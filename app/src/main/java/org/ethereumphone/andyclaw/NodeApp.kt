@@ -16,6 +16,7 @@ import org.ethereumphone.andyclaw.skills.builtin.SettingsSkill
 import org.ethereumphone.andyclaw.skills.builtin.ProactiveAgentSkill
 import org.ethereumphone.andyclaw.skills.builtin.ScreenSkill
 import org.ethereumphone.andyclaw.skills.builtin.ShellSkill
+import org.ethereumphone.andyclaw.skills.builtin.WalletSkill
 import org.ethereumphone.andyclaw.skills.tier.OsCapabilities
 
 class NodeApp : Application() {
@@ -39,6 +40,8 @@ class NodeApp : Application() {
             register(SettingsSkill(this@NodeApp))
             register(CameraSkill(this@NodeApp))
             register(SMSSkill(this@NodeApp))
+            // ethOS wallet skill
+            register(WalletSkill(this@NodeApp))
             // Day 3 showcase skills
             register(ScreenSkill())
             register(ProactiveAgentSkill())
