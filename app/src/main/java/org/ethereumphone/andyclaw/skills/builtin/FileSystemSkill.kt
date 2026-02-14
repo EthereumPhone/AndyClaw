@@ -23,18 +23,20 @@ class FileSystemSkill(private val context: Context) : AndyClawSkill {
     override val id = "filesystem"
     override val name = "File System"
 
+    private val workDir: File get() = context.filesDir
+
     override val baseManifest = SkillManifest(
-        description = "Read, write, and list files on the device filesystem.",
+        description = "Read, write, and list files in the app's sandbox directory (${context.filesDir.absolutePath}). All paths are resolved relative to this directory. No special permissions required.",
         tools = listOf(
             ToolDefinition(
                 name = "list_directory",
-                description = "List files and directories at a given path.",
+                description = "List files and directories. Paths are relative to the app sandbox. Use '.' or '' for the root sandbox directory.",
                 inputSchema = JsonObject(mapOf(
                     "type" to JsonPrimitive("object"),
                     "properties" to JsonObject(mapOf(
                         "path" to JsonObject(mapOf(
                             "type" to JsonPrimitive("string"),
-                            "description" to JsonPrimitive("The directory path to list"),
+                            "description" to JsonPrimitive("Directory path relative to app sandbox (e.g. '.' or 'scripts')"),
                         )),
                     )),
                     "required" to JsonArray(listOf(JsonPrimitive("path"))),
@@ -42,13 +44,13 @@ class FileSystemSkill(private val context: Context) : AndyClawSkill {
             ),
             ToolDefinition(
                 name = "read_file",
-                description = "Read the contents of a file. Returns the first N bytes.",
+                description = "Read the contents of a file in the app sandbox. Returns the first N bytes.",
                 inputSchema = JsonObject(mapOf(
                     "type" to JsonPrimitive("object"),
                     "properties" to JsonObject(mapOf(
                         "path" to JsonObject(mapOf(
                             "type" to JsonPrimitive("string"),
-                            "description" to JsonPrimitive("The file path to read"),
+                            "description" to JsonPrimitive("File path relative to app sandbox"),
                         )),
                         "max_bytes" to JsonObject(mapOf(
                             "type" to JsonPrimitive("integer"),
@@ -60,13 +62,13 @@ class FileSystemSkill(private val context: Context) : AndyClawSkill {
             ),
             ToolDefinition(
                 name = "write_file",
-                description = "Write content to a file. Creates the file if it doesn't exist.",
+                description = "Write content to a file in the app sandbox. Creates the file and parent directories if they don't exist.",
                 inputSchema = JsonObject(mapOf(
                     "type" to JsonPrimitive("object"),
                     "properties" to JsonObject(mapOf(
                         "path" to JsonObject(mapOf(
                             "type" to JsonPrimitive("string"),
-                            "description" to JsonPrimitive("The file path to write to"),
+                            "description" to JsonPrimitive("File path relative to app sandbox (e.g. 'scripts/hello.sh')"),
                         )),
                         "content" to JsonObject(mapOf(
                             "type" to JsonPrimitive("string"),
@@ -79,13 +81,13 @@ class FileSystemSkill(private val context: Context) : AndyClawSkill {
             ),
             ToolDefinition(
                 name = "file_info",
-                description = "Get detailed information about a file or directory.",
+                description = "Get detailed information about a file or directory in the app sandbox.",
                 inputSchema = JsonObject(mapOf(
                     "type" to JsonPrimitive("object"),
                     "properties" to JsonObject(mapOf(
                         "path" to JsonObject(mapOf(
                             "type" to JsonPrimitive("string"),
-                            "description" to JsonPrimitive("The file or directory path"),
+                            "description" to JsonPrimitive("File or directory path relative to app sandbox"),
                         )),
                     )),
                     "required" to JsonArray(listOf(JsonPrimitive("path"))),
@@ -107,16 +109,26 @@ class FileSystemSkill(private val context: Context) : AndyClawSkill {
     }
 
     private fun resolvePath(path: String): File {
-        val file = File(path)
-        if (file.isAbsolute) return file
-        return File(context.filesDir, path)
+        // Always resolve within the app sandbox - no permission needed
+        val cleaned = path.trimStart('/')
+        if (cleaned.isEmpty() || cleaned == ".") return workDir
+        return File(workDir, cleaned).also {
+            // Prevent path traversal outside the sandbox
+            require(it.canonicalPath.startsWith(workDir.canonicalPath)) {
+                "Path escapes app sandbox"
+            }
+        }
     }
 
     private fun listDirectory(params: JsonObject): SkillResult {
         val path = params["path"]?.jsonPrimitive?.contentOrNull
             ?: return SkillResult.Error("Missing required parameter: path")
-        val dir = resolvePath(path)
-        if (!dir.exists()) return SkillResult.Error("Directory not found: $path")
+        val dir = try {
+            resolvePath(path)
+        } catch (e: IllegalArgumentException) {
+            return SkillResult.Error(e.message ?: "Invalid path")
+        }
+        if (!dir.exists()) return SkillResult.Error("Directory not found: $path (resolved to ${dir.absolutePath})")
         if (!dir.isDirectory) return SkillResult.Error("Not a directory: $path")
 
         return try {
@@ -139,8 +151,12 @@ class FileSystemSkill(private val context: Context) : AndyClawSkill {
         val path = params["path"]?.jsonPrimitive?.contentOrNull
             ?: return SkillResult.Error("Missing required parameter: path")
         val maxBytes = params["max_bytes"]?.jsonPrimitive?.intOrNull ?: 100_000
-        val file = resolvePath(path)
-        if (!file.exists()) return SkillResult.Error("File not found: $path")
+        val file = try {
+            resolvePath(path)
+        } catch (e: IllegalArgumentException) {
+            return SkillResult.Error(e.message ?: "Invalid path")
+        }
+        if (!file.exists()) return SkillResult.Error("File not found: $path (resolved to ${file.absolutePath})")
         if (!file.isFile) return SkillResult.Error("Not a file: $path")
         if (!file.canRead()) return SkillResult.Error("File not readable: $path")
 
@@ -166,7 +182,11 @@ class FileSystemSkill(private val context: Context) : AndyClawSkill {
             ?: return SkillResult.Error("Missing required parameter: path")
         val content = params["content"]?.jsonPrimitive?.contentOrNull
             ?: return SkillResult.Error("Missing required parameter: content")
-        val file = resolvePath(path)
+        val file = try {
+            resolvePath(path)
+        } catch (e: IllegalArgumentException) {
+            return SkillResult.Error(e.message ?: "Invalid path")
+        }
 
         return try {
             file.parentFile?.mkdirs()
@@ -184,8 +204,12 @@ class FileSystemSkill(private val context: Context) : AndyClawSkill {
     private fun fileInfo(params: JsonObject): SkillResult {
         val path = params["path"]?.jsonPrimitive?.contentOrNull
             ?: return SkillResult.Error("Missing required parameter: path")
-        val file = resolvePath(path)
-        if (!file.exists()) return SkillResult.Error("Path not found: $path")
+        val file = try {
+            resolvePath(path)
+        } catch (e: IllegalArgumentException) {
+            return SkillResult.Error(e.message ?: "Invalid path")
+        }
+        if (!file.exists()) return SkillResult.Error("Path not found: $path (resolved to ${file.absolutePath})")
 
         val dateFormat = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSSZ", Locale.US)
         return try {

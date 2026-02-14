@@ -1,5 +1,6 @@
 package org.ethereumphone.andyclaw.skills.builtin
 
+import android.content.Context
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
@@ -16,9 +17,11 @@ import java.io.BufferedReader
 import java.io.InputStreamReader
 import java.util.concurrent.TimeUnit
 
-class ShellSkill : AndyClawSkill {
+class ShellSkill(private val context: Context) : AndyClawSkill {
     override val id = "shell"
     override val name = "Shell"
+
+    private val workDir get() = context.filesDir
 
     companion object {
         private val BLOCKED_COMMANDS = setOf("rm -rf /", "mkfs", "dd if=/dev/zero")
@@ -27,17 +30,35 @@ class ShellSkill : AndyClawSkill {
     }
 
     override val baseManifest = SkillManifest(
-        description = "Execute shell commands on the device. Restricted to safe commands on stock Android.",
+        description = buildString {
+            appendLine("Execute shell commands on the Android device.")
+            appendLine("The working directory is the app sandbox: ${context.filesDir.absolutePath}")
+            appendLine("Files created with write_file are in this directory and can be executed directly.")
+            appendLine()
+            appendLine("Common patterns:")
+            appendLine("- Run a script you wrote: sh myscript.sh")
+            appendLine("- Run Python (if installed): python3 myscript.py")
+            appendLine("- Make executable and run: chmod +x myscript.sh && ./myscript.sh")
+            appendLine("- Run inline code: echo 'Hello from Android!'")
+            appendLine("- List sandbox files: ls -la")
+            appendLine("- Check available tools: which python3 sh node dalvikvm")
+            appendLine()
+            appendLine("Android shell notes:")
+            appendLine("- Standard POSIX shell (sh) is always available")
+            appendLine("- The app runs as a normal user, not root (unless on privileged OS)")
+            appendLine("- Common tools: ls, cat, cp, mv, mkdir, rm, chmod, echo, grep, sed, awk, wc, sort, head, tail, date, uname")
+            appendLine("- Dalvik VM can run .dex files: dalvikvm -cp classes.dex ClassName")
+        },
         tools = listOf(
             ToolDefinition(
                 name = "run_shell_command",
-                description = "Run a shell command and return stdout/stderr. On stock Android, commands run as the app user with restricted access. On privileged OS, commands can run as root.",
+                description = "Run a shell command in the app sandbox directory (${context.filesDir.absolutePath}). Files written with write_file are available here. Example: after writing 'hello.sh', run it with 'sh hello.sh'. On privileged OS, commands can run as root with as_root=true.",
                 inputSchema = JsonObject(mapOf(
                     "type" to JsonPrimitive("object"),
                     "properties" to JsonObject(mapOf(
                         "command" to JsonObject(mapOf(
                             "type" to JsonPrimitive("string"),
-                            "description" to JsonPrimitive("The shell command to execute"),
+                            "description" to JsonPrimitive("The shell command to execute (runs in app sandbox directory)"),
                         )),
                         "timeout_ms" to JsonObject(mapOf(
                             "type" to JsonPrimitive("integer"),
@@ -88,6 +109,7 @@ class ShellSkill : AndyClawSkill {
             } else {
                 ProcessBuilder("sh", "-c", command)
             }
+            processBuilder.directory(workDir)
             processBuilder.redirectErrorStream(true)
             val process = processBuilder.start()
 
@@ -114,11 +136,7 @@ class ShellSkill : AndyClawSkill {
                     put("truncated", true)
                 }
             }
-            if (exitCode == 0) {
-                SkillResult.Success(result.toString())
-            } else {
-                SkillResult.Success(result.toString())
-            }
+            SkillResult.Success(result.toString())
         } catch (e: Exception) {
             SkillResult.Error("Failed to execute command: ${e.message}")
         }

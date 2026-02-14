@@ -5,7 +5,7 @@ import android.content.Intent
 import android.Manifest
 import android.net.Uri
 import android.provider.Settings
-import androidx.appcompat.app.AlertDialog
+import android.app.AlertDialog
 import androidx.activity.ComponentActivity
 import androidx.activity.result.ActivityResultLauncher
 import androidx.activity.result.contract.ActivityResultContracts
@@ -126,7 +126,12 @@ class PermissionRequester(private val activity: ComponentActivity) {
     when (permission) {
       Manifest.permission.CAMERA -> "Camera"
       Manifest.permission.RECORD_AUDIO -> "Microphone"
-      Manifest.permission.SEND_SMS -> "SMS"
-      else -> permission
+      Manifest.permission.SEND_SMS -> "Send SMS"
+      Manifest.permission.READ_SMS -> "Read SMS"
+      Manifest.permission.READ_CONTACTS -> "Read Contacts"
+      Manifest.permission.WRITE_CONTACTS -> "Write Contacts"
+      Manifest.permission.ACCESS_FINE_LOCATION -> "Location"
+      Manifest.permission.ACCESS_COARSE_LOCATION -> "Approximate Location"
+      else -> permission.substringAfterLast('.')
     }
 }

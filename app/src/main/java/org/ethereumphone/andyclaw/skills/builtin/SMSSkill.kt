@@ -33,6 +33,7 @@ class SMSSkill(private val context: Context) : AndyClawSkill {
                         "from" to JsonObject(mapOf("type" to JsonPrimitive("string"), "description" to JsonPrimitive("Filter by sender address/number"))),
                     )),
                 )),
+                requiredPermissions = listOf("android.permission.READ_SMS"),
             ),
         ),
         permissions = listOf("android.permission.READ_SMS"),
@@ -53,6 +54,7 @@ class SMSSkill(private val context: Context) : AndyClawSkill {
                     "required" to JsonArray(listOf(JsonPrimitive("to"), JsonPrimitive("message"))),
                 )),
                 requiresApproval = true,
+                requiredPermissions = listOf("android.permission.SEND_SMS"),
             ),
             ToolDefinition(
                 name = "auto_reply_sms",
@@ -66,6 +68,7 @@ class SMSSkill(private val context: Context) : AndyClawSkill {
                     "required" to JsonArray(listOf(JsonPrimitive("message"))),
                 )),
                 requiresApproval = true,
+                requiredPermissions = listOf("android.permission.SEND_SMS", "android.permission.READ_SMS"),
             ),
         ),
         permissions = listOf("android.permission.SEND_SMS"),

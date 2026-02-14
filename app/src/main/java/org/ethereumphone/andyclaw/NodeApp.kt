@@ -22,12 +22,14 @@ class NodeApp : Application() {
     val runtime: NodeRuntime by lazy { NodeRuntime(this) }
     val securePrefs: SecurePrefs by lazy { SecurePrefs(this) }
 
+    var permissionRequester: PermissionRequester? = null
+
     val nativeSkillRegistry: NativeSkillRegistry by lazy {
         NativeSkillRegistry().apply {
             // Day 1 base skills
             register(DeviceInfoSkill(this@NodeApp))
             register(ClipboardSkill(this@NodeApp))
-            register(ShellSkill())
+            register(ShellSkill(this@NodeApp))
             register(FileSystemSkill(this@NodeApp))
             // Day 2 tier-aware skills
             register(ContactsSkill(this@NodeApp))

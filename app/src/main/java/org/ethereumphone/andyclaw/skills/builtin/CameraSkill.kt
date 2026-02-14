@@ -34,6 +34,7 @@ class CameraSkill(private val context: Context) : AndyClawSkill {
                     )),
                 )),
                 requiresApproval = true,
+                requiredPermissions = listOf("android.permission.CAMERA"),
             ),
         ),
         permissions = listOf("android.permission.CAMERA"),
@@ -51,6 +52,7 @@ class CameraSkill(private val context: Context) : AndyClawSkill {
                         "facing" to JsonObject(mapOf("type" to JsonPrimitive("string"), "description" to JsonPrimitive("Camera facing: front or back"))),
                     )),
                 )),
+                requiredPermissions = listOf("android.permission.CAMERA"),
             ),
             ToolDefinition(
                 name = "analyze_image",
@@ -62,6 +64,7 @@ class CameraSkill(private val context: Context) : AndyClawSkill {
                     )),
                     "required" to JsonArray(listOf(JsonPrimitive("prompt"))),
                 )),
+                requiredPermissions = listOf("android.permission.CAMERA"),
             ),
         ),
     )

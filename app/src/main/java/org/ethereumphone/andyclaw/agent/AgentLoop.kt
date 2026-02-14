@@ -30,6 +30,7 @@ class AgentLoop(
         fun onToolExecution(toolName: String)
         fun onToolResult(toolName: String, result: SkillResult)
         suspend fun onApprovalNeeded(description: String): Boolean
+        suspend fun onPermissionsNeeded(permissions: List<String>): Boolean
         fun onComplete(fullText: String)
         fun onError(error: Throwable)
     }
@@ -101,8 +102,25 @@ class AgentLoop(
                 for (toolUse in toolUseBlocks) {
                     callbacks.onToolExecution(toolUse.name)
 
-                    // Check if tool requires approval
                     val toolDef = skillRegistry.getTools(tier).find { it.name == toolUse.name }
+
+                    // Check if tool requires Android runtime permissions
+                    if (toolDef != null && toolDef.requiredPermissions.isNotEmpty()) {
+                        val granted = callbacks.onPermissionsNeeded(toolDef.requiredPermissions)
+                        if (!granted) {
+                            toolResults.add(
+                                ContentBlock.ToolResult(
+                                    toolUseId = toolUse.id,
+                                    content = "Required Android permissions were not granted: ${toolDef.requiredPermissions.joinToString()}. Ask the user to grant them in device settings.",
+                                    isError = true,
+                                )
+                            )
+                            callbacks.onToolResult(toolUse.name, SkillResult.Error("Permissions not granted"))
+                            continue
+                        }
+                    }
+
+                    // Check if tool requires approval
                     if (toolDef?.requiresApproval == true) {
                         val approved = callbacks.onApprovalNeeded(
                             "Tool '${toolUse.name}' requires your approval to execute."

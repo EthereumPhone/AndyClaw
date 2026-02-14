@@ -9,4 +9,5 @@ data class ToolDefinition(
     val description: String,
     val inputSchema: JsonObject,
     val requiresApproval: Boolean = false,
+    val requiredPermissions: List<String> = emptyList(),
 )

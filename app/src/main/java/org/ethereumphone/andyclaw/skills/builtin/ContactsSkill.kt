@@ -37,6 +37,7 @@ class ContactsSkill(private val context: Context) : AndyClawSkill {
                     )),
                     "required" to JsonArray(listOf(JsonPrimitive("query"))),
                 )),
+                requiredPermissions = listOf("android.permission.READ_CONTACTS"),
             ),
             ToolDefinition(
                 name = "get_contact_details",
@@ -51,6 +52,7 @@ class ContactsSkill(private val context: Context) : AndyClawSkill {
                     )),
                     "required" to JsonArray(listOf(JsonPrimitive("contact_id"))),
                 )),
+                requiredPermissions = listOf("android.permission.READ_CONTACTS"),
             ),
         ),
         permissions = listOf("android.permission.READ_CONTACTS"),
@@ -72,6 +74,7 @@ class ContactsSkill(private val context: Context) : AndyClawSkill {
                     "required" to JsonArray(listOf(JsonPrimitive("name"))),
                 )),
                 requiresApproval = true,
+                requiredPermissions = listOf("android.permission.WRITE_CONTACTS"),
             ),
             ToolDefinition(
                 name = "edit_contact",
@@ -86,6 +89,7 @@ class ContactsSkill(private val context: Context) : AndyClawSkill {
                     "required" to JsonArray(listOf(JsonPrimitive("contact_id"))),
                 )),
                 requiresApproval = true,
+                requiredPermissions = listOf("android.permission.WRITE_CONTACTS"),
             ),
         ),
         permissions = listOf("android.permission.WRITE_CONTACTS"),

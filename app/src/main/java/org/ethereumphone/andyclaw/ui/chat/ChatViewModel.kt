@@ -132,12 +132,13 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 }
 
                 override fun onToolExecution(toolName: String) {
+                    // Flush any accumulated text as a committed assistant bubble
+                    flushStreamingText(sid)
                     _currentToolExecution.value = toolName
                 }
 
                 override fun onToolResult(toolName: String, result: SkillResult) {
                     _currentToolExecution.value = null
-                    // Add tool execution message to UI
                     val resultText = when (result) {
                         is SkillResult.Success -> result.data
                         is SkillResult.Error -> "Error: ${result.message}"
@@ -162,27 +163,28 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     }
                 }
 
-                override fun onComplete(fullText: String) {
-                    if (fullText.isNotBlank()) {
-                        viewModelScope.launch {
-                            repository.addMessage(sid, "assistant", fullText)
-                        }
-                        val assistantMsg = ChatUiMessage(
-                            id = java.util.UUID.randomUUID().toString(),
-                            role = "assistant",
-                            content = fullText,
-                        )
-                        _messages.value = _messages.value + assistantMsg
+                override suspend fun onPermissionsNeeded(permissions: List<String>): Boolean {
+                    val requester = app.permissionRequester ?: return false
+                    return try {
+                        val result = requester.requestIfMissing(permissions)
+                        result.values.all { it }
+                    } catch (e: Exception) {
+                        false
                     }
+                }
+
+                override fun onComplete(fullText: String) {
+                    // Flush any remaining streamed text as a final bubble
+                    flushStreamingText(sid)
                     _isStreaming.value = false
-                    _streamingText.value = ""
                     _currentToolExecution.value = null
                 }
 
                 override fun onError(error: Throwable) {
+                    // Flush any text that was streamed before the error
+                    flushStreamingText(sid)
                     _error.value = error.message ?: "An error occurred"
                     _isStreaming.value = false
-                    _streamingText.value = ""
                     _currentToolExecution.value = null
                 }
             })
@@ -205,6 +207,22 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     fun clearError() {
         _error.value = null
+    }
+
+    private fun flushStreamingText(sessionId: String) {
+        val currentText = _streamingText.value
+        if (currentText.isNotBlank()) {
+            val assistantMsg = ChatUiMessage(
+                id = java.util.UUID.randomUUID().toString(),
+                role = "assistant",
+                content = currentText,
+            )
+            _messages.value = _messages.value + assistantMsg
+            viewModelScope.launch {
+                repository.addMessage(sessionId, "assistant", currentText)
+            }
+        }
+        _streamingText.value = ""
     }
 
     private fun buildConversationHistory(): List<Message> {
