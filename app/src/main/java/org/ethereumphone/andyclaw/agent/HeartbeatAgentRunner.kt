@@ -25,11 +25,16 @@ class HeartbeatAgentRunner(private val app: NodeApp) : AgentRunner {
         systemPrompt: String?,
         skillsPrompt: String?,
     ): AgentResponse {
+        Log.i(TAG, "=== HEARTBEAT RUN STARTING ===")
+        Log.i(TAG, "Prompt: ${prompt.take(500)}")
+
         val client = app.anthropicClient
         val registry = app.nativeSkillRegistry
         val tier = OsCapabilities.currentTier()
         val aiName = app.userStoryManager.getAiName()
         val userStory = app.userStoryManager.read()
+
+        Log.i(TAG, "AI name: $aiName, tier: $tier, userStory present: ${userStory != null}")
 
         val agentLoop = AgentLoop(
             client = client,
@@ -45,18 +50,24 @@ class HeartbeatAgentRunner(private val app: NodeApp) : AgentRunner {
         val callbacks = object : AgentLoop.Callbacks {
             override fun onToken(text: String) {
                 collectedText.append(text)
+                Log.i(TAG, "LLM token: $text")
             }
 
             override fun onToolExecution(toolName: String) {
-                Log.d(TAG, "Executing tool: $toolName")
+                Log.i(TAG, "LLM calling tool: $toolName")
             }
 
             override fun onToolResult(toolName: String, result: SkillResult) {
-                Log.d(TAG, "Tool result ($toolName): ${result::class.simpleName}")
+                val resultStr = when (result) {
+                    is SkillResult.Success -> "Success: ${result.data.take(500)}"
+                    is SkillResult.Error -> "Error: ${result.message}"
+                    is SkillResult.RequiresApproval -> "RequiresApproval: ${result.description}"
+                }
+                Log.i(TAG, "Tool result ($toolName): $resultStr")
             }
 
             override suspend fun onApprovalNeeded(description: String): Boolean {
-                Log.d(TAG, "Auto-approving: $description")
+                Log.i(TAG, "Auto-approving: $description")
                 return true
             }
 
@@ -65,7 +76,9 @@ class HeartbeatAgentRunner(private val app: NodeApp) : AgentRunner {
                 if (requester != null) {
                     return try {
                         val results = requester.requestIfMissing(permissions)
-                        results.values.all { it }
+                        val allGranted = results.values.all { it }
+                        Log.i(TAG, "Permission request result: $results -> granted=$allGranted")
+                        allGranted
                     } catch (e: Exception) {
                         Log.w(TAG, "Permission request failed: ${e.message}")
                         false
@@ -76,11 +89,13 @@ class HeartbeatAgentRunner(private val app: NodeApp) : AgentRunner {
             }
 
             override fun onComplete(fullText: String) {
+                Log.i(TAG, "=== HEARTBEAT RUN COMPLETE ===")
+                Log.i(TAG, "LLM full response: ${fullText.take(1000)}")
                 completion.complete(AgentResponse(text = fullText))
             }
 
             override fun onError(error: Throwable) {
-                Log.e(TAG, "AgentLoop error: ${error.message}", error)
+                Log.e(TAG, "=== HEARTBEAT RUN FAILED ===", error)
                 completion.complete(AgentResponse(text = error.message ?: "Unknown error", isError = true))
             }
         }
