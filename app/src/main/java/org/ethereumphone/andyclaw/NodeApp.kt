@@ -1,6 +1,7 @@
 package org.ethereumphone.andyclaw
 
 import android.app.Application
+import org.ethereumphone.andyclaw.BuildConfig
 import org.ethereumphone.andyclaw.llm.AnthropicClient
 import org.ethereumphone.andyclaw.skills.NativeSkillRegistry
 import org.ethereumphone.andyclaw.skills.builtin.AppsSkill
@@ -45,7 +46,7 @@ class NodeApp : Application() {
     }
 
     val anthropicClient: AnthropicClient by lazy {
-        AnthropicClient(apiKey = { securePrefs.apiKey.value })
+        AnthropicClient(apiKey = { BuildConfig.OPENROUTER_API_KEY })
     }
 
     override fun onCreate() {

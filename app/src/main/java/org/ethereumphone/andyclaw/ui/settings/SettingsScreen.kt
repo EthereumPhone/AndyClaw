@@ -31,7 +31,6 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import org.ethereumphone.andyclaw.llm.AnthropicModels
@@ -42,9 +41,7 @@ fun SettingsScreen(
     onNavigateBack: () -> Unit,
     viewModel: SettingsViewModel = viewModel(),
 ) {
-    val apiKey by viewModel.apiKey.collectAsState()
     val selectedModel by viewModel.selectedModel.collectAsState()
-    val isApiKeyValid by viewModel.isApiKeyValid.collectAsState()
 
     Scaffold(
         topBar = {
@@ -65,32 +62,6 @@ fun SettingsScreen(
                 .verticalScroll(rememberScrollState())
                 .padding(16.dp),
         ) {
-            // API Key Section
-            Text(
-                text = "Anthropic API Key",
-                style = MaterialTheme.typography.titleMedium,
-            )
-            Spacer(Modifier.height(8.dp))
-            OutlinedTextField(
-                value = apiKey,
-                onValueChange = { viewModel.setApiKey(it) },
-                modifier = Modifier.fillMaxWidth(),
-                label = { Text("API Key") },
-                placeholder = { Text("sk-ant-...") },
-                visualTransformation = PasswordVisualTransformation(),
-                singleLine = true,
-                isError = isApiKeyValid == false,
-                supportingText = {
-                    when (isApiKeyValid) {
-                        false -> Text("Invalid API key format", color = MaterialTheme.colorScheme.error)
-                        true -> Text("API key looks valid", color = MaterialTheme.colorScheme.primary)
-                        null -> {}
-                    }
-                },
-            )
-
-            Spacer(Modifier.height(24.dp))
-
             // Model Selection
             Text(
                 text = "Model",

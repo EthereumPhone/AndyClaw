@@ -80,12 +80,6 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     fun sendMessage(text: String) {
         if (text.isBlank() || _isStreaming.value) return
 
-        val apiKey = app.securePrefs.apiKey.value
-        if (apiKey.isBlank()) {
-            _error.value = "Please set your API key in Settings first."
-            return
-        }
-
         currentJob = viewModelScope.launch {
             // Ensure session exists
             if (_sessionId.value == null) {

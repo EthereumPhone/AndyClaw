@@ -13,7 +13,7 @@ import java.util.concurrent.TimeUnit
 
 class AnthropicClient(
     private val apiKey: () -> String,
-    private val baseUrl: String = "https://api.anthropic.com",
+    private val baseUrl: String = "https://openrouter.ai/api",
 ) {
     companion object {
         private const val API_VERSION = "2023-06-01"
@@ -37,7 +37,7 @@ class AnthropicClient(
         val body = serializeRequest(nonStreamRequest)
         val httpRequest = Request.Builder()
             .url("$baseUrl/v1/messages")
-            .addHeader("x-api-key", apiKey())
+            .addHeader("Authorization", "Bearer ${apiKey()}")
             .addHeader("anthropic-version", API_VERSION)
             .addHeader("content-type", "application/json")
             .post(body.toRequestBody(JSON_MEDIA_TYPE))
@@ -57,7 +57,7 @@ class AnthropicClient(
         val body = serializeRequest(streamRequest)
         val httpRequest = Request.Builder()
             .url("$baseUrl/v1/messages")
-            .addHeader("x-api-key", apiKey())
+            .addHeader("Authorization", "Bearer ${apiKey()}")
             .addHeader("anthropic-version", API_VERSION)
             .addHeader("content-type", "application/json")
             .post(body.toRequestBody(JSON_MEDIA_TYPE))
