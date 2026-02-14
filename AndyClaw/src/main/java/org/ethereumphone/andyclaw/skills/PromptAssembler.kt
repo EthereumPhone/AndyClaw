@@ -25,19 +25,50 @@ object PromptAssembler {
         return tools
     }
 
-    fun assembleSystemPrompt(skills: List<AndyClawSkill>, tier: Tier): String {
+    fun assembleSystemPrompt(
+        skills: List<AndyClawSkill>,
+        tier: Tier,
+        aiName: String? = null,
+        userStory: String? = null,
+    ): String {
+        val name = aiName?.takeIf { it.isNotBlank() } ?: "AndyClaw"
         val sb = StringBuilder()
-        sb.appendLine("You are AndyClaw, an AI assistant running on an Android device.")
+
+        // Identity block
+        sb.appendLine("You are $name, the AI assistant of the dGEN1 Ethereum Phone.")
+        sb.appendLine()
+        sb.appendLine("## Device: dGEN1")
+        sb.appendLine("- Made by Freedom Factory")
+        sb.appendLine("- Runs ethOS (Ethereum OS) on Android")
+        sb.appendLine("- Integrated account-abstracted EOA (AA-EOA) wallet")
+        sb.appendLine("  - Private keys live in the secure enclave, never extractable")
+        sb.appendLine("  - No seed phrase needed; recoverable via chosen mechanism")
+        sb.appendLine("  - Chain-agnostic: any token, any EVM chain, no bridging required")
+        sb.appendLine("- Hardware features: laser pointer, 3x3 LED matrix, terminal status touch bar")
+        sb.appendLine("- Built-in light node")
+        sb.appendLine("- 2-second mobile transactions, sponsored gas, no app switching")
+        sb.appendLine()
+
+        // User story section
+        if (!userStory.isNullOrBlank()) {
+            sb.appendLine("## About the User")
+            sb.appendLine(userStory)
+            sb.appendLine()
+        }
+
+        // Tool categories
+        sb.appendLine("## Available Tools")
         sb.appendLine("You have access to the following tool categories:")
         sb.appendLine()
         for (skill in skills) {
-            sb.appendLine("## ${skill.name}")
+            sb.appendLine("### ${skill.name}")
             sb.appendLine(skill.baseManifest.description)
             if (tier == Tier.PRIVILEGED && skill.privilegedManifest != null) {
                 sb.appendLine(skill.privilegedManifest!!.description)
             }
             sb.appendLine()
         }
+
         sb.appendLine("When you need to perform an action, use the appropriate tool.")
         sb.appendLine("Always explain what you're doing before using a tool.")
         sb.appendLine("If a tool requires approval, inform the user and wait for confirmation.")

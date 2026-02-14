@@ -20,6 +20,8 @@ class AgentLoop(
     private val skillRegistry: NativeSkillRegistry,
     private val tier: Tier,
     private val model: AnthropicModels = AnthropicModels.SONNET_4,
+    private val aiName: String? = null,
+    private val userStory: String? = null,
 ) {
     companion object {
         private const val MAX_ITERATIONS = 20
@@ -37,7 +39,7 @@ class AgentLoop(
 
     suspend fun run(userMessage: String, conversationHistory: List<Message>, callbacks: Callbacks) {
         val skills = skillRegistry.getAll()
-        val systemPrompt = PromptAssembler.assembleSystemPrompt(skills, tier)
+        val systemPrompt = PromptAssembler.assembleSystemPrompt(skills, tier, aiName, userStory)
         val toolsJson = PromptAssembler.assembleTools(skills, tier)
 
         val messages = conversationHistory.toMutableList()

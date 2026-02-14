@@ -81,6 +81,10 @@ dependencies {
     // WalletSDK for ethOS system wallet (ERC-4337)
     implementation("org.web3j:core:4.9.4")
     implementation("com.github.EthereumPhone:WalletSDK:0.3.0")
+    // MessengerSDK for XMTP messaging
+    implementation("com.github.EthereumPhone:MessengerSDK:0.2.0")
+    // ContactsSDK for ethOS contacts with ETH address support
+    implementation("com.github.EthereumPhone:ContactsSDK:0.1.0")
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)

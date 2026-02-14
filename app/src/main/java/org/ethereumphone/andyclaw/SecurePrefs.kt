@@ -97,6 +97,9 @@ class SecurePrefs(context: Context) : KeyValueStore {
   private val _selectedModel = MutableStateFlow(prefs.getString("anthropic.model", "claude-sonnet-4-20250514") ?: "claude-sonnet-4-20250514")
   val selectedModel: StateFlow<String> = _selectedModel
 
+  private val _aiName = MutableStateFlow(prefs.getString("ai.name", "AndyClaw") ?: "AndyClaw")
+  val aiName: StateFlow<String> = _aiName
+
   fun setLastDiscoveredStableId(value: String) {
     val trimmed = value.trim()
     prefs.edit { putString("gateway.lastDiscoveredStableID", trimmed) }
@@ -256,6 +259,12 @@ class SecurePrefs(context: Context) : KeyValueStore {
     val trimmed = value.trim()
     prefs.edit { putString("anthropic.model", trimmed) }
     _selectedModel.value = trimmed
+  }
+
+  fun setAiName(value: String) {
+    val trimmed = value.trim().takeIf { it.isNotEmpty() } ?: "AndyClaw"
+    prefs.edit { putString("ai.name", trimmed) }
+    _aiName.value = trimmed
   }
 
   private fun loadVoiceWakeMode(): VoiceWakeMode {

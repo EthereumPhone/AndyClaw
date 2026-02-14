@@ -17,12 +17,15 @@ import org.ethereumphone.andyclaw.skills.builtin.ProactiveAgentSkill
 import org.ethereumphone.andyclaw.skills.builtin.ScreenSkill
 import org.ethereumphone.andyclaw.skills.builtin.ShellSkill
 import org.ethereumphone.andyclaw.skills.builtin.WalletSkill
+import org.ethereumphone.andyclaw.skills.builtin.MessengerSkill
 import org.ethereumphone.andyclaw.skills.tier.OsCapabilities
+import org.ethereumphone.andyclaw.onboarding.UserStoryManager
 
 class NodeApp : Application() {
 
     val runtime: NodeRuntime by lazy { NodeRuntime(this) }
     val securePrefs: SecurePrefs by lazy { SecurePrefs(this) }
+    val userStoryManager: UserStoryManager by lazy { UserStoryManager(this) }
 
     var permissionRequester: PermissionRequester? = null
 
@@ -42,6 +45,8 @@ class NodeApp : Application() {
             register(SMSSkill(this@NodeApp))
             // ethOS wallet skill
             register(WalletSkill(this@NodeApp))
+            // XMTP messenger skill
+            register(MessengerSkill(this@NodeApp))
             // Day 3 showcase skills
             register(ScreenSkill())
             register(ProactiveAgentSkill())

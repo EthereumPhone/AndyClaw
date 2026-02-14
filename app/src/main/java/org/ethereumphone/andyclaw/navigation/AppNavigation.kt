@@ -1,16 +1,21 @@
 package org.ethereumphone.andyclaw.navigation
 
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
+import androidx.compose.ui.platform.LocalContext
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
+import org.ethereumphone.andyclaw.NodeApp
+import org.ethereumphone.andyclaw.onboarding.OnboardingScreen
 import org.ethereumphone.andyclaw.ui.chat.ChatScreen
 import org.ethereumphone.andyclaw.ui.chat.SessionListScreen
 import org.ethereumphone.andyclaw.ui.settings.SettingsScreen
 
 object Routes {
+    const val ONBOARDING = "onboarding"
     const val CHAT = "chat"
     const val CHAT_WITH_SESSION = "chat/{sessionId}"
     const val SESSIONS = "sessions"
@@ -20,11 +25,25 @@ object Routes {
 @Composable
 fun AppNavigation() {
     val navController = rememberNavController()
+    val app = LocalContext.current.applicationContext as NodeApp
+    val startDestination = remember {
+        if (app.userStoryManager.exists()) Routes.CHAT else Routes.ONBOARDING
+    }
 
     NavHost(
         navController = navController,
-        startDestination = Routes.CHAT,
+        startDestination = startDestination,
     ) {
+        composable(Routes.ONBOARDING) {
+            OnboardingScreen(
+                onComplete = {
+                    navController.navigate(Routes.CHAT) {
+                        popUpTo(Routes.ONBOARDING) { inclusive = true }
+                    }
+                },
+            )
+        }
+
         composable(Routes.CHAT) {
             ChatScreen(
                 sessionId = null,

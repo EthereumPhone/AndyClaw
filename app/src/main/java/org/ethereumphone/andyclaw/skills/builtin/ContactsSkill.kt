@@ -1,9 +1,6 @@
 package org.ethereumphone.andyclaw.skills.builtin
 
-import android.content.ContentResolver
-import android.content.ContentValues
 import android.content.Context
-import android.provider.ContactsContract
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -16,23 +13,26 @@ import org.ethereumphone.andyclaw.skills.SkillManifest
 import org.ethereumphone.andyclaw.skills.SkillResult
 import org.ethereumphone.andyclaw.skills.Tier
 import org.ethereumphone.andyclaw.skills.ToolDefinition
+import org.ethereumphone.contactssdk.ContactsSDK
 
 class ContactsSkill(private val context: Context) : AndyClawSkill {
     override val id = "contacts"
     override val name = "Contacts"
 
+    private val contactsSDK by lazy { ContactsSDK(context) }
+
     override val baseManifest = SkillManifest(
-        description = "Search and view contacts on the device.",
+        description = "Search and view contacts on the device, including Ethereum addresses and ENS names.",
         tools = listOf(
             ToolDefinition(
                 name = "search_contacts",
-                description = "Search contacts by name or phone number. Returns matching contacts.",
+                description = "Search contacts by name. Returns matching contacts with ETH addresses and ENS names.",
                 inputSchema = JsonObject(mapOf(
                     "type" to JsonPrimitive("object"),
                     "properties" to JsonObject(mapOf(
                         "query" to JsonObject(mapOf(
                             "type" to JsonPrimitive("string"),
-                            "description" to JsonPrimitive("Search query (name or phone number)"),
+                            "description" to JsonPrimitive("Search query (name)"),
                         )),
                     )),
                     "required" to JsonArray(listOf(JsonPrimitive("query"))),
@@ -41,7 +41,7 @@ class ContactsSkill(private val context: Context) : AndyClawSkill {
             ),
             ToolDefinition(
                 name = "get_contact_details",
-                description = "Get full details of a contact by contact ID.",
+                description = "Get full details of a contact by contact ID, including ETH address and ENS name.",
                 inputSchema = JsonObject(mapOf(
                     "type" to JsonPrimitive("object"),
                     "properties" to JsonObject(mapOf(
@@ -54,22 +54,48 @@ class ContactsSkill(private val context: Context) : AndyClawSkill {
                 )),
                 requiredPermissions = listOf("android.permission.READ_CONTACTS"),
             ),
+            ToolDefinition(
+                name = "get_eth_contacts",
+                description = "Get all contacts that have an Ethereum address or ENS name.",
+                inputSchema = JsonObject(mapOf(
+                    "type" to JsonPrimitive("object"),
+                    "properties" to JsonObject(emptyMap()),
+                )),
+                requiredPermissions = listOf("android.permission.READ_CONTACTS"),
+            ),
         ),
         permissions = listOf("android.permission.READ_CONTACTS"),
     )
 
     override val privilegedManifest = SkillManifest(
-        description = "Create and edit contacts (privileged OS only).",
+        description = "Create and edit contacts with Ethereum data (privileged OS only).",
         tools = listOf(
             ToolDefinition(
                 name = "create_contact",
-                description = "Create a new contact with name and phone number.",
+                description = "Create a new contact with name, phone, email, ETH address, and/or ENS name.",
                 inputSchema = JsonObject(mapOf(
                     "type" to JsonPrimitive("object"),
                     "properties" to JsonObject(mapOf(
-                        "name" to JsonObject(mapOf("type" to JsonPrimitive("string"), "description" to JsonPrimitive("Contact display name"))),
-                        "phone" to JsonObject(mapOf("type" to JsonPrimitive("string"), "description" to JsonPrimitive("Phone number"))),
-                        "email" to JsonObject(mapOf("type" to JsonPrimitive("string"), "description" to JsonPrimitive("Email address"))),
+                        "name" to JsonObject(mapOf(
+                            "type" to JsonPrimitive("string"),
+                            "description" to JsonPrimitive("Contact display name"),
+                        )),
+                        "phone" to JsonObject(mapOf(
+                            "type" to JsonPrimitive("string"),
+                            "description" to JsonPrimitive("Phone number"),
+                        )),
+                        "email" to JsonObject(mapOf(
+                            "type" to JsonPrimitive("string"),
+                            "description" to JsonPrimitive("Email address"),
+                        )),
+                        "eth_address" to JsonObject(mapOf(
+                            "type" to JsonPrimitive("string"),
+                            "description" to JsonPrimitive("Ethereum address (0x-prefixed)"),
+                        )),
+                        "ens_name" to JsonObject(mapOf(
+                            "type" to JsonPrimitive("string"),
+                            "description" to JsonPrimitive("ENS name (e.g., vitalik.eth)"),
+                        )),
                     )),
                     "required" to JsonArray(listOf(JsonPrimitive("name"))),
                 )),
@@ -77,16 +103,24 @@ class ContactsSkill(private val context: Context) : AndyClawSkill {
                 requiredPermissions = listOf("android.permission.WRITE_CONTACTS"),
             ),
             ToolDefinition(
-                name = "edit_contact",
-                description = "Edit an existing contact's details.",
+                name = "set_eth_address",
+                description = "Set or update the ETH address on an existing contact.",
                 inputSchema = JsonObject(mapOf(
                     "type" to JsonPrimitive("object"),
                     "properties" to JsonObject(mapOf(
-                        "contact_id" to JsonObject(mapOf("type" to JsonPrimitive("string"), "description" to JsonPrimitive("The contact ID to edit"))),
-                        "name" to JsonObject(mapOf("type" to JsonPrimitive("string"), "description" to JsonPrimitive("New display name"))),
-                        "phone" to JsonObject(mapOf("type" to JsonPrimitive("string"), "description" to JsonPrimitive("New phone number"))),
+                        "contact_id" to JsonObject(mapOf(
+                            "type" to JsonPrimitive("string"),
+                            "description" to JsonPrimitive("The contact ID"),
+                        )),
+                        "eth_address" to JsonObject(mapOf(
+                            "type" to JsonPrimitive("string"),
+                            "description" to JsonPrimitive("Ethereum address (0x-prefixed, 42 characters)"),
+                        )),
                     )),
-                    "required" to JsonArray(listOf(JsonPrimitive("contact_id"))),
+                    "required" to JsonArray(listOf(
+                        JsonPrimitive("contact_id"),
+                        JsonPrimitive("eth_address"),
+                    )),
                 )),
                 requiresApproval = true,
                 requiredPermissions = listOf("android.permission.WRITE_CONTACTS"),
@@ -99,13 +133,14 @@ class ContactsSkill(private val context: Context) : AndyClawSkill {
         return when (tool) {
             "search_contacts" -> searchContacts(params)
             "get_contact_details" -> getContactDetails(params)
+            "get_eth_contacts" -> getEthContacts()
             "create_contact" -> {
                 if (tier != Tier.PRIVILEGED) SkillResult.Error("create_contact requires privileged OS")
                 else createContact(params)
             }
-            "edit_contact" -> {
-                if (tier != Tier.PRIVILEGED) SkillResult.Error("edit_contact requires privileged OS")
-                else editContact(params)
+            "set_eth_address" -> {
+                if (tier != Tier.PRIVILEGED) SkillResult.Error("set_eth_address requires privileged OS")
+                else setEthAddress(params)
             }
             else -> SkillResult.Error("Unknown tool: $tool")
         }
@@ -115,26 +150,20 @@ class ContactsSkill(private val context: Context) : AndyClawSkill {
         val query = params["query"]?.jsonPrimitive?.contentOrNull
             ?: return SkillResult.Error("Missing required parameter: query")
         return try {
-            val contacts = mutableListOf<JsonObject>()
-            val cr = context.contentResolver
-            val cursor = cr.query(
-                ContactsContract.Contacts.CONTENT_URI,
-                arrayOf(ContactsContract.Contacts._ID, ContactsContract.Contacts.DISPLAY_NAME_PRIMARY),
-                "${ContactsContract.Contacts.DISPLAY_NAME_PRIMARY} LIKE ?",
-                arrayOf("%$query%"),
-                ContactsContract.Contacts.DISPLAY_NAME_PRIMARY,
-            )
-            cursor?.use {
-                while (it.moveToNext() && contacts.size < 20) {
-                    val id = it.getString(0)
-                    val name = it.getString(1)
-                    contacts.add(buildJsonObject {
-                        put("id", id)
-                        put("name", name ?: "")
-                    })
+            val contacts = contactsSDK.getContacts()
+                .filter { it.displayName.contains(query, ignoreCase = true) }
+                .take(20)
+            val result = JsonArray(contacts.map { c ->
+                buildJsonObject {
+                    put("id", c.contactId)
+                    put("name", c.displayName)
+                    c.phoneNumber?.let { put("phone", it) }
+                    c.email?.let { put("email", it) }
+                    c.ethAddress?.let { put("eth_address", it) }
+                    c.ensName?.let { put("ens_name", it) }
                 }
-            }
-            SkillResult.Success(JsonArray(contacts).toString())
+            })
+            SkillResult.Success(result.toString())
         } catch (e: Exception) {
             SkillResult.Error("Failed to search contacts: ${e.message}")
         }
@@ -144,46 +173,16 @@ class ContactsSkill(private val context: Context) : AndyClawSkill {
         val contactId = params["contact_id"]?.jsonPrimitive?.contentOrNull
             ?: return SkillResult.Error("Missing required parameter: contact_id")
         return try {
-            val cr = context.contentResolver
+            val contact = contactsSDK.getContactById(contactId)
+                ?: return SkillResult.Error("Contact not found: $contactId")
             val result = buildJsonObject {
-                put("id", contactId)
-                // Get name
-                val nameCursor = cr.query(
-                    ContactsContract.Contacts.CONTENT_URI,
-                    arrayOf(ContactsContract.Contacts.DISPLAY_NAME_PRIMARY),
-                    "${ContactsContract.Contacts._ID} = ?",
-                    arrayOf(contactId),
-                    null,
-                )
-                nameCursor?.use {
-                    if (it.moveToFirst()) put("name", it.getString(0) ?: "")
-                }
-                // Get phones
-                val phones = mutableListOf<String>()
-                val phoneCursor = cr.query(
-                    ContactsContract.CommonDataKinds.Phone.CONTENT_URI,
-                    arrayOf(ContactsContract.CommonDataKinds.Phone.NUMBER),
-                    "${ContactsContract.CommonDataKinds.Phone.CONTACT_ID} = ?",
-                    arrayOf(contactId),
-                    null,
-                )
-                phoneCursor?.use {
-                    while (it.moveToNext()) phones.add(it.getString(0) ?: "")
-                }
-                put("phones", JsonArray(phones.map { JsonPrimitive(it) }))
-                // Get emails
-                val emails = mutableListOf<String>()
-                val emailCursor = cr.query(
-                    ContactsContract.CommonDataKinds.Email.CONTENT_URI,
-                    arrayOf(ContactsContract.CommonDataKinds.Email.ADDRESS),
-                    "${ContactsContract.CommonDataKinds.Email.CONTACT_ID} = ?",
-                    arrayOf(contactId),
-                    null,
-                )
-                emailCursor?.use {
-                    while (it.moveToNext()) emails.add(it.getString(0) ?: "")
-                }
-                put("emails", JsonArray(emails.map { JsonPrimitive(it) }))
+                put("id", contact.contactId)
+                put("name", contact.displayName)
+                contact.phoneNumber?.let { put("phone", it) }
+                contact.email?.let { put("email", it) }
+                contact.photoUri?.let { put("photo_uri", it) }
+                contact.ethAddress?.let { put("eth_address", it) }
+                contact.ensName?.let { put("ens_name", it) }
             }
             SkillResult.Success(result.toString())
         } catch (e: Exception) {
@@ -191,68 +190,74 @@ class ContactsSkill(private val context: Context) : AndyClawSkill {
         }
     }
 
+    private fun getEthContacts(): SkillResult {
+        return try {
+            val contacts = contactsSDK.getContactsWithEthData()
+            val result = JsonArray(contacts.map { c ->
+                buildJsonObject {
+                    put("id", c.contactId)
+                    put("name", c.displayName)
+                    c.ethAddress?.let { put("eth_address", it) }
+                    c.ensName?.let { put("ens_name", it) }
+                }
+            })
+            SkillResult.Success(result.toString())
+        } catch (e: Exception) {
+            SkillResult.Error("Failed to get ETH contacts: ${e.message}")
+        }
+    }
+
     private fun createContact(params: JsonObject): SkillResult {
         val name = params["name"]?.jsonPrimitive?.contentOrNull
             ?: return SkillResult.Error("Missing required parameter: name")
+        val phone = params["phone"]?.jsonPrimitive?.contentOrNull
+        val email = params["email"]?.jsonPrimitive?.contentOrNull
+        val ethAddress = params["eth_address"]?.jsonPrimitive?.contentOrNull
+        val ensName = params["ens_name"]?.jsonPrimitive?.contentOrNull
+
         return try {
-            val ops = ArrayList<android.content.ContentProviderOperation>()
-            ops.add(
-                android.content.ContentProviderOperation.newInsert(ContactsContract.RawContacts.CONTENT_URI)
-                    .withValue(ContactsContract.RawContacts.ACCOUNT_TYPE, null)
-                    .withValue(ContactsContract.RawContacts.ACCOUNT_NAME, null)
-                    .build()
+            val contactId = contactsSDK.addContact(
+                displayName = name,
+                phoneNumber = phone,
+                email = email,
+                ethAddress = ethAddress,
+                ensName = ensName,
             )
-            ops.add(
-                android.content.ContentProviderOperation.newInsert(ContactsContract.Data.CONTENT_URI)
-                    .withValueBackReference(ContactsContract.Data.RAW_CONTACT_ID, 0)
-                    .withValue(ContactsContract.Data.MIMETYPE, ContactsContract.CommonDataKinds.StructuredName.CONTENT_ITEM_TYPE)
-                    .withValue(ContactsContract.CommonDataKinds.StructuredName.DISPLAY_NAME, name)
-                    .build()
-            )
-            params["phone"]?.jsonPrimitive?.contentOrNull?.let { phone ->
-                ops.add(
-                    android.content.ContentProviderOperation.newInsert(ContactsContract.Data.CONTENT_URI)
-                        .withValueBackReference(ContactsContract.Data.RAW_CONTACT_ID, 0)
-                        .withValue(ContactsContract.Data.MIMETYPE, ContactsContract.CommonDataKinds.Phone.CONTENT_ITEM_TYPE)
-                        .withValue(ContactsContract.CommonDataKinds.Phone.NUMBER, phone)
-                        .withValue(ContactsContract.CommonDataKinds.Phone.TYPE, ContactsContract.CommonDataKinds.Phone.TYPE_MOBILE)
-                        .build()
-                )
+            if (contactId != null) {
+                SkillResult.Success(buildJsonObject {
+                    put("success", true)
+                    put("contact_id", contactId)
+                    put("name", name)
+                }.toString())
+            } else {
+                SkillResult.Error("Failed to create contact")
             }
-            params["email"]?.jsonPrimitive?.contentOrNull?.let { email ->
-                ops.add(
-                    android.content.ContentProviderOperation.newInsert(ContactsContract.Data.CONTENT_URI)
-                        .withValueBackReference(ContactsContract.Data.RAW_CONTACT_ID, 0)
-                        .withValue(ContactsContract.Data.MIMETYPE, ContactsContract.CommonDataKinds.Email.CONTENT_ITEM_TYPE)
-                        .withValue(ContactsContract.CommonDataKinds.Email.ADDRESS, email)
-                        .build()
-                )
-            }
-            context.contentResolver.applyBatch(ContactsContract.AUTHORITY, ops)
-            SkillResult.Success(buildJsonObject { put("success", true); put("name", name) }.toString())
         } catch (e: Exception) {
             SkillResult.Error("Failed to create contact: ${e.message}")
         }
     }
 
-    private fun editContact(params: JsonObject): SkillResult {
+    private fun setEthAddress(params: JsonObject): SkillResult {
         val contactId = params["contact_id"]?.jsonPrimitive?.contentOrNull
             ?: return SkillResult.Error("Missing required parameter: contact_id")
+        val ethAddress = params["eth_address"]?.jsonPrimitive?.contentOrNull
+            ?: return SkillResult.Error("Missing required parameter: eth_address")
+
         return try {
-            params["name"]?.jsonPrimitive?.contentOrNull?.let { name ->
-                val values = ContentValues().apply {
-                    put(ContactsContract.CommonDataKinds.StructuredName.DISPLAY_NAME, name)
-                }
-                context.contentResolver.update(
-                    ContactsContract.Data.CONTENT_URI,
-                    values,
-                    "${ContactsContract.Data.CONTACT_ID} = ? AND ${ContactsContract.Data.MIMETYPE} = ?",
-                    arrayOf(contactId, ContactsContract.CommonDataKinds.StructuredName.CONTENT_ITEM_TYPE),
-                )
+            val success = contactsSDK.setEthAddress(contactId.toLong(), ethAddress)
+            if (success) {
+                SkillResult.Success(buildJsonObject {
+                    put("success", true)
+                    put("contact_id", contactId)
+                    put("eth_address", ethAddress)
+                }.toString())
+            } else {
+                SkillResult.Error("Failed to set ETH address on contact $contactId")
             }
-            SkillResult.Success(buildJsonObject { put("success", true); put("contact_id", contactId) }.toString())
+        } catch (e: IllegalArgumentException) {
+            SkillResult.Error("Invalid ETH address: ${e.message}")
         } catch (e: Exception) {
-            SkillResult.Error("Failed to edit contact: ${e.message}")
+            SkillResult.Error("Failed to set ETH address: ${e.message}")
         }
     }
 }

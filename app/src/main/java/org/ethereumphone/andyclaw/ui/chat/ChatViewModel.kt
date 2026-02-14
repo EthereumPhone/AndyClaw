@@ -118,6 +118,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 skillRegistry = app.nativeSkillRegistry,
                 tier = org.ethereumphone.andyclaw.skills.tier.OsCapabilities.currentTier(),
                 model = model,
+                aiName = app.userStoryManager.getAiName(),
+                userStory = app.userStoryManager.read(),
             )
 
             agentLoop.run(text, conversationHistory, object : AgentLoop.Callbacks {

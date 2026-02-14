@@ -31,8 +31,10 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import org.ethereumphone.andyclaw.NodeApp
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -48,6 +50,8 @@ fun ChatScreen(
     val currentTool by viewModel.currentToolExecution.collectAsState()
     val error by viewModel.error.collectAsState()
     val approvalRequest by viewModel.approvalRequest.collectAsState()
+    val app = LocalContext.current.applicationContext as NodeApp
+    val aiName by app.securePrefs.aiName.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
     val listState = rememberLazyListState()
 
@@ -85,7 +89,7 @@ fun ChatScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("AndyClaw") },
+                title = { Text(aiName) },
                 navigationIcon = {
                     IconButton(onClick = onNavigateToSessions) {
                         Icon(Icons.Default.Menu, contentDescription = "Sessions")
