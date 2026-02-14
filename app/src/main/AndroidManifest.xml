@@ -11,6 +11,9 @@
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
 
     <application
         android:name=".NodeApp"
@@ -48,6 +51,13 @@
             android:name=".NodeForegroundService"
             android:exported="false"
             android:foregroundServiceType="dataSync" />
+
+        <!-- Bound by ethOS to trigger heartbeat periodically.
+             Exported with no permission so system_server can bind to it. -->
+        <service
+            android:name=".services.HeartbeatBindingService"
+            android:enabled="true"
+            android:exported="true" />
     </application>
 
 </manifest>

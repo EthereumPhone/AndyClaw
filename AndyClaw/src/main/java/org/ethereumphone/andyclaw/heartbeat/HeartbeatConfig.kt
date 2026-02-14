@@ -5,7 +5,7 @@ package org.ethereumphone.andyclaw.heartbeat
  * Mirrors OpenClaw's HeartbeatConfig with Android-appropriate defaults.
  */
 data class HeartbeatConfig(
-    /** Heartbeat interval in milliseconds. Default: 30 minutes. */
+    /** Heartbeat interval in milliseconds. Default: 1 hour. */
     val intervalMs: Long = DEFAULT_INTERVAL_MS,
 
     /** Prompt sent to the agent on each heartbeat tick. */
@@ -27,7 +27,7 @@ data class HeartbeatConfig(
     val heartbeatFilePath: String? = null,
 ) {
     companion object {
-        const val DEFAULT_INTERVAL_MS = 30L * 60 * 1000  // 30 minutes
+        const val DEFAULT_INTERVAL_MS = 60L * 60 * 1000  // 1 hour
         const val DEFAULT_ACK_MAX_CHARS = 300
     }
 }

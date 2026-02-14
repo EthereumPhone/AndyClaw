@@ -159,11 +159,15 @@ class NodeRuntime(private val context: Context) {
      * Create an AgentLoop instance for the tool_use flow.
      * Returns null if no API key is configured.
      */
-    fun createAgentLoop(model: AnthropicModels = AnthropicModels.SONNET_4): AgentLoop? {
+    fun createAgentLoop(
+        model: AnthropicModels = AnthropicModels.SONNET_4,
+        aiName: String? = null,
+        userStory: String? = null,
+    ): AgentLoop? {
         val client = anthropicClient ?: return null
         val registry = nativeSkillRegistry ?: return null
         val tier = OsCapabilities.currentTier()
-        return AgentLoop(client, registry, tier, model)
+        return AgentLoop(client, registry, tier, model, aiName, userStory)
     }
 
     /**
