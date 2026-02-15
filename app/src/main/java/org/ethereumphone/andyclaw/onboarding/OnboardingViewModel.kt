@@ -1,6 +1,8 @@
 package org.ethereumphone.andyclaw.onboarding
 
+import android.Manifest
 import android.app.Application
+import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -86,6 +88,9 @@ class OnboardingViewModel(application: Application) : AndroidViewModel(applicati
                 app.userStoryManager.write(story)
                 app.securePrefs.setAiName(aiName)
 
+                // Request all runtime permissions the app may need
+                requestAllPermissions()
+
                 _isSubmitting.value = false
                 onComplete()
             } catch (e: Exception) {
@@ -97,5 +102,24 @@ class OnboardingViewModel(application: Application) : AndroidViewModel(applicati
 
     fun clearError() {
         _error.value = null
+    }
+
+    private suspend fun requestAllPermissions() {
+        val requester = app.permissionRequester ?: return
+        val permissions = listOf(
+            Manifest.permission.CAMERA,
+            Manifest.permission.READ_CONTACTS,
+            Manifest.permission.WRITE_CONTACTS,
+            Manifest.permission.READ_SMS,
+            Manifest.permission.SEND_SMS,
+            Manifest.permission.ACCESS_FINE_LOCATION,
+            Manifest.permission.ACCESS_COARSE_LOCATION,
+        )
+        try {
+            val results = requester.requestIfMissing(permissions)
+            Log.i("OnboardingViewModel", "Permission results: $results")
+        } catch (e: Exception) {
+            Log.w("OnboardingViewModel", "Permission request failed: ${e.message}")
+        }
     }
 }
