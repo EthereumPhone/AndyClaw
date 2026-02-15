@@ -91,6 +91,9 @@ class SecurePrefs(context: Context) : KeyValueStore {
   private val _talkEnabled = MutableStateFlow(prefs.getBoolean("talk.enabled", false))
   val talkEnabled: StateFlow<Boolean> = _talkEnabled
 
+  private val _yoloMode = MutableStateFlow(prefs.getBoolean("agent.yoloMode", false))
+  val yoloMode: StateFlow<Boolean> = _yoloMode
+
   private val _apiKey = MutableStateFlow(prefs.getString("anthropic.apiKey", "") ?: "")
   val apiKey: StateFlow<String> = _apiKey
 
@@ -247,6 +250,11 @@ class SecurePrefs(context: Context) : KeyValueStore {
   fun setTalkEnabled(value: Boolean) {
     prefs.edit { putBoolean("talk.enabled", value) }
     _talkEnabled.value = value
+  }
+
+  fun setYoloMode(value: Boolean) {
+    prefs.edit { putBoolean("agent.yoloMode", value) }
+    _yoloMode.value = value
   }
 
   fun setApiKey(value: String) {

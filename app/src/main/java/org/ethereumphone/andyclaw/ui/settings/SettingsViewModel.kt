@@ -12,6 +12,7 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
     private val prefs = app.securePrefs
 
     val selectedModel = prefs.selectedModel
+    val yoloMode = prefs.yoloMode
 
     val currentTier: String get() = OsCapabilities.currentTier().name
     val isPrivileged: Boolean get() = OsCapabilities.hasPrivilegedAccess
@@ -22,6 +23,10 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
 
     fun setSelectedModel(modelId: String) {
         prefs.setSelectedModel(modelId)
+    }
+
+    fun setYoloMode(enabled: Boolean) {
+        prefs.setYoloMode(enabled)
     }
 
 }

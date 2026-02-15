@@ -153,6 +153,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 }
 
                 override suspend fun onApprovalNeeded(description: String): Boolean {
+                    if (app.securePrefs.yoloMode.value) return true
                     return kotlinx.coroutines.suspendCancellableCoroutine { cont ->
                         approvalContinuation = cont
                         _approvalRequest.value = ApprovalRequest(description)
