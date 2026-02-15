@@ -3,10 +3,7 @@ package org.ethereumphone.andyclaw.extensions.security
 import android.content.Context
 import android.content.pm.PackageManager
 import org.ethereumphone.andyclaw.extensions.ExtensionDescriptor
-import org.ethereumphone.andyclaw.extensions.ExtensionType
-import java.io.File
 import java.security.MessageDigest
-import java.util.jar.JarFile
 
 /**
  * Result of a security validation check.
@@ -26,7 +23,7 @@ sealed class SecurityCheckResult {
  * Enforces security boundaries for extension loading and execution.
  *
  * Validates:
- * - **Signature integrity** — APK signing certificates and JAR manifest signatures.
+ * - **Signature integrity** — APK signing certificates.
  * - **UID isolation** — APK extensions must not share the host's UID.
  * - **Runtime permissions** — Android permissions required by individual functions.
  *
@@ -51,11 +48,11 @@ class ExtensionSecurityManager(
         }
 
         if (policy.enforceSignatureValidation) {
-            val sigResult = validateSignature(descriptor)
+            val sigResult = validateApkSignature(descriptor)
             if (sigResult is SecurityCheckResult.Failed) return sigResult
         }
 
-        if (policy.enforceUidIsolation && descriptor.type == ExtensionType.APK) {
+        if (policy.enforceUidIsolation) {
             val uidResult = validateUidIsolation(descriptor)
             if (uidResult is SecurityCheckResult.Failed) return uidResult
         }
@@ -88,13 +85,6 @@ class ExtensionSecurityManager(
     }
 
     // ── Signature validation ─────────────────────────────────────────
-
-    private fun validateSignature(descriptor: ExtensionDescriptor): SecurityCheckResult {
-        return when (descriptor.type) {
-            ExtensionType.APK -> validateApkSignature(descriptor)
-            ExtensionType.JAR -> validateJarSignature(descriptor)
-        }
-    }
 
     /**
      * Verify the APK's signing certificate via PackageManager.
@@ -143,42 +133,6 @@ class ExtensionSecurityManager(
             SecurityCheckResult.Failed("Package not installed: $packageName")
         } catch (e: Exception) {
             SecurityCheckResult.Failed("APK signature check failed: ${e.message}")
-        }
-    }
-
-    /**
-     * Verify JAR signature integrity by consuming all signed entries.
-     *
-     * A [SecurityException] during entry reading indicates a tampered entry.
-     */
-    private fun validateJarSignature(descriptor: ExtensionDescriptor): SecurityCheckResult {
-        val jarPath = descriptor.jarPath
-            ?: return SecurityCheckResult.Failed("JAR extension ${descriptor.id} has no file path")
-
-        val file = File(jarPath)
-        if (!file.exists()) {
-            return SecurityCheckResult.Failed("JAR file not found: $jarPath")
-        }
-
-        return try {
-            JarFile(file, true).use { jar ->
-                // Reading every entry forces signature verification
-                val buffer = ByteArray(8192)
-                val entries = jar.entries()
-                while (entries.hasMoreElements()) {
-                    val entry = entries.nextElement()
-                    if (entry.isDirectory) continue
-                    jar.getInputStream(entry).use { stream ->
-                        @Suppress("ControlFlowWithEmptyBody")
-                        while (stream.read(buffer) != -1) { /* consume to trigger verify */ }
-                    }
-                }
-            }
-            SecurityCheckResult.Passed
-        } catch (e: SecurityException) {
-            SecurityCheckResult.Failed("JAR signature invalid: ${e.message}")
-        } catch (e: Exception) {
-            SecurityCheckResult.Failed("JAR validation error: ${e.message}")
         }
     }
 

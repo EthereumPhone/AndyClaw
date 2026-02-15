@@ -36,24 +36,21 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
-import org.ethereumphone.andyclaw.data.AndyClawDatabase
-import org.ethereumphone.andyclaw.data.ChatRepository
-import org.ethereumphone.andyclaw.data.ChatSessionEntity
+import org.ethereumphone.andyclaw.NodeApp
+import org.ethereumphone.andyclaw.sessions.model.Session
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
 class SessionListViewModel(application: Application) : AndroidViewModel(application) {
-    private val repository = ChatRepository(
-        AndyClawDatabase.getInstance(application).chatDao()
-    )
+    private val sessionManager = (application as NodeApp).sessionManager
 
-    val sessions = repository.getAllSessions()
+    val sessions = sessionManager.observeSessions()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     fun deleteSession(sessionId: String) {
         viewModelScope.launch {
-            repository.deleteSession(sessionId)
+            sessionManager.deleteSession(sessionId)
         }
     }
 }
@@ -119,7 +116,7 @@ fun SessionListScreen(
 
 @Composable
 private fun SessionItem(
-    session: ChatSessionEntity,
+    session: Session,
     dateFormat: SimpleDateFormat,
     onClick: () -> Unit,
     onDelete: () -> Unit,

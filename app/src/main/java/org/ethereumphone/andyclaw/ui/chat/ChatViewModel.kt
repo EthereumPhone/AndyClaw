@@ -10,13 +10,15 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import org.ethereumphone.andyclaw.NodeApp
 import org.ethereumphone.andyclaw.agent.AgentLoop
-import org.ethereumphone.andyclaw.data.AndyClawDatabase
-import org.ethereumphone.andyclaw.data.ChatMessageEntity
-import org.ethereumphone.andyclaw.data.ChatRepository
 import org.ethereumphone.andyclaw.llm.AnthropicModels
 import org.ethereumphone.andyclaw.llm.ContentBlock
 import org.ethereumphone.andyclaw.llm.Message
 import org.ethereumphone.andyclaw.llm.MessageContent
+import org.ethereumphone.andyclaw.memory.MemoryManager
+import org.ethereumphone.andyclaw.memory.model.MemorySource
+import org.ethereumphone.andyclaw.sessions.SessionManager
+import org.ethereumphone.andyclaw.sessions.model.MessageRole
+import org.ethereumphone.andyclaw.sessions.model.SessionMessage
 import org.ethereumphone.andyclaw.skills.SkillResult
 
 data class ChatUiMessage(
@@ -30,9 +32,8 @@ data class ChatUiMessage(
 class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     private val app = application as NodeApp
-    private val repository = ChatRepository(
-        AndyClawDatabase.getInstance(application).chatDao()
-    )
+    private val sessionManager: SessionManager = app.sessionManager
+    private val memoryManager: MemoryManager = app.memoryManager
 
     private val _messages = MutableStateFlow<List<ChatUiMessage>>(emptyList())
     val messages: StateFlow<List<ChatUiMessage>> = _messages.asStateFlow()
@@ -63,7 +64,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     fun loadSession(sessionId: String) {
         viewModelScope.launch {
             _sessionId.value = sessionId
-            val messages = repository.getMessagesList(sessionId)
+            val messages = sessionManager.getMessages(sessionId)
             _messages.value = messages.map { it.toUiMessage() }
         }
     }
@@ -71,7 +72,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     fun newSession() {
         viewModelScope.launch {
             val model = app.securePrefs.selectedModel.value
-            val session = repository.createSession(model)
+            val session = sessionManager.createSession(model = model)
             _sessionId.value = session.id
             _messages.value = emptyList()
         }
@@ -84,13 +85,13 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             // Ensure session exists
             if (_sessionId.value == null) {
                 val model = app.securePrefs.selectedModel.value
-                val session = repository.createSession(model)
+                val session = sessionManager.createSession(model = model)
                 _sessionId.value = session.id
             }
             val sid = _sessionId.value!!
 
             // Add user message
-            repository.addMessage(sid, "user", text)
+            sessionManager.addMessage(sid, MessageRole.USER, text)
             val userMsg = ChatUiMessage(
                 id = java.util.UUID.randomUUID().toString(),
                 role = "user",
@@ -101,7 +102,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             // Auto-title on first message
             if (_messages.value.size == 1) {
                 val title = text.take(50).let { if (text.length > 50) "$it..." else it }
-                repository.updateSessionTitle(sid, title)
+                sessionManager.updateSessionTitle(sid, title)
             }
 
             _isStreaming.value = true
@@ -120,6 +121,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 model = model,
                 aiName = app.userStoryManager.getAiName(),
                 userStory = app.userStoryManager.read(),
+                memoryManager = memoryManager,
             )
 
             agentLoop.run(text, conversationHistory, object : AgentLoop.Callbacks {
@@ -141,7 +143,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                         is SkillResult.RequiresApproval -> "Requires approval: ${result.description}"
                     }
                     viewModelScope.launch {
-                        repository.addMessage(sid, "tool", resultText, toolName = toolName)
+                        sessionManager.addMessage(sid, MessageRole.TOOL, resultText, toolName = toolName)
                     }
                     val toolMsg = ChatUiMessage(
                         id = java.util.UUID.randomUUID().toString(),
@@ -175,6 +177,9 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     flushStreamingText(sid)
                     _isStreaming.value = false
                     _currentToolExecution.value = null
+
+                    // Auto-store conversation turn in memory for future context
+                    autoStoreConversationTurn(text, fullText)
                 }
 
                 override fun onError(error: Throwable) {
@@ -216,7 +221,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             )
             _messages.value = _messages.value + assistantMsg
             viewModelScope.launch {
-                repository.addMessage(sessionId, "assistant", currentText)
+                sessionManager.addMessage(sessionId, MessageRole.ASSISTANT, currentText)
             }
         }
         _streamingText.value = ""
@@ -235,9 +240,41 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    private fun ChatMessageEntity.toUiMessage() = ChatUiMessage(
+    /**
+     * Automatically store a condensed conversation turn to long-term memory.
+     *
+     * Follows OpenClaw's session-memory pattern: important interactions are
+     * persisted so the agent can recall them in future conversations.
+     * Only stores turns with substantive content (> 80 chars combined).
+     * Respects the user's auto-store preference from Settings.
+     */
+    private fun autoStoreConversationTurn(userText: String, assistantText: String) {
+        // Check if auto-store is enabled
+        val autoStoreEnabled = app.securePrefs.getString("memory.autoStore") != "false"
+        if (!autoStoreEnabled) return
+        if (userText.length + assistantText.length < 80) return
+
+        viewModelScope.launch {
+            try {
+                val summary = buildString {
+                    appendLine("User: ${userText.take(500)}")
+                    appendLine("Assistant: ${assistantText.take(500)}")
+                }
+                memoryManager.store(
+                    content = summary,
+                    source = MemorySource.CONVERSATION,
+                    tags = listOf("conversation"),
+                    importance = 0.3f,
+                )
+            } catch (_: Exception) {
+                // Memory storage is best-effort; don't disrupt the UI
+            }
+        }
+    }
+
+    private fun SessionMessage.toUiMessage() = ChatUiMessage(
         id = id,
-        role = role,
+        role = role.name.lowercase(),
         content = content,
         toolName = toolName,
     )

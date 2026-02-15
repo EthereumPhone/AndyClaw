@@ -16,7 +16,7 @@ import org.ethereumphone.andyclaw.extensions.ExtensionDescriptor
  *    disable individual check categories system-wide.
  * 3. **[developerMode]** — bypass **all** checks (nuclear option).
  *
- * @property enforceSignatureValidation  Require valid APK / JAR signatures before loading.
+ * @property enforceSignatureValidation  Require valid APK signatures before loading.
  * @property enforcePermissionChecks     Require declared Android permissions to be granted.
  * @property enforceUidIsolation         Require APK extensions to run in a separate UID.
  * @property executionTimeoutMs          Maximum wall-clock time per invocation (ms).

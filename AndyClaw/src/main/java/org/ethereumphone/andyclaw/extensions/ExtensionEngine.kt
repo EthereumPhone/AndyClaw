@@ -7,23 +7,20 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonObject
 import org.ethereumphone.andyclaw.extensions.discovery.ApkExtensionScanner
-import org.ethereumphone.andyclaw.extensions.discovery.JarExtensionScanner
 import org.ethereumphone.andyclaw.extensions.execution.ApkExtensionExecutor
-import org.ethereumphone.andyclaw.extensions.execution.JarExtensionLoader
 import org.ethereumphone.andyclaw.extensions.security.ExtensionSecurityManager
 import org.ethereumphone.andyclaw.extensions.security.ExtensionSecurityPolicy
 import org.ethereumphone.andyclaw.extensions.security.SecurityCheckResult
-import java.io.File
 
 /**
  * Unified entry point for the AndyClaw extension system.
  *
- * Orchestrates the full lifecycle of both APK and JAR extensions:
+ * Orchestrates the full lifecycle of APK extensions:
  *
  * ```
  *   ┌─────────────┐     ┌──────────────┐     ┌──────────────┐
  *   │  Discovery   │────▶│   Registry   │────▶│  Execution   │
- *   │ (APK + JAR)  │     │  (indexing)  │     │ (IPC / DEX)  │
+ *   │  (APK scan)  │     │  (indexing)  │     │   (IPC)      │
  *   └─────────────┘     └──────────────┘     └──────┬───────┘
  *                                                    │
  *                                            ┌───────▼───────┐
@@ -56,8 +53,8 @@ import java.io.File
  * ## Security model
  *
  * All security checks are **on by default**:
- * - Signature validation (APK certs + JAR signing)
- * - UID isolation (APK extensions must not share the host UID)
+ * - Signature validation (APK signing certificates)
+ * - UID isolation (extensions must not share the host UID)
  * - Permission checks (Android runtime permissions)
  *
  * Users can opt out at various granularities — see [ExtensionSecurityPolicy].
@@ -77,35 +74,22 @@ class ExtensionEngine(
     val securityManager = ExtensionSecurityManager(context, securityPolicy)
 
     private val apkScanner = ApkExtensionScanner(context)
-    private val jarScanner = JarExtensionScanner()
     private val apkExecutor = ApkExtensionExecutor(context)
-    private val jarLoader = JarExtensionLoader(
-        cacheDir = File(context.cacheDir, "extension_dex"),
-        workDir = File(context.filesDir, "extension_data"),
-    )
 
     private val discoveryMutex = Mutex()
-
-    /**
-     * Directories scanned for JAR/DEX plugins.
-     * Defaults to `<filesDir>/extensions/jars`. Add more as needed.
-     */
-    var jarExtensionDirs: List<File> = listOf(
-        File(context.filesDir, "extensions/jars"),
-    )
 
     // ── Discovery ────────────────────────────────────────────────────
 
     /**
-     * Discover all available extensions (APK + JAR) and register them.
+     * Discover all installed APK extensions and register them.
      *
-     * Safe to call repeatedly — the registry is updated in place,
-     * and JAR plugins that are already loaded are not re-loaded.
+     * Safe to call repeatedly — the registry is updated in place.
      */
     suspend fun discoverAndRegister() = discoveryMutex.withLock {
         withContext(Dispatchers.IO) {
-            discoverApkExtensions()
-            discoverJarExtensions()
+            for (descriptor in apkScanner.scan()) {
+                registry.register(descriptor)
+            }
         }
     }
 
@@ -159,12 +143,10 @@ class ExtensionEngine(
     // ── Shutdown ─────────────────────────────────────────────────────
 
     /**
-     * Tear down the engine: unbind APK services, destroy JAR plugins,
-     * and clear the registry.
+     * Tear down the engine: unbind APK services and clear the registry.
      */
     fun shutdown() {
         apkExecutor.unbindAll()
-        jarLoader.unloadAll()
         registry.clear()
     }
 
@@ -208,32 +190,6 @@ class ExtensionEngine(
         // ── Route to executor ────────────────────────────────────────
         val timeoutMs = securityManager.policy.executionTimeoutMs
 
-        return when (descriptor.type) {
-            ExtensionType.APK ->
-                apkExecutor.execute(descriptor, functionName, params, timeoutMs)
-
-            ExtensionType.JAR ->
-                jarLoader.execute(descriptor.id, functionName, params, timeoutMs)
-        }
-    }
-
-    // ── Discovery helpers ────────────────────────────────────────────
-
-    private fun discoverApkExtensions() {
-        for (descriptor in apkScanner.scan()) {
-            registry.register(descriptor)
-        }
-    }
-
-    private fun discoverJarExtensions() {
-        // Ensure scan directories exist
-        jarExtensionDirs.forEach { it.mkdirs() }
-
-        for (descriptor in jarScanner.scan(jarExtensionDirs)) {
-            if (!jarLoader.isLoaded(descriptor.id)) {
-                val enriched = jarLoader.load(descriptor)
-                registry.register(enriched ?: descriptor)
-            }
-        }
+        return apkExecutor.execute(descriptor, functionName, params, timeoutMs)
     }
 }

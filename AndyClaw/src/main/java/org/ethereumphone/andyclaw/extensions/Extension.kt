@@ -9,9 +9,6 @@ import kotlinx.serialization.json.JsonObject
 enum class ExtensionType {
     /** Installed Android APK communicating via IPC. */
     APK,
-
-    /** Dynamically-loaded JVM/DEX plugin. */
-    JAR,
 }
 
 /**
@@ -58,30 +55,27 @@ data class ExtensionFunction(
 )
 
 /**
- * Metadata describing a discovered extension.
+ * Metadata describing a discovered APK extension.
  *
- * Produced by scanners, enriched by loaders, and stored in the [ExtensionRegistry].
+ * Produced by [ApkExtensionScanner] and stored in the [ExtensionRegistry].
  */
 data class ExtensionDescriptor(
-    /** Unique identifier. Convention: "apk:<package>" or "jar:<name>". */
+    /** Unique identifier. Convention: "apk:<package>". */
     val id: String,
 
     /** Human-readable name. */
     val name: String,
 
-    /** Whether this is an APK or JAR extension. */
-    val type: ExtensionType,
+    /** Extension runtime type. */
+    val type: ExtensionType = ExtensionType.APK,
 
     /** Monotonically increasing version for the extension. */
     val version: Int = 1,
 
-    /** Package name of the APK (APK extensions only). */
+    /** Package name of the installed APK. */
     val packageName: String? = null,
 
-    /** Filesystem path to the JAR/DEX file (JAR extensions only). */
-    val jarPath: String? = null,
-
-    /** IPC mechanisms the APK extension exposes (APK extensions only). */
+    /** IPC mechanisms the APK extension exposes. */
     val bridgeTypes: Set<ApkBridgeType> = emptySet(),
 
     /** Functions this extension makes available. */

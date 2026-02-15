@@ -46,6 +46,11 @@ fun SettingsScreen(
 ) {
     val selectedModel by viewModel.selectedModel.collectAsState()
     val yoloMode by viewModel.yoloMode.collectAsState()
+    val memoryCount by viewModel.memoryCount.collectAsState()
+    val autoStoreEnabled by viewModel.autoStoreEnabled.collectAsState()
+    val isReindexing by viewModel.isReindexing.collectAsState()
+    val extensions by viewModel.extensions.collectAsState()
+    val isExtensionScanning by viewModel.isExtensionScanning.collectAsState()
 
     Scaffold(
         topBar = {
@@ -163,6 +168,31 @@ fun SettingsScreen(
                     )
                 }
             }
+
+            Spacer(Modifier.height(24.dp))
+            HorizontalDivider()
+            Spacer(Modifier.height(16.dp))
+
+            // Long-term Memory
+            MemorySettingsSection(
+                memoryCount = memoryCount,
+                autoStoreEnabled = autoStoreEnabled,
+                isReindexing = isReindexing,
+                onAutoStoreToggle = { viewModel.setAutoStoreEnabled(it) },
+                onReindex = { viewModel.reindexMemory() },
+                onClearMemories = { viewModel.clearAllMemories() },
+            )
+
+            Spacer(Modifier.height(24.dp))
+            HorizontalDivider()
+            Spacer(Modifier.height(16.dp))
+
+            // Extensions
+            ExtensionManagementSection(
+                extensions = extensions,
+                isScanning = isExtensionScanning,
+                onRescan = { viewModel.rescanExtensions() },
+            )
 
             Spacer(Modifier.height(24.dp))
             HorizontalDivider()

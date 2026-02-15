@@ -10,6 +10,7 @@ import org.ethereumphone.andyclaw.llm.MessageContent
 import org.ethereumphone.andyclaw.llm.MessagesRequest
 import org.ethereumphone.andyclaw.llm.MessagesResponse
 import org.ethereumphone.andyclaw.llm.StreamingCallback
+import org.ethereumphone.andyclaw.memory.MemoryManager
 import org.ethereumphone.andyclaw.skills.NativeSkillRegistry
 import org.ethereumphone.andyclaw.skills.PromptAssembler
 import org.ethereumphone.andyclaw.skills.SkillResult
@@ -22,9 +23,12 @@ class AgentLoop(
     private val model: AnthropicModels = AnthropicModels.SONNET_4,
     private val aiName: String? = null,
     private val userStory: String? = null,
+    private val memoryManager: MemoryManager? = null,
 ) {
     companion object {
         private const val MAX_ITERATIONS = 20
+        private const val MEMORY_CONTEXT_MAX_RESULTS = 3
+        private const val MEMORY_CONTEXT_MIN_SCORE = 0.4f
     }
 
     interface Callbacks {
@@ -39,7 +43,25 @@ class AgentLoop(
 
     suspend fun run(userMessage: String, conversationHistory: List<Message>, callbacks: Callbacks) {
         val skills = skillRegistry.getAll()
-        val systemPrompt = PromptAssembler.assembleSystemPrompt(skills, tier, aiName, userStory)
+
+        // Search memory for relevant context to inject into the system prompt.
+        // This mirrors OpenClaw's approach of pre-fetching memory context before
+        // the agent turn, giving the model background knowledge without requiring
+        // an explicit tool call.
+        val memoryContext = fetchMemoryContext(userMessage)
+
+        val systemPrompt = buildString {
+            append(PromptAssembler.assembleSystemPrompt(skills, tier, aiName, userStory))
+            if (memoryContext.isNotBlank()) {
+                appendLine()
+                appendLine("## Relevant Memories")
+                appendLine("The following context was retrieved from long-term memory and may be relevant:")
+                appendLine()
+                append(memoryContext)
+                appendLine()
+            }
+        }
+
         val toolsJson = PromptAssembler.assembleTools(skills, tier)
 
         val messages = conversationHistory.toMutableList()
@@ -179,6 +201,37 @@ class AgentLoop(
             throw e
         } catch (e: Exception) {
             callbacks.onError(e)
+        }
+    }
+
+    /**
+     * Search long-term memory for snippets relevant to the user's message.
+     *
+     * Returns a formatted string suitable for injection into the system prompt,
+     * or blank if no relevant memories are found (or no memory manager is set).
+     */
+    private suspend fun fetchMemoryContext(userMessage: String): String {
+        val manager = memoryManager ?: return ""
+
+        return try {
+            val results = manager.search(
+                query = userMessage,
+                maxResults = MEMORY_CONTEXT_MAX_RESULTS,
+                minScore = MEMORY_CONTEXT_MIN_SCORE,
+            )
+            if (results.isEmpty()) return ""
+
+            results.joinToString("\n") { result ->
+                buildString {
+                    append("- ${result.snippet}")
+                    if (result.tags.isNotEmpty()) {
+                        append(" [${result.tags.joinToString(", ")}]")
+                    }
+                }
+            }
+        } catch (_: Exception) {
+            // Memory search is best-effort; don't block the agent on failure
+            ""
         }
     }
 }

@@ -58,7 +58,9 @@ fun ChatScreen(
     LaunchedEffect(sessionId) {
         if (sessionId != null) {
             viewModel.loadSession(sessionId)
-        } else {
+        } else if (viewModel.sessionId.value == null) {
+            // Only create a new session when there isn't one already
+            // (avoids re-creating on back-navigation from the sessions list)
             viewModel.newSession()
         }
     }
