@@ -11,6 +11,7 @@ import android.util.Log
 import java.io.File
 import org.ethereumphone.andyclaw.agent.HeartbeatAgentRunner
 import org.ethereumphone.andyclaw.heartbeat.HeartbeatConfig
+import org.ethereumphone.andyclaw.heartbeat.HeartbeatInstructions
 
 /**
  * Foreground service that keeps the AndyClaw heartbeat running.
@@ -82,29 +83,7 @@ class NodeForegroundService : Service() {
 
     private fun seedHeartbeatFile() {
         val file = File(filesDir, "HEARTBEAT.md")
-        if (file.exists()) return
-        file.writeText(
-            """
-            |# Heartbeat Instructions
-            |
-            |You are running as a background heartbeat on the user's dGEN1 phone.
-            |Every hour, you wake up and decide if there's something useful to do.
-            |
-            |## Steps
-            |1. Read `heartbeat_journal.md` to see what you've done recently (use read_file tool)
-            |2. Based on the user's goals and what you've already done, decide if any action is needed
-            |3. Check the user's crypto portfolio (use get_owned_tokens tool) if relevant to their goals
-            |4. If you did something useful, send a brief summary to the user (use send_message_to_user tool)
-            |5. Write a short log entry to `heartbeat_journal.md` (use write_file tool) noting what you did and when, so you don't repeat yourself next hour
-            |6. If nothing needs attention right now, reply with just: HEARTBEAT_OK
-            |
-            |## Rules
-            |- Do NOT repeat an action you already logged in the journal within the last 24 hours
-            |- Keep XMTP messages short and useful — no fluff
-            |- Only message the user if you have genuine value to share
-            |- If the journal doesn't exist yet, create it with your first entry
-            """.trimMargin()
-        )
+        file.writeText(HeartbeatInstructions.CONTENT)
         Log.i(TAG, "Seeded HEARTBEAT.md")
     }
 
