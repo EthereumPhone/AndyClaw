@@ -156,7 +156,7 @@ class FileSystemSkill(private val context: Context) : AndyClawSkill {
         } catch (e: IllegalArgumentException) {
             return SkillResult.Error(e.message ?: "Invalid path")
         }
-        if (!file.exists()) return SkillResult.Error("File not found: $path (resolved to ${file.absolutePath})")
+        if (!file.exists()) return SkillResult.Success("{\"error\":\"file_not_found\",\"message\":\"File does not exist yet: $path. You can create it with write_file.\"}")
         if (!file.isFile) return SkillResult.Error("Not a file: $path")
         if (!file.canRead()) return SkillResult.Error("File not readable: $path")
 
