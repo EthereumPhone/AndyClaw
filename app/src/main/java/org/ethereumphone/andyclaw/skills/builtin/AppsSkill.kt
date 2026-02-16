@@ -161,8 +161,14 @@ class AppsSkill(private val context: Context) : AndyClawSkill {
             ?: return SkillResult.Error("Missing required parameter: package_name")
         return try {
             val am = context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
-            @Suppress("DEPRECATION")
-            am.killBackgroundProcesses(packageName)
+            // Try hidden forceStopPackage first (truly kills the app), fall back to killBackgroundProcesses
+            try {
+                val method = am.javaClass.getDeclaredMethod("forceStopPackage", String::class.java)
+                method.invoke(am, packageName)
+            } catch (_: Exception) {
+                @Suppress("DEPRECATION")
+                am.killBackgroundProcesses(packageName)
+            }
             SkillResult.Success(buildJsonObject { put("force_stopped", packageName) }.toString())
         } catch (e: Exception) {
             SkillResult.Error("Failed to force stop app: ${e.message}")

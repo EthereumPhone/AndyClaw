@@ -44,7 +44,15 @@ object OsCapabilities {
             Capability.APPS_MANAGE,
             Capability.SETTINGS_WRITE,
             Capability.NOTIFICATIONS_MANAGE,
-            Capability.PROACTIVE_TRIGGERS -> hasPrivilegedAccess
+            Capability.PROACTIVE_TRIGGERS,
+            Capability.CONNECTIVITY_MANAGE,
+            Capability.PHONE_CALL,
+            Capability.CALENDAR_WRITE,
+            Capability.SCREEN_TIME_READ,
+            Capability.STORAGE_MANAGE,
+            Capability.PACKAGE_MANAGE,
+            Capability.AUDIO_MANAGE,
+            Capability.DEVICE_POWER_MANAGE -> hasPrivilegedAccess
 
             Capability.CONTACTS_READ,
             Capability.CONTACTS_WRITE,
@@ -53,7 +61,10 @@ object OsCapabilities {
             Capability.NOTIFICATIONS_READ,
             Capability.SETTINGS_READ,
             Capability.CAMERA_CAPTURE,
-            Capability.LOCATION_ACCESS -> true // Guarded by runtime permissions
+            Capability.LOCATION_ACCESS,
+            Capability.CONNECTIVITY_READ,
+            Capability.PHONE_READ,
+            Capability.CALENDAR_READ -> true // Guarded by runtime permissions
         }
     }
 

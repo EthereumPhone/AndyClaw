@@ -17,6 +17,9 @@ class NativeSkillRegistry {
 
     fun getAll(): List<AndyClawSkill> = skills.toList()
 
+    fun getEnabled(enabledSkillIds: Set<String>): List<AndyClawSkill> =
+        skills.filter { it.id in enabledSkillIds }
+
     fun getTools(tier: Tier): List<ToolDefinition> {
         val tools = mutableListOf<ToolDefinition>()
         for (skill in skills) {

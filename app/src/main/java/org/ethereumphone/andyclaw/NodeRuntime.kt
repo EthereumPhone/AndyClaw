@@ -163,11 +163,12 @@ class NodeRuntime(private val context: Context) {
         model: AnthropicModels = AnthropicModels.SONNET_4,
         aiName: String? = null,
         userStory: String? = null,
+        enabledSkillIds: Set<String> = emptySet(),
     ): AgentLoop? {
         val client = anthropicClient ?: return null
         val registry = nativeSkillRegistry ?: return null
         val tier = OsCapabilities.currentTier()
-        return AgentLoop(client, registry, tier, model, aiName, userStory)
+        return AgentLoop(client, registry, tier, enabledSkillIds, model, aiName, userStory)
     }
 
     /**

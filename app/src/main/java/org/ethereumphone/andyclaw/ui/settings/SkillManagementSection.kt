@@ -8,8 +8,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
@@ -20,6 +18,8 @@ import org.ethereumphone.andyclaw.skills.tier.OsCapabilities
 @Composable
 fun SkillManagementSection(
     skills: List<AndyClawSkill>,
+    enabledSkills: Set<String>,
+    onToggleSkill: (String, Boolean) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val tier = OsCapabilities.currentTier()
@@ -31,7 +31,12 @@ fun SkillManagementSection(
             modifier = Modifier.padding(bottom = 8.dp),
         )
         for (skill in skills) {
-            SkillRow(skill = skill, tier = tier)
+            SkillRow(
+                skill = skill,
+                tier = tier,
+                enabled = skill.id in enabledSkills,
+                onToggle = { onToggleSkill(skill.id, it) },
+            )
         }
     }
 }
@@ -40,9 +45,9 @@ fun SkillManagementSection(
 private fun SkillRow(
     skill: AndyClawSkill,
     tier: Tier,
+    enabled: Boolean,
+    onToggle: (Boolean) -> Unit,
 ) {
-    val enabled = remember { mutableStateOf(true) }
-
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -70,8 +75,8 @@ private fun SkillRow(
             )
         }
         Switch(
-            checked = enabled.value,
-            onCheckedChange = { enabled.value = it },
+            checked = enabled,
+            onCheckedChange = onToggle,
         )
     }
 }

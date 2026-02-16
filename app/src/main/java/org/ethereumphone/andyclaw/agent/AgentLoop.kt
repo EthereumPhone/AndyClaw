@@ -20,6 +20,7 @@ class AgentLoop(
     private val client: AnthropicClient,
     private val skillRegistry: NativeSkillRegistry,
     private val tier: Tier,
+    private val enabledSkillIds: Set<String> = emptySet(),
     private val model: AnthropicModels = AnthropicModels.SONNET_4,
     private val aiName: String? = null,
     private val userStory: String? = null,
@@ -42,7 +43,7 @@ class AgentLoop(
     }
 
     suspend fun run(userMessage: String, conversationHistory: List<Message>, callbacks: Callbacks) {
-        val skills = skillRegistry.getAll()
+        val skills = skillRegistry.getEnabled(enabledSkillIds)
 
         // Search memory for relevant context to inject into the system prompt.
         // This mirrors OpenClaw's approach of pre-fetching memory context before
@@ -159,6 +160,23 @@ class AgentLoop(
                             )
                             continue
                         }
+                    }
+
+                    // Guard: verify the tool's owning skill is enabled
+                    val owningSkill = skillRegistry.findSkillForTool(toolUse.name, tier)
+                    if (owningSkill != null && owningSkill.id !in enabledSkillIds) {
+                        val disabledResult = SkillResult.Error(
+                            "Skill '${owningSkill.name}' is disabled. The user must enable it in Settings."
+                        )
+                        callbacks.onToolResult(toolUse.name, disabledResult)
+                        toolResults.add(
+                            ContentBlock.ToolResult(
+                                toolUseId = toolUse.id,
+                                content = disabledResult.message,
+                                isError = true,
+                            )
+                        )
+                        continue
                     }
 
                     val result = skillRegistry.executeTool(toolUse.name, toolUse.input, tier)

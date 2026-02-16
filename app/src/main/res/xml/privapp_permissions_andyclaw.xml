@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Pre-grant privileged permissions when AndyClaw is installed as a system
+  priv-app in /system/priv-app/AndyClaw/.
+  Copy this file to /etc/permissions/ on the device (or include via AOSP overlay).
+-->
+<permissions>
+    <privapp-permissions package="org.ethereumphone.andyclaw">
+        <!-- Connectivity -->
+        <permission name="android.permission.WRITE_SECURE_SETTINGS" />
+        <permission name="android.permission.OVERRIDE_WIFI_CONFIG" />
+        <permission name="android.permission.BLUETOOTH_PRIVILEGED" />
+        <permission name="android.permission.TETHER_PRIVILEGED" />
+        <permission name="android.permission.MODIFY_PHONE_STATE" />
+
+        <!-- Phone -->
+        <permission name="android.permission.CALL_PHONE" />
+        <permission name="android.permission.READ_CALL_LOG" />
+        <permission name="android.permission.WRITE_CALL_LOG" />
+        <permission name="android.permission.READ_PHONE_STATE" />
+        <permission name="android.permission.ANSWER_PHONE_CALLS" />
+
+        <!-- Calendar -->
+        <permission name="android.permission.READ_CALENDAR" />
+        <permission name="android.permission.WRITE_CALENDAR" />
+
+        <!-- Screen Time -->
+        <permission name="android.permission.PACKAGE_USAGE_STATS" />
+
+        <!-- Storage -->
+        <permission name="android.permission.MANAGE_EXTERNAL_STORAGE" />
+
+        <!-- Package Manager -->
+        <permission name="android.permission.INSTALL_PACKAGES" />
+        <permission name="android.permission.DELETE_PACKAGES" />
+        <permission name="android.permission.CLEAR_APP_CACHE" />
+        <permission name="android.permission.FORCE_STOP_PACKAGES" />
+
+        <!-- Audio -->
+        <permission name="android.permission.RECORD_AUDIO" />
+        <permission name="android.permission.MODIFY_AUDIO_SETTINGS" />
+
+        <!-- Device Power -->
+        <permission name="android.permission.REBOOT" />
+        <permission name="android.permission.DEVICE_POWER" />
+
+        <!-- Notification DND -->
+        <permission name="android.permission.ACCESS_NOTIFICATION_POLICY" />
+    </privapp-permissions>
+</permissions>
