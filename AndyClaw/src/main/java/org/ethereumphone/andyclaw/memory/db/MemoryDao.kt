@@ -70,6 +70,18 @@ interface MemoryDao {
     @Query("SELECT * FROM memory_entries WHERE agentId = :agentId ORDER BY updatedAt DESC")
     fun observeEntriesByAgent(agentId: String): Flow<List<MemoryEntryEntity>>
 
+    /** Reactive count of entries for an agent (Room invalidation-tracked). */
+    @Query("SELECT COUNT(*) FROM memory_entries WHERE agentId = :agentId")
+    fun observeEntryCountByAgent(agentId: String): Flow<Int>
+
+    /** One-shot count of entries for an agent. */
+    @Query("SELECT COUNT(*) FROM memory_entries WHERE agentId = :agentId")
+    suspend fun getEntryCountByAgent(agentId: String): Int
+
+    /** Bulk-delete all entries for an agent. CASCADE removes chunks + tag cross-refs. */
+    @Query("DELETE FROM memory_entries WHERE agentId = :agentId")
+    suspend fun deleteAllEntriesByAgent(agentId: String)
+
     @Query(
         """
         UPDATE memory_entries

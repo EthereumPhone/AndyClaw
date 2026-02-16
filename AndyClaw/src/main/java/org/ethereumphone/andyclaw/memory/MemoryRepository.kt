@@ -125,6 +125,14 @@ class MemoryRepository(
         }
     }
 
+    /**
+     * Reactive count of memories for an agent (Room invalidation-tracked).
+     * Efficient: uses SQL COUNT(*) instead of loading all entries.
+     */
+    fun observeCount(agentId: String): Flow<Int> {
+        return dao.observeEntryCountByAgent(agentId)
+    }
+
     // ── Update ──────────────────────────────────────────────────────
 
     /**
@@ -178,6 +186,15 @@ class MemoryRepository(
      */
     suspend fun delete(memoryId: String) = withContext(Dispatchers.IO) {
         dao.deleteEntry(memoryId) // CASCADE handles chunks + tag cross-refs
+        database.rebuildFtsIndex()
+    }
+
+    /**
+     * Delete all memories for an agent and rebuild the FTS index.
+     * Uses a single SQL DELETE (CASCADE removes chunks + tag cross-refs).
+     */
+    suspend fun deleteAll(agentId: String) = withContext(Dispatchers.IO) {
+        dao.deleteAllEntriesByAgent(agentId)
         database.rebuildFtsIndex()
     }
 

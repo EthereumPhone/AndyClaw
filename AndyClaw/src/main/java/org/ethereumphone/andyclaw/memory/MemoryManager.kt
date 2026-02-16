@@ -124,6 +124,14 @@ class MemoryManager(
     }
 
     /**
+     * Reactive count of memories for this agent.
+     * Efficient: uses SQL COUNT(*) and Room invalidation tracking.
+     */
+    fun observeCount(): Flow<Int> {
+        return repository.observeCount(agentId)
+    }
+
+    /**
      * Update an existing memory's content, tags, or importance.
      *
      * Re-chunks and re-indexes automatically. Returns the updated entry
@@ -143,6 +151,14 @@ class MemoryManager(
      */
     suspend fun delete(memoryId: String) {
         repository.delete(memoryId)
+    }
+
+    /**
+     * Delete all memories for this agent.
+     * Uses a single SQL DELETE — no cap on number of entries.
+     */
+    suspend fun deleteAll() {
+        repository.deleteAll(agentId)
     }
 
     // ── Embeddings & Indexing ────────────────────────────────────────

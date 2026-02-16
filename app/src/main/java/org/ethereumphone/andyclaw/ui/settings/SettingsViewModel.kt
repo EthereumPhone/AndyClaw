@@ -4,8 +4,11 @@ import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import org.ethereumphone.andyclaw.NodeApp
 import org.ethereumphone.andyclaw.extensions.ExtensionDescriptor
@@ -30,8 +33,10 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
 
     // ── Memory ──────────────────────────────────────────────────────────
 
-    private val _memoryCount = MutableStateFlow(0)
-    val memoryCount: StateFlow<Int> = _memoryCount.asStateFlow()
+    /** Reactive memory count — auto-updates when memories are added or deleted. */
+    val memoryCount: StateFlow<Int> = app.memoryManager.observeCount()
+        .catch { emit(0) }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), 0)
 
     private val _autoStoreEnabled = MutableStateFlow(true)
     val autoStoreEnabled: StateFlow<Boolean> = _autoStoreEnabled.asStateFlow()
@@ -48,7 +53,7 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
     val isExtensionScanning: StateFlow<Boolean> = _isExtensionScanning.asStateFlow()
 
     init {
-        refreshMemoryCount()
+        loadAutoStorePreference()
         refreshExtensions()
     }
 
@@ -84,11 +89,8 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
     fun clearAllMemories() {
         viewModelScope.launch {
             try {
-                val memories = app.memoryManager.list(limit = 1000)
-                for (memory in memories) {
-                    app.memoryManager.delete(memory.id)
-                }
-                _memoryCount.value = 0
+                app.memoryManager.deleteAll()
+                // Count updates automatically via observeCount() Flow
             } catch (_: Exception) {
                 // Best-effort
             }
@@ -115,15 +117,7 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
 
     // ── Internal ────────────────────────────────────────────────────────
 
-    private fun refreshMemoryCount() {
-        viewModelScope.launch {
-            try {
-                _memoryCount.value = app.memoryManager.list(limit = 10_000).size
-            } catch (_: Exception) {
-                _memoryCount.value = 0
-            }
-        }
-        // Load saved preference
+    private fun loadAutoStorePreference() {
         _autoStoreEnabled.value = prefs.getString("memory.autoStore") != "false"
     }
 
