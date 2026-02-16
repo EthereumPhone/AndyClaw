@@ -75,6 +75,7 @@ dependencies {
     implementation(libs.camera.video)
     implementation(libs.exifinterface)
     implementation(libs.security.crypto)
+    implementation(libs.beanshell)
     // WalletSDK for ethOS system wallet (ERC-4337)
     implementation("org.web3j:core:4.9.4")
     implementation("com.github.EthereumPhone:WalletSDK:0.3.0")

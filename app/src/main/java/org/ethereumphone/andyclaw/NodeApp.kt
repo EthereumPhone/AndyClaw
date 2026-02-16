@@ -30,6 +30,7 @@ import org.ethereumphone.andyclaw.skills.builtin.SettingsSkill
 import org.ethereumphone.andyclaw.skills.builtin.ShellSkill
 import org.ethereumphone.andyclaw.skills.builtin.AudioSkill
 import org.ethereumphone.andyclaw.skills.builtin.CalendarSkill
+import org.ethereumphone.andyclaw.skills.builtin.CodeExecutionSkill
 import org.ethereumphone.andyclaw.skills.builtin.ConnectivitySkill
 import org.ethereumphone.andyclaw.skills.builtin.DevicePowerSkill
 import org.ethereumphone.andyclaw.skills.builtin.PackageManagerSkill
@@ -107,6 +108,7 @@ class NodeApp : Application() {
             register(PackageManagerSkill(this@NodeApp))
             register(AudioSkill(this@NodeApp))
             register(DevicePowerSkill(this@NodeApp))
+            register(CodeExecutionSkill(this@NodeApp))
         }
     }
 

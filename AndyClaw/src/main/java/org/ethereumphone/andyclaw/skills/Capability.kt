@@ -35,4 +35,5 @@ enum class Capability {
     PACKAGE_MANAGE,
     AUDIO_MANAGE,
     DEVICE_POWER_MANAGE,
+    CODE_EXECUTE,
 }

@@ -21,6 +21,7 @@ room = "2.7.1"
 ksp = "2.0.21-1.0.28"
 navigationCompose = "2.9.0"
 lifecycleViewmodelCompose = "2.10.0"
+beanshell = "2.0b6"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -55,6 +56,7 @@ camera-lifecycle = { group = "androidx.camera", name = "camera-lifecycle", versi
 camera-video = { group = "androidx.camera", name = "camera-video", version.ref = "cameraX" }
 exifinterface = { group = "androidx.exifinterface", name = "exifinterface", version.ref = "exifinterface" }
 security-crypto = { group = "androidx.security", name = "security-crypto", version.ref = "securityCrypto" }
+beanshell = { group = "org.apache-extras.beanshell", name = "bsh", version.ref = "beanshell" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

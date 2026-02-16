@@ -52,7 +52,8 @@ object OsCapabilities {
             Capability.STORAGE_MANAGE,
             Capability.PACKAGE_MANAGE,
             Capability.AUDIO_MANAGE,
-            Capability.DEVICE_POWER_MANAGE -> hasPrivilegedAccess
+            Capability.DEVICE_POWER_MANAGE,
+            Capability.CODE_EXECUTE -> hasPrivilegedAccess
 
             Capability.CONTACTS_READ,
             Capability.CONTACTS_WRITE,
