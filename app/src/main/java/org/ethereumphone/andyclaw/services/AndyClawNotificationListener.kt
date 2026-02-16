@@ -37,26 +37,33 @@ class AndyClawNotificationListener : NotificationListenerService() {
     }
 
     fun replyToNotification(key: String, replyText: String) {
-        val sbn = activeNotifications.find { it.key == key }
+        val all = activeNotifications
+        val sbn = all.find { it.key == key }
             ?: throw IllegalArgumentException("Notification not found: $key")
 
-        val actions = sbn.notification.actions
-            ?: throw IllegalArgumentException("Notification has no actions")
+        // Try the target notification first, then fall back to siblings from the
+        // same package (handles WhatsApp-style bundled notifications where the
+        // group summary has no actions but child notifications do).
+        val candidates = mutableListOf(sbn)
+        candidates.addAll(all.filter { it.key != key && it.packageName == sbn.packageName })
 
-        for (action in actions) {
-            val remoteInputs = action.remoteInputs
-            if (remoteInputs != null && remoteInputs.isNotEmpty()) {
-                val intent = Intent()
-                val bundle = Bundle()
-                for (remoteInput in remoteInputs) {
-                    bundle.putCharSequence(remoteInput.resultKey, replyText)
+        for (candidate in candidates) {
+            val actions = candidate.notification.actions ?: continue
+            for (action in actions) {
+                val remoteInputs = action.remoteInputs
+                if (remoteInputs != null && remoteInputs.isNotEmpty()) {
+                    val intent = Intent()
+                    val bundle = Bundle()
+                    for (remoteInput in remoteInputs) {
+                        bundle.putCharSequence(remoteInput.resultKey, replyText)
+                    }
+                    RemoteInput.addResultsToIntent(remoteInputs, intent, bundle)
+                    action.actionIntent.send(applicationContext, 0, intent)
+                    return
                 }
-                RemoteInput.addResultsToIntent(remoteInputs, intent, bundle)
-                action.actionIntent.send(applicationContext, 0, intent)
-                return
             }
         }
 
-        throw IllegalArgumentException("Notification has no direct reply action")
+        throw IllegalArgumentException("No notification from ${sbn.packageName} has a direct reply action")
     }
 }

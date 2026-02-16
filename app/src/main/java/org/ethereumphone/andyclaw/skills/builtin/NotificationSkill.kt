@@ -107,6 +107,9 @@ class NotificationSkill(private val context: Context) : AndyClawSkill {
             ?: return SkillResult.Error("Notification listener not active. Enable it in Settings > Apps > Special access > Notification access.")
         return try {
             val notifications = listener.activeNotifications.map { sbn ->
+                val hasReply = sbn.notification.actions?.any { action ->
+                    action.remoteInputs?.isNotEmpty() == true
+                } == true
                 buildJsonObject {
                     put("key", sbn.key)
                     put("package", sbn.packageName)
@@ -114,6 +117,7 @@ class NotificationSkill(private val context: Context) : AndyClawSkill {
                     put("text", sbn.notification.extras.getCharSequence("android.text")?.toString() ?: "")
                     put("time", sbn.postTime)
                     put("ongoing", sbn.isOngoing)
+                    put("can_reply", hasReply)
                 }
             }
             SkillResult.Success(JsonArray(notifications).toString())
