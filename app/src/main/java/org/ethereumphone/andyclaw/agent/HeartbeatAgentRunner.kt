@@ -40,6 +40,11 @@ class HeartbeatAgentRunner(private val app: NodeApp) : AgentRunner {
             client = client,
             skillRegistry = registry,
             tier = tier,
+            enabledSkillIds = if (app.securePrefs.yoloMode.value) {
+                registry.getAll().map { it.id }.toSet()
+            } else {
+                app.securePrefs.enabledSkills.value
+            },
             aiName = aiName,
             userStory = userStory,
         )

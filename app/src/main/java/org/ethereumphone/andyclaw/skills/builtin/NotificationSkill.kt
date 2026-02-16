@@ -1,5 +1,7 @@
 package org.ethereumphone.andyclaw.skills.builtin
 
+import android.app.NotificationManager
+import android.content.Context
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -14,7 +16,7 @@ import org.ethereumphone.andyclaw.skills.Tier
 import org.ethereumphone.andyclaw.skills.ToolDefinition
 import org.ethereumphone.andyclaw.services.AndyClawNotificationListener
 
-class NotificationSkill : AndyClawSkill {
+class NotificationSkill(private val context: Context) : AndyClawSkill {
     override val id = "notifications"
     override val name = "Notifications"
 
@@ -61,6 +63,19 @@ class NotificationSkill : AndyClawSkill {
                 description = "Automatically categorize and prioritize current notifications.",
                 inputSchema = JsonObject(mapOf("type" to JsonPrimitive("object"), "properties" to JsonObject(emptyMap()))),
             ),
+            ToolDefinition(
+                name = "set_dnd_mode",
+                description = "Set Do Not Disturb (DND) mode.",
+                inputSchema = JsonObject(mapOf(
+                    "type" to JsonPrimitive("object"),
+                    "properties" to JsonObject(mapOf(
+                        "enabled" to JsonObject(mapOf("type" to JsonPrimitive("boolean"), "description" to JsonPrimitive("true to enable DND, false to disable"))),
+                        "priority_only" to JsonObject(mapOf("type" to JsonPrimitive("boolean"), "description" to JsonPrimitive("If true, allow priority notifications only (default false = total silence)"))),
+                    )),
+                    "required" to JsonArray(listOf(JsonPrimitive("enabled"))),
+                )),
+                requiresApproval = true,
+            ),
         ),
     )
 
@@ -78,6 +93,10 @@ class NotificationSkill : AndyClawSkill {
             "auto_triage" -> {
                 if (tier != Tier.PRIVILEGED) SkillResult.Error("auto_triage requires privileged OS")
                 else SkillResult.Error("auto_triage is not yet implemented")
+            }
+            "set_dnd_mode" -> {
+                if (tier != Tier.PRIVILEGED) SkillResult.Error("set_dnd_mode requires privileged OS access. Install AndyClaw as a system app on ethOS.")
+                else setDndMode(params)
             }
             else -> SkillResult.Error("Unknown tool: $tool")
         }
@@ -113,6 +132,33 @@ class NotificationSkill : AndyClawSkill {
             SkillResult.Success(buildJsonObject { put("dismissed", key) }.toString())
         } catch (e: Exception) {
             SkillResult.Error("Failed to dismiss notification: ${e.message}")
+        }
+    }
+
+    private fun setDndMode(params: JsonObject): SkillResult {
+        val enabled = params["enabled"]?.jsonPrimitive?.contentOrNull?.toBooleanStrictOrNull()
+            ?: return SkillResult.Error("Missing required parameter: enabled (boolean)")
+        val priorityOnly = params["priority_only"]?.jsonPrimitive?.contentOrNull?.toBooleanStrictOrNull() ?: false
+        return try {
+            val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            val filter = when {
+                !enabled -> NotificationManager.INTERRUPTION_FILTER_ALL
+                priorityOnly -> NotificationManager.INTERRUPTION_FILTER_PRIORITY
+                else -> NotificationManager.INTERRUPTION_FILTER_NONE
+            }
+            nm.setInterruptionFilter(filter)
+            val modeName = when (filter) {
+                NotificationManager.INTERRUPTION_FILTER_ALL -> "off"
+                NotificationManager.INTERRUPTION_FILTER_PRIORITY -> "priority_only"
+                NotificationManager.INTERRUPTION_FILTER_NONE -> "total_silence"
+                else -> "unknown"
+            }
+            SkillResult.Success(buildJsonObject {
+                put("dnd_enabled", enabled)
+                put("mode", modeName)
+            }.toString())
+        } catch (e: Exception) {
+            SkillResult.Error("Failed to set DND mode: ${e.message}")
         }
     }
 }

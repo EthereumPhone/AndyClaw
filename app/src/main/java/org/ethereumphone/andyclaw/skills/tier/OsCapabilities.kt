@@ -1,9 +1,7 @@
 package org.ethereumphone.andyclaw.skills.tier
 
-import android.annotation.SuppressLint
 import android.content.Context
 import android.content.pm.PackageManager
-import android.os.Build
 import org.ethereumphone.andyclaw.skills.Capability
 import org.ethereumphone.andyclaw.skills.Tier
 
@@ -15,7 +13,7 @@ object OsCapabilities {
 
     fun init(context: Context) {
         appContext = context.applicationContext
-        _isPrivilegedOs = detectPrivilegedOs()
+        _isPrivilegedOs = detectPrivilegedOs(context)
         _isSystemApp = detectSystemApp(context)
     }
 
@@ -46,7 +44,15 @@ object OsCapabilities {
             Capability.APPS_MANAGE,
             Capability.SETTINGS_WRITE,
             Capability.NOTIFICATIONS_MANAGE,
-            Capability.PROACTIVE_TRIGGERS -> hasPrivilegedAccess
+            Capability.PROACTIVE_TRIGGERS,
+            Capability.CONNECTIVITY_MANAGE,
+            Capability.PHONE_CALL,
+            Capability.CALENDAR_WRITE,
+            Capability.SCREEN_TIME_READ,
+            Capability.STORAGE_MANAGE,
+            Capability.PACKAGE_MANAGE,
+            Capability.AUDIO_MANAGE,
+            Capability.DEVICE_POWER_MANAGE -> hasPrivilegedAccess
 
             Capability.CONTACTS_READ,
             Capability.CONTACTS_WRITE,
@@ -55,20 +61,15 @@ object OsCapabilities {
             Capability.NOTIFICATIONS_READ,
             Capability.SETTINGS_READ,
             Capability.CAMERA_CAPTURE,
-            Capability.LOCATION_ACCESS -> true // Guarded by runtime permissions
+            Capability.LOCATION_ACCESS,
+            Capability.CONNECTIVITY_READ,
+            Capability.PHONE_READ,
+            Capability.CALENDAR_READ -> true // Guarded by runtime permissions
         }
     }
 
-    @SuppressLint("PrivateApi")
-    private fun detectPrivilegedOs(): Boolean {
-        return try {
-            val prop = Class.forName("android.os.SystemProperties")
-                .getMethod("get", String::class.java, String::class.java)
-            val brand = prop.invoke(null, "ro.product.brand", "") as String
-            brand.lowercase().contains("etheos") || brand.lowercase().contains("youros")
-        } catch (_: Exception) {
-            false
-        }
+    private fun detectPrivilegedOs(context: Context): Boolean {
+        return context.getSystemService("wallet") != null
     }
 
     private fun detectSystemApp(context: Context): Boolean {

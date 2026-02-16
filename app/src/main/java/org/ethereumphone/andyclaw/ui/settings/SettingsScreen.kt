@@ -51,6 +51,7 @@ fun SettingsScreen(
     val isReindexing by viewModel.isReindexing.collectAsState()
     val extensions by viewModel.extensions.collectAsState()
     val isExtensionScanning by viewModel.isExtensionScanning.collectAsState()
+    val enabledSkills by viewModel.enabledSkills.collectAsState()
 
     Scaffold(
         topBar = {
@@ -199,7 +200,11 @@ fun SettingsScreen(
             Spacer(Modifier.height(16.dp))
 
             // Skills
-            SkillManagementSection(skills = viewModel.registeredSkills)
+            SkillManagementSection(
+                skills = viewModel.registeredSkills,
+                enabledSkills = enabledSkills,
+                onToggleSkill = { skillId, enabled -> viewModel.toggleSkill(skillId, enabled) },
+            )
         }
     }
 }

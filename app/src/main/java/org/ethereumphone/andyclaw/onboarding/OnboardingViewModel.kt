@@ -14,6 +14,7 @@ import org.ethereumphone.andyclaw.llm.AnthropicModels
 import org.ethereumphone.andyclaw.llm.ContentBlock
 import org.ethereumphone.andyclaw.llm.Message
 import org.ethereumphone.andyclaw.llm.MessagesRequest
+import org.ethereumphone.andyclaw.skills.AndyClawSkill
 
 class OnboardingViewModel(application: Application) : AndroidViewModel(application) {
 
@@ -32,12 +33,31 @@ class OnboardingViewModel(application: Application) : AndroidViewModel(applicati
     private val _error = MutableStateFlow<String?>(null)
     val error: StateFlow<String?> = _error.asStateFlow()
 
+    private val _yoloMode = MutableStateFlow(false)
+    val yoloMode: StateFlow<Boolean> = _yoloMode.asStateFlow()
+
+    private val _selectedSkills = MutableStateFlow<Set<String>>(emptySet())
+    val selectedSkills: StateFlow<Set<String>> = _selectedSkills.asStateFlow()
+
+    val registeredSkills: List<AndyClawSkill>
+        get() = app.nativeSkillRegistry.getAll()
+
     fun nextStep() {
-        if (_currentStep.value < 2) _currentStep.value++
+        if (_currentStep.value < 3) _currentStep.value++
     }
 
     fun previousStep() {
         if (_currentStep.value > 0) _currentStep.value--
+    }
+
+    fun setYoloMode(enabled: Boolean) {
+        _yoloMode.value = enabled
+    }
+
+    fun toggleSkill(skillId: String, enabled: Boolean) {
+        val current = _selectedSkills.value.toMutableSet()
+        if (enabled) current.add(skillId) else current.remove(skillId)
+        _selectedSkills.value = current.toSet()
     }
 
     fun submit(onComplete: () -> Unit) {
@@ -88,6 +108,16 @@ class OnboardingViewModel(application: Application) : AndroidViewModel(applicati
                 app.userStoryManager.write(story)
                 app.securePrefs.setAiName(aiName)
 
+                // Persist YOLO mode and skill selections
+                val isYolo = _yoloMode.value
+                app.securePrefs.setYoloMode(isYolo)
+                if (isYolo) {
+                    val allIds = app.nativeSkillRegistry.getAll().map { it.id }.toSet()
+                    app.securePrefs.setAllSkillsEnabled(allIds)
+                } else {
+                    app.securePrefs.setAllSkillsEnabled(_selectedSkills.value)
+                }
+
                 // Request all runtime permissions the app may need
                 requestAllPermissions()
 
@@ -114,6 +144,10 @@ class OnboardingViewModel(application: Application) : AndroidViewModel(applicati
             Manifest.permission.SEND_SMS,
             Manifest.permission.ACCESS_FINE_LOCATION,
             Manifest.permission.ACCESS_COARSE_LOCATION,
+            Manifest.permission.CALL_PHONE,
+            Manifest.permission.READ_CALL_LOG,
+            Manifest.permission.READ_CALENDAR,
+            Manifest.permission.WRITE_CALENDAR,
         )
         try {
             val results = requester.requestIfMissing(permissions)

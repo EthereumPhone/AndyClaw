@@ -28,6 +28,14 @@ import org.ethereumphone.andyclaw.skills.builtin.SMSSkill
 import org.ethereumphone.andyclaw.skills.builtin.ScreenSkill
 import org.ethereumphone.andyclaw.skills.builtin.SettingsSkill
 import org.ethereumphone.andyclaw.skills.builtin.ShellSkill
+import org.ethereumphone.andyclaw.skills.builtin.AudioSkill
+import org.ethereumphone.andyclaw.skills.builtin.CalendarSkill
+import org.ethereumphone.andyclaw.skills.builtin.ConnectivitySkill
+import org.ethereumphone.andyclaw.skills.builtin.DevicePowerSkill
+import org.ethereumphone.andyclaw.skills.builtin.PackageManagerSkill
+import org.ethereumphone.andyclaw.skills.builtin.PhoneSkill
+import org.ethereumphone.andyclaw.skills.builtin.ScreenTimeSkill
+import org.ethereumphone.andyclaw.skills.builtin.StorageSkill
 import org.ethereumphone.andyclaw.skills.builtin.WalletSkill
 import org.ethereumphone.andyclaw.skills.tier.OsCapabilities
 import org.ethereumphone.andyclaw.onboarding.UserStoryManager
@@ -77,7 +85,7 @@ class NodeApp : Application() {
             // Day 2 tier-aware skills
             register(ContactsSkill(this@NodeApp))
             register(AppsSkill(this@NodeApp))
-            register(NotificationSkill())
+            register(NotificationSkill(this@NodeApp))
             register(SettingsSkill(this@NodeApp))
             register(CameraSkill(this@NodeApp))
             register(SMSSkill(this@NodeApp))
@@ -90,6 +98,15 @@ class NodeApp : Application() {
             register(ProactiveAgentSkill())
             // Memory skill — agent can store and search long-term memory
             register(MemorySkill(memoryManager))
+            // System app / priv-app skills
+            register(ConnectivitySkill(this@NodeApp))
+            register(PhoneSkill(this@NodeApp))
+            register(CalendarSkill(this@NodeApp))
+            register(ScreenTimeSkill(this@NodeApp))
+            register(StorageSkill(this@NodeApp))
+            register(PackageManagerSkill(this@NodeApp))
+            register(AudioSkill(this@NodeApp))
+            register(DevicePowerSkill(this@NodeApp))
         }
     }
 

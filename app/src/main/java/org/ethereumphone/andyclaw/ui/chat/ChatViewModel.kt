@@ -118,6 +118,11 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 client = app.anthropicClient,
                 skillRegistry = app.nativeSkillRegistry,
                 tier = org.ethereumphone.andyclaw.skills.tier.OsCapabilities.currentTier(),
+                enabledSkillIds = if (app.securePrefs.yoloMode.value) {
+                    app.nativeSkillRegistry.getAll().map { it.id }.toSet()
+                } else {
+                    app.securePrefs.enabledSkills.value
+                },
                 model = model,
                 aiName = app.userStoryManager.getAiName(),
                 userStory = app.userStoryManager.read(),

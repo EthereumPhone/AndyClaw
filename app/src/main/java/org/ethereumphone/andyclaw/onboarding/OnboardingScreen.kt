@@ -16,7 +16,11 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -26,6 +30,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Snackbar
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -36,6 +41,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import org.ethereumphone.andyclaw.skills.AndyClawSkill
+import org.ethereumphone.andyclaw.skills.Tier
+import org.ethereumphone.andyclaw.skills.tier.OsCapabilities
+
+private const val TOTAL_STEPS = 4
 
 @Composable
 fun OnboardingScreen(
@@ -49,6 +59,8 @@ fun OnboardingScreen(
     val goals by viewModel.goals.collectAsState()
     val customName by viewModel.customName.collectAsState()
     val values by viewModel.values.collectAsState()
+    val yoloMode by viewModel.yoloMode.collectAsState()
+    val selectedSkills by viewModel.selectedSkills.collectAsState()
 
     val snackbarHostState = remember { SnackbarHostState() }
 
@@ -70,12 +82,12 @@ fun OnboardingScreen(
         ) {
             // Progress indicator
             LinearProgressIndicator(
-                progress = { (currentStep + 1) / 3f },
+                progress = { (currentStep + 1) / TOTAL_STEPS.toFloat() },
                 modifier = Modifier.fillMaxWidth(),
             )
 
             Text(
-                text = "Step ${currentStep + 1} of 3",
+                text = "Step ${currentStep + 1} of $TOTAL_STEPS",
                 style = MaterialTheme.typography.labelMedium,
                 modifier = Modifier.padding(top = 8.dp),
             )
@@ -101,6 +113,13 @@ fun OnboardingScreen(
                     0 -> StepGoals(goals) { viewModel.goals.value = it }
                     1 -> StepName(customName) { viewModel.customName.value = it }
                     2 -> StepValues(values) { viewModel.values.value = it }
+                    3 -> StepPermissions(
+                        skills = viewModel.registeredSkills,
+                        yoloMode = yoloMode,
+                        selectedSkills = selectedSkills,
+                        onYoloModeChange = { viewModel.setYoloMode(it) },
+                        onToggleSkill = { id, enabled -> viewModel.toggleSkill(id, enabled) },
+                    )
                 }
             }
 
@@ -120,7 +139,7 @@ fun OnboardingScreen(
                     Spacer(Modifier)
                 }
 
-                if (currentStep < 2) {
+                if (currentStep < TOTAL_STEPS - 1) {
                     Button(
                         onClick = { viewModel.nextStep() },
                         enabled = when (currentStep) {
@@ -133,7 +152,7 @@ fun OnboardingScreen(
                 } else {
                     Button(
                         onClick = { viewModel.submit(onComplete) },
-                        enabled = !isSubmitting && values.isNotBlank(),
+                        enabled = !isSubmitting,
                     ) {
                         if (isSubmitting) {
                             CircularProgressIndicator(
@@ -221,6 +240,127 @@ private fun StepValues(value: String, onValueChange: (String) -> Unit) {
             placeholder = { Text("e.g. Privacy, decentralization, security, simplicity...") },
             minLines = 4,
             maxLines = 8,
+        )
+    }
+}
+
+@Composable
+private fun StepPermissions(
+    skills: List<AndyClawSkill>,
+    yoloMode: Boolean,
+    selectedSkills: Set<String>,
+    onYoloModeChange: (Boolean) -> Unit,
+    onToggleSkill: (String, Boolean) -> Unit,
+) {
+    val tier = OsCapabilities.currentTier()
+
+    Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
+        Text(
+            text = "Permissions",
+            style = MaterialTheme.typography.headlineSmall,
+        )
+        Spacer(Modifier.height(8.dp))
+        Text(
+            text = "Choose which capabilities your AI can use. You can change these later in Settings.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+
+        Spacer(Modifier.height(16.dp))
+
+        // YOLO mode card
+        Card(
+            colors = CardDefaults.cardColors(
+                containerColor = if (yoloMode) {
+                    MaterialTheme.colorScheme.primaryContainer
+                } else {
+                    MaterialTheme.colorScheme.surfaceVariant
+                },
+            ),
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(16.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "YOLO Mode",
+                        style = MaterialTheme.typography.titleMedium,
+                    )
+                    Text(
+                        text = "Give your AI full access to all device capabilities. Tool usage will be auto-approved.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Switch(
+                    checked = yoloMode,
+                    onCheckedChange = onYoloModeChange,
+                )
+            }
+        }
+
+        Spacer(Modifier.height(16.dp))
+
+        Text(
+            text = "Individual Skills",
+            style = MaterialTheme.typography.titleMedium,
+            modifier = Modifier.padding(bottom = 8.dp),
+        )
+
+        for (skill in skills) {
+            SkillRow(
+                skill = skill,
+                tier = tier,
+                enabled = if (yoloMode) true else skill.id in selectedSkills,
+                disabledByYolo = yoloMode,
+                onToggle = { onToggleSkill(skill.id, it) },
+            )
+        }
+    }
+}
+
+@Composable
+private fun SkillRow(
+    skill: AndyClawSkill,
+    tier: Tier,
+    enabled: Boolean,
+    disabledByYolo: Boolean,
+    onToggle: (Boolean) -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = skill.name,
+                style = MaterialTheme.typography.bodyLarge,
+            )
+            val baseToolCount = skill.baseManifest.tools.size
+            val privToolCount = skill.privilegedManifest?.tools?.size ?: 0
+            val toolText = buildString {
+                append("$baseToolCount base tool${if (baseToolCount != 1) "s" else ""}")
+                if (privToolCount > 0) {
+                    append(", $privToolCount privileged")
+                    if (tier != Tier.PRIVILEGED) append(" (locked)")
+                }
+            }
+            Text(
+                text = toolText,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        Switch(
+            checked = enabled,
+            onCheckedChange = onToggle,
+            enabled = !disabledByYolo,
         )
     }
 }

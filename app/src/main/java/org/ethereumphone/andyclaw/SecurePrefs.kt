@@ -103,6 +103,9 @@ class SecurePrefs(context: Context) : KeyValueStore {
   private val _aiName = MutableStateFlow(prefs.getString("ai.name", "AndyClaw") ?: "AndyClaw")
   val aiName: StateFlow<String> = _aiName
 
+  private val _enabledSkills = MutableStateFlow(loadEnabledSkills())
+  val enabledSkills: StateFlow<Set<String>> = _enabledSkills
+
   fun setLastDiscoveredStableId(value: String) {
     val trimmed = value.trim()
     prefs.edit { putString("gateway.lastDiscoveredStableID", trimmed) }
@@ -273,6 +276,41 @@ class SecurePrefs(context: Context) : KeyValueStore {
     val trimmed = value.trim().takeIf { it.isNotEmpty() } ?: "AndyClaw"
     prefs.edit { putString("ai.name", trimmed) }
     _aiName.value = trimmed
+  }
+
+  fun setSkillEnabled(skillId: String, enabled: Boolean) {
+    val current = _enabledSkills.value.toMutableSet()
+    if (enabled) current.add(skillId) else current.remove(skillId)
+    val updated = current.toSet()
+    val encoded = JsonArray(updated.map { JsonPrimitive(it) }).toString()
+    prefs.edit { putString("agent.enabledSkills", encoded) }
+    _enabledSkills.value = updated
+  }
+
+  fun setAllSkillsEnabled(skillIds: Set<String>) {
+    val encoded = JsonArray(skillIds.map { JsonPrimitive(it) }).toString()
+    prefs.edit { putString("agent.enabledSkills", encoded) }
+    _enabledSkills.value = skillIds
+  }
+
+  fun isSkillEnabled(skillId: String): Boolean = skillId in _enabledSkills.value
+
+  private fun loadEnabledSkills(): Set<String> {
+    val raw = prefs.getString("agent.enabledSkills", null)?.trim()
+    if (raw.isNullOrEmpty()) return emptySet()
+    return try {
+      val element = json.parseToJsonElement(raw)
+      val array = element as? JsonArray ?: return emptySet()
+      array.mapNotNull { item ->
+        when (item) {
+          is JsonNull -> null
+          is JsonPrimitive -> item.content.trim().takeIf { it.isNotEmpty() }
+          else -> null
+        }
+      }.toSet()
+    } catch (_: Throwable) {
+      emptySet()
+    }
   }
 
   private fun loadVoiceWakeMode(): VoiceWakeMode {
