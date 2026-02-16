@@ -8,6 +8,11 @@ import java.util.logging.Logger
  * Handles loading from multiple directories, filtering by eligibility,
  * and generating the skills prompt for the AI agent.
  *
+ * Supports skills from three sources:
+ * 1. Local filesystem (bundled, managed, workspace directories)
+ * 2. APK extensions (via ExtensionSkillAdapter)
+ * 3. ClawHub registry (remote skills installed to managed dir)
+ *
  * Mirrors OpenClaw's workspace skill snapshot + command spec generation.
  */
 class SkillRegistry {
@@ -16,11 +21,17 @@ class SkillRegistry {
     private val entries = mutableListOf<SkillEntry>()
     private val commandSpecs = mutableListOf<SkillCommandSpec>()
 
+    /** Reload callback invoked by ClawHubManager after install/uninstall. */
+    var onReloadRequested: (() -> Unit)? = null
+
     val skills: List<SkillEntry> get() = entries.toList()
     val commands: List<SkillCommandSpec> get() = commandSpecs.toList()
 
     /**
      * Load skills from the given directories and rebuild the registry.
+     *
+     * ClawHub-installed skills are automatically included when they reside
+     * in [managedSkillsDir] (the directory ClawHubManager installs into).
      */
     fun load(
         workspaceDir: File,
@@ -41,6 +52,39 @@ class SkillRegistry {
         commandSpecs.addAll(buildCommandSpecs(loaded))
 
         log.info("Loaded ${entries.size} skills, ${commandSpecs.size} commands")
+    }
+
+    /**
+     * Merge additional skill entries into the registry without clearing
+     * existing entries. Entries with duplicate names are skipped (first wins).
+     *
+     * Useful for appending ClawHub-sourced entries or extension-sourced entries
+     * after the initial [load] call.
+     */
+    fun mergeEntries(additional: List<SkillEntry>) {
+        val existingNames = entries.map { it.skill.name.lowercase() }.toMutableSet()
+        var added = 0
+        for (entry in additional) {
+            val key = entry.skill.name.lowercase()
+            if (key !in existingNames) {
+                entries.add(entry)
+                existingNames.add(key)
+                added++
+            }
+        }
+        if (added > 0) {
+            commandSpecs.clear()
+            commandSpecs.addAll(buildCommandSpecs(entries))
+            log.info("Merged $added additional skills (total: ${entries.size})")
+        }
+    }
+
+    /**
+     * Request a registry reload (triggers the [onReloadRequested] callback).
+     * Used by ClawHubManager after install/uninstall operations.
+     */
+    fun requestReload() {
+        onReloadRequested?.invoke()
     }
 
     /**

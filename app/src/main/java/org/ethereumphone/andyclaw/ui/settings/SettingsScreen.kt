@@ -16,6 +16,7 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExposedDropdownMenuBox
 import androidx.compose.material3.ExposedDropdownMenuDefaults
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -42,6 +43,7 @@ import org.ethereumphone.andyclaw.llm.AnthropicModels
 @Composable
 fun SettingsScreen(
     onNavigateBack: () -> Unit,
+    onNavigateToClawHub: () -> Unit = {},
     viewModel: SettingsViewModel = viewModel(),
 ) {
     val selectedModel by viewModel.selectedModel.collectAsState()
@@ -194,6 +196,40 @@ fun SettingsScreen(
                 isScanning = isExtensionScanning,
                 onRescan = { viewModel.rescanExtensions() },
             )
+
+            Spacer(Modifier.height(24.dp))
+            HorizontalDivider()
+            Spacer(Modifier.height(16.dp))
+
+            // ClawHub
+            Text(
+                text = "ClawHub",
+                style = MaterialTheme.typography.titleMedium,
+            )
+            Spacer(Modifier.height(8.dp))
+            Card(modifier = Modifier.fillMaxWidth()) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Skill Registry",
+                            style = MaterialTheme.typography.bodyLarge,
+                        )
+                        Text(
+                            text = "Browse, install, and manage skills from ClawHub",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    FilledTonalButton(onClick = onNavigateToClawHub) {
+                        Text("Open")
+                    }
+                }
+            }
 
             Spacer(Modifier.height(24.dp))
             HorizontalDivider()

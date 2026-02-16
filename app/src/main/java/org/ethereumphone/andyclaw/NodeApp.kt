@@ -8,8 +8,11 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import org.ethereumphone.andyclaw.BuildConfig
 import org.ethereumphone.andyclaw.extensions.ExtensionEngine
+import org.ethereumphone.andyclaw.extensions.clawhub.ClawHubManager
+import org.ethereumphone.andyclaw.extensions.clawhub.ClawHubSkillAdapter
 import org.ethereumphone.andyclaw.extensions.toSkillAdapters
 import org.ethereumphone.andyclaw.llm.AnthropicClient
+import org.ethereumphone.andyclaw.skills.SkillRegistry
 import org.ethereumphone.andyclaw.memory.MemoryManager
 import org.ethereumphone.andyclaw.memory.OpenAiEmbeddingProvider
 import org.ethereumphone.andyclaw.sessions.SessionManager
@@ -74,6 +77,23 @@ class NodeApp : Application() {
         ExtensionEngine(this)
     }
 
+    // ── ClawHub subsystem ───────────────────────────────────────────────
+
+    /** Directory where ClawHub-installed skills are stored. */
+    val clawHubSkillsDir by lazy {
+        java.io.File(filesDir, "clawhub-skills").also { it.mkdirs() }
+    }
+
+    /** Skill registry for SKILL.md-based skills (ClawHub + local). */
+    val skillRegistry: SkillRegistry by lazy { SkillRegistry() }
+
+    val clawHubManager: ClawHubManager by lazy {
+        ClawHubManager(
+            managedSkillsDir = clawHubSkillsDir,
+            skillRegistry = skillRegistry,
+        )
+    }
+
     // ── Skills ─────────────────────────────────────────────────────────
 
     val nativeSkillRegistry: NativeSkillRegistry by lazy {
@@ -123,6 +143,13 @@ class NodeApp : Application() {
         // Wire up the embedding provider for semantic memory search
         memoryManager.setEmbeddingProvider(embeddingProvider)
 
+        // Wire ClawHub reload: when ClawHubManager installs/uninstalls a skill,
+        // re-sync all ClawHub adapters into the NativeSkillRegistry.
+        skillRegistry.onReloadRequested = { syncClawHubSkills() }
+
+        // Load any previously installed ClawHub skills on startup
+        syncClawHubSkills()
+
         // Discover extensions in the background and bridge them into the skill system
         appScope.launch {
             try {
@@ -136,5 +163,27 @@ class NodeApp : Application() {
                 Log.w(TAG, "Extension discovery failed: ${e.message}", e)
             }
         }
+    }
+
+    /**
+     * Sync ClawHub-installed skills into [NativeSkillRegistry].
+     *
+     * Removes stale ClawHub adapters, then registers fresh ones for every
+     * SKILL.md currently on disk. Called on startup and after every
+     * install/uninstall/update via the [SkillRegistry.onReloadRequested] callback.
+     */
+    private fun syncClawHubSkills() {
+        // Remove all existing clawhub: adapters so we get a clean slate
+        val stale = nativeSkillRegistry.getAll().filter { it.id.startsWith("clawhub:") }
+        for (skill in stale) {
+            nativeSkillRegistry.unregister(skill.id)
+        }
+
+        // Create fresh adapters from whatever is on disk right now
+        val adapters = ClawHubSkillAdapter.fromInstalledSkills(clawHubSkillsDir)
+        for (adapter in adapters) {
+            nativeSkillRegistry.register(adapter)
+        }
+        Log.i(TAG, "Synced ${adapters.size} ClawHub skill(s) into NativeSkillRegistry")
     }
 }
