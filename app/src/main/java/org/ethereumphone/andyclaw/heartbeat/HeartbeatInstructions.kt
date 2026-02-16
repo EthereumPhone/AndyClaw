@@ -48,7 +48,8 @@ Only alert the user (via `send_message_to_user`) when:
 
 ## Rules
 - **Act first, alert second** — if you can fix it, fix it
-- Do NOT repeat an action you already logged in the journal within the last 24 hours
+- Do NOT repeat a **successful** action you already logged in the journal within the last 24 hours
+- **ALWAYS retry failed actions** — previous failures may have been due to temporary issues (permissions, connectivity, etc.) that are now resolved
 - Keep XMTP messages short and useful — no fluff
 - Only message the user if you have genuine value to share or cannot resolve something yourself
 - If the journal doesn't exist yet, create it with your first entry
