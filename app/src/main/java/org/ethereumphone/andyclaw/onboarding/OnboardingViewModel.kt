@@ -148,6 +148,9 @@ class OnboardingViewModel(application: Application) : AndroidViewModel(applicati
             Manifest.permission.READ_CALL_LOG,
             Manifest.permission.READ_CALENDAR,
             Manifest.permission.WRITE_CALENDAR,
+            Manifest.permission.BLUETOOTH_CONNECT,
+            Manifest.permission.BLUETOOTH_SCAN,
+            Manifest.permission.RECORD_AUDIO,
         )
         try {
             val results = requester.requestIfMissing(permissions)

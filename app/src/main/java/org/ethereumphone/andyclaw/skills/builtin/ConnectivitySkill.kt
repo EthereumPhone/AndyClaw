@@ -86,6 +86,7 @@ class ConnectivitySkill(private val context: Context) : AndyClawSkill {
                     "required" to JsonArray(listOf(JsonPrimitive("enabled"))),
                 )),
                 requiresApproval = true,
+                requiredPermissions = listOf("android.permission.BLUETOOTH_CONNECT"),
             ),
             ToolDefinition(
                 name = "toggle_mobile_data",
