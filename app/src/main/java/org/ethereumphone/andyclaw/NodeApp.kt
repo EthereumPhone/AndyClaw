@@ -40,6 +40,7 @@ import org.ethereumphone.andyclaw.skills.builtin.PackageManagerSkill
 import org.ethereumphone.andyclaw.skills.builtin.PhoneSkill
 import org.ethereumphone.andyclaw.skills.builtin.ScreenTimeSkill
 import org.ethereumphone.andyclaw.skills.builtin.StorageSkill
+import org.ethereumphone.andyclaw.skills.builtin.TermuxSkill
 import org.ethereumphone.andyclaw.skills.builtin.WalletSkill
 import org.ethereumphone.andyclaw.skills.tier.OsCapabilities
 import org.ethereumphone.andyclaw.onboarding.UserStoryManager
@@ -129,6 +130,8 @@ class NodeApp : Application() {
             register(AudioSkill(this@NodeApp))
             register(DevicePowerSkill(this@NodeApp))
             register(CodeExecutionSkill(this@NodeApp))
+            // Termux integration — full Linux environment via Termux app
+            register(TermuxSkill(this@NodeApp))
         }
     }
 

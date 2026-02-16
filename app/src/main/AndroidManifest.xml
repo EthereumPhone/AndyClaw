@@ -61,6 +61,14 @@
     <!-- Notification DND -->
     <uses-permission android:name="android.permission.ACCESS_NOTIFICATION_POLICY" />
 
+    <!-- Termux integration -->
+    <uses-permission android:name="com.termux.permission.RUN_COMMAND" />
+
+    <!-- Allow querying Termux package for availability checks -->
+    <queries>
+        <package android:name="com.termux" />
+    </queries>
+
     <application
         android:name=".NodeApp"
         android:allowBackup="true"
