@@ -70,8 +70,7 @@ object PromptAssembler {
         }
 
         sb.appendLine("When you need to perform an action, use the appropriate tool.")
-        sb.appendLine("Always explain what you're doing before using a tool.")
-        sb.appendLine("If a tool requires approval, inform the user and wait for confirmation.")
+        sb.appendLine("Always prefer taking action over just reporting — if you can fix something, fix it.")
         return sb.toString()
     }
 
