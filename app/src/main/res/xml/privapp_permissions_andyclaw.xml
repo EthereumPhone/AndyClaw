@@ -10,8 +10,12 @@
         <permission name="android.permission.WRITE_SECURE_SETTINGS" />
         <permission name="android.permission.OVERRIDE_WIFI_CONFIG" />
         <permission name="android.permission.BLUETOOTH_PRIVILEGED" />
+        <permission name="android.permission.BLUETOOTH_CONNECT" />
+        <permission name="android.permission.BLUETOOTH_SCAN" />
         <permission name="android.permission.TETHER_PRIVILEGED" />
         <permission name="android.permission.MODIFY_PHONE_STATE" />
+        <permission name="android.permission.CHANGE_WIFI_STATE" />
+        <permission name="android.permission.ACCESS_WIFI_STATE" />
 
         <!-- Phone -->
         <permission name="android.permission.CALL_PHONE" />
