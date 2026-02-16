@@ -88,7 +88,7 @@ class NotificationSkill(private val context: Context) : AndyClawSkill {
             }
             "reply_to_notification" -> {
                 if (tier != Tier.PRIVILEGED) SkillResult.Error("reply_to_notification requires privileged OS")
-                else SkillResult.Error("reply_to_notification is not yet implemented")
+                else replyToNotification(params)
             }
             "auto_triage" -> {
                 if (tier != Tier.PRIVILEGED) SkillResult.Error("auto_triage requires privileged OS")
@@ -132,6 +132,24 @@ class NotificationSkill(private val context: Context) : AndyClawSkill {
             SkillResult.Success(buildJsonObject { put("dismissed", key) }.toString())
         } catch (e: Exception) {
             SkillResult.Error("Failed to dismiss notification: ${e.message}")
+        }
+    }
+
+    private fun replyToNotification(params: JsonObject): SkillResult {
+        val key = params["key"]?.jsonPrimitive?.contentOrNull
+            ?: return SkillResult.Error("Missing required parameter: key")
+        val reply = params["reply"]?.jsonPrimitive?.contentOrNull
+            ?: return SkillResult.Error("Missing required parameter: reply")
+        val listener = AndyClawNotificationListener.instance
+            ?: return SkillResult.Error("Notification listener not active.")
+        return try {
+            listener.replyToNotification(key, reply)
+            SkillResult.Success(buildJsonObject {
+                put("replied_to", key)
+                put("reply", reply)
+            }.toString())
+        } catch (e: Exception) {
+            SkillResult.Error("Failed to reply to notification: ${e.message}")
         }
     }
 
