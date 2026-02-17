@@ -103,6 +103,18 @@ sealed class ContentBlock {
     ) : ContentBlock()
 
     @Serializable
+    @SerialName("thinking")
+    data class ThinkingBlock(
+        val thinking: String,
+    ) : ContentBlock()
+
+    @Serializable
+    @SerialName("redacted_thinking")
+    data class RedactedThinkingBlock(
+        val data: String = "",
+    ) : ContentBlock()
+
+    @Serializable
     @SerialName("tool_use")
     data class ToolUseBlock(
         val id: String,
