@@ -48,6 +48,7 @@ fun SettingsScreen(
 ) {
     val selectedModel by viewModel.selectedModel.collectAsState()
     val yoloMode by viewModel.yoloMode.collectAsState()
+    val notificationReplyEnabled by viewModel.notificationReplyEnabled.collectAsState()
     val memoryCount by viewModel.memoryCount.collectAsState()
     val autoStoreEnabled by viewModel.autoStoreEnabled.collectAsState()
     val isReindexing by viewModel.isReindexing.collectAsState()
@@ -168,6 +169,41 @@ fun SettingsScreen(
                     Switch(
                         checked = yoloMode,
                         onCheckedChange = { viewModel.setYoloMode(it) },
+                    )
+                }
+            }
+
+            Spacer(Modifier.height(24.dp))
+            HorizontalDivider()
+            Spacer(Modifier.height(16.dp))
+
+            // Notification Reply
+            Text(
+                text = "Auto-Reply to Notifications",
+                style = MaterialTheme.typography.titleMedium,
+            )
+            Spacer(Modifier.height(8.dp))
+            Card(modifier = Modifier.fillMaxWidth()) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Allow replying to messages",
+                            style = MaterialTheme.typography.bodyLarge,
+                        )
+                        Text(
+                            text = "When enabled, the AI can reply to incoming notifications (Telegram, WhatsApp, etc.) on your behalf",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    Switch(
+                        checked = notificationReplyEnabled,
+                        onCheckedChange = { viewModel.setNotificationReplyEnabled(it) },
                     )
                 }
             }

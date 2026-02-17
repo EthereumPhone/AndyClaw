@@ -1,6 +1,8 @@
 package org.ethereumphone.andyclaw.agent
 
+import android.content.pm.PackageManager
 import android.util.Log
+import androidx.core.content.ContextCompat
 import kotlinx.coroutines.CompletableDeferred
 import org.ethereumphone.andyclaw.NodeApp
 import org.ethereumphone.andyclaw.skills.SkillResult
@@ -77,6 +79,16 @@ class HeartbeatAgentRunner(private val app: NodeApp) : AgentRunner {
             }
 
             override suspend fun onPermissionsNeeded(permissions: List<String>): Boolean {
+                // First check if all permissions are already granted — no UI needed
+                val allAlreadyGranted = permissions.all { perm ->
+                    ContextCompat.checkSelfPermission(app, perm) == PackageManager.PERMISSION_GRANTED
+                }
+                if (allAlreadyGranted) {
+                    Log.i(TAG, "Permissions already granted: $permissions")
+                    return true
+                }
+
+                // Not all granted — try requesting via UI if available
                 val requester = app.permissionRequester
                 if (requester != null) {
                     return try {
@@ -89,7 +101,11 @@ class HeartbeatAgentRunner(private val app: NodeApp) : AgentRunner {
                         false
                     }
                 }
-                Log.w(TAG, "No permission requester available (background), denying: $permissions")
+
+                val missing = permissions.filter { perm ->
+                    ContextCompat.checkSelfPermission(app, perm) != PackageManager.PERMISSION_GRANTED
+                }
+                Log.w(TAG, "No permission requester available (background), missing: $missing")
                 return false
             }
 

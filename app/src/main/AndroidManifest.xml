@@ -61,6 +61,11 @@
     <!-- Notification DND -->
     <uses-permission android:name="android.permission.ACCESS_NOTIFICATION_POLICY" />
 
+    <!-- Reminders -->
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
+    <uses-permission android:name="android.permission.USE_EXACT_ALARM" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
     <!-- Termux integration -->
     <uses-permission android:name="com.termux.permission.RUN_COMMAND" />
 
@@ -112,6 +117,10 @@
             android:name=".services.HeartbeatBindingService"
             android:enabled="true"
             android:exported="true" />
+
+        <receiver
+            android:name=".services.ReminderReceiver"
+            android:exported="false" />
     </application>
 
 </manifest>

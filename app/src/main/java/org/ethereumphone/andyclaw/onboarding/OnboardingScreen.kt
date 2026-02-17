@@ -45,8 +45,6 @@ import org.ethereumphone.andyclaw.skills.AndyClawSkill
 import org.ethereumphone.andyclaw.skills.Tier
 import org.ethereumphone.andyclaw.skills.tier.OsCapabilities
 
-private const val TOTAL_STEPS = 4
-
 @Composable
 fun OnboardingScreen(
     onComplete: () -> Unit,
@@ -56,11 +54,16 @@ fun OnboardingScreen(
     val isSubmitting by viewModel.isSubmitting.collectAsState()
     val error by viewModel.error.collectAsState()
 
+    val apiKey by viewModel.apiKey.collectAsState()
     val goals by viewModel.goals.collectAsState()
     val customName by viewModel.customName.collectAsState()
     val values by viewModel.values.collectAsState()
     val yoloMode by viewModel.yoloMode.collectAsState()
     val selectedSkills by viewModel.selectedSkills.collectAsState()
+
+    val needsApiKey = viewModel.needsApiKey
+    val totalSteps = viewModel.totalSteps
+    val stepOffset = if (needsApiKey) 1 else 0
 
     val snackbarHostState = remember { SnackbarHostState() }
 
@@ -82,12 +85,12 @@ fun OnboardingScreen(
         ) {
             // Progress indicator
             LinearProgressIndicator(
-                progress = { (currentStep + 1) / TOTAL_STEPS.toFloat() },
+                progress = { (currentStep + 1) / totalSteps.toFloat() },
                 modifier = Modifier.fillMaxWidth(),
             )
 
             Text(
-                text = "Step ${currentStep + 1} of $TOTAL_STEPS",
+                text = "Step ${currentStep + 1} of $totalSteps",
                 style = MaterialTheme.typography.labelMedium,
                 modifier = Modifier.padding(top = 8.dp),
             )
@@ -110,10 +113,15 @@ fun OnboardingScreen(
                 label = "onboarding_step",
             ) { step ->
                 when (step) {
-                    0 -> StepGoals(goals) { viewModel.goals.value = it }
-                    1 -> StepName(customName) { viewModel.customName.value = it }
-                    2 -> StepValues(values) { viewModel.values.value = it }
-                    3 -> StepPermissions(
+                    0 -> if (needsApiKey) {
+                        StepApiKey(apiKey) { viewModel.apiKey.value = it }
+                    } else {
+                        StepGoals(goals) { viewModel.goals.value = it }
+                    }
+                    0 + stepOffset -> StepGoals(goals) { viewModel.goals.value = it }
+                    1 + stepOffset -> StepName(customName) { viewModel.customName.value = it }
+                    2 + stepOffset -> StepValues(values) { viewModel.values.value = it }
+                    3 + stepOffset -> StepPermissions(
                         skills = viewModel.registeredSkills,
                         yoloMode = yoloMode,
                         selectedSkills = selectedSkills,
@@ -139,11 +147,12 @@ fun OnboardingScreen(
                     Spacer(Modifier)
                 }
 
-                if (currentStep < TOTAL_STEPS - 1) {
+                if (currentStep < totalSteps - 1) {
                     Button(
                         onClick = { viewModel.nextStep() },
                         enabled = when (currentStep) {
-                            0 -> goals.isNotBlank()
+                            0 -> if (needsApiKey) apiKey.isNotBlank() else goals.isNotBlank()
+                            0 + stepOffset -> goals.isNotBlank()
                             else -> true
                         },
                     ) {
@@ -167,6 +176,30 @@ fun OnboardingScreen(
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun StepApiKey(value: String, onValueChange: (String) -> Unit) {
+    Column {
+        Text(
+            text = "Enter your API key",
+            style = MaterialTheme.typography.headlineSmall,
+        )
+        Spacer(Modifier.height(8.dp))
+        Text(
+            text = "An OpenRouter API key is required to power your AI assistant. You can get one at openrouter.ai.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.height(16.dp))
+        OutlinedTextField(
+            value = value,
+            onValueChange = onValueChange,
+            modifier = Modifier.fillMaxWidth(),
+            placeholder = { Text("sk-or-v1-...") },
+            singleLine = true,
+        )
     }
 }
 

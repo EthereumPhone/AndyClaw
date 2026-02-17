@@ -40,6 +40,7 @@ import org.ethereumphone.andyclaw.skills.builtin.PackageManagerSkill
 import org.ethereumphone.andyclaw.skills.builtin.PhoneSkill
 import org.ethereumphone.andyclaw.skills.builtin.ScreenTimeSkill
 import org.ethereumphone.andyclaw.skills.builtin.StorageSkill
+import org.ethereumphone.andyclaw.skills.builtin.ReminderSkill
 import org.ethereumphone.andyclaw.skills.builtin.TermuxSkill
 import org.ethereumphone.andyclaw.skills.builtin.WalletSkill
 import org.ethereumphone.andyclaw.skills.tier.OsCapabilities
@@ -68,8 +69,13 @@ class NodeApp : Application() {
         MemoryManager(this, agentId = DEFAULT_AGENT_ID)
     }
 
+    private fun resolveApiKey(): String {
+        val prefsKey = securePrefs.apiKey.value
+        return prefsKey.ifEmpty { BuildConfig.OPENROUTER_API_KEY }
+    }
+
     private val embeddingProvider: OpenAiEmbeddingProvider by lazy {
-        OpenAiEmbeddingProvider(apiKey = { BuildConfig.OPENROUTER_API_KEY })
+        OpenAiEmbeddingProvider(apiKey = ::resolveApiKey)
     }
 
     // ── Extension subsystem ────────────────────────────────────────────
@@ -130,13 +136,15 @@ class NodeApp : Application() {
             register(AudioSkill(this@NodeApp))
             register(DevicePowerSkill(this@NodeApp))
             register(CodeExecutionSkill(this@NodeApp))
+            // Reminders — schedule notifications at specific times
+            register(ReminderSkill(this@NodeApp))
             // Termux integration — full Linux environment via Termux app
             register(TermuxSkill(this@NodeApp))
         }
     }
 
     val anthropicClient: AnthropicClient by lazy {
-        AnthropicClient(apiKey = { BuildConfig.OPENROUTER_API_KEY })
+        AnthropicClient(apiKey = ::resolveApiKey)
     }
 
     override fun onCreate() {

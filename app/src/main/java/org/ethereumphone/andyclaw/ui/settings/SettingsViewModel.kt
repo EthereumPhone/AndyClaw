@@ -24,6 +24,7 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
     val selectedModel = prefs.selectedModel
     val yoloMode = prefs.yoloMode
     val enabledSkills = prefs.enabledSkills
+    val notificationReplyEnabled = prefs.notificationReplyEnabled
 
     val currentTier: String get() = OsCapabilities.currentTier().name
     val isPrivileged: Boolean get() = OsCapabilities.hasPrivilegedAccess
@@ -66,6 +67,10 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
 
     fun setYoloMode(enabled: Boolean) {
         prefs.setYoloMode(enabled)
+    }
+
+    fun setNotificationReplyEnabled(enabled: Boolean) {
+        prefs.setNotificationReplyEnabled(enabled)
     }
 
     fun toggleSkill(skillId: String, enabled: Boolean) {

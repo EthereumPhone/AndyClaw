@@ -1,7 +1,10 @@
 package org.ethereumphone.andyclaw
 
+import android.Manifest
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.os.PowerManager
 import android.provider.Settings
@@ -9,6 +12,9 @@ import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.core.content.ContextCompat
+import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.launch
 import org.ethereumphone.andyclaw.navigation.AppNavigation
 import org.ethereumphone.andyclaw.ui.theme.AndyClawTheme
 
@@ -18,6 +24,7 @@ class MainActivity : ComponentActivity() {
         (application as NodeApp).permissionRequester = PermissionRequester(this)
 
         requestBatteryOptimizationExemption()
+        requestNotificationPermission()
 
         val isEthOS = getSystemService("wallet") != null
         if (isEthOS) {
@@ -38,6 +45,18 @@ class MainActivity : ComponentActivity() {
     override fun onDestroy() {
         (application as NodeApp).permissionRequester = null
         super.onDestroy()
+    }
+
+    private fun requestNotificationPermission() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
+            == PackageManager.PERMISSION_GRANTED) return
+
+        val requester = (application as NodeApp).permissionRequester ?: return
+        lifecycleScope.launch {
+            val result = requester.requestIfMissing(listOf(Manifest.permission.POST_NOTIFICATIONS))
+            Log.i("MainActivity", "POST_NOTIFICATIONS result: $result")
+        }
     }
 
     private fun requestBatteryOptimizationExemption() {

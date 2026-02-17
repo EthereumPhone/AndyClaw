@@ -71,6 +71,21 @@ object PromptAssembler {
 
         sb.appendLine("When you need to perform an action, use the appropriate tool.")
         sb.appendLine("Always prefer taking action over just reporting — if you can fix something, fix it.")
+        sb.appendLine()
+
+        // Code execution fallback hint (only when execute_code is available)
+        val hasCodeExecution = skills.any { skill ->
+            skill.baseManifest.tools.any { it.name == "execute_code" } ||
+            (tier == Tier.PRIVILEGED && skill.privilegedManifest?.tools?.any { it.name == "execute_code" } == true)
+        }
+        if (hasCodeExecution) {
+            sb.appendLine("## Fallback: Code Execution")
+            sb.appendLine("If a tool fails, returns an error, or if a needed tool does not exist, you can use `execute_code` as a fallback.")
+            sb.appendLine("Write Java/BeanShell code that calls Android APIs directly (e.g. AlarmManager, NotificationManager, ContentResolver, TelephonyManager, etc.).")
+            sb.appendLine("This gives you full access to the Android platform — treat it as your escape hatch for anything the built-in tools cannot do.")
+            sb.appendLine()
+        }
+
         return sb.toString()
     }
 

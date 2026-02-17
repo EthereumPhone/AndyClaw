@@ -9,6 +9,7 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
+import org.ethereumphone.andyclaw.NodeApp
 import org.ethereumphone.andyclaw.skills.AndyClawSkill
 import org.ethereumphone.andyclaw.skills.SkillManifest
 import org.ethereumphone.andyclaw.skills.SkillResult
@@ -88,6 +89,8 @@ class NotificationSkill(private val context: Context) : AndyClawSkill {
             }
             "reply_to_notification" -> {
                 if (tier != Tier.PRIVILEGED) SkillResult.Error("reply_to_notification requires privileged OS")
+                else if (!(context as NodeApp).securePrefs.notificationReplyEnabled.value)
+                    SkillResult.Error("reply_to_notification is disabled by the user in Settings. Do not attempt to reply to notifications.")
                 else replyToNotification(params)
             }
             "auto_triage" -> {

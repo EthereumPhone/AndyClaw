@@ -9,6 +9,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import org.ethereumphone.andyclaw.BuildConfig
 import org.ethereumphone.andyclaw.NodeApp
 import org.ethereumphone.andyclaw.llm.AnthropicModels
 import org.ethereumphone.andyclaw.llm.ContentBlock
@@ -20,9 +21,13 @@ class OnboardingViewModel(application: Application) : AndroidViewModel(applicati
 
     private val app = application as NodeApp
 
+    val apiKey = MutableStateFlow("")
     val goals = MutableStateFlow("")
     val customName = MutableStateFlow("")
     val values = MutableStateFlow("")
+
+    val needsApiKey: Boolean = BuildConfig.OPENROUTER_API_KEY.isEmpty()
+    val totalSteps: Int = if (needsApiKey) 5 else 4
 
     private val _currentStep = MutableStateFlow(0)
     val currentStep: StateFlow<Int> = _currentStep.asStateFlow()
@@ -43,7 +48,7 @@ class OnboardingViewModel(application: Application) : AndroidViewModel(applicati
         get() = app.nativeSkillRegistry.getAll()
 
     fun nextStep() {
-        if (_currentStep.value < 3) _currentStep.value++
+        if (_currentStep.value < totalSteps - 1) _currentStep.value++
     }
 
     fun previousStep() {
@@ -71,6 +76,11 @@ class OnboardingViewModel(application: Application) : AndroidViewModel(applicati
 
         viewModelScope.launch {
             try {
+                // Save API key before using the client so resolveApiKey() picks it up
+                if (needsApiKey) {
+                    app.securePrefs.setApiKey(apiKey.value.trim())
+                }
+
                 val prompt = buildString {
                     appendLine("You are helping set up a personalized AI assistant for a dGEN1 Ethereum Phone user.")
                     appendLine("Based on the user's answers below, write a concise user profile in markdown.")
@@ -151,6 +161,7 @@ class OnboardingViewModel(application: Application) : AndroidViewModel(applicati
             Manifest.permission.BLUETOOTH_CONNECT,
             Manifest.permission.BLUETOOTH_SCAN,
             Manifest.permission.RECORD_AUDIO,
+            Manifest.permission.POST_NOTIFICATIONS,
         )
         try {
             val results = requester.requestIfMissing(permissions)

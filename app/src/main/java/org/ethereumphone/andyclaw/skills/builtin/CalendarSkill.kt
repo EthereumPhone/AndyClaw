@@ -8,6 +8,7 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.long
 import kotlinx.serialization.json.put
@@ -22,7 +23,7 @@ class CalendarSkill(private val context: Context) : AndyClawSkill {
     override val name = "Calendar"
 
     override val baseManifest = SkillManifest(
-        description = "Read calendar events from the device.",
+        description = "Read, create, and delete calendar events on the device.",
         tools = listOf(
             ToolDefinition(
                 name = "list_events",
@@ -49,15 +50,9 @@ class CalendarSkill(private val context: Context) : AndyClawSkill {
                 )),
                 requiredPermissions = listOf("android.permission.READ_CALENDAR"),
             ),
-        ),
-    )
-
-    override val privilegedManifest = SkillManifest(
-        description = "Create and delete calendar events (privileged OS only).",
-        tools = listOf(
             ToolDefinition(
                 name = "create_event",
-                description = "Create a new calendar event.",
+                description = "Create a new calendar event. Prefers Google Calendar if installed, otherwise uses the default calendar.",
                 inputSchema = JsonObject(mapOf(
                     "type" to JsonPrimitive("object"),
                     "properties" to JsonObject(mapOf(
@@ -67,6 +62,11 @@ class CalendarSkill(private val context: Context) : AndyClawSkill {
                         "description" to JsonObject(mapOf("type" to JsonPrimitive("string"), "description" to JsonPrimitive("Event description"))),
                         "location" to JsonObject(mapOf("type" to JsonPrimitive("string"), "description" to JsonPrimitive("Event location"))),
                         "calendar_id" to JsonObject(mapOf("type" to JsonPrimitive("string"), "description" to JsonPrimitive("Calendar ID (uses default if omitted)"))),
+                        "participants" to JsonObject(mapOf(
+                            "type" to JsonPrimitive("array"),
+                            "items" to JsonObject(mapOf("type" to JsonPrimitive("string"))),
+                            "description" to JsonPrimitive("List of participant email addresses to invite"),
+                        )),
                     )),
                     "required" to JsonArray(listOf(JsonPrimitive("title"), JsonPrimitive("start_time"), JsonPrimitive("end_time"))),
                 )),
@@ -89,18 +89,14 @@ class CalendarSkill(private val context: Context) : AndyClawSkill {
         ),
     )
 
+    override val privilegedManifest: SkillManifest? = null
+
     override suspend fun execute(tool: String, params: JsonObject, tier: Tier): SkillResult {
         return when (tool) {
             "list_events" -> listEvents(params)
             "get_event" -> getEvent(params)
-            "create_event" -> {
-                if (tier != Tier.PRIVILEGED) SkillResult.Error("create_event requires privileged OS access. Install AndyClaw as a system app on ethOS.")
-                else createEvent(params)
-            }
-            "delete_event" -> {
-                if (tier != Tier.PRIVILEGED) SkillResult.Error("delete_event requires privileged OS access. Install AndyClaw as a system app on ethOS.")
-                else deleteEvent(params)
-            }
+            "create_event" -> createEvent(params)
+            "delete_event" -> deleteEvent(params)
             else -> SkillResult.Error("Unknown tool: $tool")
         }
     }
@@ -209,10 +205,16 @@ class CalendarSkill(private val context: Context) : AndyClawSkill {
         val description = params["description"]?.jsonPrimitive?.contentOrNull
         val location = params["location"]?.jsonPrimitive?.contentOrNull
         val calendarId = params["calendar_id"]?.jsonPrimitive?.contentOrNull
+        val participants = params["participants"]?.jsonArray
+            ?.mapNotNull { it.jsonPrimitive.contentOrNull }
+            ?: emptyList()
 
         return try {
             val resolvedCalendarId = calendarId?.toLongOrNull() ?: getDefaultCalendarId()
                 ?: return SkillResult.Error("No calendar found on device. Create a calendar first.")
+
+            // Look up the owner email of this calendar so we can set ORGANIZER
+            val ownerEmail = getCalendarOwnerEmail(resolvedCalendarId)
 
             val values = ContentValues().apply {
                 put(CalendarContract.Events.TITLE, title)
@@ -222,17 +224,67 @@ class CalendarSkill(private val context: Context) : AndyClawSkill {
                 put(CalendarContract.Events.EVENT_TIMEZONE, java.util.TimeZone.getDefault().id)
                 if (description != null) put(CalendarContract.Events.DESCRIPTION, description)
                 if (location != null) put(CalendarContract.Events.EVENT_LOCATION, location)
+                if (ownerEmail != null) put(CalendarContract.Events.ORGANIZER, ownerEmail)
+                if (participants.isNotEmpty()) {
+                    put(CalendarContract.Events.HAS_ATTENDEE_DATA, 1)
+                    put(CalendarContract.Events.GUESTS_CAN_INVITE_OTHERS, 1)
+                    put(CalendarContract.Events.GUESTS_CAN_SEE_GUESTS, 1)
+                }
             }
             val uri = context.contentResolver.insert(CalendarContract.Events.CONTENT_URI, values)
                 ?: return SkillResult.Error("Failed to create event")
-            val newId = uri.lastPathSegment
+            val newId = uri.lastPathSegment?.toLongOrNull()
+                ?: return SkillResult.Error("Failed to get event ID after creation")
+
+            // Add the organizer as an attendee (required for Google Calendar invitations)
+            if (participants.isNotEmpty() && ownerEmail != null) {
+                val organizerAttendee = ContentValues().apply {
+                    put(CalendarContract.Attendees.EVENT_ID, newId)
+                    put(CalendarContract.Attendees.ATTENDEE_EMAIL, ownerEmail)
+                    put(CalendarContract.Attendees.ATTENDEE_RELATIONSHIP, CalendarContract.Attendees.RELATIONSHIP_ORGANIZER)
+                    put(CalendarContract.Attendees.ATTENDEE_TYPE, CalendarContract.Attendees.TYPE_REQUIRED)
+                    put(CalendarContract.Attendees.ATTENDEE_STATUS, CalendarContract.Attendees.ATTENDEE_STATUS_ACCEPTED)
+                }
+                context.contentResolver.insert(CalendarContract.Attendees.CONTENT_URI, organizerAttendee)
+            }
+
+            // Add participants as attendees
+            for (email in participants) {
+                val attendeeValues = ContentValues().apply {
+                    put(CalendarContract.Attendees.EVENT_ID, newId)
+                    put(CalendarContract.Attendees.ATTENDEE_EMAIL, email)
+                    put(CalendarContract.Attendees.ATTENDEE_RELATIONSHIP, CalendarContract.Attendees.RELATIONSHIP_ATTENDEE)
+                    put(CalendarContract.Attendees.ATTENDEE_TYPE, CalendarContract.Attendees.TYPE_REQUIRED)
+                    put(CalendarContract.Attendees.ATTENDEE_STATUS, CalendarContract.Attendees.ATTENDEE_STATUS_INVITED)
+                }
+                context.contentResolver.insert(CalendarContract.Attendees.CONTENT_URI, attendeeValues)
+            }
+
             SkillResult.Success(buildJsonObject {
                 put("created", true)
-                put("event_id", newId ?: "")
+                put("event_id", newId.toString())
                 put("title", title)
+                put("calendar_id", resolvedCalendarId.toString())
+                if (ownerEmail != null) put("organizer", ownerEmail)
+                if (participants.isNotEmpty()) {
+                    put("participants_added", participants.size)
+                }
             }.toString())
         } catch (e: Exception) {
             SkillResult.Error("Failed to create event: ${e.message}")
+        }
+    }
+
+    private fun getCalendarOwnerEmail(calendarId: Long): String? {
+        val cursor = context.contentResolver.query(
+            CalendarContract.Calendars.CONTENT_URI,
+            arrayOf(CalendarContract.Calendars.OWNER_ACCOUNT),
+            "${CalendarContract.Calendars._ID} = ?",
+            arrayOf(calendarId.toString()),
+            null,
+        )
+        return cursor?.use {
+            if (it.moveToFirst()) it.getString(0) else null
         }
     }
 
@@ -255,16 +307,36 @@ class CalendarSkill(private val context: Context) : AndyClawSkill {
         }
     }
 
+    /**
+     * Prefer Google Calendar if available, otherwise fall back to any visible calendar.
+     */
     private fun getDefaultCalendarId(): Long? {
         val cursor = context.contentResolver.query(
             CalendarContract.Calendars.CONTENT_URI,
-            arrayOf(CalendarContract.Calendars._ID),
+            arrayOf(
+                CalendarContract.Calendars._ID,
+                CalendarContract.Calendars.ACCOUNT_TYPE,
+                CalendarContract.Calendars.IS_PRIMARY,
+            ),
             "${CalendarContract.Calendars.VISIBLE} = 1",
             null,
-            "${CalendarContract.Calendars.IS_PRIMARY} DESC",
+            null,
         )
-        return cursor?.use {
-            if (it.moveToFirst()) it.getLong(0) else null
+        var googleCalendarId: Long? = null
+        var fallbackId: Long? = null
+        cursor?.use {
+            while (it.moveToNext()) {
+                val id = it.getLong(0)
+                val accountType = it.getString(1) ?: ""
+                val isPrimary = it.getInt(2) != 0
+                if (accountType == "com.google" && (googleCalendarId == null || isPrimary)) {
+                    googleCalendarId = id
+                }
+                if (fallbackId == null || isPrimary) {
+                    fallbackId = id
+                }
+            }
         }
+        return googleCalendarId ?: fallbackId
     }
 }
