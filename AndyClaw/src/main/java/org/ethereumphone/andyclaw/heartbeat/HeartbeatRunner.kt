@@ -145,6 +145,18 @@ class HeartbeatRunner(
         }
     }
 
+    /**
+     * Request an immediate heartbeat run with extra context injected into the prompt.
+     * The [extraContext] is appended after HEARTBEAT.md content so the agent can
+     * act on it (e.g. new incoming XMTP messages).
+     */
+    fun requestNowWithContext(extraContext: String) {
+        scope.launch {
+            val result = runOnceWithContext(extraContext)
+            onResult(result)
+        }
+    }
+
     private fun shouldSkip(): HeartbeatSkipReason? {
         if (!config.enabled) return HeartbeatSkipReason.DISABLED
         if (!isWithinActiveHours()) return HeartbeatSkipReason.QUIET_HOURS
@@ -189,6 +201,43 @@ class HeartbeatRunner(
             "$base\n\n--- HEARTBEAT.md ---\n$content"
         } else {
             base
+        }
+    }
+
+    /**
+     * Run a single heartbeat cycle with extra context appended to the prompt.
+     * Skips the empty-file and quiet-hours checks since the caller is providing
+     * explicit trigger context (e.g. new XMTP messages).
+     */
+    private suspend fun runOnceWithContext(extraContext: String): HeartbeatResult {
+        if (!config.enabled) {
+            return HeartbeatResult(HeartbeatOutcome.SKIPPED)
+        }
+
+        return try {
+            val heartbeatFile = resolveHeartbeatFile()
+            val basePrompt = buildPrompt(heartbeatFile)
+            val prompt = "$basePrompt\n\n--- INCOMING CONTEXT ---\n$extraContext"
+
+            val response = agentRunner.run(prompt = prompt)
+
+            if (response.isError) {
+                return HeartbeatResult(HeartbeatOutcome.ERROR, error = response.text)
+            }
+
+            val stripped = HeartbeatPrompt.stripToken(response.text, config.ackMaxChars)
+
+            if (stripped.shouldSkip) {
+                log.fine("Heartbeat (with context): HEARTBEAT_OK - nothing to report")
+                return HeartbeatResult(HeartbeatOutcome.OK)
+            }
+
+            lastHeartbeatText = stripped.text
+            lastHeartbeatSentAt = System.currentTimeMillis()
+            HeartbeatResult(HeartbeatOutcome.ALERT, text = stripped.text)
+        } catch (e: Exception) {
+            log.warning("Heartbeat (with context) error: ${e.message}")
+            HeartbeatResult(HeartbeatOutcome.ERROR, error = e.message)
         }
     }
 }

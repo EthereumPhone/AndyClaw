@@ -82,7 +82,7 @@ dependencies {
     implementation("org.web3j:core:4.9.4")
     implementation("com.github.EthereumPhone:WalletSDK:0.3.0")
     // MessengerSDK for XMTP messaging
-    implementation("com.github.EthereumPhone:MessengerSDK:0.3.0")
+    implementation("com.github.EthereumPhone:MessengerSDK:0.4.0")
     // ContactsSDK for ethOS contacts with ETH address support
     implementation("com.github.EthereumPhone:ContactsSDK:0.1.0")
     testImplementation(libs.junit)

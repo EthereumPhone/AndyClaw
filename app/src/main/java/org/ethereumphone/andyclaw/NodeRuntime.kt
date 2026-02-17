@@ -123,6 +123,14 @@ class NodeRuntime(private val context: Context) {
     }
 
     /**
+     * Trigger an immediate heartbeat run with extra context injected into the prompt.
+     * Used when external events (e.g. new XMTP messages) should be provided to the agent.
+     */
+    fun requestHeartbeatNowWithContext(context: String) {
+        heartbeatRunner?.requestNowWithContext(context)
+    }
+
+    /**
      * Reload skills from all configured directories.
      */
     fun loadSkills(

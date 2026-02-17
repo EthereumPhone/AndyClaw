@@ -100,6 +100,9 @@ class SecurePrefs(context: Context) : KeyValueStore {
   private val _heartbeatOnNotificationEnabled = MutableStateFlow(prefs.getBoolean("agent.heartbeatOnNotification", false))
   val heartbeatOnNotificationEnabled: StateFlow<Boolean> = _heartbeatOnNotificationEnabled
 
+  private val _heartbeatOnXmtpMessageEnabled = MutableStateFlow(prefs.getBoolean("agent.heartbeatOnXmtpMessage", false))
+  val heartbeatOnXmtpMessageEnabled: StateFlow<Boolean> = _heartbeatOnXmtpMessageEnabled
+
   private val _apiKey = MutableStateFlow(prefs.getString("anthropic.apiKey", "") ?: "")
   val apiKey: StateFlow<String> = _apiKey
 
@@ -274,6 +277,11 @@ class SecurePrefs(context: Context) : KeyValueStore {
   fun setHeartbeatOnNotificationEnabled(value: Boolean) {
     prefs.edit { putBoolean("agent.heartbeatOnNotification", value) }
     _heartbeatOnNotificationEnabled.value = value
+  }
+
+  fun setHeartbeatOnXmtpMessageEnabled(value: Boolean) {
+    prefs.edit { putBoolean("agent.heartbeatOnXmtpMessage", value) }
+    _heartbeatOnXmtpMessageEnabled.value = value
   }
 
   fun setApiKey(value: String) {

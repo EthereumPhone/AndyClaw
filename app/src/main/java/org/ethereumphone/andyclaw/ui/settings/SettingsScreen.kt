@@ -50,6 +50,7 @@ fun SettingsScreen(
     val yoloMode by viewModel.yoloMode.collectAsState()
     val notificationReplyEnabled by viewModel.notificationReplyEnabled.collectAsState()
     val heartbeatOnNotificationEnabled by viewModel.heartbeatOnNotificationEnabled.collectAsState()
+    val heartbeatOnXmtpMessageEnabled by viewModel.heartbeatOnXmtpMessageEnabled.collectAsState()
     val memoryCount by viewModel.memoryCount.collectAsState()
     val autoStoreEnabled by viewModel.autoStoreEnabled.collectAsState()
     val isReindexing by viewModel.isReindexing.collectAsState()
@@ -238,6 +239,40 @@ fun SettingsScreen(
                         Switch(
                             checked = heartbeatOnNotificationEnabled,
                             onCheckedChange = { viewModel.setHeartbeatOnNotificationEnabled(it) },
+                        )
+                    }
+                }
+            }
+
+            // Heartbeat on XMTP Message — privileged only
+            if (viewModel.isPrivileged) {
+                Spacer(Modifier.height(12.dp))
+                Text(
+                    text = "Heartbeat on XMTP Message",
+                    style = MaterialTheme.typography.titleMedium,
+                )
+                Spacer(Modifier.height(8.dp))
+                Card(modifier = Modifier.fillMaxWidth()) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(16.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "Trigger heartbeat on new XMTP message",
+                                style = MaterialTheme.typography.bodyLarge,
+                            )
+                            Text(
+                                text = "When enabled, the AI heartbeat runs with the new messages as context whenever the background sync detects incoming XMTP messages",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        Switch(
+                            checked = heartbeatOnXmtpMessageEnabled,
+                            onCheckedChange = { viewModel.setHeartbeatOnXmtpMessageEnabled(it) },
                         )
                     }
                 }

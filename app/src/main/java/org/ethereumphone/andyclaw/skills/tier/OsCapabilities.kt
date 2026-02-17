@@ -54,7 +54,8 @@ object OsCapabilities {
             Capability.AUDIO_MANAGE,
             Capability.DEVICE_POWER_MANAGE,
             Capability.CODE_EXECUTE,
-            Capability.HEARTBEAT_ON_NOTIFICATION -> hasPrivilegedAccess
+            Capability.HEARTBEAT_ON_NOTIFICATION,
+            Capability.HEARTBEAT_ON_XMTP_MESSAGE -> hasPrivilegedAccess
 
             Capability.CONTACTS_READ,
             Capability.CONTACTS_WRITE,
