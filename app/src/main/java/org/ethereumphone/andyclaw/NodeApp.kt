@@ -158,11 +158,14 @@ class NodeApp : Application() {
         super.onCreate()
         OsCapabilities.init(this)
 
-        // Register SDK wakeup handler so Messenger can wake us on new XMTP messages
-        MessengerSDK.setNewMessageWakeupHandler { ctx, count ->
-            val intent = android.content.Intent(ctx, NodeForegroundService::class.java)
-                .putExtra(NodeForegroundService.EXTRA_XMTP_MESSAGE_COUNT, count)
-            ctx.startForegroundService(intent)
+        // Register SDK wakeup handler for non-ethOS devices (standard Android fallback).
+        // On ethOS, the OS relays XMTP messages directly to HeartbeatBindingService via binder.
+        if (!OsCapabilities.hasPrivilegedAccess) {
+            MessengerSDK.setNewMessageWakeupHandler { ctx, count ->
+                val intent = android.content.Intent(ctx, NodeForegroundService::class.java)
+                    .putExtra(NodeForegroundService.EXTRA_XMTP_MESSAGE_COUNT, count)
+                ctx.startForegroundService(intent)
+            }
         }
 
         // Wire up the embedding provider for semantic memory search

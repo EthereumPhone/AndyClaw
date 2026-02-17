@@ -113,17 +113,26 @@ class NodeForegroundService : Service() {
 
     /**
      * Handles a wake-up from the XMTP broadcast receiver.
-     * Only triggers a heartbeat if the SDK listener isn't already active
-     * (i.e. the service was freshly started by the broadcast).
+     * Fetches full message context via the SDK when available, otherwise
+     * falls back to a generic prompt.
      */
     private fun handleXmtpWakeup(messageCount: Int) {
         if (!app.securePrefs.heartbeatOnXmtpMessageEnabled.value) return
-        // If the SDK listener is already bound, it will handle via the callback flow
-        if (messengerSdk != null) return
 
         serviceScope.launch {
-            val context = "You received $messageCount new XMTP message(s). " +
-                "Use list_conversations and read_messages to check them."
+            val sdk = messengerSdk
+            val context = if (sdk != null) {
+                try {
+                    fetchNewMessagesContext(sdk, messageCount)
+                } catch (e: Exception) {
+                    Log.w(TAG, "Failed to fetch XMTP messages for heartbeat context", e)
+                    "You received $messageCount new XMTP message(s). " +
+                        "Use list_conversations and read_messages to check them."
+                }
+            } else {
+                "You received $messageCount new XMTP message(s). " +
+                    "Use list_conversations and read_messages to check them."
+            }
             runtime.requestHeartbeatNowWithContext(context)
         }
     }

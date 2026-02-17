@@ -15,12 +15,15 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import org.ethereumphone.andyclaw.NodeApp
 import org.ethereumphone.andyclaw.agent.HeartbeatAgentRunner
 import org.ethereumphone.andyclaw.heartbeat.HeartbeatConfig
 import org.ethereumphone.andyclaw.heartbeat.HeartbeatInstructions
 import org.ethereumphone.andyclaw.ipc.IHeartbeatService
+import org.ethereumhpone.messengersdk.MessengerSDK
 
 /**
  * Bound service for OS-level heartbeat triggering.
@@ -44,12 +47,20 @@ class HeartbeatBindingService : Service() {
     )
 
     private var runtimeReady = false
+    private var messengerSdk: MessengerSDK? = null
+    private val xmtpMutex = Mutex()
 
     private val binder = object : IHeartbeatService.Stub() {
         override fun heartbeatNow() {
             enforceSystemCaller()
             Log.i(TAG, "heartbeatNow() called by OS (uid=${Binder.getCallingUid()})")
             performHeartbeat()
+        }
+
+        override fun heartbeatNowWithXmtpMessages(senderAddress: String, messageText: String) {
+            enforceSystemCaller()
+            Log.i(TAG, "heartbeatNowWithXmtpMessages() called by OS (uid=${Binder.getCallingUid()}) sender=$senderAddress text=\"${messageText.take(80)}\"")
+            performHeartbeatWithXmtp(senderAddress, messageText)
         }
     }
 
@@ -81,6 +92,8 @@ class HeartbeatBindingService : Service() {
 
     override fun onDestroy() {
         Log.i(TAG, "HeartbeatBindingService destroyed")
+        messengerSdk?.identity?.unbind()
+        messengerSdk = null
         serviceScope.cancel()
         super.onDestroy()
     }
@@ -108,30 +121,109 @@ class HeartbeatBindingService : Service() {
 
     private fun performHeartbeat() {
         serviceScope.launch {
-            val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
-            val wakeLock = powerManager.newWakeLock(
-                PowerManager.PARTIAL_WAKE_LOCK,
-                WAKE_LOCK_TAG,
-            ).apply { setReferenceCounted(false) }
+            runWithWakeLock {
+                (application as NodeApp).runtime.requestHeartbeatNow()
+            }
+        }
+    }
 
+    private fun performHeartbeatWithXmtp(senderAddress: String, messageText: String) {
+        serviceScope.launch {
+            // Prevent duplicate processing (OS may relay the same event twice)
+            if (!xmtpMutex.tryLock()) {
+                Log.i(TAG, "XMTP handling already in progress, skipping duplicate")
+                return@launch
+            }
             try {
-                wakeLock.acquire(HEARTBEAT_TIMEOUT_MS + 5000)
-                Log.i(TAG, "Wake lock acquired, running heartbeat...")
-
-                val result = withTimeoutOrNull(HEARTBEAT_TIMEOUT_MS) {
-                    (application as NodeApp).runtime.requestHeartbeatNow()
+                runWithWakeLock {
+                    handleXmtpMessage(senderAddress, messageText)
                 }
-
-                if (result == null) {
-                    Log.w(TAG, "Heartbeat timed out after ${HEARTBEAT_TIMEOUT_MS}ms")
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "Error during heartbeat", e)
             } finally {
-                if (wakeLock.isHeld) {
-                    wakeLock.release()
-                    Log.i(TAG, "Wake lock released")
-                }
+                xmtpMutex.unlock()
+            }
+        }
+    }
+
+    /**
+     * Handles a single incoming XMTP message (text passed from Messenger via OS relay).
+     * Runs the agent with the message as a prompt and sends the response back to the sender.
+     */
+    private suspend fun handleXmtpMessage(senderAddress: String, messageText: String) {
+        ensureRuntimeReady()
+        val app = application as NodeApp
+
+        Log.i(TAG, "XMTP: handling message from $senderAddress: \"${messageText.take(80)}\"")
+
+        // Step 1: Build prompt
+        val prompt = buildString {
+            appendLine("You received a new XMTP message from $senderAddress:")
+            appendLine()
+            appendLine("\"$messageText\"")
+            appendLine()
+            appendLine("Write your reply. Do NOT use send_xmtp_message — your response will be sent automatically.")
+        }
+
+        // Step 2: Run agent
+        Log.i(TAG, "XMTP: running agent for $senderAddress...")
+        val response = app.runtime.agentRunner.run(prompt)
+        Log.i(TAG, "XMTP: agent response (error=${response.isError}): \"${response.text.take(100)}\"")
+
+        if (response.isError) {
+            Log.w(TAG, "XMTP: agent error for $senderAddress: ${response.text}")
+            return
+        }
+
+        if (response.text.isBlank()) {
+            Log.w(TAG, "XMTP: agent returned blank response for $senderAddress")
+            return
+        }
+
+        // Step 3: Connect to MessengerSDK to send reply
+        Log.i(TAG, "XMTP: connecting to MessengerSDK to send reply...")
+        try {
+            if (messengerSdk == null) {
+                messengerSdk = MessengerSDK.getInstance(this@HeartbeatBindingService)
+            }
+            val sdk = messengerSdk!!
+            withContext(Dispatchers.IO) {
+                sdk.identity.bind()
+                sdk.identity.awaitConnected()
+            }
+            Log.i(TAG, "XMTP: SDK connected, sending reply...")
+
+            withContext(Dispatchers.IO) {
+                sdk.identity.sendMessage(senderAddress, response.text)
+            }
+            Log.i(TAG, "XMTP: sent reply to $senderAddress")
+        } catch (e: Exception) {
+            Log.e(TAG, "XMTP: failed to send reply to $senderAddress", e)
+        }
+    }
+
+    private suspend fun runWithWakeLock(block: suspend () -> Unit) {
+        val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
+        val wakeLock = powerManager.newWakeLock(
+            PowerManager.PARTIAL_WAKE_LOCK,
+            WAKE_LOCK_TAG,
+        ).apply { setReferenceCounted(false) }
+
+        try {
+            wakeLock.acquire(HEARTBEAT_TIMEOUT_MS + 5000)
+            Log.i(TAG, "Wake lock acquired, running heartbeat...")
+
+            val result = withTimeoutOrNull(HEARTBEAT_TIMEOUT_MS) {
+                block()
+            }
+
+            if (result == null) {
+                Log.w(TAG, "Heartbeat timed out after ${HEARTBEAT_TIMEOUT_MS}ms")
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error during heartbeat", e)
+        } finally {
+            if (wakeLock.isHeld) {
+                wakeLock.release()
+                Log.i(TAG, "Wake lock released")
             }
         }
     }

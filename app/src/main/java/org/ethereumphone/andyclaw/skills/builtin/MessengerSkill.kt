@@ -172,12 +172,7 @@ class MessengerSkill(private val context: Context) : AndyClawSkill {
      * only perform setup once.
      */
     private suspend fun ensureIdentityReady(): SkillResult? {
-        if (identityReady && sdk != null) return null
-
         return initMutex.withLock {
-            // Double-check after acquiring lock
-            if (identityReady && sdk != null) return@withLock null
-
             try {
                 // Step 1: Get SDK instance
                 if (sdk == null) {
@@ -185,25 +180,27 @@ class MessengerSkill(private val context: Context) : AndyClawSkill {
                 }
                 val messengerSdk = sdk!!
 
-                // Step 2: Bind to identity service
+                // Step 2: Bind to identity service (idempotent — re-binds if connection was lost)
                 withContext(Dispatchers.IO) {
                     messengerSdk.identity.bind()
                     messengerSdk.identity.awaitConnected()
                 }
                 Log.d(TAG, "Identity service connected")
 
-                // Step 3: Create identity if one doesn't exist yet
-                val hasIdentity = withContext(Dispatchers.IO) {
-                    messengerSdk.identity.hasIdentity()
-                }
-                if (!hasIdentity) {
-                    withContext(Dispatchers.IO) {
-                        messengerSdk.identity.createIdentity()
+                // Step 3: Create identity if one doesn't exist yet (only once)
+                if (!identityReady) {
+                    val hasIdentity = withContext(Dispatchers.IO) {
+                        messengerSdk.identity.hasIdentity()
                     }
-                    Log.d(TAG, "Created new XMTP identity")
+                    if (!hasIdentity) {
+                        withContext(Dispatchers.IO) {
+                            messengerSdk.identity.createIdentity()
+                        }
+                        Log.d(TAG, "Created new XMTP identity")
+                    }
+                    identityReady = true
                 }
 
-                identityReady = true
                 null // success, no error
             } catch (e: SdkException) {
                 Log.e(TAG, "Failed to initialize identity: ${e.message}", e)

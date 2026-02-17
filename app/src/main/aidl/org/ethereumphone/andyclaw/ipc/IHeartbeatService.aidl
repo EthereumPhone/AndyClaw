@@ -11,4 +11,10 @@ oneway interface IHeartbeatService {
     // and optionally notify the user via XMTP.
     // The 'oneway' modifier makes this fire-and-forget (non-blocking for the caller).
     void heartbeatNow();
+
+    // Triggers an immediate XMTP message handling cycle.
+    // Called by the OS XMTPNotificationsService when a new message arrives
+    // for this app's isolated identity. The actual message content is passed
+    // through so the app doesn't need to read it from the SDK.
+    void heartbeatNowWithXmtpMessages(String senderAddress, String messageText);
 }
