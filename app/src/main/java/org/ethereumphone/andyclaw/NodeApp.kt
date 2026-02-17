@@ -44,6 +44,7 @@ import org.ethereumphone.andyclaw.skills.builtin.ReminderSkill
 import org.ethereumphone.andyclaw.skills.builtin.TermuxSkill
 import org.ethereumphone.andyclaw.skills.builtin.WalletSkill
 import org.ethereumphone.andyclaw.skills.builtin.AuroraStoreSkill
+import org.ethereumphone.andyclaw.skills.builtin.WebSearchSkill
 import org.ethereumphone.andyclaw.skills.tier.OsCapabilities
 import org.ethereumphone.andyclaw.onboarding.UserStoryManager
 import org.ethereumhpone.messengersdk.MessengerSDK
@@ -144,6 +145,8 @@ class NodeApp : Application() {
             register(TermuxSkill(this@NodeApp))
             // Aurora Store — download and install apps from Play Store
             register(AuroraStoreSkill(this@NodeApp))
+            // Web Search — search the web and fetch webpage content
+            register(WebSearchSkill(this@NodeApp))
         }
     }
 
