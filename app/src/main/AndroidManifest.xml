@@ -66,6 +66,9 @@
     <uses-permission android:name="android.permission.USE_EXACT_ALARM" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
+    <!-- Query all packages (needed to list all installed apps on Android 11+) -->
+    <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />
+
     <!-- Termux integration -->
     <uses-permission android:name="com.termux.permission.RUN_COMMAND" />
 
@@ -121,6 +124,15 @@
         <receiver
             android:name=".services.ReminderReceiver"
             android:exported="false" />
+
+        <!-- Aurora Store install result receiver -->
+        <receiver
+            android:name=".skills.builtin.aurorastore.AuroraInstallReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="org.ethereumphone.andyclaw.AURORA_INSTALL_COMPLETE" />
+            </intent-filter>
+        </receiver>
     </application>
 
 </manifest>

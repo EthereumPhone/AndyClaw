@@ -105,11 +105,15 @@ class AppsSkill(private val context: Context) : AndyClawSkill {
     private fun listApps(): SkillResult {
         return try {
             val pm = context.packageManager
-            val intent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
-            val apps = pm.queryIntentActivities(intent, 0).map { resolveInfo ->
+            val packages = pm.getInstalledPackages(PackageManager.PackageInfoFlags.of(0))
+            val apps = packages.map { pkgInfo ->
+                val appInfo = pkgInfo.applicationInfo
+                val isSystemApp = appInfo != null &&
+                        (appInfo.flags and android.content.pm.ApplicationInfo.FLAG_SYSTEM) != 0
                 buildJsonObject {
-                    put("package_name", resolveInfo.activityInfo.packageName)
-                    put("label", resolveInfo.loadLabel(pm).toString())
+                    put("package_name", pkgInfo.packageName)
+                    put("label", appInfo?.let { pm.getApplicationLabel(it).toString() } ?: pkgInfo.packageName)
+                    put("is_system_app", isSystemApp)
                 }
             }
             SkillResult.Success(JsonArray(apps).toString())
