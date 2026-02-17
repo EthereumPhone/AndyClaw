@@ -49,6 +49,7 @@ fun SettingsScreen(
     val selectedModel by viewModel.selectedModel.collectAsState()
     val yoloMode by viewModel.yoloMode.collectAsState()
     val notificationReplyEnabled by viewModel.notificationReplyEnabled.collectAsState()
+    val heartbeatOnNotificationEnabled by viewModel.heartbeatOnNotificationEnabled.collectAsState()
     val memoryCount by viewModel.memoryCount.collectAsState()
     val autoStoreEnabled by viewModel.autoStoreEnabled.collectAsState()
     val isReindexing by viewModel.isReindexing.collectAsState()
@@ -205,6 +206,40 @@ fun SettingsScreen(
                         checked = notificationReplyEnabled,
                         onCheckedChange = { viewModel.setNotificationReplyEnabled(it) },
                     )
+                }
+            }
+
+            // Heartbeat on Notification — privileged only
+            if (viewModel.isPrivileged) {
+                Spacer(Modifier.height(12.dp))
+                Text(
+                    text = "Heartbeat on Notification",
+                    style = MaterialTheme.typography.titleMedium,
+                )
+                Spacer(Modifier.height(8.dp))
+                Card(modifier = Modifier.fillMaxWidth()) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(16.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "Trigger heartbeat on new notification",
+                                style = MaterialTheme.typography.bodyLarge,
+                            )
+                            Text(
+                                text = "When enabled, the AI heartbeat runs whenever a new notification arrives so it can react to messages and alerts",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        Switch(
+                            checked = heartbeatOnNotificationEnabled,
+                            onCheckedChange = { viewModel.setHeartbeatOnNotificationEnabled(it) },
+                        )
+                    }
                 }
             }
 

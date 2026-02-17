@@ -98,7 +98,7 @@ class OnboardingViewModel(application: Application) : AndroidViewModel(applicati
                 }
 
                 val request = MessagesRequest(
-                    model = AnthropicModels.SONNET_4.modelId,
+                    model = AnthropicModels.MINIMAX_M25.modelId,
                     maxTokens = 1024,
                     messages = listOf(Message.user(prompt)),
                 )

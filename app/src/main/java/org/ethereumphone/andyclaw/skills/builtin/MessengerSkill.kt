@@ -11,6 +11,7 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import org.ethereumphone.andyclaw.BuildConfig
@@ -60,10 +61,11 @@ class MessengerSkill(private val context: Context) : AndyClawSkill {
     }
 
     override val baseManifest = SkillManifest(
-        description = "Send XMTP messages using the device's Messenger app. The AI has its own " +
-                "XMTP identity and can send direct messages. Use send_message_to_user to write " +
-                "to the device owner (automatically resolves their wallet address), or use " +
-                "send_xmtp_message to message an arbitrary wallet address. " +
+        description = "Send and read XMTP messages using the device's Messenger app. The AI has its own " +
+                "XMTP identity and can send direct messages and read incoming conversations. " +
+                "Use send_message_to_user to write to the device owner, send_xmtp_message to " +
+                "message an arbitrary wallet address, list_conversations to see all conversations, " +
+                "and read_messages to read messages in a conversation. " +
                 "Requires the XMTP Messenger app to be installed on the device.",
         tools = listOf(
             ToolDefinition(
@@ -118,6 +120,37 @@ class MessengerSkill(private val context: Context) : AndyClawSkill {
                     "android.permission.WRITE_CONTACTS",
                 ),
             ),
+            ToolDefinition(
+                name = "list_conversations",
+                description = "List all XMTP conversations for the AI's identity. " +
+                        "Syncs conversations from the network first, then returns the list. " +
+                        "Use this to discover conversation IDs before reading messages.",
+                inputSchema = JsonObject(mapOf(
+                    "type" to JsonPrimitive("object"),
+                    "properties" to JsonObject(emptyMap()),
+                )),
+            ),
+            ToolDefinition(
+                name = "read_messages",
+                description = "Read messages from a specific XMTP conversation. " +
+                        "Use list_conversations first to get the conversation ID.",
+                inputSchema = JsonObject(mapOf(
+                    "type" to JsonPrimitive("object"),
+                    "properties" to JsonObject(mapOf(
+                        "conversation_id" to JsonObject(mapOf(
+                            "type" to JsonPrimitive("string"),
+                            "description" to JsonPrimitive("The conversation ID to read messages from"),
+                        )),
+                        "limit" to JsonObject(mapOf(
+                            "type" to JsonPrimitive("integer"),
+                            "description" to JsonPrimitive("Maximum number of messages to return (default 20)"),
+                        )),
+                    )),
+                    "required" to JsonArray(listOf(
+                        JsonPrimitive("conversation_id"),
+                    )),
+                )),
+            ),
         ),
     )
 
@@ -127,6 +160,8 @@ class MessengerSkill(private val context: Context) : AndyClawSkill {
         return when (tool) {
             "send_message_to_user" -> sendMessageToUser(params)
             "send_xmtp_message" -> sendMessage(params)
+            "list_conversations" -> listConversations()
+            "read_messages" -> readMessages(params)
             else -> SkillResult.Error("Unknown tool: $tool")
         }
     }
@@ -258,6 +293,70 @@ class MessengerSkill(private val context: Context) : AndyClawSkill {
             put("message", message)
         }
         return sendMessage(messageParams)
+    }
+
+    private suspend fun listConversations(): SkillResult {
+        ensureIdentityReady()?.let { return it }
+
+        val messengerSdk = sdk
+            ?: return SkillResult.Error("MessengerSDK not available")
+
+        return try {
+            val conversations = withContext(Dispatchers.IO) {
+                messengerSdk.identity.syncConversations()
+                messengerSdk.identity.getConversations()
+            }
+            val result = JsonArray(conversations.map { conv ->
+                buildJsonObject {
+                    put("id", conv.id)
+                    put("peerAddress", conv.peerAddress)
+                    put("createdAtMs", conv.createdAtMs)
+                }
+            })
+            Log.d(TAG, "Listed ${conversations.size} conversations")
+            SkillResult.Success(result.toString())
+        } catch (e: SdkException) {
+            Log.e(TAG, "Failed to list conversations: ${e.message}", e)
+            SkillResult.Error("Failed to list XMTP conversations: ${e.message}")
+        } catch (e: Exception) {
+            Log.e(TAG, "Unexpected error listing conversations: ${e.message}", e)
+            SkillResult.Error("Failed to list conversations: ${e.message}")
+        }
+    }
+
+    private suspend fun readMessages(params: JsonObject): SkillResult {
+        val conversationId = params["conversation_id"]?.jsonPrimitive?.contentOrNull
+            ?: return SkillResult.Error("Missing required parameter: conversation_id")
+        val limit = params["limit"]?.jsonPrimitive?.intOrNull ?: 20
+
+        ensureIdentityReady()?.let { return it }
+
+        val messengerSdk = sdk
+            ?: return SkillResult.Error("MessengerSDK not available")
+
+        return try {
+            val messages = withContext(Dispatchers.IO) {
+                messengerSdk.identity.getMessages(conversationId)
+            }
+            val limited = messages.takeLast(limit)
+            val result = JsonArray(limited.map { msg ->
+                buildJsonObject {
+                    put("id", msg.id)
+                    put("senderInboxId", msg.senderInboxId)
+                    put("body", msg.body)
+                    put("sentAtMs", msg.sentAtMs)
+                    put("isMe", msg.isMe)
+                }
+            })
+            Log.d(TAG, "Read ${limited.size} messages from conversation $conversationId")
+            SkillResult.Success(result.toString())
+        } catch (e: SdkException) {
+            Log.e(TAG, "Failed to read messages: ${e.message}", e)
+            SkillResult.Error("Failed to read XMTP messages: ${e.message}")
+        } catch (e: Exception) {
+            Log.e(TAG, "Unexpected error reading messages: ${e.message}", e)
+            SkillResult.Error("Failed to read messages: ${e.message}")
+        }
     }
 
     private suspend fun sendMessage(params: JsonObject): SkillResult {

@@ -113,7 +113,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             val conversationHistory = buildConversationHistory()
 
             val modelId = app.securePrefs.selectedModel.value
-            val model = AnthropicModels.fromModelId(modelId) ?: AnthropicModels.SONNET_4
+            val model = AnthropicModels.fromModelId(modelId) ?: AnthropicModels.MINIMAX_M25
             val agentLoop = AgentLoop(
                 client = app.anthropicClient,
                 skillRegistry = app.nativeSkillRegistry,

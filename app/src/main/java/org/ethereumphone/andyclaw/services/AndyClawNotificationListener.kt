@@ -5,14 +5,25 @@ import android.content.Intent
 import android.os.Bundle
 import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
+import android.util.Log
+import org.ethereumphone.andyclaw.NodeApp
+import org.ethereumphone.andyclaw.skills.Capability
+import org.ethereumphone.andyclaw.skills.tier.OsCapabilities
 
 class AndyClawNotificationListener : NotificationListenerService() {
 
     companion object {
+        private const val TAG = "NotificationListener"
+
+        /** Minimum interval between notification-triggered heartbeats. */
+        private const val HEARTBEAT_COOLDOWN_MS = 60_000L
+
         @Volatile
         var instance: AndyClawNotificationListener? = null
             private set
     }
+
+    private var lastHeartbeatTriggerMs = 0L
 
     override fun onListenerConnected() {
         super.onListenerConnected()
@@ -25,7 +36,25 @@ class AndyClawNotificationListener : NotificationListenerService() {
     }
 
     override fun onNotificationPosted(sbn: StatusBarNotification?) {
-        // Notifications are accessed via activeNotifications when needed
+        if (sbn == null) return
+
+        // Never react to our own notifications (avoid infinite loops)
+        if (sbn.packageName == applicationContext.packageName) return
+
+        // Gate: privileged capability required
+        if (!OsCapabilities.hasCapability(Capability.HEARTBEAT_ON_NOTIFICATION)) return
+
+        // Gate: user must have the setting enabled
+        val app = applicationContext as? NodeApp ?: return
+        if (!app.securePrefs.heartbeatOnNotificationEnabled.value) return
+
+        // Throttle: honour cooldown to avoid spamming heartbeats
+        val now = System.currentTimeMillis()
+        if (now - lastHeartbeatTriggerMs < HEARTBEAT_COOLDOWN_MS) return
+        lastHeartbeatTriggerMs = now
+
+        Log.d(TAG, "Notification from ${sbn.packageName} — triggering heartbeat")
+        app.runtime.requestHeartbeatNow()
     }
 
     override fun onNotificationRemoved(sbn: StatusBarNotification?) {

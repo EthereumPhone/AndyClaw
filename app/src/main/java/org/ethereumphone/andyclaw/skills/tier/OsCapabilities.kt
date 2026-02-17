@@ -53,7 +53,8 @@ object OsCapabilities {
             Capability.PACKAGE_MANAGE,
             Capability.AUDIO_MANAGE,
             Capability.DEVICE_POWER_MANAGE,
-            Capability.CODE_EXECUTE -> hasPrivilegedAccess
+            Capability.CODE_EXECUTE,
+            Capability.HEARTBEAT_ON_NOTIFICATION -> hasPrivilegedAccess
 
             Capability.CONTACTS_READ,
             Capability.CONTACTS_WRITE,

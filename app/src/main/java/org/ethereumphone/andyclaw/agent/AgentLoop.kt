@@ -21,7 +21,7 @@ class AgentLoop(
     private val skillRegistry: NativeSkillRegistry,
     private val tier: Tier,
     private val enabledSkillIds: Set<String> = emptySet(),
-    private val model: AnthropicModels = AnthropicModels.SONNET_4,
+    private val model: AnthropicModels = AnthropicModels.MINIMAX_M25,
     private val aiName: String? = null,
     private val userStory: String? = null,
     private val memoryManager: MemoryManager? = null,

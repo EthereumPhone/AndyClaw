@@ -36,4 +36,5 @@ enum class Capability {
     AUDIO_MANAGE,
     DEVICE_POWER_MANAGE,
     CODE_EXECUTE,
+    HEARTBEAT_ON_NOTIFICATION,
 }

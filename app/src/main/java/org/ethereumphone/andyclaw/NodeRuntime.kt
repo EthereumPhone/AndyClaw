@@ -160,7 +160,7 @@ class NodeRuntime(private val context: Context) {
      * Returns null if no API key is configured.
      */
     fun createAgentLoop(
-        model: AnthropicModels = AnthropicModels.SONNET_4,
+        model: AnthropicModels = AnthropicModels.MINIMAX_M25,
         aiName: String? = null,
         userStory: String? = null,
         enabledSkillIds: Set<String> = emptySet(),
