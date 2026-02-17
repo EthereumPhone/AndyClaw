@@ -33,6 +33,7 @@ class NodeForegroundService : Service() {
         private const val TAG = "NodeForegroundService"
         private const val CHANNEL_ID = "andyclaw_heartbeat"
         private const val NOTIFICATION_ID = 1
+        const val EXTRA_XMTP_MESSAGE_COUNT = "xmtp_message_count"
 
         fun start(context: Context) {
             val intent = Intent(context, NodeForegroundService::class.java)
@@ -53,6 +54,7 @@ class NodeForegroundService : Service() {
 
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var messengerSdk: MessengerSDK? = null
+    private var serviceInitialized = false
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -65,28 +67,38 @@ class NodeForegroundService : Service() {
         val notification = buildNotification()
         startForeground(NOTIFICATION_ID, notification)
 
-        // Wire up the real heartbeat agent runner with tool_use
-        runtime.nativeSkillRegistry = app.nativeSkillRegistry
-        runtime.anthropicClient = app.anthropicClient
-        runtime.agentRunner = HeartbeatAgentRunner(app)
+        if (!serviceInitialized) {
+            // Wire up the real heartbeat agent runner with tool_use
+            runtime.nativeSkillRegistry = app.nativeSkillRegistry
+            runtime.anthropicClient = app.anthropicClient
+            runtime.agentRunner = HeartbeatAgentRunner(app)
 
-        // Configure 1-hour heartbeat with standing instructions prompt
-        runtime.heartbeatConfig = HeartbeatConfig(
-            intervalMs = 60L * 60 * 1000, // 1 hour
-            heartbeatFilePath = File(filesDir, "HEARTBEAT.md").absolutePath,
-        )
+            // Configure 1-hour heartbeat with standing instructions prompt
+            runtime.heartbeatConfig = HeartbeatConfig(
+                intervalMs = 60L * 60 * 1000, // 1 hour
+                heartbeatFilePath = File(filesDir, "HEARTBEAT.md").absolutePath,
+            )
 
-        // Seed HEARTBEAT.md if it doesn't exist
-        seedHeartbeatFile()
+            // Seed HEARTBEAT.md if it doesn't exist
+            seedHeartbeatFile()
 
-        // Initialize and start the heartbeat
-        runtime.initialize()
-        runtime.startHeartbeat()
+            // Initialize and start the heartbeat
+            runtime.initialize()
+            runtime.startHeartbeat()
 
-        // Start listening for XMTP new-message callbacks
-        startXmtpMessageListener()
+            // Start listening for XMTP new-message callbacks
+            startXmtpMessageListener()
 
-        Log.i(TAG, "Heartbeat service started")
+            serviceInitialized = true
+            Log.i(TAG, "Heartbeat service started")
+        }
+
+        // Handle XMTP broadcast wake-up
+        val xmtpCount = intent?.getIntExtra(EXTRA_XMTP_MESSAGE_COUNT, 0) ?: 0
+        if (xmtpCount > 0) {
+            handleXmtpWakeup(xmtpCount)
+        }
+
         return START_STICKY
     }
 
@@ -97,6 +109,23 @@ class NodeForegroundService : Service() {
         serviceScope.cancel()
         Log.i(TAG, "Heartbeat service stopped")
         super.onDestroy()
+    }
+
+    /**
+     * Handles a wake-up from the XMTP broadcast receiver.
+     * Only triggers a heartbeat if the SDK listener isn't already active
+     * (i.e. the service was freshly started by the broadcast).
+     */
+    private fun handleXmtpWakeup(messageCount: Int) {
+        if (!app.securePrefs.heartbeatOnXmtpMessageEnabled.value) return
+        // If the SDK listener is already bound, it will handle via the callback flow
+        if (messengerSdk != null) return
+
+        serviceScope.launch {
+            val context = "You received $messageCount new XMTP message(s). " +
+                "Use list_conversations and read_messages to check them."
+            runtime.requestHeartbeatNowWithContext(context)
+        }
     }
 
     /**

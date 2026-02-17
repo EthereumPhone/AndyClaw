@@ -10,6 +10,7 @@ import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
+import org.ethereumphone.andyclaw.NodeApp
 import org.ethereumphone.andyclaw.skills.AndyClawSkill
 import org.ethereumphone.andyclaw.skills.SkillManifest
 import org.ethereumphone.andyclaw.skills.SkillResult
@@ -79,6 +80,8 @@ class SMSSkill(private val context: Context) : AndyClawSkill {
             "read_sms" -> readSms(params)
             "send_sms" -> {
                 if (tier != Tier.PRIVILEGED) SkillResult.Error("send_sms requires privileged OS")
+                else if (!(context as NodeApp).securePrefs.notificationReplyEnabled.value)
+                    SkillResult.Error("Sending messages is disabled by the user in Settings. Do not attempt to send messages.")
                 else sendSms(params)
             }
             "auto_reply_sms" -> {

@@ -46,6 +46,7 @@ import org.ethereumphone.andyclaw.skills.builtin.WalletSkill
 import org.ethereumphone.andyclaw.skills.builtin.AuroraStoreSkill
 import org.ethereumphone.andyclaw.skills.tier.OsCapabilities
 import org.ethereumphone.andyclaw.onboarding.UserStoryManager
+import org.ethereumhpone.messengersdk.MessengerSDK
 
 class NodeApp : Application() {
 
@@ -153,6 +154,13 @@ class NodeApp : Application() {
     override fun onCreate() {
         super.onCreate()
         OsCapabilities.init(this)
+
+        // Register SDK wakeup handler so Messenger can wake us on new XMTP messages
+        MessengerSDK.setNewMessageWakeupHandler { ctx, count ->
+            val intent = android.content.Intent(ctx, NodeForegroundService::class.java)
+                .putExtra(NodeForegroundService.EXTRA_XMTP_MESSAGE_COUNT, count)
+            ctx.startForegroundService(intent)
+        }
 
         // Wire up the embedding provider for semantic memory search
         memoryManager.setEmbeddingProvider(embeddingProvider)
