@@ -42,8 +42,25 @@ android {
         }
     }
     compileOptions {
-        sourceCompatibility = JavaVersion.VERSION_11
-        targetCompatibility = JavaVersion.VERSION_11
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+    packaging {
+        resources {
+            pickFirsts += listOf(
+                "META-INF/versions/9/OSGI-INF/MANIFEST.MF",
+                "META-INF/DISCLAIMER",
+            )
+            excludes += listOf(
+                "META-INF/INDEX.LIST",
+                "META-INF/DEPENDENCIES",
+                "META-INF/LICENSE.md",
+                "META-INF/NOTICE.md",
+                "META-INF/io.netty.versions.properties",
+                "META-INF/FastDoubleParser-*",
+                "META-INF/BigDecimal*",
+            )
+        }
     }
     buildFeatures {
         compose = true
@@ -78,9 +95,9 @@ dependencies {
     implementation(libs.beanshell)
     // Aurora Store gplayapi for downloading apps from Play Store
     implementation(libs.gplayapi)
-    // WalletSDK for ethOS system wallet (ERC-4337)
-    implementation("org.web3j:core:4.9.4")
-    implementation("com.github.EthereumPhone:WalletSDK:0.3.0")
+    // DgenSubAccountSDK — gives the LLM its own sub-account wallet (SubWalletSDK)
+    // and exposes the OS-level system wallet (WalletSDK) transitively
+    implementation("com.github.EthereumPhone:DgenSubAccountSDK:0.2.0")
     // MessengerSDK for XMTP messaging
     implementation("com.github.EthereumPhone:MessengerSDK:0.5.0")
     // ContactsSDK for ethOS contacts with ETH address support

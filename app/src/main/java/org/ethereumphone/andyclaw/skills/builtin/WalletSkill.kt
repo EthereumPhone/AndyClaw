@@ -19,6 +19,7 @@ import org.ethereumphone.andyclaw.skills.SkillManifest
 import org.ethereumphone.andyclaw.skills.SkillResult
 import org.ethereumphone.andyclaw.skills.Tier
 import org.ethereumphone.andyclaw.skills.ToolDefinition
+import org.ethereumphone.subwalletsdk.SubWalletSDK
 import org.ethereumphone.walletsdk.WalletSDK
 import org.web3j.abi.FunctionEncoder
 import org.web3j.abi.datatypes.Address
@@ -58,15 +59,28 @@ class WalletSkill(private val context: Context) : AndyClawSkill {
         }
     }
 
-    /** Cache of per-chain WalletSDK instances. */
+    // ── SDK caches ──────────────────────────────────────────────────────
+
+    /** Cache of per-chain WalletSDK instances (user's OS wallet). */
     private val walletsByChain = mutableMapOf<Int, WalletSDK>()
 
+    /** Cache of per-chain SubWalletSDK instances (agent's own wallet). */
+    private val subWalletsByChain = mutableMapOf<Int, SubWalletSDK>()
+
     /**
-     * Default instance (Ethereum mainnet) used for non-chain-specific calls
-     * like getAddress() and token queries via WalletManager content providers.
+     * Default WalletSDK instance (Ethereum mainnet) used for non-chain-specific
+     * calls like getAddress() and token queries via WalletManager content providers.
      */
     private val defaultWallet: WalletSDK? by lazy {
         getOrCreateWallet(1)
+    }
+
+    /**
+     * Default SubWalletSDK instance (Ethereum mainnet) used for
+     * non-chain-specific calls like getAddress().
+     */
+    private val defaultSubWallet: SubWalletSDK? by lazy {
+        getOrCreateSubWallet(1)
     }
 
     private fun getOrCreateWallet(chainId: Int): WalletSDK? {
@@ -86,16 +100,36 @@ class WalletSkill(private val context: Context) : AndyClawSkill {
         }
     }
 
+    private fun getOrCreateSubWallet(chainId: Int): SubWalletSDK? {
+        subWalletsByChain[chainId]?.let { return it }
+        val rpc = chainIdToRpc(chainId) ?: return null
+        return try {
+            val sdk = SubWalletSDK(
+                context = context,
+                web3jInstance = Web3j.build(HttpService(rpc)),
+                bundlerRPCUrl = chainIdToBundler(chainId),
+            )
+            subWalletsByChain[chainId] = sdk
+            sdk
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to initialize SubWalletSDK for chain $chainId: ${e.message}")
+            null
+        }
+    }
+
+    // ── Tool definitions ────────────────────────────────────────────────
+
     override val baseManifest = SkillManifest(
-        description = "Interact with the ethOS system wallet to send blockchain transactions, " +
-                "view token balances and portfolio, and get DEX swap quotes. " +
-                "Requires ethOS (dGEN1 hardware) with the system wallet service. " +
+        description = "Interact with the ethOS wallet system. You have TWO wallets: " +
+                "(1) the user's OS system wallet — transactions require on-device approval, and " +
+                "(2) your own agent sub-account wallet — you can sign and send autonomously. " +
                 "Supported chains: Ethereum (1), Optimism (10), Polygon (137), Arbitrum (42161), " +
                 "Base (8453), Zora (7777777), BNB (56), Avalanche (43114).",
         tools = listOf(
+            // ── User wallet (WalletSDK) ─────────────────────────────
             ToolDefinition(
-                name = "get_wallet_address",
-                description = "Get the ethOS system wallet address.",
+                name = "get_user_wallet_address",
+                description = "Get the user's ethOS system wallet address.",
                 inputSchema = JsonObject(mapOf(
                     "type" to JsonPrimitive("object"),
                     "properties" to JsonObject(emptyMap()),
@@ -103,7 +137,7 @@ class WalletSkill(private val context: Context) : AndyClawSkill {
             ),
             ToolDefinition(
                 name = "get_owned_tokens",
-                description = "Get all tokens owned by the wallet with balances, USD prices, " +
+                description = "Get all tokens owned by the user's wallet with balances, USD prices, " +
                         "and total values. Returns a portfolio view of all tokens with positive " +
                         "balances. Optionally filter by chain ID.",
                 inputSchema = JsonObject(mapOf(
@@ -177,12 +211,13 @@ class WalletSkill(private val context: Context) : AndyClawSkill {
                 )),
             ),
             ToolDefinition(
-                name = "send_transaction",
-                description = "Send a blockchain transaction from the system wallet. " +
+                name = "propose_transaction",
+                description = "Propose a blockchain transaction from the user's system wallet. " +
                         "The user will be prompted to approve the transaction on-device before it is sent. " +
                         "Returns a user operation hash on success. " +
                         "For simple native token (ETH/MATIC/etc.) transfers, set data to '0'. " +
-                        "For contract interactions, provide the ABI-encoded calldata as a 0x-prefixed hex string.",
+                        "For contract interactions, provide the ABI-encoded calldata as a 0x-prefixed hex string. " +
+                        "To fund the agent's own wallet, use this with the agent's address as the recipient.",
                 inputSchema = JsonObject(mapOf(
                     "type" to JsonPrimitive("object"),
                     "properties" to JsonObject(mapOf(
@@ -220,11 +255,11 @@ class WalletSkill(private val context: Context) : AndyClawSkill {
                 requiresApproval = true,
             ),
             ToolDefinition(
-                name = "transfer_token",
-                description = "Transfer an ERC-20 token to a recipient address. " +
-                        "This is the preferred way to send tokens (USDC, USDT, WETH, etc.). " +
+                name = "propose_token_transfer",
+                description = "Propose an ERC-20 token transfer from the user's system wallet. " +
                         "The user will be prompted to approve the transaction on-device. " +
-                        "Use get_owned_tokens first to find the contract address and decimals of the token.",
+                        "Use get_owned_tokens first to find the contract address and decimals of the token. " +
+                        "To fund the agent's own wallet with tokens, use the agent's address as the recipient.",
                 inputSchema = JsonObject(mapOf(
                     "type" to JsonPrimitive("object"),
                     "properties" to JsonObject(mapOf(
@@ -265,17 +300,117 @@ class WalletSkill(private val context: Context) : AndyClawSkill {
                 )),
                 requiresApproval = true,
             ),
+            // ── Agent wallet (SubWalletSDK) ─────────────────────────
+            ToolDefinition(
+                name = "get_agent_wallet_address",
+                description = "Get the agent's own sub-account wallet address. " +
+                        "This is the wallet the agent can send from autonomously without user approval.",
+                inputSchema = JsonObject(mapOf(
+                    "type" to JsonPrimitive("object"),
+                    "properties" to JsonObject(emptyMap()),
+                )),
+            ),
+            ToolDefinition(
+                name = "agent_send_transaction",
+                description = "Send a blockchain transaction from the agent's own sub-account wallet. " +
+                        "Does NOT require user approval — signs locally and submits to the bundler. " +
+                        "The agent wallet must be funded first (use propose_transaction to send funds from the user's wallet). " +
+                        "For simple native token (ETH/MATIC/etc.) transfers, set data to '0x'. " +
+                        "For contract interactions, provide the ABI-encoded calldata as a 0x-prefixed hex string.",
+                inputSchema = JsonObject(mapOf(
+                    "type" to JsonPrimitive("object"),
+                    "properties" to JsonObject(mapOf(
+                        "to" to JsonObject(mapOf(
+                            "type" to JsonPrimitive("string"),
+                            "description" to JsonPrimitive("Recipient address (0x-prefixed, 42 characters)"),
+                        )),
+                        "value" to JsonObject(mapOf(
+                            "type" to JsonPrimitive("string"),
+                            "description" to JsonPrimitive(
+                                "Amount of native token to send in wei " +
+                                        "(e.g., '1000000000000000000' for 1 ETH, '0' for pure contract calls). " +
+                                        "1 ETH = 10^18 wei."
+                            ),
+                        )),
+                        "data" to JsonObject(mapOf(
+                            "type" to JsonPrimitive("string"),
+                            "description" to JsonPrimitive(
+                                "Transaction calldata. Use '0x' for simple native token transfers. " +
+                                        "For contract calls, provide 0x-prefixed hex-encoded calldata."
+                            ),
+                        )),
+                        "chain_id" to JsonObject(mapOf(
+                            "type" to JsonPrimitive("integer"),
+                            "description" to JsonPrimitive("Chain ID for the transaction (e.g., 1 for Ethereum, 8453 for Base)"),
+                        )),
+                    )),
+                    "required" to JsonArray(listOf(
+                        JsonPrimitive("to"),
+                        JsonPrimitive("value"),
+                        JsonPrimitive("data"),
+                        JsonPrimitive("chain_id"),
+                    )),
+                )),
+            ),
+            ToolDefinition(
+                name = "agent_transfer_token",
+                description = "Transfer an ERC-20 token from the agent's own sub-account wallet. " +
+                        "Does NOT require user approval — signs locally and submits to the bundler. " +
+                        "The agent wallet must hold the token first. " +
+                        "Use get_owned_tokens to find the contract address and decimals of the token.",
+                inputSchema = JsonObject(mapOf(
+                    "type" to JsonPrimitive("object"),
+                    "properties" to JsonObject(mapOf(
+                        "contract_address" to JsonObject(mapOf(
+                            "type" to JsonPrimitive("string"),
+                            "description" to JsonPrimitive("ERC-20 token contract address (0x-prefixed)"),
+                        )),
+                        "to" to JsonObject(mapOf(
+                            "type" to JsonPrimitive("string"),
+                            "description" to JsonPrimitive("Recipient address (0x-prefixed, 42 characters)"),
+                        )),
+                        "amount" to JsonObject(mapOf(
+                            "type" to JsonPrimitive("string"),
+                            "description" to JsonPrimitive(
+                                "Amount to send in human-readable form " +
+                                        "(e.g., '100' to send 100 USDC, '0.5' to send 0.5 WETH)"
+                            ),
+                        )),
+                        "decimals" to JsonObject(mapOf(
+                            "type" to JsonPrimitive("integer"),
+                            "description" to JsonPrimitive(
+                                "Token decimals (e.g., 6 for USDC, 18 for WETH). " +
+                                        "Available from get_owned_tokens results."
+                            ),
+                        )),
+                        "chain_id" to JsonObject(mapOf(
+                            "type" to JsonPrimitive("integer"),
+                            "description" to JsonPrimitive("Chain ID where the token exists (e.g., 1 for Ethereum, 8453 for Base)"),
+                        )),
+                    )),
+                    "required" to JsonArray(listOf(
+                        JsonPrimitive("contract_address"),
+                        JsonPrimitive("to"),
+                        JsonPrimitive("amount"),
+                        JsonPrimitive("decimals"),
+                        JsonPrimitive("chain_id"),
+                    )),
+                )),
+            ),
         ),
     )
 
     override val privilegedManifest: SkillManifest? = null
 
+    // ── Tool dispatch ───────────────────────────────────────────────────
+
     override suspend fun execute(tool: String, params: JsonObject, tier: Tier): SkillResult {
 
         return when (tool) {
-            "get_wallet_address" -> {
+            // User wallet (WalletSDK)
+            "get_user_wallet_address" -> {
                 val w = defaultWallet ?: return walletUnavailableError()
-                getWalletAddress(w)
+                getUserWalletAddress(w)
             }
             "get_owned_tokens" -> {
                 val w = defaultWallet ?: return walletUnavailableError()
@@ -285,18 +420,36 @@ class WalletSkill(private val context: Context) : AndyClawSkill {
                 val w = defaultWallet ?: return walletUnavailableError()
                 getSwapQuote(w, params)
             }
-            "send_transaction" -> sendTransaction(params)
-            "transfer_token" -> transferToken(params)
+            "propose_transaction" -> proposeTransaction(params)
+            "propose_token_transfer" -> proposeTokenTransfer(params)
+
+            // Agent wallet (SubWalletSDK)
+            "get_agent_wallet_address" -> {
+                val sw = defaultSubWallet ?: return subWalletUnavailableError()
+                getAgentWalletAddress(sw)
+            }
+            "agent_send_transaction" -> agentSendTransaction(params)
+            "agent_transfer_token" -> agentTransferToken(params)
+
             else -> SkillResult.Error("Unknown tool: $tool")
         }
     }
+
+    // ── Error helpers ───────────────────────────────────────────────────
 
     private fun walletUnavailableError() = SkillResult.Error(
         "System wallet not available. " +
                 "Ensure this device runs ethOS with the wallet service enabled."
     )
 
-    private suspend fun getWalletAddress(wallet: WalletSDK): SkillResult {
+    private fun subWalletUnavailableError() = SkillResult.Error(
+        "Agent sub-account wallet not available. " +
+                "Ensure this device runs ethOS with the wallet service enabled."
+    )
+
+    // ── User wallet operations ──────────────────────────────────────────
+
+    private suspend fun getUserWalletAddress(wallet: WalletSDK): SkillResult {
         return try {
             val address = withContext(Dispatchers.IO) { wallet.getAddress() }
             SkillResult.Success(
@@ -394,7 +547,7 @@ class WalletSkill(private val context: Context) : AndyClawSkill {
         }
     }
 
-    private suspend fun sendTransaction(params: JsonObject): SkillResult {
+    private suspend fun proposeTransaction(params: JsonObject): SkillResult {
         val to = params["to"]?.jsonPrimitive?.contentOrNull
             ?: return SkillResult.Error("Missing required parameter: to")
         val value = params["value"]?.jsonPrimitive?.contentOrNull
@@ -445,7 +598,7 @@ class WalletSkill(private val context: Context) : AndyClawSkill {
         }
     }
 
-    private suspend fun transferToken(params: JsonObject): SkillResult {
+    private suspend fun proposeTokenTransfer(params: JsonObject): SkillResult {
         val contractAddress = params["contract_address"]?.jsonPrimitive?.contentOrNull
             ?: return SkillResult.Error("Missing required parameter: contract_address")
         val to = params["to"]?.jsonPrimitive?.contentOrNull
@@ -463,7 +616,6 @@ class WalletSkill(private val context: Context) : AndyClawSkill {
                         "Supported chains: ${CHAIN_NAMES.keys.sorted().joinToString()}"
             )
 
-        // Convert human-readable amount to smallest unit (e.g. "100" USDC with 6 decimals -> 100000000)
         val rawAmount = try {
             BigDecimal(amount)
                 .multiply(BigDecimal.TEN.pow(decimals))
@@ -472,7 +624,6 @@ class WalletSkill(private val context: Context) : AndyClawSkill {
             return SkillResult.Error("Invalid amount '$amount': ${e.message}")
         }
 
-        // Encode ERC-20 transfer(address,uint256)
         val function = Function(
             "transfer",
             listOf(Address(to), Uint256(rawAmount)),
@@ -515,6 +666,131 @@ class WalletSkill(private val context: Context) : AndyClawSkill {
             }
         } catch (e: Exception) {
             SkillResult.Error("Failed to transfer token: ${e.message}")
+        }
+    }
+
+    // ── Agent wallet operations (SubWalletSDK) ──────────────────────────
+
+    private suspend fun getAgentWalletAddress(subWallet: SubWalletSDK): SkillResult {
+        return try {
+            val address = withContext(Dispatchers.IO) { subWallet.getAddress() }
+            SkillResult.Success(
+                buildJsonObject { put("address", address) }.toString()
+            )
+        } catch (e: Exception) {
+            SkillResult.Error("Failed to get agent wallet address: ${e.message}")
+        }
+    }
+
+    private suspend fun agentSendTransaction(params: JsonObject): SkillResult {
+        val to = params["to"]?.jsonPrimitive?.contentOrNull
+            ?: return SkillResult.Error("Missing required parameter: to")
+        val value = params["value"]?.jsonPrimitive?.contentOrNull
+            ?: return SkillResult.Error("Missing required parameter: value")
+        val data = params["data"]?.jsonPrimitive?.contentOrNull
+            ?: return SkillResult.Error("Missing required parameter: data")
+        val chainId = params["chain_id"]?.jsonPrimitive?.intOrNull
+            ?: return SkillResult.Error("Missing required parameter: chain_id")
+
+        val rpcEndpoint = chainIdToRpc(chainId)
+            ?: return SkillResult.Error(
+                "Unsupported chain ID: $chainId. " +
+                        "Supported chains: ${CHAIN_NAMES.keys.sorted().joinToString()}"
+            )
+
+        val sw = getOrCreateSubWallet(chainId)
+            ?: return subWalletUnavailableError()
+
+        return try {
+            val result = withContext(Dispatchers.IO) {
+                if (chainId != sw.getChainId()) {
+                    sw.changeChain(
+                        chainId = chainId,
+                        rpcEndpoint = rpcEndpoint,
+                        mBundlerRPCUrl = chainIdToBundler(chainId),
+                    )
+                }
+                sw.sendTransaction(
+                    to = to,
+                    value = value,
+                    data = data,
+                    callGas = null,
+                    chainId = chainId,
+                )
+            }
+            SkillResult.Success(buildJsonObject {
+                put("user_op_hash", result)
+                put("status", "submitted")
+                put("chain_id", chainId)
+            }.toString())
+        } catch (e: Exception) {
+            SkillResult.Error("Failed to send agent transaction: ${e.message}")
+        }
+    }
+
+    private suspend fun agentTransferToken(params: JsonObject): SkillResult {
+        val contractAddress = params["contract_address"]?.jsonPrimitive?.contentOrNull
+            ?: return SkillResult.Error("Missing required parameter: contract_address")
+        val to = params["to"]?.jsonPrimitive?.contentOrNull
+            ?: return SkillResult.Error("Missing required parameter: to")
+        val amount = params["amount"]?.jsonPrimitive?.contentOrNull
+            ?: return SkillResult.Error("Missing required parameter: amount")
+        val decimals = params["decimals"]?.jsonPrimitive?.intOrNull
+            ?: return SkillResult.Error("Missing required parameter: decimals")
+        val chainId = params["chain_id"]?.jsonPrimitive?.intOrNull
+            ?: return SkillResult.Error("Missing required parameter: chain_id")
+
+        val rpcEndpoint = chainIdToRpc(chainId)
+            ?: return SkillResult.Error(
+                "Unsupported chain ID: $chainId. " +
+                        "Supported chains: ${CHAIN_NAMES.keys.sorted().joinToString()}"
+            )
+
+        val rawAmount = try {
+            BigDecimal(amount)
+                .multiply(BigDecimal.TEN.pow(decimals))
+                .toBigIntegerExact()
+        } catch (e: Exception) {
+            return SkillResult.Error("Invalid amount '$amount': ${e.message}")
+        }
+
+        val function = Function(
+            "transfer",
+            listOf(Address(to), Uint256(rawAmount)),
+            emptyList(),
+        )
+        val encodedData = FunctionEncoder.encode(function)
+
+        val sw = getOrCreateSubWallet(chainId)
+            ?: return subWalletUnavailableError()
+
+        return try {
+            val result = withContext(Dispatchers.IO) {
+                if (chainId != sw.getChainId()) {
+                    sw.changeChain(
+                        chainId = chainId,
+                        rpcEndpoint = rpcEndpoint,
+                        mBundlerRPCUrl = chainIdToBundler(chainId),
+                    )
+                }
+                sw.sendTransaction(
+                    to = contractAddress,
+                    value = "0",
+                    data = encodedData,
+                    callGas = null,
+                    chainId = chainId,
+                )
+            }
+            SkillResult.Success(buildJsonObject {
+                put("user_op_hash", result)
+                put("status", "submitted")
+                put("chain_id", chainId)
+                put("token", contractAddress)
+                put("to", to)
+                put("amount", amount)
+            }.toString())
+        } catch (e: Exception) {
+            SkillResult.Error("Failed to transfer token from agent wallet: ${e.message}")
         }
     }
 }
