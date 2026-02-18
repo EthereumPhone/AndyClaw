@@ -23,7 +23,7 @@ class OnboardingViewModel(application: Application) : AndroidViewModel(applicati
 
     val apiKey = MutableStateFlow("")
     val goals = MutableStateFlow("")
-    val customName = MutableStateFlow("")
+    val customName = MutableStateFlow(generateFunnyName())
     val values = MutableStateFlow("")
 
     val needsApiKey: Boolean = BuildConfig.OPENROUTER_API_KEY.isEmpty()
@@ -142,6 +142,21 @@ class OnboardingViewModel(application: Application) : AndroidViewModel(applicati
 
     fun clearError() {
         _error.value = null
+    }
+
+    companion object {
+        private val ADJECTIVES = listOf(
+            "Cosmic", "Turbo", "Mega", "Pixel", "Neon", "Quantum", "Glitch",
+            "Fuzzy", "Hyper", "Mighty", "Sneaky", "Spicy", "Chill", "Zippy",
+            "Groovy", "Wacky", "Crispy", "Jolly", "Breezy", "Zesty",
+        )
+        private val NOUNS = listOf(
+            "Panda", "Wizard", "Goblin", "Nugget", "Toaster", "Llama", "Pickle",
+            "Walrus", "Potato", "Waffle", "Penguin", "Noodle", "Muffin", "Cactus",
+            "Banana", "Otter", "Taco", "Yeti", "Pretzel", "Badger",
+        )
+
+        fun generateFunnyName(): String = ADJECTIVES.random() + NOUNS.random()
     }
 
     private suspend fun requestAllPermissions() {

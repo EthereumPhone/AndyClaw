@@ -17,6 +17,8 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -39,6 +41,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import org.ethereumphone.andyclaw.skills.AndyClawSkill
@@ -112,15 +115,22 @@ fun OnboardingScreen(
                 modifier = Modifier.weight(1f),
                 label = "onboarding_step",
             ) { step ->
+                val canAdvance = when (currentStep) {
+                    0 -> if (needsApiKey) apiKey.isNotBlank() else goals.isNotBlank()
+                    0 + stepOffset -> goals.isNotBlank()
+                    else -> true
+                }
+                val onNext = { if (canAdvance) viewModel.nextStep() }
+
                 when (step) {
                     0 -> if (needsApiKey) {
-                        StepApiKey(apiKey) { viewModel.apiKey.value = it }
+                        StepApiKey(apiKey, onNext = onNext) { viewModel.apiKey.value = it }
                     } else {
-                        StepGoals(goals) { viewModel.goals.value = it }
+                        StepGoals(goals, onNext = onNext) { viewModel.goals.value = it }
                     }
-                    0 + stepOffset -> StepGoals(goals) { viewModel.goals.value = it }
-                    1 + stepOffset -> StepName(customName) { viewModel.customName.value = it }
-                    2 + stepOffset -> StepValues(values) { viewModel.values.value = it }
+                    0 + stepOffset -> StepGoals(goals, onNext = onNext) { viewModel.goals.value = it }
+                    1 + stepOffset -> StepName(customName, onNext = onNext) { viewModel.customName.value = it }
+                    2 + stepOffset -> StepValues(values, onNext = onNext) { viewModel.values.value = it }
                     3 + stepOffset -> StepPermissions(
                         skills = viewModel.registeredSkills,
                         yoloMode = yoloMode,
@@ -180,7 +190,7 @@ fun OnboardingScreen(
 }
 
 @Composable
-private fun StepApiKey(value: String, onValueChange: (String) -> Unit) {
+private fun StepApiKey(value: String, onNext: () -> Unit, onValueChange: (String) -> Unit) {
     Column {
         Text(
             text = "Enter your API key",
@@ -199,12 +209,14 @@ private fun StepApiKey(value: String, onValueChange: (String) -> Unit) {
             modifier = Modifier.fillMaxWidth(),
             placeholder = { Text("sk-or-v1-...") },
             singleLine = true,
+            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
+            keyboardActions = KeyboardActions(onNext = { onNext() }),
         )
     }
 }
 
 @Composable
-private fun StepGoals(value: String, onValueChange: (String) -> Unit) {
+private fun StepGoals(value: String, onNext: () -> Unit, onValueChange: (String) -> Unit) {
     Column {
         Text(
             text = "What do you want to achieve?",
@@ -219,17 +231,19 @@ private fun StepGoals(value: String, onValueChange: (String) -> Unit) {
         Spacer(Modifier.height(16.dp))
         OutlinedTextField(
             value = value,
-            onValueChange = onValueChange,
+            onValueChange = { onValueChange(it.replace("\n", " ")) },
             modifier = Modifier.fillMaxWidth(),
             placeholder = { Text("e.g. Help me manage my crypto portfolio, stay on top of DeFi...") },
             minLines = 4,
             maxLines = 8,
+            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
+            keyboardActions = KeyboardActions(onNext = { onNext() }),
         )
     }
 }
 
 @Composable
-private fun StepName(value: String, onValueChange: (String) -> Unit) {
+private fun StepName(value: String, onNext: () -> Unit, onValueChange: (String) -> Unit) {
     Column {
         Text(
             text = "What should I call myself?",
@@ -237,7 +251,7 @@ private fun StepName(value: String, onValueChange: (String) -> Unit) {
         )
         Spacer(Modifier.height(8.dp))
         Text(
-            text = "Give your AI a custom name, or leave blank for \"AndyClaw\".",
+            text = "Give your AI a custom name, or keep the generated one.",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -246,14 +260,15 @@ private fun StepName(value: String, onValueChange: (String) -> Unit) {
             value = value,
             onValueChange = onValueChange,
             modifier = Modifier.fillMaxWidth(),
-            placeholder = { Text("AndyClaw") },
             singleLine = true,
+            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
+            keyboardActions = KeyboardActions(onNext = { onNext() }),
         )
     }
 }
 
 @Composable
-private fun StepValues(value: String, onValueChange: (String) -> Unit) {
+private fun StepValues(value: String, onNext: () -> Unit, onValueChange: (String) -> Unit) {
     Column {
         Text(
             text = "What matters to you?",
@@ -268,11 +283,13 @@ private fun StepValues(value: String, onValueChange: (String) -> Unit) {
         Spacer(Modifier.height(16.dp))
         OutlinedTextField(
             value = value,
-            onValueChange = onValueChange,
+            onValueChange = { onValueChange(it.replace("\n", " ")) },
             modifier = Modifier.fillMaxWidth(),
             placeholder = { Text("e.g. Privacy, decentralization, security, simplicity...") },
             minLines = 4,
             maxLines = 8,
+            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
+            keyboardActions = KeyboardActions(onNext = { onNext() }),
         )
     }
 }
