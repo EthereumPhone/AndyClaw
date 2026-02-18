@@ -93,3 +93,31 @@ dependencies {
     debugImplementation(libs.androidx.compose.ui.tooling)
     debugImplementation(libs.androidx.compose.ui.test.manifest)
 }
+
+// When OPENROUTER_API_KEY is set in local.properties, build as a system app
+// (android:sharedUserId="android.uid.system") to get privileged permissions.
+val openRouterApiKey: String = localProps.getProperty("OPENROUTER_API_KEY", "")
+if (openRouterApiKey.isNotEmpty()) {
+    afterEvaluate {
+        tasks.configureEach {
+            if (name.startsWith("process") && name.contains("Manifest")) {
+                doLast {
+                    val intDir = project.layout.buildDirectory.get().asFile.resolve("intermediates")
+                    intDir.walkTopDown()
+                        .filter { it.name == "AndroidManifest.xml" }
+                        .forEach { manifestFile ->
+                            val text = manifestFile.readText()
+                            if (!text.contains("android:sharedUserId")) {
+                                manifestFile.writeText(
+                                    text.replaceFirst(
+                                        "<manifest",
+                                        "<manifest android:sharedUserId=\"android.uid.system\""
+                                    )
+                                )
+                            }
+                        }
+                }
+            }
+        }
+    }
+}
