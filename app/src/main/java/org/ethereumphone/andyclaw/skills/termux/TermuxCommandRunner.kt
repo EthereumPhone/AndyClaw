@@ -165,7 +165,7 @@ class TermuxCommandRunner(private val context: Context) {
         }
 
         try {
-            context.startService(serviceIntent)
+            context.startForegroundService(serviceIntent)
         } catch (e: Exception) {
             try { context.unregisterReceiver(receiver) } catch (_: Exception) {}
             if (cont.isActive) {
