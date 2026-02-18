@@ -46,6 +46,7 @@
 
     <!-- Package Manager -->
     <uses-permission android:name="android.permission.INSTALL_PACKAGES" />
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <uses-permission android:name="android.permission.DELETE_PACKAGES" />
     <uses-permission android:name="android.permission.CLEAR_APP_CACHE" />
     <uses-permission android:name="android.permission.FORCE_STOP_PACKAGES" />

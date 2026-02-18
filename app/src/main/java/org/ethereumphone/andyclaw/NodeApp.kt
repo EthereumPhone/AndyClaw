@@ -44,6 +44,7 @@ import org.ethereumphone.andyclaw.skills.builtin.ReminderSkill
 import org.ethereumphone.andyclaw.skills.builtin.TermuxSkill
 import org.ethereumphone.andyclaw.skills.builtin.WalletSkill
 import org.ethereumphone.andyclaw.skills.builtin.AuroraStoreSkill
+import org.ethereumphone.andyclaw.skills.builtin.LocationSkill
 import org.ethereumphone.andyclaw.skills.builtin.WebSearchSkill
 import org.ethereumphone.andyclaw.skills.tier.OsCapabilities
 import org.ethereumphone.andyclaw.onboarding.UserStoryManager
@@ -147,6 +148,8 @@ class NodeApp : Application() {
             register(AuroraStoreSkill(this@NodeApp))
             // Web Search — search the web and fetch webpage content
             register(WebSearchSkill(this@NodeApp))
+            // Location — GPS position, nearby places, maps & navigation
+            register(LocationSkill(this@NodeApp))
         }
     }
 

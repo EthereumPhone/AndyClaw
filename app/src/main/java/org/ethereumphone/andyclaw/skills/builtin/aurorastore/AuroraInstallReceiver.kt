@@ -30,6 +30,12 @@ class AuroraInstallReceiver : BroadcastReceiver() {
         when (status) {
             PackageInstaller.STATUS_SUCCESS -> {
                 Log.i(TAG, "Installation successful: $packageName")
+                val cleaned = AuroraInstallCleanupStore.cleanupAfterSuccess(context, packageName)
+                if (cleaned) {
+                    Log.i(TAG, "Removed downloaded APK files for $packageName after successful install")
+                } else {
+                    Log.d(TAG, "No pending APK cleanup path for $packageName")
+                }
             }
 
             PackageInstaller.STATUS_PENDING_USER_ACTION -> {
@@ -38,6 +44,8 @@ class AuroraInstallReceiver : BroadcastReceiver() {
                     Log.i(TAG, "User confirmation required for: $packageName")
                     confirmIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                     context.startActivity(confirmIntent)
+                } else {
+                    Log.e(TAG, "Missing confirmation intent for pending user action: $packageName")
                 }
             }
 

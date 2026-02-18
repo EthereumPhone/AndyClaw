@@ -5,6 +5,9 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageInstaller
 import android.content.pm.PackageManager
+import android.net.Uri
+import android.os.Build
+import android.provider.Settings
 import android.util.Log
 import com.aurora.gplayapi.data.models.App
 import com.aurora.gplayapi.data.models.AuthData
@@ -29,6 +32,7 @@ import org.ethereumphone.andyclaw.skills.SkillManifest
 import org.ethereumphone.andyclaw.skills.SkillResult
 import org.ethereumphone.andyclaw.skills.Tier
 import org.ethereumphone.andyclaw.skills.ToolDefinition
+import org.ethereumphone.andyclaw.skills.builtin.aurorastore.AuroraInstallCleanupStore
 import org.ethereumphone.andyclaw.skills.builtin.aurorastore.AuroraStoreAuthProvider
 import org.ethereumphone.andyclaw.skills.builtin.aurorastore.DeviceInfoProvider
 import org.ethereumphone.andyclaw.skills.builtin.aurorastore.PlayStoreHttpClient
@@ -267,6 +271,16 @@ class AuroraStoreSkill(private val context: Context) : AndyClawSkill {
         }
 
         try {
+            if (!canInstallPackages()) {
+                Log.w(TAG, "Installation permission missing. Opening unknown sources settings.")
+                withContext(Dispatchers.Main) {
+                    openInstallPermissionSettings()
+                }
+                return@withContext SkillResult.Error(
+                    "Cannot install apps yet. Please allow installation from this source in Settings, then retry."
+                )
+            }
+
             // Step 1: Authenticate
             Log.i(TAG, "Starting install for $packageName")
             val authData = ensureAuthenticated()
@@ -305,13 +319,11 @@ class AuroraStoreSkill(private val context: Context) : AndyClawSkill {
 
             // Step 5: Install APKs
             Log.i(TAG, "Installing APK(s)...")
+            AuroraInstallCleanupStore.setPendingCleanupPath(context, packageName, downloadDir.absolutePath)
             val installResult = installApks(downloadedFiles, packageName)
 
-            // Step 6: Clean up downloaded files
-            downloadedFiles.forEach { it.delete() }
-            downloadDir.deleteRecursively()
-
             if (installResult.isFailure) {
+                AuroraInstallCleanupStore.clearPendingCleanupPath(context, packageName)
                 return@withContext SkillResult.Error("Failed to install $packageName: ${installResult.exceptionOrNull()?.message}")
             }
 
@@ -321,7 +333,7 @@ class AuroraStoreSkill(private val context: Context) : AndyClawSkill {
                 put("app_name", app.displayName)
                 put("version", app.versionName)
                 put("files_count", files.size)
-                put("message", "Installation of ${app.displayName} has been initiated. The user may need to confirm the installation on their device.")
+                put("message", "Installation of ${app.displayName} has been initiated. The APK files will be removed only after installation succeeds.")
             }.toString())
 
         } catch (e: Exception) {
@@ -353,6 +365,24 @@ class AuroraStoreSkill(private val context: Context) : AndyClawSkill {
             packageInfo.longVersionCode
         } catch (_: PackageManager.NameNotFoundException) {
             null
+        }
+    }
+
+    private fun canInstallPackages(): Boolean {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            context.packageManager.canRequestPackageInstalls()
+        } else {
+            true
+        }
+    }
+
+    private fun openInstallPermissionSettings() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val intent = Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES).apply {
+                data = Uri.parse("package:${context.packageName}")
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            context.startActivity(intent)
         }
     }
 
