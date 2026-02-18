@@ -59,6 +59,47 @@ data class SkillMetadata(
     val os: List<String> = emptyList(),
     val requires: SkillRequirements? = null,
     val install: List<SkillInstallSpec> = emptyList(),
+    /** Execution contract for runnable skills (Termux, etc.). */
+    val execution: SkillExecutionSpec? = null,
+)
+
+/**
+ * Declares how a skill should be executed at runtime.
+ *
+ * When [type] is `"termux"`, the skill's [entrypoint] script is run inside
+ * Termux via the RUN_COMMAND intent.  Files are synced to
+ * `~/.andyclaw/skills/<slug>/` in Termux's home directory.
+ */
+data class SkillExecutionSpec(
+    /** Runtime type — only `"termux"` is supported today. */
+    val type: String,
+    /** Path to the main script, relative to the skill directory. */
+    val entrypoint: String,
+    /** Optional one-time setup script run after first sync. */
+    val setup: String? = null,
+    /** Tools exposed by this skill.  Empty = single implicit tool. */
+    val tools: List<SkillToolSpec> = emptyList(),
+)
+
+/**
+ * A single tool exposed by an executable skill.
+ */
+data class SkillToolSpec(
+    val name: String,
+    val description: String = "",
+    /** Per-tool entrypoint override; falls back to [SkillExecutionSpec.entrypoint]. */
+    val entrypoint: String? = null,
+    val args: Map<String, SkillArgSpec> = emptyMap(),
+)
+
+/**
+ * Schema for a single argument accepted by a [SkillToolSpec].
+ */
+data class SkillArgSpec(
+    val type: String = "string",
+    val description: String = "",
+    val required: Boolean = false,
+    val default: String? = null,
 )
 
 /**

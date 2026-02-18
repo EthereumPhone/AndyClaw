@@ -11,6 +11,9 @@ import org.ethereumphone.andyclaw.extensions.ExtensionEngine
 import org.ethereumphone.andyclaw.extensions.clawhub.ClawHubManager
 import org.ethereumphone.andyclaw.extensions.clawhub.ClawHubSkillAdapter
 import org.ethereumphone.andyclaw.extensions.toSkillAdapters
+import org.ethereumphone.andyclaw.skills.termux.ClawHubTermuxSkillAdapter
+import org.ethereumphone.andyclaw.skills.termux.TermuxCommandRunner
+import org.ethereumphone.andyclaw.skills.termux.TermuxSkillSync
 import org.ethereumphone.andyclaw.llm.AnthropicClient
 import org.ethereumphone.andyclaw.skills.SkillRegistry
 import org.ethereumphone.andyclaw.memory.MemoryManager
@@ -88,6 +91,14 @@ class NodeApp : Application() {
         ExtensionEngine(this)
     }
 
+    // ── Termux subsystem (shared by TermuxSkill + ClawHub adapters) ────
+
+    val termuxCommandRunner: TermuxCommandRunner by lazy { TermuxCommandRunner(this) }
+
+    val termuxSkillSync: TermuxSkillSync by lazy {
+        TermuxSkillSync(termuxCommandRunner, this)
+    }
+
     // ── ClawHub subsystem ───────────────────────────────────────────────
 
     /** Directory where ClawHub-installed skills are stored. */
@@ -143,7 +154,7 @@ class NodeApp : Application() {
             // Reminders — schedule notifications at specific times
             register(ReminderSkill(this@NodeApp))
             // Termux integration — full Linux environment via Termux app
-            register(TermuxSkill(this@NodeApp))
+            register(TermuxSkill(this@NodeApp, termuxCommandRunner))
             // Aurora Store — download and install apps from Play Store
             register(AuroraStoreSkill(this@NodeApp))
             // Web Search — search the web and fetch webpage content
@@ -200,8 +211,13 @@ class NodeApp : Application() {
      * Sync ClawHub-installed skills into [NativeSkillRegistry].
      *
      * Removes stale ClawHub adapters, then registers fresh ones for every
-     * SKILL.md currently on disk. Called on startup and after every
-     * install/uninstall/update via the [SkillRegistry.onReloadRequested] callback.
+     * SKILL.md currently on disk.  Skills that declare
+     * `metadata.openclaw.execution.type: termux` are wrapped in a
+     * [ClawHubTermuxSkillAdapter] (real tool invocations); all others get
+     * the instruction-only [ClawHubSkillAdapter].
+     *
+     * Called on startup and after every install/uninstall/update via the
+     * [SkillRegistry.onReloadRequested] callback.
      */
     private fun syncClawHubSkills() {
         // Remove all existing clawhub: adapters so we get a clean slate
@@ -210,11 +226,28 @@ class NodeApp : Application() {
             nativeSkillRegistry.unregister(skill.id)
         }
 
-        // Create fresh adapters from whatever is on disk right now
-        val adapters = ClawHubSkillAdapter.fromInstalledSkills(clawHubSkillsDir)
+        // Create fresh adapters — executable (Termux) or instruction-only
+        val adapters = ClawHubTermuxSkillAdapter.createAdaptersForInstalledSkills(
+            managedDir = clawHubSkillsDir,
+            runner = termuxCommandRunner,
+            sync = termuxSkillSync,
+        )
         for (adapter in adapters) {
             nativeSkillRegistry.register(adapter)
         }
-        Log.i(TAG, "Synced ${adapters.size} ClawHub skill(s) into NativeSkillRegistry")
+
+        // Clean up Termux-side files for skills that were uninstalled
+        val activeTermuxSlugs = adapters
+            .filterIsInstance<ClawHubTermuxSkillAdapter>()
+            .map { it.slug }
+            .toSet()
+        appScope.launch {
+            termuxSkillSync.cleanOrphans(activeTermuxSlugs)
+        }
+
+        val execCount = adapters.count { it is ClawHubTermuxSkillAdapter }
+        val instrCount = adapters.size - execCount
+        Log.i(TAG, "Synced ${adapters.size} ClawHub skill(s) " +
+            "($execCount executable, $instrCount instruction-only)")
     }
 }
