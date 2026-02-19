@@ -46,6 +46,7 @@ import org.ethereumphone.andyclaw.llm.AnthropicModels
 fun SettingsScreen(
     onNavigateBack: () -> Unit,
     onNavigateToClawHub: () -> Unit = {},
+    onNavigateToHeartbeatLogs: () -> Unit = {},
     viewModel: SettingsViewModel = viewModel(),
 ) {
     val selectedModel by viewModel.selectedModel.collectAsState()
@@ -318,6 +319,37 @@ fun SettingsScreen(
                             Text("5 min", style = MaterialTheme.typography.labelSmall)
                             Text("60 min", style = MaterialTheme.typography.labelSmall)
                         }
+                    }
+                }
+            }
+
+            // Heartbeat Logs
+            Spacer(Modifier.height(12.dp))
+            Text(
+                text = "Heartbeat Logs",
+                style = MaterialTheme.typography.titleMedium,
+            )
+            Spacer(Modifier.height(8.dp))
+            Card(modifier = Modifier.fillMaxWidth()) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Run History",
+                            style = MaterialTheme.typography.bodyLarge,
+                        )
+                        Text(
+                            text = "View past heartbeat runs, tool calls, and responses",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    FilledTonalButton(onClick = onNavigateToHeartbeatLogs) {
+                        Text("Open")
                     }
                 }
             }

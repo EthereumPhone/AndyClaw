@@ -6,6 +6,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
+import org.ethereumphone.andyclaw.heartbeat.HeartbeatLogStore
 import org.ethereumphone.andyclaw.extensions.ExtensionEngine
 import org.ethereumphone.andyclaw.extensions.clawhub.ClawHubManager
 import org.ethereumphone.andyclaw.extensions.clawhub.ClawHubSkillAdapter
@@ -66,6 +67,7 @@ class NodeApp : Application() {
     val securePrefs: SecurePrefs by lazy { SecurePrefs(this) }
     val userStoryManager: UserStoryManager by lazy { UserStoryManager(this) }
     val sessionManager: SessionManager by lazy { SessionManager(this) }
+    val heartbeatLogStore: HeartbeatLogStore by lazy { HeartbeatLogStore(filesDir) }
 
     var permissionRequester: PermissionRequester? = null
 

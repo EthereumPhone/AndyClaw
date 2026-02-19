@@ -5,6 +5,9 @@ import android.util.Log
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.CompletableDeferred
 import org.ethereumphone.andyclaw.NodeApp
+import org.ethereumphone.andyclaw.heartbeat.HeartbeatLogEntry
+import org.ethereumphone.andyclaw.heartbeat.HeartbeatLogStore
+import org.ethereumphone.andyclaw.heartbeat.HeartbeatToolCall
 import org.ethereumphone.andyclaw.skills.SkillResult
 import org.ethereumphone.andyclaw.skills.tier.OsCapabilities
 
@@ -16,7 +19,10 @@ import org.ethereumphone.andyclaw.skills.tier.OsCapabilities
  * will fail gracefully via their own permission checks) and skips Android
  * runtime permission requests (no UI available in background).
  */
-class HeartbeatAgentRunner(private val app: NodeApp) : AgentRunner {
+class HeartbeatAgentRunner(
+    private val app: NodeApp,
+    private val logStore: HeartbeatLogStore,
+) : AgentRunner {
 
     companion object {
         private const val TAG = "HeartbeatAgentRunner"
@@ -53,6 +59,8 @@ class HeartbeatAgentRunner(private val app: NodeApp) : AgentRunner {
 
         val collectedText = StringBuilder()
         val completion = CompletableDeferred<AgentResponse>()
+        val collectedToolCalls = mutableListOf<HeartbeatToolCall>()
+        val startTimeMs = System.currentTimeMillis()
 
         val callbacks = object : AgentLoop.Callbacks {
             override fun onToken(text: String) {
@@ -71,6 +79,10 @@ class HeartbeatAgentRunner(private val app: NodeApp) : AgentRunner {
                     is SkillResult.RequiresApproval -> "RequiresApproval: ${result.description}"
                 }
                 Log.i(TAG, "Tool result ($toolName): $resultStr")
+                collectedToolCalls.add(HeartbeatToolCall(
+                    toolName = toolName,
+                    result = resultStr.take(500),
+                ))
             }
 
             override suspend fun onApprovalNeeded(description: String): Boolean {
@@ -112,11 +124,28 @@ class HeartbeatAgentRunner(private val app: NodeApp) : AgentRunner {
             override fun onComplete(fullText: String) {
                 Log.i(TAG, "=== HEARTBEAT RUN COMPLETE ===")
                 Log.i(TAG, "LLM full response: ${fullText.take(1000)}")
+                logStore.append(HeartbeatLogEntry(
+                    timestampMs = System.currentTimeMillis(),
+                    outcome = "success",
+                    prompt = prompt.take(200),
+                    responseText = fullText.take(1000),
+                    toolCalls = collectedToolCalls.toList(),
+                    durationMs = System.currentTimeMillis() - startTimeMs,
+                ))
                 completion.complete(AgentResponse(text = fullText))
             }
 
             override fun onError(error: Throwable) {
                 Log.e(TAG, "=== HEARTBEAT RUN FAILED ===", error)
+                logStore.append(HeartbeatLogEntry(
+                    timestampMs = System.currentTimeMillis(),
+                    outcome = "error",
+                    prompt = prompt.take(200),
+                    responseText = "",
+                    error = error.message ?: "Unknown error",
+                    toolCalls = collectedToolCalls.toList(),
+                    durationMs = System.currentTimeMillis() - startTimeMs,
+                ))
                 completion.complete(AgentResponse(text = error.message ?: "Unknown error", isError = true))
             }
         }

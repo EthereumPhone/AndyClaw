@@ -111,7 +111,7 @@ class HeartbeatBindingService : Service() {
 
         runtime.nativeSkillRegistry = app.nativeSkillRegistry
         runtime.anthropicClient = app.anthropicClient
-        runtime.agentRunner = HeartbeatAgentRunner(app)
+        runtime.agentRunner = HeartbeatAgentRunner(app, app.heartbeatLogStore)
 
         runtime.heartbeatConfig = HeartbeatConfig(
             heartbeatFilePath = File(filesDir, "HEARTBEAT.md").absolutePath,
