@@ -134,14 +134,14 @@ class WalletSignViewModel(application: Application) : AndroidViewModel(applicati
 
         viewModelScope.launch {
             try {
-                val rpc = "https://eth-mainnet.g.alchemy.com/v2/${BuildConfig.ALCHEMY_API}"
+                val rpc = "https://base-mainnet.g.alchemy.com/v2/${BuildConfig.ALCHEMY_API}"
                 val sdk = WalletSDK(
                     context = app,
                     web3jInstance = Web3j.build(HttpService(rpc)),
-                    bundlerRPCUrl = "https://api.pimlico.io/v2/1/rpc?apikey=${BuildConfig.BUNDLER_API}",
+                    bundlerRPCUrl = "https://api.pimlico.io/v2/8453/rpc?apikey=${BuildConfig.BUNDLER_API}",
                 )
                 val address = withContext(Dispatchers.IO) { sdk.getAddress() }
-                val sig = sdk.signMessage("Signing into AndyClaw", chainId = 1)
+                val sig = sdk.signMessage("Signing into AndyClaw", chainId = 8453)
                 _walletAddress.value = address
                 _walletSignature.value = sig
             } catch (e: Exception) {
