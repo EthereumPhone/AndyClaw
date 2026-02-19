@@ -54,12 +54,14 @@ class HeartbeatBindingService : Service() {
         override fun heartbeatNow() {
             enforceSystemCaller()
             Log.i(TAG, "heartbeatNow() called by OS (uid=${Binder.getCallingUid()})")
+            ensureRuntimeReady()
             performHeartbeat()
         }
 
         override fun heartbeatNowWithXmtpMessages(senderAddress: String, messageText: String) {
             enforceSystemCaller()
             Log.i(TAG, "heartbeatNowWithXmtpMessages() called by OS (uid=${Binder.getCallingUid()}) sender=$senderAddress text=\"${messageText.take(80)}\"")
+            ensureRuntimeReady()
             performHeartbeatWithXmtp(senderAddress, messageText)
         }
     }
@@ -81,7 +83,9 @@ class HeartbeatBindingService : Service() {
 
     override fun onBind(intent: Intent?): IBinder {
         Log.i(TAG, "onBind() - returning AIDL binder")
-        ensureRuntimeReady()
+        // Do NOT initialize runtime here — keep onBind() lightweight so the system
+        // can bind successfully even during direct boot or early startup.
+        // Runtime init is deferred to the actual binder method calls.
         return binder
     }
 

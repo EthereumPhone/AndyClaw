@@ -116,9 +116,11 @@
             android:foregroundServiceType="dataSync" />
 
         <!-- Bound by ethOS to trigger heartbeat periodically.
-             Exported with no permission so system_server can bind to it. -->
+             Exported with no permission so system_server can bind to it.
+             directBootAware so the OS can bind before the user unlocks. -->
         <service
             android:name=".services.HeartbeatBindingService"
+            android:directBootAware="true"
             android:enabled="true"
             android:exported="true" />
 
@@ -126,6 +128,13 @@
         <provider
             android:name=".services.HeartbeatSettingsProvider"
             android:authorities="org.ethereumphone.andyclaw.heartbeat.settings"
+            android:exported="true"
+            android:grantUriPermissions="false" />
+
+        <!-- Exposes the user-chosen AI name so the launcher can display it. -->
+        <provider
+            android:name=".services.AiNameProvider"
+            android:authorities="org.ethereumphone.andyclaw.ai.settings"
             android:exported="true"
             android:grantUriPermissions="false" />
 

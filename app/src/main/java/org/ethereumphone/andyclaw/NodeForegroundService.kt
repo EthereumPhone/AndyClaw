@@ -216,9 +216,10 @@ class NodeForegroundService : Service() {
     }
 
     private fun createNotificationChannel() {
+        val aiName = app.securePrefs.aiName.value
         val channel = NotificationChannel(
             CHANNEL_ID,
-            "AndyClaw Heartbeat",
+            "$aiName Heartbeat",
             NotificationManager.IMPORTANCE_LOW,
         ).apply {
             description = "Keeps the AI heartbeat running in the background"
@@ -228,8 +229,9 @@ class NodeForegroundService : Service() {
     }
 
     private fun buildNotification(): Notification {
+        val aiName = app.securePrefs.aiName.value
         return Notification.Builder(this, CHANNEL_ID)
-            .setContentTitle("AndyClaw")
+            .setContentTitle(aiName)
             .setContentText("Heartbeat active")
             .setSmallIcon(android.R.drawable.ic_dialog_info)
             .setOngoing(true)

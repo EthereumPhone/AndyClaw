@@ -114,7 +114,8 @@ class PermissionRequester(private val activity: ComponentActivity) {
 
   private fun buildRationaleMessage(permissions: List<String>): String {
     val labels = permissions.map { permissionLabel(it) }
-    return "AndyClaw needs ${labels.joinToString(", ")} permissions to continue."
+    val aiName = (activity.applicationContext as NodeApp).securePrefs.aiName.value
+    return "$aiName needs ${labels.joinToString(", ")} permissions to continue."
   }
 
   private fun buildSettingsMessage(permissions: List<String>): String {

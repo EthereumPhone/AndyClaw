@@ -271,25 +271,37 @@ class MessengerSkill(private val context: Context) : AndyClawSkill {
     }
 
     private suspend fun sendMessageToUser(params: JsonObject): SkillResult {
-        val message = params["message"]?.jsonPrimitive?.contentOrNull
-            ?: return SkillResult.Error("Missing required parameter: message")
+        Log.d(TAG, "sendMessageToUser called with params: $params")
 
+        val message = params["message"]?.jsonPrimitive?.contentOrNull
+        if (message == null) {
+            Log.e(TAG, "sendMessageToUser: missing 'message' param. Keys present: ${params.keys}")
+            return SkillResult.Error("Missing required parameter: message")
+        }
+        Log.d(TAG, "sendMessageToUser: message='${message.take(50)}...' (len=${message.length})")
+
+        Log.d(TAG, "sendMessageToUser: resolving user wallet address via WalletSDK...")
         val userAddress = try {
             withContext(Dispatchers.IO) { walletSDK.getAddress() }
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to get user wallet address: ${e.message}", e)
+            Log.e(TAG, "sendMessageToUser: walletSDK.getAddress() threw: ${e.javaClass.simpleName}: ${e.message}", e)
             return SkillResult.Error("Failed to resolve user's wallet address: ${e.message}")
         }
+        Log.d(TAG, "sendMessageToUser: walletSDK.getAddress() returned: '$userAddress'")
 
         if (userAddress.isNullOrBlank()) {
+            Log.e(TAG, "sendMessageToUser: userAddress is null or blank, aborting")
             return SkillResult.Error("Could not determine user's wallet address")
         }
 
+        Log.d(TAG, "sendMessageToUser: delegating to sendMessage with recipient=$userAddress")
         val messageParams = buildJsonObject {
             put("recipient_address", userAddress)
             put("message", message)
         }
-        return sendMessage(messageParams)
+        val result = sendMessage(messageParams)
+        Log.d(TAG, "sendMessageToUser: sendMessage returned: $result")
+        return result
     }
 
     private suspend fun listConversations(): SkillResult {

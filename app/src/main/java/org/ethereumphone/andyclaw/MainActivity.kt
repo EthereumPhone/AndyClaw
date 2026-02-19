@@ -1,6 +1,7 @@
 package org.ethereumphone.andyclaw
 
 import android.Manifest
+import android.app.ActivityManager
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
@@ -21,7 +22,8 @@ import org.ethereumphone.andyclaw.ui.theme.AndyClawTheme
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        (application as NodeApp).permissionRequester = PermissionRequester(this)
+        val app = application as NodeApp
+        app.permissionRequester = PermissionRequester(this)
 
         requestBatteryOptimizationExemption()
         requestNotificationPermission()
@@ -32,6 +34,13 @@ class MainActivity : ComponentActivity() {
         } else {
             Log.i("MainActivity", "Not ethOS (no wallet service), starting foreground service")
             NodeForegroundService.start(this)
+        }
+
+        // Update the recent-apps label whenever the AI name changes
+        lifecycleScope.launch {
+            app.securePrefs.aiName.collect { name ->
+                setTaskDescription(ActivityManager.TaskDescription.Builder().setLabel(name).build())
+            }
         }
 
         enableEdgeToEdge()
