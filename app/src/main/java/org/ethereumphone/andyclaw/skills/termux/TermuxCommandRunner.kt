@@ -7,6 +7,7 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.os.Bundle
+import android.util.Log
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withTimeout
@@ -35,6 +36,7 @@ data class TermuxCommandResult(
 class TermuxCommandRunner(private val context: Context) {
 
     companion object {
+        private const val TAG = "TermuxCmdRunner"
         const val TERMUX_PACKAGE = "com.termux"
         private const val TERMUX_RUN_COMMAND_SERVICE = "com.termux.app.RunCommandService"
         private const val ACTION_RUN_COMMAND = "com.termux.RUN_COMMAND"
@@ -98,12 +100,16 @@ class TermuxCommandRunner(private val context: Context) {
         workdir: String = TERMUX_HOME,
         timeoutMs: Long = DEFAULT_TIMEOUT_MS,
     ): TermuxCommandResult {
+        Log.d(TAG, "run() called — command=${command.take(100)}, workdir=$workdir, timeout=$timeoutMs")
+
         if (!isTermuxInstalled()) {
+            Log.e(TAG, "Termux is not installed")
             return TermuxCommandResult(
                 exitCode = -1, stdout = "", stderr = "",
                 internalError = "Termux is not installed.",
             )
         }
+        Log.d(TAG, "Termux is installed")
 
         val effectiveTimeout = timeoutMs.coerceIn(1_000, MAX_TIMEOUT_MS)
         return try {
@@ -111,11 +117,13 @@ class TermuxCommandRunner(private val context: Context) {
                 executeViaIntent(command, workdir)
             }
         } catch (_: TimeoutCancellationException) {
+            Log.e(TAG, "Command timed out after ${effectiveTimeout}ms")
             TermuxCommandResult(
                 exitCode = -1, stdout = "", stderr = "",
                 internalError = "Command timed out after ${effectiveTimeout}ms.",
             )
         } catch (e: Exception) {
+            Log.e(TAG, "Execution failed", e)
             TermuxCommandResult(
                 exitCode = -1, stdout = "", stderr = "",
                 internalError = "Execution failed: ${e.message}",
@@ -133,14 +141,21 @@ class TermuxCommandRunner(private val context: Context) {
         val requestId = UUID.randomUUID().toString()
         val action = "$RESULT_ACTION_PREFIX$requestId"
 
+        Log.d(TAG, "executeViaIntent — requestId=$requestId")
+        Log.d(TAG, "  wrappedCommand=${wrappedCommand.take(200)}")
+        Log.d(TAG, "  action=$action")
+
         val receiver = object : BroadcastReceiver() {
             override fun onReceive(ctx: Context, intent: Intent) {
+                Log.d(TAG, "BroadcastReceiver.onReceive — requestId=$requestId")
                 try { context.unregisterReceiver(this) } catch (_: Exception) {}
                 val result = extractResult(intent)
+                Log.d(TAG, "  exitCode=${result.exitCode}, stdout=${result.stdout.take(200)}, stderr=${result.stderr.take(200)}, err=${result.internalError}")
                 if (cont.isActive) cont.resume(result)
             }
         }
 
+        Log.d(TAG, "Registering broadcast receiver for action=$action")
         context.registerReceiver(
             receiver,
             IntentFilter(action),
@@ -163,25 +178,37 @@ class TermuxCommandRunner(private val context: Context) {
             putExtra(EXTRA_BACKGROUND, true)
             putExtra(EXTRA_PENDING_INTENT, pendingIntent)
         }
+        Log.d(TAG, "Built serviceIntent: component=${serviceIntent.component}, extras=${serviceIntent.extras?.keySet()}")
 
         try {
+            Log.d(TAG, "Trying startForegroundService...")
             context.startForegroundService(serviceIntent)
-        } catch (e: Exception) {
-            try { context.unregisterReceiver(receiver) } catch (_: Exception) {}
-            if (cont.isActive) {
-                cont.resume(
-                    TermuxCommandResult(
-                        exitCode = -1, stdout = "", stderr = "",
-                        internalError = "Failed to start Termux service: ${e.message}. " +
-                            "Make sure Termux is running and the RUN_COMMAND permission " +
-                            "is granted to AndyClaw.",
+            Log.d(TAG, "startForegroundService succeeded")
+        } catch (e1: Exception) {
+            Log.w(TAG, "startForegroundService failed: ${e1::class.simpleName}: ${e1.message}", e1)
+            try {
+                Log.d(TAG, "Trying startService fallback...")
+                context.startService(serviceIntent)
+                Log.d(TAG, "startService succeeded")
+            } catch (e2: Exception) {
+                Log.e(TAG, "startService also failed: ${e2::class.simpleName}: ${e2.message}", e2)
+                try { context.unregisterReceiver(receiver) } catch (_: Exception) {}
+                if (cont.isActive) {
+                    cont.resume(
+                        TermuxCommandResult(
+                            exitCode = -1, stdout = "", stderr = "",
+                            internalError = "Failed to start Termux service: ${e2.message}. " +
+                                "Make sure Termux is running and the RUN_COMMAND permission " +
+                                "is granted to AndyClaw.",
+                        )
                     )
-                )
+                }
+                return@suspendCancellableCoroutine
             }
-            return@suspendCancellableCoroutine
         }
 
         cont.invokeOnCancellation {
+            Log.d(TAG, "Coroutine cancelled — unregistering receiver for requestId=$requestId")
             try { context.unregisterReceiver(receiver) } catch (_: Exception) {}
         }
     }
