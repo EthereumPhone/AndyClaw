@@ -19,6 +19,7 @@ import org.ethereumphone.andyclaw.memory.model.MemorySource
 import org.ethereumphone.andyclaw.sessions.SessionManager
 import org.ethereumphone.andyclaw.sessions.model.MessageRole
 import org.ethereumphone.andyclaw.sessions.model.SessionMessage
+import org.ethereumphone.andyclaw.llm.AnthropicApiException
 import org.ethereumphone.andyclaw.skills.SkillResult
 
 data class ChatUiMessage(
@@ -52,6 +53,9 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _error = MutableStateFlow<String?>(null)
     val error: StateFlow<String?> = _error.asStateFlow()
+
+    private val _insufficientBalance = MutableStateFlow(false)
+    val insufficientBalance: StateFlow<Boolean> = _insufficientBalance.asStateFlow()
 
     private val _approvalRequest = MutableStateFlow<ApprovalRequest?>(null)
     val approvalRequest: StateFlow<ApprovalRequest?> = _approvalRequest.asStateFlow()
@@ -190,7 +194,14 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 override fun onError(error: Throwable) {
                     // Flush any text that was streamed before the error
                     flushStreamingText(sid)
-                    _error.value = error.message ?: "An error occurred"
+                    if (error is AnthropicApiException &&
+                        error.statusCode == 403 &&
+                        error.message?.contains("Insufficient balance") == true
+                    ) {
+                        _insufficientBalance.value = true
+                    } else {
+                        _error.value = error.message ?: "An error occurred"
+                    }
                     _isStreaming.value = false
                     _currentToolExecution.value = null
                 }
@@ -214,6 +225,10 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     fun clearError() {
         _error.value = null
+    }
+
+    fun clearInsufficientBalance() {
+        _insufficientBalance.value = false
     }
 
     private fun flushStreamingText(sessionId: String) {

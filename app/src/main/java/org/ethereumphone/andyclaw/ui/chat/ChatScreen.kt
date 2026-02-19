@@ -14,6 +14,7 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -23,6 +24,7 @@ import androidx.compose.material3.Snackbar
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -31,6 +33,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import android.content.Intent
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -49,8 +52,10 @@ fun ChatScreen(
     val streamingText by viewModel.streamingText.collectAsState()
     val currentTool by viewModel.currentToolExecution.collectAsState()
     val error by viewModel.error.collectAsState()
+    val insufficientBalance by viewModel.insufficientBalance.collectAsState()
     val approvalRequest by viewModel.approvalRequest.collectAsState()
-    val app = LocalContext.current.applicationContext as NodeApp
+    val context = LocalContext.current
+    val app = context.applicationContext as NodeApp
     val aiName by app.securePrefs.aiName.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
     val listState = rememberLazyListState()
@@ -85,6 +90,31 @@ fun ChatScreen(
             description = request.description,
             onApprove = { viewModel.respondToApproval(true) },
             onDeny = { viewModel.respondToApproval(false) },
+        )
+    }
+
+    // Insufficient balance dialog
+    if (insufficientBalance) {
+        AlertDialog(
+            onDismissRequest = { viewModel.clearInsufficientBalance() },
+            title = { Text("Balance Depleted") },
+            text = { Text("Your balance has run out. Please top up using the Gas Paymaster.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    viewModel.clearInsufficientBalance()
+                    val intent = Intent("org.ethereumphone.walletmanager.ACTION_OPEN_GAS").apply {
+                        setPackage("org.ethereumphone.walletmanager")
+                    }
+                    context.startActivity(intent)
+                }) {
+                    Text("Top Up")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { viewModel.clearInsufficientBalance() }) {
+                    Text("Dismiss")
+                }
+            },
         )
     }
 
