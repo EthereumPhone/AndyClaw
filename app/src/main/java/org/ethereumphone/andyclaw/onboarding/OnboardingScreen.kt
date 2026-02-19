@@ -7,7 +7,6 @@ import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -29,7 +28,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Snackbar
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Switch
@@ -57,6 +55,9 @@ fun OnboardingScreen(
     val isSubmitting by viewModel.isSubmitting.collectAsState()
     val error by viewModel.error.collectAsState()
 
+    val isPrivileged = viewModel.isPrivileged
+    val walletAddress by viewModel.walletAddress.collectAsState()
+    val isSigning by viewModel.isSigning.collectAsState()
     val apiKey by viewModel.apiKey.collectAsState()
     val goals by viewModel.goals.collectAsState()
     val customName by viewModel.customName.collectAsState()
@@ -64,9 +65,7 @@ fun OnboardingScreen(
     val yoloMode by viewModel.yoloMode.collectAsState()
     val selectedSkills by viewModel.selectedSkills.collectAsState()
 
-    val needsApiKey = viewModel.needsApiKey
     val totalSteps = viewModel.totalSteps
-    val stepOffset = if (needsApiKey) 1 else 0
 
     val snackbarHostState = remember { SnackbarHostState() }
 
@@ -116,22 +115,26 @@ fun OnboardingScreen(
                 label = "onboarding_step",
             ) { step ->
                 val canAdvance = when (currentStep) {
-                    0 -> if (needsApiKey) apiKey.isNotBlank() else goals.isNotBlank()
-                    0 + stepOffset -> goals.isNotBlank()
+                    0 -> if (isPrivileged) walletAddress.isNotBlank() else apiKey.isNotBlank()
+                    1 -> goals.isNotBlank()
                     else -> true
                 }
                 val onNext = { if (canAdvance) viewModel.nextStep() }
 
                 when (step) {
-                    0 -> if (needsApiKey) {
-                        StepApiKey(apiKey, onNext = onNext) { viewModel.apiKey.value = it }
+                    0 -> if (isPrivileged) {
+                        StepWalletSign(
+                            walletAddress = walletAddress,
+                            isSigning = isSigning,
+                            onSign = { viewModel.signWithWallet() },
+                        )
                     } else {
-                        StepGoals(goals, onNext = onNext) { viewModel.goals.value = it }
+                        StepApiKey(apiKey, onNext = onNext) { viewModel.apiKey.value = it }
                     }
-                    0 + stepOffset -> StepGoals(goals, onNext = onNext) { viewModel.goals.value = it }
-                    1 + stepOffset -> StepName(customName, onNext = onNext) { viewModel.customName.value = it }
-                    2 + stepOffset -> StepValues(values, onNext = onNext) { viewModel.values.value = it }
-                    3 + stepOffset -> StepPermissions(
+                    1 -> StepGoals(goals, onNext = onNext) { viewModel.goals.value = it }
+                    2 -> StepName(customName, onNext = onNext) { viewModel.customName.value = it }
+                    3 -> StepValues(values, onNext = onNext) { viewModel.values.value = it }
+                    4 -> StepPermissions(
                         skills = viewModel.registeredSkills,
                         yoloMode = yoloMode,
                         selectedSkills = selectedSkills,
@@ -161,8 +164,8 @@ fun OnboardingScreen(
                     Button(
                         onClick = { viewModel.nextStep() },
                         enabled = when (currentStep) {
-                            0 -> if (needsApiKey) apiKey.isNotBlank() else goals.isNotBlank()
-                            0 + stepOffset -> goals.isNotBlank()
+                            0 -> if (isPrivileged) walletAddress.isNotBlank() else apiKey.isNotBlank()
+                            1 -> goals.isNotBlank()
                             else -> true
                         },
                     ) {
@@ -183,6 +186,52 @@ fun OnboardingScreen(
                             Text("Get Started")
                         }
                     }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun StepWalletSign(
+    walletAddress: String,
+    isSigning: Boolean,
+    onSign: () -> Unit,
+) {
+    Column {
+        Text(
+            text = "Sign in with your wallet",
+            style = MaterialTheme.typography.headlineSmall,
+        )
+        Spacer(Modifier.height(8.dp))
+        Text(
+            text = "Sign a message to verify your identity. This lets us track your usage for billing.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.height(24.dp))
+
+        if (walletAddress.isNotBlank()) {
+            val truncated = walletAddress.take(6) + "..." + walletAddress.takeLast(4)
+            Text(
+                text = "Signed as $truncated",
+                style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.primary,
+            )
+        } else {
+            Button(
+                onClick = onSign,
+                enabled = !isSigning,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                if (isSigning) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(20.dp),
+                        strokeWidth = 2.dp,
+                        color = MaterialTheme.colorScheme.onPrimary,
+                    )
+                } else {
+                    Text("Sign")
                 }
             }
         }

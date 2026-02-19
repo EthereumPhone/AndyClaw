@@ -106,6 +106,12 @@ class SecurePrefs(context: Context) : KeyValueStore {
   private val _heartbeatIntervalMinutes = MutableStateFlow(prefs.getInt("agent.heartbeatIntervalMinutes", 30))
   val heartbeatIntervalMinutes: StateFlow<Int> = _heartbeatIntervalMinutes
 
+  private val _walletAddress = MutableStateFlow(prefs.getString("auth.walletAddress", "") ?: "")
+  val walletAddress: StateFlow<String> = _walletAddress
+
+  private val _walletSignature = MutableStateFlow(prefs.getString("auth.walletSignature", "") ?: "")
+  val walletSignature: StateFlow<String> = _walletSignature
+
   private val _apiKey = MutableStateFlow(prefs.getString("anthropic.apiKey", "") ?: "")
   val apiKey: StateFlow<String> = _apiKey
 
@@ -297,6 +303,15 @@ class SecurePrefs(context: Context) : KeyValueStore {
         android.content.Intent("org.ethereumphone.andyclaw.HEARTBEAT_INTERVAL_CHANGED")
       )
     } catch (_: Exception) { }
+  }
+
+  fun setWalletAuth(address: String, signature: String) {
+    prefs.edit {
+      putString("auth.walletAddress", address.trim())
+      putString("auth.walletSignature", signature.trim())
+    }
+    _walletAddress.value = address.trim()
+    _walletSignature.value = signature.trim()
   }
 
   fun setApiKey(value: String) {

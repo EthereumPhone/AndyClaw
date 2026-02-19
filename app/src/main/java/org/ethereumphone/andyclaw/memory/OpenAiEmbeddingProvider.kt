@@ -22,27 +22,25 @@ import org.ethereumphone.andyclaw.memory.embedding.EmbeddingProvider
 import java.util.concurrent.TimeUnit
 
 /**
- * [EmbeddingProvider] backed by any OpenAI-compatible embeddings API.
+ * [EmbeddingProvider] backed by an OpenAI-compatible embeddings API.
  *
- * Works with OpenRouter, OpenAI, Azure OpenAI, and local servers that
- * implement the `/v1/embeddings` endpoint.
+ * On ethOS (privileged) devices, authenticates via wallet signature headers
+ * (`X-User-Id`, `X-Signature`) through the premium-llm-andy proxy.
+ * On standard Android, authenticates via `Authorization: Bearer` with an API key
+ * directly to OpenRouter.
  *
- * ```kotlin
- * val provider = OpenAiEmbeddingProvider(
- *     apiKey = { securePrefs.apiKey.value },
- *     baseUrl = "https://openrouter.ai/api/v1",
- * )
- * memoryManager.setEmbeddingProvider(provider)
- * ```
- *
- * @param apiKey     Lambda returning the current API key (re-evaluated per request).
- * @param baseUrl    Base URL of the OpenAI-compatible API.
+ * @param userId     Lambda returning the wallet address (ethOS).
+ * @param signature  Lambda returning the wallet signature (ethOS).
+ * @param apiKey     Lambda returning the OpenRouter API key (non-ethOS).
+ * @param baseUrl    Base URL — either premium-llm-andy or OpenRouter.
  * @param model      Embedding model to use.
  * @param dimensions Output dimensionality (pass null to use the model's default).
  */
 class OpenAiEmbeddingProvider(
-    private val apiKey: () -> String,
-    private val baseUrl: String = "https://openrouter.ai/api/v1",
+    private val userId: () -> String = { "" },
+    private val signature: () -> String = { "" },
+    private val apiKey: () -> String = { "" },
+    private val baseUrl: String = "https://api.markushaas.com/api/premium-llm-andy",
     private val model: String = DEFAULT_MODEL,
     override val dimensions: Int = DEFAULT_DIMENSIONS,
 ) : EmbeddingProvider {
@@ -59,8 +57,12 @@ class OpenAiEmbeddingProvider(
     override suspend fun embed(texts: List<String>): List<FloatArray> = withContext(Dispatchers.IO) {
         require(texts.isNotEmpty()) { "texts must not be empty" }
 
+        val uid = userId()
+        val sig = signature()
         val key = apiKey()
-        if (key.isBlank()) throw EmbeddingException("No API key configured for embeddings")
+        if (uid.isBlank() && sig.isBlank() && key.isBlank()) {
+            throw EmbeddingException("No auth configured for embeddings")
+        }
 
         val requestBody = buildJsonObject {
             put("model", model)
@@ -71,12 +73,17 @@ class OpenAiEmbeddingProvider(
         }.toString()
 
         val url = "${baseUrl.trimEnd('/')}/embeddings"
-        val request = Request.Builder()
+        val builder = Request.Builder()
             .url(url)
-            .header("Authorization", "Bearer $key")
             .header("Content-Type", "application/json")
             .post(requestBody.toRequestBody("application/json".toMediaType()))
-            .build()
+        if (uid.isNotBlank() && sig.isNotBlank()) {
+            builder.header("X-User-Id", uid)
+            builder.header("X-Signature", sig)
+        } else if (key.isNotBlank()) {
+            builder.header("Authorization", "Bearer $key")
+        }
+        val request = builder.build()
 
         val response = try {
             client.newCall(request).execute()

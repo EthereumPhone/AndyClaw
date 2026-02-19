@@ -10,6 +10,8 @@ import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import org.ethereumphone.andyclaw.NodeApp
 import org.ethereumphone.andyclaw.onboarding.OnboardingScreen
+import org.ethereumphone.andyclaw.onboarding.WalletSignScreen
+import org.ethereumphone.andyclaw.skills.tier.OsCapabilities
 import org.ethereumphone.andyclaw.ui.chat.ChatScreen
 import org.ethereumphone.andyclaw.ui.chat.SessionListScreen
 import org.ethereumphone.andyclaw.ui.clawhub.ClawHubScreen
@@ -17,6 +19,7 @@ import org.ethereumphone.andyclaw.ui.settings.SettingsScreen
 
 object Routes {
     const val ONBOARDING = "onboarding"
+    const val WALLET_SIGN = "wallet_sign"
     const val CHAT = "chat"
     const val CHAT_WITH_SESSION = "chat/{sessionId}"
     const val SESSIONS = "sessions"
@@ -29,7 +32,13 @@ fun AppNavigation() {
     val navController = rememberNavController()
     val app = LocalContext.current.applicationContext as NodeApp
     val startDestination = remember {
-        if (app.userStoryManager.exists()) Routes.CHAT else Routes.ONBOARDING
+        when {
+            !app.userStoryManager.exists() -> Routes.ONBOARDING
+            // Existing ethOS user who hasn't signed yet — require wallet signature
+            OsCapabilities.hasPrivilegedAccess &&
+                app.securePrefs.walletAddress.value.isBlank() -> Routes.WALLET_SIGN
+            else -> Routes.CHAT
+        }
     }
 
     NavHost(
@@ -41,6 +50,16 @@ fun AppNavigation() {
                 onComplete = {
                     navController.navigate(Routes.CHAT) {
                         popUpTo(Routes.ONBOARDING) { inclusive = true }
+                    }
+                },
+            )
+        }
+
+        composable(Routes.WALLET_SIGN) {
+            WalletSignScreen(
+                onComplete = {
+                    navController.navigate(Routes.CHAT) {
+                        popUpTo(Routes.WALLET_SIGN) { inclusive = true }
                     }
                 },
             )

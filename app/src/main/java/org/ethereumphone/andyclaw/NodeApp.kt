@@ -6,7 +6,6 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
-import org.ethereumphone.andyclaw.BuildConfig
 import org.ethereumphone.andyclaw.extensions.ExtensionEngine
 import org.ethereumphone.andyclaw.extensions.clawhub.ClawHubManager
 import org.ethereumphone.andyclaw.extensions.clawhub.ClawHubSkillAdapter
@@ -76,13 +75,18 @@ class NodeApp : Application() {
         MemoryManager(this, agentId = DEFAULT_AGENT_ID)
     }
 
-    private fun resolveApiKey(): String {
-        val prefsKey = securePrefs.apiKey.value
-        return prefsKey.ifEmpty { BuildConfig.OPENROUTER_API_KEY }
-    }
-
     private val embeddingProvider: OpenAiEmbeddingProvider by lazy {
-        OpenAiEmbeddingProvider(apiKey = ::resolveApiKey)
+        if (OsCapabilities.hasPrivilegedAccess) {
+            OpenAiEmbeddingProvider(
+                userId = { securePrefs.walletAddress.value },
+                signature = { securePrefs.walletSignature.value },
+            )
+        } else {
+            OpenAiEmbeddingProvider(
+                apiKey = { securePrefs.apiKey.value },
+                baseUrl = "https://openrouter.ai/api/v1",
+            )
+        }
     }
 
     // ── Extension subsystem ────────────────────────────────────────────
@@ -165,7 +169,17 @@ class NodeApp : Application() {
     }
 
     val anthropicClient: AnthropicClient by lazy {
-        AnthropicClient(apiKey = ::resolveApiKey)
+        if (OsCapabilities.hasPrivilegedAccess) {
+            AnthropicClient(
+                userId = { securePrefs.walletAddress.value },
+                signature = { securePrefs.walletSignature.value },
+            )
+        } else {
+            AnthropicClient(
+                apiKey = { securePrefs.apiKey.value },
+                baseUrl = "https://openrouter.ai/api/v1/messages",
+            )
+        }
     }
 
     override fun onCreate() {

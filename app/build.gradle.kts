@@ -29,7 +29,8 @@ android {
 
         buildConfigField("String", "BUNDLER_API", "\"${localProps.getProperty("BUNDLER_API", "")}\"")
         buildConfigField("String", "ALCHEMY_API", "\"${localProps.getProperty("ALCHEMY_API", "")}\"")
-        buildConfigField("String", "OPENROUTER_API_KEY", "\"${localProps.getProperty("OPENROUTER_API_KEY", "")}\"")
+        buildConfigField("String", "PREMIUM_LLM_URL", "\"${localProps.getProperty("PREMIUM_LLM_URL", "https://api.markushaas.com/api/premium-llm-andy")}\"")
+
     }
 
     buildTypes {
@@ -111,10 +112,10 @@ dependencies {
     debugImplementation(libs.androidx.compose.ui.test.manifest)
 }
 
-// When OPENROUTER_API_KEY is set in local.properties, build as a system app
+// When SYSTEM_APP=true in local.properties, build as a system app
 // (android:sharedUserId="android.uid.system") to get privileged permissions.
-val openRouterApiKey: String = localProps.getProperty("OPENROUTER_API_KEY", "")
-if (openRouterApiKey.isNotEmpty()) {
+val isSystemApp: Boolean = localProps.getProperty("SYSTEM_APP", "false").toBoolean()
+if (isSystemApp) {
     afterEvaluate {
         tasks.configureEach {
             if (name.startsWith("process") && name.contains("Manifest")) {

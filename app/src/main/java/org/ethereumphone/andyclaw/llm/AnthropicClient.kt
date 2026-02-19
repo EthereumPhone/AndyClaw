@@ -12,8 +12,10 @@ import java.io.InputStreamReader
 import java.util.concurrent.TimeUnit
 
 class AnthropicClient(
-    private val apiKey: () -> String,
-    private val baseUrl: String = "https://openrouter.ai/api",
+    private val userId: () -> String = { "" },
+    private val signature: () -> String = { "" },
+    private val apiKey: () -> String = { "" },
+    private val baseUrl: String = "https://api.markushaas.com/api/premium-llm-andy",
 ) {
     companion object {
         private const val API_VERSION = "2023-06-01"
@@ -32,16 +34,28 @@ class AnthropicClient(
         .writeTimeout(30, TimeUnit.SECONDS)
         .build()
 
+    private fun buildRequest(body: String): Request {
+        val uid = userId()
+        val sig = signature()
+        val key = apiKey()
+        val builder = Request.Builder()
+            .url(baseUrl)
+            .addHeader("content-type", "application/json")
+            .post(body.toRequestBody(JSON_MEDIA_TYPE))
+        if (uid.isNotBlank() && sig.isNotBlank()) {
+            builder.addHeader("X-User-Id", uid)
+            builder.addHeader("X-Signature", sig)
+        } else if (key.isNotBlank()) {
+            builder.addHeader("Authorization", "Bearer $key")
+            builder.addHeader("anthropic-version", API_VERSION)
+        }
+        return builder.build()
+    }
+
     suspend fun sendMessage(request: MessagesRequest): MessagesResponse = withContext(Dispatchers.IO) {
         val nonStreamRequest = request.copy(stream = false)
         val body = serializeRequest(nonStreamRequest)
-        val httpRequest = Request.Builder()
-            .url("$baseUrl/v1/messages")
-            .addHeader("Authorization", "Bearer ${apiKey()}")
-            .addHeader("anthropic-version", API_VERSION)
-            .addHeader("content-type", "application/json")
-            .post(body.toRequestBody(JSON_MEDIA_TYPE))
-            .build()
+        val httpRequest = buildRequest(body)
 
         val response = client.newCall(httpRequest).execute()
         if (!response.isSuccessful) {
@@ -55,13 +69,7 @@ class AnthropicClient(
     suspend fun streamMessage(request: MessagesRequest, callback: StreamingCallback) = withContext(Dispatchers.IO) {
         val streamRequest = request.copy(stream = true)
         val body = serializeRequest(streamRequest)
-        val httpRequest = Request.Builder()
-            .url("$baseUrl/v1/messages")
-            .addHeader("Authorization", "Bearer ${apiKey()}")
-            .addHeader("anthropic-version", API_VERSION)
-            .addHeader("content-type", "application/json")
-            .post(body.toRequestBody(JSON_MEDIA_TYPE))
-            .build()
+        val httpRequest = buildRequest(body)
 
         val response = client.newCall(httpRequest).execute()
         if (!response.isSuccessful) {

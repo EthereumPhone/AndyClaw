@@ -5,10 +5,12 @@ import android.app.Application
 import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import org.ethereumphone.andyclaw.BuildConfig
 import org.ethereumphone.andyclaw.NodeApp
 import org.ethereumphone.andyclaw.llm.AnthropicModels
@@ -16,18 +18,31 @@ import org.ethereumphone.andyclaw.llm.ContentBlock
 import org.ethereumphone.andyclaw.llm.Message
 import org.ethereumphone.andyclaw.llm.MessagesRequest
 import org.ethereumphone.andyclaw.skills.AndyClawSkill
+import org.ethereumphone.andyclaw.skills.tier.OsCapabilities
+import org.ethereumphone.walletsdk.WalletSDK
+import org.web3j.protocol.Web3j
+import org.web3j.protocol.http.HttpService
 
 class OnboardingViewModel(application: Application) : AndroidViewModel(application) {
 
     private val app = application as NodeApp
 
+    /** True on ethOS devices — step 0 is wallet sign. False on standard Android — step 0 is API key. */
+    val isPrivileged: Boolean = OsCapabilities.hasPrivilegedAccess
+
+    // Wallet auth (ethOS only)
+    val walletAddress = MutableStateFlow("")
+    val walletSignature = MutableStateFlow("")
+    val isSigning = MutableStateFlow(false)
+
+    // API key auth (non-ethOS only)
     val apiKey = MutableStateFlow("")
+
     val goals = MutableStateFlow("")
     val customName = MutableStateFlow(generateFunnyName())
     val values = MutableStateFlow("")
 
-    val needsApiKey: Boolean = BuildConfig.OPENROUTER_API_KEY.isEmpty()
-    val totalSteps: Int = if (needsApiKey) 5 else 4
+    val totalSteps: Int = 5 // Auth (sign or api key), Goals, Name, Values, Permissions
 
     private val _currentStep = MutableStateFlow(0)
     val currentStep: StateFlow<Int> = _currentStep.asStateFlow()
@@ -65,6 +80,32 @@ class OnboardingViewModel(application: Application) : AndroidViewModel(applicati
         _selectedSkills.value = current.toSet()
     }
 
+    fun signWithWallet() {
+        if (isSigning.value) return
+        isSigning.value = true
+        _error.value = null
+
+        viewModelScope.launch {
+            try {
+                val rpc = "https://eth-mainnet.g.alchemy.com/v2/${BuildConfig.ALCHEMY_API}"
+                val sdk = WalletSDK(
+                    context = app,
+                    web3jInstance = Web3j.build(HttpService(rpc)),
+                    bundlerRPCUrl = "https://api.pimlico.io/v2/1/rpc?apikey=${BuildConfig.BUNDLER_API}",
+                )
+                val address = withContext(Dispatchers.IO) { sdk.getAddress() }
+                val sig = sdk.signMessage("Signing into AndyClaw", chainId = 1)
+                walletAddress.value = address
+                walletSignature.value = sig
+            } catch (e: Exception) {
+                Log.e("OnboardingViewModel", "Wallet signing failed", e)
+                _error.value = "Wallet signing failed: ${e.message}"
+            } finally {
+                isSigning.value = false
+            }
+        }
+    }
+
     fun submit(onComplete: () -> Unit) {
         if (_isSubmitting.value) return
         _isSubmitting.value = true
@@ -76,8 +117,10 @@ class OnboardingViewModel(application: Application) : AndroidViewModel(applicati
 
         viewModelScope.launch {
             try {
-                // Save API key before using the client so resolveApiKey() picks it up
-                if (needsApiKey) {
+                // Save auth so the AnthropicClient can use it
+                if (isPrivileged) {
+                    app.securePrefs.setWalletAuth(walletAddress.value, walletSignature.value)
+                } else {
                     app.securePrefs.setApiKey(apiKey.value.trim())
                 }
 
@@ -97,22 +140,30 @@ class OnboardingViewModel(application: Application) : AndroidViewModel(applicati
                     appendLine("Chosen AI name: $aiName")
                 }
 
-                val request = MessagesRequest(
-                    model = AnthropicModels.MINIMAX_M25.modelId,
-                    maxTokens = 1024,
-                    messages = listOf(Message.user(prompt)),
-                )
+                val story = try {
+                    val request = MessagesRequest(
+                        model = AnthropicModels.MINIMAX_M25.modelId,
+                        maxTokens = 1024,
+                        messages = listOf(Message.user(prompt)),
+                    )
 
-                val response = app.anthropicClient.sendMessage(request)
-                val text = response.content
-                    .filterIsInstance<ContentBlock.TextBlock>()
-                    .joinToString("\n") { it.text }
+                    val response = app.anthropicClient.sendMessage(request)
+                    val text = response.content
+                        .filterIsInstance<ContentBlock.TextBlock>()
+                        .joinToString("\n") { it.text }
 
-                // Ensure the name heading is present even if the LLM omitted it
-                val story = if (text.startsWith("# Name:")) {
-                    text
-                } else {
-                    "# Name: $aiName\n\n$text"
+                    // Ensure the name heading is present even if the LLM omitted it
+                    if (text.startsWith("# Name:")) text
+                    else "# Name: $aiName\n\n$text"
+                } catch (e: Exception) {
+                    Log.w("OnboardingViewModel", "Profile generation failed, using template", e)
+                    buildString {
+                        appendLine("# Name: $aiName")
+                        appendLine()
+                        appendLine("## Story")
+                        if (userGoals.isNotBlank()) appendLine("You want to: $userGoals")
+                        if (userValues.isNotBlank()) appendLine("You care about: $userValues")
+                    }.trim()
                 }
 
                 app.userStoryManager.write(story)
@@ -134,7 +185,8 @@ class OnboardingViewModel(application: Application) : AndroidViewModel(applicati
                 _isSubmitting.value = false
                 onComplete()
             } catch (e: Exception) {
-                _error.value = e.message ?: "Failed to generate profile"
+                Log.e("OnboardingViewModel", "Onboarding submit failed", e)
+                _error.value = e.message ?: "Failed to complete setup"
                 _isSubmitting.value = false
             }
         }
