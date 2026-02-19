@@ -1,5 +1,6 @@
 package org.ethereumphone.andyclaw.ui.settings
 
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -24,6 +25,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.MenuAnchorType
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
@@ -51,6 +53,7 @@ fun SettingsScreen(
     val notificationReplyEnabled by viewModel.notificationReplyEnabled.collectAsState()
     val heartbeatOnNotificationEnabled by viewModel.heartbeatOnNotificationEnabled.collectAsState()
     val heartbeatOnXmtpMessageEnabled by viewModel.heartbeatOnXmtpMessageEnabled.collectAsState()
+    val heartbeatIntervalMinutes by viewModel.heartbeatIntervalMinutes.collectAsState()
     val memoryCount by viewModel.memoryCount.collectAsState()
     val autoStoreEnabled by viewModel.autoStoreEnabled.collectAsState()
     val isReindexing by viewModel.isReindexing.collectAsState()
@@ -274,6 +277,47 @@ fun SettingsScreen(
                             checked = heartbeatOnXmtpMessageEnabled,
                             onCheckedChange = { viewModel.setHeartbeatOnXmtpMessageEnabled(it) },
                         )
+                    }
+                }
+            }
+
+            // Heartbeat Interval — privileged only
+            if (viewModel.isPrivileged) {
+                Spacer(Modifier.height(12.dp))
+                Text(
+                    text = "Heartbeat Interval",
+                    style = MaterialTheme.typography.titleMedium,
+                )
+                Spacer(Modifier.height(8.dp))
+                Card(modifier = Modifier.fillMaxWidth()) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(16.dp),
+                    ) {
+                        Text(
+                            text = "Every $heartbeatIntervalMinutes minutes",
+                            style = MaterialTheme.typography.bodyLarge,
+                        )
+                        Text(
+                            text = "How often the OS triggers the AI heartbeat check",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Spacer(Modifier.height(12.dp))
+                        Slider(
+                            value = heartbeatIntervalMinutes.toFloat(),
+                            onValueChange = { viewModel.setHeartbeatIntervalMinutes(it.toInt()) },
+                            valueRange = 5f..60f,
+                            steps = 10,
+                        )
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                        ) {
+                            Text("5 min", style = MaterialTheme.typography.labelSmall)
+                            Text("60 min", style = MaterialTheme.typography.labelSmall)
+                        }
                     }
                 }
             }

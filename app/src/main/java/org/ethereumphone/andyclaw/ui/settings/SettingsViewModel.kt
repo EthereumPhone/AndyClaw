@@ -27,6 +27,7 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
     val notificationReplyEnabled = prefs.notificationReplyEnabled
     val heartbeatOnNotificationEnabled = prefs.heartbeatOnNotificationEnabled
     val heartbeatOnXmtpMessageEnabled = prefs.heartbeatOnXmtpMessageEnabled
+    val heartbeatIntervalMinutes = prefs.heartbeatIntervalMinutes
 
     val currentTier: String get() = OsCapabilities.currentTier().name
     val isPrivileged: Boolean get() = OsCapabilities.hasPrivilegedAccess
@@ -81,6 +82,10 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
 
     fun setHeartbeatOnXmtpMessageEnabled(enabled: Boolean) {
         prefs.setHeartbeatOnXmtpMessageEnabled(enabled)
+    }
+
+    fun setHeartbeatIntervalMinutes(minutes: Int) {
+        prefs.setHeartbeatIntervalMinutes(minutes)
     }
 
     fun toggleSkill(skillId: String, enabled: Boolean) {

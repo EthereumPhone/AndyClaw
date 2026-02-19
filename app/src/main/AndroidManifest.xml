@@ -122,6 +122,13 @@
             android:enabled="true"
             android:exported="true" />
 
+        <!-- Exposes heartbeat settings (interval) to the OS heartbeat service. -->
+        <provider
+            android:name=".services.HeartbeatSettingsProvider"
+            android:authorities="org.ethereumphone.andyclaw.heartbeat.settings"
+            android:exported="true"
+            android:grantUriPermissions="false" />
+
         <receiver
             android:name=".services.ReminderReceiver"
             android:exported="false" />

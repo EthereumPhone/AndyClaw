@@ -103,6 +103,9 @@ class SecurePrefs(context: Context) : KeyValueStore {
   private val _heartbeatOnXmtpMessageEnabled = MutableStateFlow(prefs.getBoolean("agent.heartbeatOnXmtpMessage", false))
   val heartbeatOnXmtpMessageEnabled: StateFlow<Boolean> = _heartbeatOnXmtpMessageEnabled
 
+  private val _heartbeatIntervalMinutes = MutableStateFlow(prefs.getInt("agent.heartbeatIntervalMinutes", 30))
+  val heartbeatIntervalMinutes: StateFlow<Int> = _heartbeatIntervalMinutes
+
   private val _apiKey = MutableStateFlow(prefs.getString("anthropic.apiKey", "") ?: "")
   val apiKey: StateFlow<String> = _apiKey
 
@@ -282,6 +285,18 @@ class SecurePrefs(context: Context) : KeyValueStore {
   fun setHeartbeatOnXmtpMessageEnabled(value: Boolean) {
     prefs.edit { putBoolean("agent.heartbeatOnXmtpMessage", value) }
     _heartbeatOnXmtpMessageEnabled.value = value
+  }
+
+  fun setHeartbeatIntervalMinutes(value: Int) {
+    val clamped = value.coerceIn(5, 60)
+    prefs.edit { putInt("agent.heartbeatIntervalMinutes", clamped) }
+    _heartbeatIntervalMinutes.value = clamped
+    // Notify OS heartbeat service to re-schedule at the new interval
+    try {
+      appContext.sendBroadcast(
+        android.content.Intent("org.ethereumphone.andyclaw.HEARTBEAT_INTERVAL_CHANGED")
+      )
+    } catch (_: Exception) { }
   }
 
   fun setApiKey(value: String) {
