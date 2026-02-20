@@ -76,11 +76,23 @@ class ClawHubSkillAdapter(
     /**
      * Executing the read_skill tool returns the SKILL.md body content
      * (without frontmatter), which the agent uses as instructions.
+     *
+     * If a `REFINEMENT.md` file exists alongside the SKILL.md, its body
+     * is appended as an "Android Refinements" section. This overlay
+     * approach lets refinements be added/removed without touching the
+     * original skill content.
      */
     override suspend fun execute(tool: String, params: JsonObject, tier: Tier): SkillResult {
         return try {
             val body = SkillFrontmatter.extractBody(skill.content)
-            SkillResult.Success(body)
+            val refinementFile = File(skill.baseDir, "REFINEMENT.md")
+            val combined = if (refinementFile.isFile) {
+                val refinement = SkillFrontmatter.extractBody(refinementFile.readText())
+                "$body\n\n---\n\n## Android Refinements\n\n$refinement"
+            } else {
+                body
+            }
+            SkillResult.Success(combined)
         } catch (e: Exception) {
             SkillResult.Error("Failed to read skill '${skill.name}': ${e.message}")
         }

@@ -48,6 +48,8 @@ import org.ethereumphone.andyclaw.skills.builtin.TermuxSkill
 import org.ethereumphone.andyclaw.skills.builtin.WalletSkill
 import org.ethereumphone.andyclaw.skills.builtin.AuroraStoreSkill
 import org.ethereumphone.andyclaw.skills.builtin.LocationSkill
+import org.ethereumphone.andyclaw.skills.builtin.SkillCreatorSkill
+import org.ethereumphone.andyclaw.skills.builtin.SkillRefinementSkill
 import org.ethereumphone.andyclaw.skills.builtin.WebSearchSkill
 import org.ethereumphone.andyclaw.skills.tier.OsCapabilities
 import org.ethereumphone.andyclaw.onboarding.UserStoryManager
@@ -112,6 +114,11 @@ class NodeApp : Application() {
         java.io.File(filesDir, "clawhub-skills").also { it.mkdirs() }
     }
 
+    /** Directory where AI-created skills are stored. */
+    val aiSkillsDir by lazy {
+        java.io.File(filesDir, "ai-skills").also { it.mkdirs() }
+    }
+
     /** Skill registry for SKILL.md-based skills (ClawHub + local). */
     val skillRegistry: SkillRegistry by lazy { SkillRegistry() }
 
@@ -167,6 +174,19 @@ class NodeApp : Application() {
             register(WebSearchSkill(this@NodeApp))
             // Location — GPS position, nearby places, maps & navigation
             register(LocationSkill(this@NodeApp))
+            // Skill Creator — AI can author new SKILL.md-based skills at runtime
+            register(SkillCreatorSkill(
+                aiSkillsDir = aiSkillsDir,
+                clawHubSkillsDir = clawHubSkillsDir,
+                nativeSkillRegistry = this,
+                onSkillsChanged = { syncAiSkills() },
+            ))
+            // Skill Refinement — overlay improvements on ClawHub and AI-created skills
+            register(SkillRefinementSkill(
+                aiSkillsDir = aiSkillsDir,
+                clawHubSkillsDir = clawHubSkillsDir,
+                nativeSkillRegistry = this,
+            ))
         }
     }
 
@@ -207,6 +227,9 @@ class NodeApp : Application() {
 
         // Load any previously installed ClawHub skills on startup
         syncClawHubSkills()
+
+        // Load any previously created AI skills on startup
+        syncAiSkills()
 
         // Discover extensions in the background and bridge them into the skill system
         appScope.launch {
@@ -265,5 +288,29 @@ class NodeApp : Application() {
         val instrCount = adapters.size - execCount
         Log.i(TAG, "Synced ${adapters.size} ClawHub skill(s) " +
             "($execCount executable, $instrCount instruction-only)")
+    }
+
+    /**
+     * Sync AI-created skills into [NativeSkillRegistry].
+     *
+     * Removes stale `ai:` adapters, then registers fresh ones for every
+     * SKILL.md found in [aiSkillsDir]. All AI-created skills are
+     * instruction-only (the agent reads and follows the SKILL.md body).
+     *
+     * Called on startup and after every create/delete via the
+     * [SkillCreatorSkill.onSkillsChanged] callback.
+     */
+    private fun syncAiSkills() {
+        val stale = nativeSkillRegistry.getAll().filter { it.id.startsWith("ai:") }
+        for (skill in stale) {
+            nativeSkillRegistry.unregister(skill.id)
+        }
+
+        val adapters = SkillCreatorSkill.createAdaptersFromDir(aiSkillsDir)
+        for (adapter in adapters) {
+            nativeSkillRegistry.register(adapter)
+        }
+
+        Log.i(TAG, "Synced ${adapters.size} AI-created skill(s)")
     }
 }
