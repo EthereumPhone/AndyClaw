@@ -10,6 +10,14 @@ import kotlinx.serialization.Serializable
  * REST search, browse, resolve, and download endpoints.
  */
 
+// ── Moderation ──────────────────────────────────────────────────────
+
+@Serializable
+data class ClawHubModeration(
+    val isSuspicious: Boolean = false,
+    val isMalwareBlocked: Boolean = false,
+)
+
 // ── Search ──────────────────────────────────────────────────────────
 
 @Serializable
@@ -20,6 +28,7 @@ data class ClawHubSearchResult(
     val version: String? = null,
     val score: Double = 0.0,
     val updatedAt: Long? = null,
+    val moderation: ClawHubModeration? = null,
 )
 
 @Serializable
@@ -51,6 +60,7 @@ data class ClawHubSkillSummary(
     val createdAt: Long = 0L,
     val updatedAt: Long = 0L,
     val latestVersion: ClawHubSkillVersion? = null,
+    val moderation: ClawHubModeration? = null,
 )
 
 @Serializable
@@ -65,6 +75,7 @@ data class ClawHubSkillDetail(
     val skill: ClawHubSkillSummary? = null,
     val latestVersion: ClawHubSkillVersion? = null,
     val owner: ClawHubSkillOwner? = null,
+    val moderation: ClawHubModeration? = null,
 )
 
 @Serializable

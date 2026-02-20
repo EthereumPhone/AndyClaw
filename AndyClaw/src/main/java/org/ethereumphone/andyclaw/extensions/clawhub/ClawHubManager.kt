@@ -173,6 +173,105 @@ class ClawHubManager(
         InstallResult.Success(slug, resolvedVersion)
     }
 
+    // ── Two-phase install (with threat assessment) ─────────────────
+
+    /**
+     * Phase 1: download a skill, extract it, and run a threat assessment.
+     *
+     * The skill files are written to disk but **not** registered in the
+     * lockfile or skill registry. The caller should inspect the returned
+     * [ThreatAssessment] and then call [confirmInstall] or
+     * [cancelPendingInstall].
+     */
+    suspend fun downloadAndAssess(
+        slug: String,
+        version: String? = null,
+        force: Boolean = false,
+    ): DownloadAssessResult = operationMutex.withLock {
+        val targetDir = File(managedSkillsDir, slug)
+
+        if (targetDir.isDirectory && !force) {
+            if (lockFile.isInstalled(slug)) {
+                return@withLock DownloadAssessResult.AlreadyInstalled(
+                    slug, lockFile.getEntry(slug)?.version,
+                )
+            }
+        }
+
+        log.info("Downloading skill '$slug' for assessment (version=${version ?: "latest"})…")
+
+        val resolvedVersion = version ?: try {
+            api.resolve(slug)?.latestVersion?.version
+        } catch (e: Exception) {
+            log.warning("Version resolve failed for '$slug': ${e.message}")
+            null
+        }
+
+        try {
+            if (targetDir.isDirectory) targetDir.deleteRecursively()
+            if (!api.downloadAndExtract(slug, resolvedVersion, targetDir)) {
+                return@withLock DownloadAssessResult.Failed(slug, "Download or extraction failed")
+            }
+        } catch (e: Exception) {
+            return@withLock DownloadAssessResult.Failed(slug, "Download failed: ${e.message}")
+        }
+
+        val skillFile = File(targetDir, "SKILL.md")
+        if (!skillFile.isFile) {
+            targetDir.deleteRecursively()
+            return@withLock DownloadAssessResult.Failed(slug, "Skill bundle missing SKILL.md")
+        }
+
+        // Fetch server-side moderation flags for the skill
+        val moderation = try {
+            api.getSkill(slug).moderation
+        } catch (e: Exception) {
+            log.warning("Could not fetch moderation data for '$slug': ${e.message}")
+            null
+        }
+
+        val assessment = SkillThreatAnalyzer.deepAssess(targetDir, moderation)
+        log.info("Threat assessment for '$slug': ${assessment.level}")
+
+        DownloadAssessResult.Ready(slug, resolvedVersion, assessment)
+    }
+
+    /**
+     * Phase 2a: finalise a previously downloaded skill.
+     *
+     * Updates the lockfile and reloads the skill registry so the skill
+     * becomes immediately available.
+     */
+    suspend fun confirmInstall(
+        slug: String,
+        version: String?,
+    ): InstallResult = operationMutex.withLock {
+        val targetDir = File(managedSkillsDir, slug)
+
+        if (!targetDir.isDirectory || !File(targetDir, "SKILL.md").isFile) {
+            return@withLock InstallResult.Failed(
+                slug, "Skill files not found — was the download completed?",
+            )
+        }
+
+        lockFile.recordInstall(slug, version)
+        reloadSkillRegistry()
+
+        log.info("Confirmed install of skill '$slug' v${version ?: "unknown"}")
+        InstallResult.Success(slug, version)
+    }
+
+    /**
+     * Phase 2b: cancel a pending install and clean up extracted files.
+     */
+    suspend fun cancelPendingInstall(slug: String) = operationMutex.withLock {
+        val targetDir = File(managedSkillsDir, slug)
+        if (targetDir.isDirectory && !lockFile.isInstalled(slug)) {
+            targetDir.deleteRecursively()
+            log.info("Cancelled pending install of skill '$slug'")
+        }
+    }
+
     // ── Uninstall ───────────────────────────────────────────────────
 
     /**

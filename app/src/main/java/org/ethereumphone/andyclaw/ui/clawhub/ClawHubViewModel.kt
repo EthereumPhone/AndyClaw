@@ -12,8 +12,11 @@ import kotlinx.coroutines.launch
 import org.ethereumphone.andyclaw.NodeApp
 import org.ethereumphone.andyclaw.extensions.clawhub.ClawHubSearchResult
 import org.ethereumphone.andyclaw.extensions.clawhub.ClawHubSkillSummary
+import org.ethereumphone.andyclaw.extensions.clawhub.DownloadAssessResult
 import org.ethereumphone.andyclaw.extensions.clawhub.InstalledClawHubSkill
 import org.ethereumphone.andyclaw.extensions.clawhub.InstallResult
+import org.ethereumphone.andyclaw.extensions.clawhub.ThreatAssessment
+import org.ethereumphone.andyclaw.extensions.clawhub.ThreatLevel
 import org.ethereumphone.andyclaw.extensions.clawhub.UpdateResult
 
 class ClawHubViewModel(application: Application) : AndroidViewModel(application) {
@@ -61,6 +64,11 @@ class ClawHubViewModel(application: Application) : AndroidViewModel(application)
 
     private val _snackbarMessage = MutableStateFlow<String?>(null)
     val snackbarMessage: StateFlow<String?> = _snackbarMessage.asStateFlow()
+
+    // ── Pending install confirmation ─────────────────────────────────────
+
+    private val _pendingInstall = MutableStateFlow<PendingSkillInstall?>(null)
+    val pendingInstall: StateFlow<PendingSkillInstall?> = _pendingInstall.asStateFlow()
 
     private var searchJob: Job? = null
 
@@ -140,26 +148,73 @@ class ClawHubViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
-    // ── Install ─────────────────────────────────────────────────────────
+    // ── Install (two-phase with threat assessment) ─────────────────────
 
     fun installSkill(slug: String) {
         if (_operatingSlug.value != null) return
         viewModelScope.launch {
             _operatingSlug.value = slug
             try {
-                when (val result = manager.install(slug)) {
-                    is InstallResult.Success ->
-                        showSnackbar("Installed '${result.slug}' v${result.version ?: "latest"}")
-                    is InstallResult.AlreadyInstalled ->
+                when (val result = manager.downloadAndAssess(slug)) {
+                    is DownloadAssessResult.Ready -> {
+                        if (result.assessment.level >= ThreatLevel.MEDIUM) {
+                            _pendingInstall.value = PendingSkillInstall(
+                                slug = result.slug,
+                                version = result.version,
+                                assessment = result.assessment,
+                            )
+                        } else {
+                            finaliseInstall(result.slug, result.version)
+                        }
+                    }
+                    is DownloadAssessResult.AlreadyInstalled ->
                         showSnackbar("'${result.slug}' is already installed")
-                    is InstallResult.Failed ->
+                    is DownloadAssessResult.Failed ->
                         showSnackbar("Failed: ${result.reason}")
                 }
-                refreshInstalled()
             } finally {
+                if (_pendingInstall.value == null) {
+                    _operatingSlug.value = null
+                }
+            }
+        }
+    }
+
+    fun confirmPendingInstall() {
+        val pending = _pendingInstall.value ?: return
+        viewModelScope.launch {
+            try {
+                finaliseInstall(pending.slug, pending.version)
+            } finally {
+                _pendingInstall.value = null
                 _operatingSlug.value = null
             }
         }
+    }
+
+    fun cancelPendingInstall() {
+        val pending = _pendingInstall.value ?: return
+        viewModelScope.launch {
+            try {
+                manager.cancelPendingInstall(pending.slug)
+                showSnackbar("Installation of '${pending.slug}' cancelled")
+            } finally {
+                _pendingInstall.value = null
+                _operatingSlug.value = null
+            }
+        }
+    }
+
+    private suspend fun finaliseInstall(slug: String, version: String?) {
+        when (val result = manager.confirmInstall(slug, version)) {
+            is InstallResult.Success ->
+                showSnackbar("Installed '${result.slug}' v${result.version ?: "latest"}")
+            is InstallResult.AlreadyInstalled ->
+                showSnackbar("'${result.slug}' is already installed")
+            is InstallResult.Failed ->
+                showSnackbar("Failed: ${result.reason}")
+        }
+        refreshInstalled()
     }
 
     // ── Uninstall ───────────────────────────────────────────────────────
@@ -226,3 +281,13 @@ class ClawHubViewModel(application: Application) : AndroidViewModel(application)
 }
 
 enum class ClawHubTab { BROWSE, INSTALLED }
+
+/**
+ * Holds state for a skill that has been downloaded and assessed but is
+ * awaiting user confirmation before being registered.
+ */
+data class PendingSkillInstall(
+    val slug: String,
+    val version: String?,
+    val assessment: ThreatAssessment,
+)
