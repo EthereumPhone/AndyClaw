@@ -1,6 +1,7 @@
 package org.ethereumphone.andyclaw.memory
 
 import android.content.Context
+import android.util.Log
 import kotlinx.coroutines.flow.Flow
 import org.ethereumphone.andyclaw.memory.db.MemoryDatabase
 import org.ethereumphone.andyclaw.memory.embedding.EmbeddingProvider
@@ -41,10 +42,15 @@ class MemoryManager(
     private val agentId: String,
     chunkingEngine: ChunkingEngine = ChunkingEngine(),
 ) {
+    companion object {
+        private const val TAG = "MemoryManager"
+    }
+
     private val database: MemoryDatabase = MemoryDatabase.getInstance(context)
     private val dao = database.memoryDao()
     private val repository = MemoryRepository(database, dao, chunkingEngine)
     private val searchManager = MemorySearchManager(dao)
+    private var embeddingProvider: EmbeddingProvider? = null
 
     // ── Store ───────────────────────────────────────────────────────
 
@@ -66,7 +72,25 @@ class MemoryManager(
         tags: List<String> = emptyList(),
         importance: Float = 0.5f,
     ): MemoryEntry {
-        return repository.store(agentId, content, source, tags, importance)
+        Log.d(TAG, "Storing memory: source=$source, tags=$tags, importance=$importance, " +
+            "contentLength=${content.length}")
+        val entry = repository.store(agentId, content, source, tags, importance)
+        Log.i(TAG, "Memory stored: id=${entry.id}, tags=${entry.tags}")
+
+        // Eagerly embed new chunks so they are searchable immediately
+        val provider = embeddingProvider
+        if (provider != null) {
+            try {
+                val embedded = repository.embedUnprocessedChunks(agentId, provider)
+                Log.d(TAG, "Embedded $embedded new chunk(s) for memory ${entry.id}")
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to embed chunks at store time: ${e.message}", e)
+            }
+        } else {
+            Log.d(TAG, "No embedding provider set — chunks stored without embeddings")
+        }
+
+        return entry
     }
 
     // ── Search ──────────────────────────────────────────────────────
@@ -89,7 +113,12 @@ class MemoryManager(
         minScore: Float = MemorySearchManager.DEFAULT_MIN_SCORE,
         tags: List<String>? = null,
     ): List<MemorySearchResult> {
-        return searchManager.search(query, agentId, maxResults, minScore, tags)
+        Log.d(TAG, "Searching memory: query=\"$query\", maxResults=$maxResults, " +
+            "minScore=$minScore, tags=$tags")
+        val results = searchManager.search(query, agentId, maxResults, minScore, tags)
+        Log.i(TAG, "Search returned ${results.size} result(s)" +
+            if (results.isNotEmpty()) ": ${results.map { "id=${it.memoryId} score=${"%.2f".format(it.score)}" }}" else "")
+        return results
     }
 
     // ── CRUD ────────────────────────────────────────────────────────
@@ -98,7 +127,9 @@ class MemoryManager(
      * Retrieve a single memory by its ID, or null.
      */
     suspend fun get(memoryId: String): MemoryEntry? {
-        return repository.get(memoryId)
+        val entry = repository.get(memoryId)
+        Log.d(TAG, "Get memory id=$memoryId → ${if (entry != null) "found" else "not found"}")
+        return entry
     }
 
     /**
@@ -113,7 +144,10 @@ class MemoryManager(
         tags: List<String>? = null,
         limit: Int = 50,
     ): List<MemoryEntry> {
-        return repository.list(agentId, source, tags, limit)
+        Log.d(TAG, "Listing memories: source=$source, tags=$tags, limit=$limit")
+        val entries = repository.list(agentId, source, tags, limit)
+        Log.i(TAG, "List returned ${entries.size} memory/memories")
+        return entries
     }
 
     /**
@@ -150,6 +184,7 @@ class MemoryManager(
      * Permanently delete a memory and all associated chunks/tags.
      */
     suspend fun delete(memoryId: String) {
+        Log.i(TAG, "Deleting memory: id=$memoryId")
         repository.delete(memoryId)
     }
 
@@ -158,6 +193,7 @@ class MemoryManager(
      * Uses a single SQL DELETE — no cap on number of entries.
      */
     suspend fun deleteAll() {
+        Log.w(TAG, "Deleting ALL memories for agent=$agentId")
         repository.deleteAll(agentId)
     }
 
@@ -170,6 +206,8 @@ class MemoryManager(
      * for existing content.
      */
     fun setEmbeddingProvider(provider: EmbeddingProvider) {
+        Log.i(TAG, "Embedding provider set: ${provider.modelName}")
+        embeddingProvider = provider
         searchManager.setEmbeddingProvider(provider)
     }
 

@@ -1,5 +1,6 @@
 package org.ethereumphone.andyclaw.skills.builtin
 
+import android.util.Log
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
@@ -29,13 +30,19 @@ class MemorySkill(
     private val memoryManager: MemoryManager,
 ) : AndyClawSkill {
 
+    companion object {
+        private const val TAG = "MemorySkill"
+        private const val FALLBACK_MIN_SCORE = 0.10f
+    }
+
     override val id: String = "memory"
     override val name: String = "Memory"
 
     override val baseManifest = SkillManifest(
         description = "Long-term memory: store facts, preferences, and context that persist across conversations. " +
             "Use memory_search before answering questions that might benefit from past context. " +
-            "Use memory_store to save important information the user shares.",
+            "Use memory_store to save important information the user shares. " +
+            "Use memory_list to see all stored memories (useful when the user asks what you remember).",
         tools = listOf(
             ToolDefinition(
                 name = "memory_search",
@@ -60,6 +67,25 @@ class MemorySkill(
                         }
                     }
                     putJsonArray("required") { add(JsonPrimitive("query")) }
+                },
+            ),
+            ToolDefinition(
+                name = "memory_list",
+                description = "List all stored long-term memories, newest first. " +
+                    "Use this when the user asks what you remember, wants a summary of all memories, " +
+                    "or when you need a broad overview rather than a targeted search.",
+                inputSchema = buildJsonObject {
+                    put("type", "object")
+                    putJsonObject("properties") {
+                        putJsonObject("limit") {
+                            put("type", "integer")
+                            put("description", "Maximum number of memories to return (default: 20)")
+                        }
+                        putJsonObject("source") {
+                            put("type", "string")
+                            put("description", "Filter by source: MANUAL, CONVERSATION, or SYSTEM (default: all)")
+                        }
+                    }
                 },
             ),
             ToolDefinition(
@@ -108,8 +134,10 @@ class MemorySkill(
     override val privilegedManifest: SkillManifest? = null
 
     override suspend fun execute(tool: String, params: JsonObject, tier: Tier): SkillResult {
+        Log.d(TAG, "Executing tool: $tool")
         return when (tool) {
             "memory_search" -> executeSearch(params)
+            "memory_list" -> executeList(params)
             "memory_store" -> executeStore(params)
             "memory_delete" -> executeDelete(params)
             else -> SkillResult.Error("Unknown memory tool: $tool")
@@ -122,16 +150,32 @@ class MemorySkill(
         val maxResults = params["max_results"]?.jsonPrimitive?.int ?: 6
         val tags = params["tags"]?.jsonArray?.map { it.jsonPrimitive.content }
 
+        Log.d(TAG, "memory_search: query=\"$query\", maxResults=$maxResults, tags=$tags")
+
         return try {
-            val results = memoryManager.search(
+            var results = memoryManager.search(
                 query = query,
                 maxResults = maxResults,
                 tags = tags,
             )
 
+            // Fallback: if the default threshold filtered everything out,
+            // retry with a much lower threshold to avoid false negatives.
             if (results.isEmpty()) {
+                Log.d(TAG, "memory_search: no results at default threshold, retrying with minScore=$FALLBACK_MIN_SCORE")
+                results = memoryManager.search(
+                    query = query,
+                    maxResults = maxResults,
+                    minScore = FALLBACK_MIN_SCORE,
+                    tags = tags,
+                )
+            }
+
+            if (results.isEmpty()) {
+                Log.i(TAG, "memory_search: no results for \"$query\" (including fallback)")
                 SkillResult.Success("No memories found matching: \"$query\"")
             } else {
+                Log.i(TAG, "memory_search: ${results.size} result(s) for \"$query\"")
                 val formatted = results.mapIndexed { i, r ->
                     buildString {
                         appendLine("${i + 1}. [id: ${r.memoryId}] (score: ${"%.2f".format(r.score)})")
@@ -144,7 +188,42 @@ class MemorySkill(
                 SkillResult.Success("Found ${results.size} relevant memories:\n\n$formatted")
             }
         } catch (e: Exception) {
+            Log.e(TAG, "memory_search failed: ${e.message}", e)
             SkillResult.Error("Memory search failed: ${e.message}")
+        }
+    }
+
+    private suspend fun executeList(params: JsonObject): SkillResult {
+        val limit = params["limit"]?.jsonPrimitive?.int ?: 20
+        val sourceStr = params["source"]?.jsonPrimitive?.content
+        val source = sourceStr?.let {
+            runCatching { MemorySource.valueOf(it.uppercase()) }.getOrNull()
+        }
+
+        Log.d(TAG, "memory_list: limit=$limit, source=$source")
+
+        return try {
+            val entries = memoryManager.list(source = source, limit = limit)
+
+            if (entries.isEmpty()) {
+                Log.i(TAG, "memory_list: no memories stored")
+                SkillResult.Success("No memories stored yet.")
+            } else {
+                Log.i(TAG, "memory_list: returning ${entries.size} memory/memories")
+                val formatted = entries.mapIndexed { i, entry ->
+                    buildString {
+                        appendLine("${i + 1}. [id: ${entry.id}] (source: ${entry.source}, importance: ${"%.1f".format(entry.importance)})")
+                        appendLine("   ${entry.content.take(300)}${if (entry.content.length > 300) "..." else ""}")
+                        if (entry.tags.isNotEmpty()) {
+                            appendLine("   tags: ${entry.tags.joinToString(", ")}")
+                        }
+                    }
+                }.joinToString("\n")
+                SkillResult.Success("${entries.size} stored memory/memories:\n\n$formatted")
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "memory_list failed: ${e.message}", e)
+            SkillResult.Error("Failed to list memories: ${e.message}")
         }
     }
 
@@ -154,6 +233,8 @@ class MemorySkill(
         val tags = params["tags"]?.jsonArray?.map { it.jsonPrimitive.content } ?: emptyList()
         val importance = params["importance"]?.jsonPrimitive?.float ?: 0.5f
 
+        Log.d(TAG, "memory_store: contentLength=${content.length}, tags=$tags, importance=$importance")
+
         return try {
             val entry = memoryManager.store(
                 content = content,
@@ -161,8 +242,10 @@ class MemorySkill(
                 tags = tags,
                 importance = importance,
             )
+            Log.i(TAG, "memory_store: stored id=${entry.id}")
             SkillResult.Success("Memory stored (id: ${entry.id}). Tags: ${tags.ifEmpty { listOf("none") }.joinToString(", ")}")
         } catch (e: Exception) {
+            Log.e(TAG, "memory_store failed: ${e.message}", e)
             SkillResult.Error("Failed to store memory: ${e.message}")
         }
     }
@@ -171,15 +254,20 @@ class MemorySkill(
         val memoryId = params["memory_id"]?.jsonPrimitive?.content
             ?: return SkillResult.Error("Missing required parameter: memory_id")
 
+        Log.d(TAG, "memory_delete: id=$memoryId")
+
         return try {
             val existing = memoryManager.get(memoryId)
             if (existing == null) {
+                Log.w(TAG, "memory_delete: not found id=$memoryId")
                 SkillResult.Error("Memory not found: $memoryId")
             } else {
                 memoryManager.delete(memoryId)
+                Log.i(TAG, "memory_delete: deleted id=$memoryId")
                 SkillResult.Success("Memory deleted: $memoryId")
             }
         } catch (e: Exception) {
+            Log.e(TAG, "memory_delete failed: ${e.message}", e)
             SkillResult.Error("Failed to delete memory: ${e.message}")
         }
     }

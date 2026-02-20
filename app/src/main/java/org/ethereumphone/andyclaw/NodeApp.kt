@@ -160,7 +160,7 @@ class NodeApp : Application() {
             // Reminders — schedule notifications at specific times
             register(ReminderSkill(this@NodeApp))
             // Termux integration — full Linux environment via Termux app
-            register(TermuxSkill(this@NodeApp, termuxCommandRunner))
+            register(TermuxSkill(this@NodeApp))
             // Aurora Store — download and install apps from Play Store
             register(AuroraStoreSkill(this@NodeApp))
             // Web Search — search the web and fetch webpage content

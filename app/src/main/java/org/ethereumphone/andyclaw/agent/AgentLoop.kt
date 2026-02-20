@@ -1,5 +1,6 @@
 package org.ethereumphone.andyclaw.agent
 
+import android.util.Log
 import kotlinx.coroutines.CancellationException
 import kotlinx.serialization.json.JsonObject
 import org.ethereumphone.andyclaw.llm.AnthropicClient
@@ -27,9 +28,10 @@ class AgentLoop(
     private val memoryManager: MemoryManager? = null,
 ) {
     companion object {
+        private const val TAG = "AgentLoop"
         private const val MAX_ITERATIONS = 20
         private const val MEMORY_CONTEXT_MAX_RESULTS = 3
-        private const val MEMORY_CONTEXT_MIN_SCORE = 0.4f
+        private const val MEMORY_CONTEXT_MIN_SCORE = 0.25f
     }
 
     interface Callbacks {
@@ -229,16 +231,24 @@ class AgentLoop(
      * or blank if no relevant memories are found (or no memory manager is set).
      */
     private suspend fun fetchMemoryContext(userMessage: String): String {
-        val manager = memoryManager ?: return ""
+        val manager = memoryManager ?: run {
+            Log.d(TAG, "fetchMemoryContext: no MemoryManager set, skipping")
+            return ""
+        }
 
         return try {
+            Log.d(TAG, "fetchMemoryContext: searching for context, query=\"${userMessage.take(80)}\"")
             val results = manager.search(
                 query = userMessage,
                 maxResults = MEMORY_CONTEXT_MAX_RESULTS,
                 minScore = MEMORY_CONTEXT_MIN_SCORE,
             )
-            if (results.isEmpty()) return ""
+            if (results.isEmpty()) {
+                Log.d(TAG, "fetchMemoryContext: no relevant memories found")
+                return ""
+            }
 
+            Log.i(TAG, "fetchMemoryContext: injecting ${results.size} memory/memories into system prompt")
             results.joinToString("\n") { result ->
                 buildString {
                     append("- ${result.snippet}")
@@ -247,8 +257,8 @@ class AgentLoop(
                     }
                 }
             }
-        } catch (_: Exception) {
-            // Memory search is best-effort; don't block the agent on failure
+        } catch (e: Exception) {
+            Log.w(TAG, "fetchMemoryContext: search failed: ${e.message}", e)
             ""
         }
     }

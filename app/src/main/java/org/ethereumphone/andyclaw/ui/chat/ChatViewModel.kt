@@ -261,27 +261,25 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     /**
-     * Automatically store a condensed conversation turn to long-term memory.
+     * Automatically store the user's message to long-term memory.
      *
-     * Follows OpenClaw's session-memory pattern: important interactions are
-     * persisted so the agent can recall them in future conversations.
-     * Only stores turns with substantive content (> 80 chars combined).
-     * Respects the user's auto-store preference from Settings.
+     * Only the user's text is stored (not the assistant's reply) to keep
+     * memories concise, searchable, and embedding-friendly. Generic assistant
+     * acknowledgments like "Sure, I'll remember that!" dilute both keyword
+     * and vector search quality.
+     *
+     * Skips very short messages (< 20 chars) which are unlikely to contain
+     * memorable facts. Respects the user's auto-store preference from Settings.
      */
-    private fun autoStoreConversationTurn(userText: String, assistantText: String) {
-        // Check if auto-store is enabled
+    private fun autoStoreConversationTurn(userText: String, @Suppress("UNUSED_PARAMETER") assistantText: String) {
         val autoStoreEnabled = app.securePrefs.getString("memory.autoStore") != "false"
         if (!autoStoreEnabled) return
-        if (userText.length + assistantText.length < 80) return
+        if (userText.length < 20) return
 
         viewModelScope.launch {
             try {
-                val summary = buildString {
-                    appendLine("User: ${userText.take(500)}")
-                    appendLine("Assistant: ${assistantText.take(500)}")
-                }
                 memoryManager.store(
-                    content = summary,
+                    content = userText.take(500),
                     source = MemorySource.CONVERSATION,
                     tags = listOf("conversation"),
                     importance = 0.3f,

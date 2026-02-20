@@ -91,15 +91,14 @@ class MemorySearchManager(
         agentId: String,
         allowedIds: Set<String>?,
     ): Map<Long, ScoredChunk> {
-        // Build an FTS4 MATCH expression.
-        // Tokenise the query and OR the terms for broad recall.
-        val ftsQuery = buildFtsQuery(query)
-        if (ftsQuery.isBlank()) return emptyMap()
+        val queryTerms = tokenize(query)
+        if (queryTerms.isEmpty()) return emptyMap()
+
+        val ftsQuery = queryTerms.joinToString(" OR ")
 
         val chunks = try {
             dao.searchChunksFtsByAgent(ftsQuery, agentId)
         } catch (_: Exception) {
-            // FTS can throw on malformed queries; degrade gracefully.
             emptyList()
         }
 
@@ -111,15 +110,33 @@ class MemorySearchManager(
 
         if (filtered.isEmpty()) return emptyMap()
 
-        // Assign simple rank: earlier = better (FTS returns by relevance).
-        // Normalise to [0, 1] based on position.
+        // Score by proportion of query terms found in the chunk text.
+        // A chunk matching 4/4 terms scores 1.0; matching 1/4 scores 0.25.
+        // FTS position is used as a tiebreaker within the same overlap count.
+        val totalTerms = queryTerms.size.toFloat()
         val maxRank = filtered.size.toFloat()
+
         return filtered.mapIndexed { index, chunk ->
+            val chunkLower = chunk.text.lowercase()
+            val matchedTerms = queryTerms.count { term -> chunkLower.contains(term) }
+            val overlapScore = matchedTerms / totalTerms
+            val positionBonus = (maxRank - index) / maxRank * 0.1f
             chunk.rowId to ScoredChunk(
                 chunk = chunk,
-                score = (maxRank - index) / maxRank,
+                score = (overlapScore + positionBonus).coerceAtMost(1f),
             )
         }.toMap()
+    }
+
+    /**
+     * Tokenize a query string into lowercase search terms.
+     * Strips non-word characters and drops tokens shorter than 2 chars.
+     */
+    private fun tokenize(query: String): List<String> {
+        return query
+            .split(Regex("\\s+"))
+            .map { it.replace(Regex("[^\\w]"), "").lowercase() }
+            .filter { it.length >= 2 }
     }
 
     /**
@@ -129,11 +146,7 @@ class MemorySearchManager(
      * Example: "user preferences dark mode" → "user OR preferences OR dark OR mode"
      */
     private fun buildFtsQuery(query: String): String {
-        return query
-            .split(Regex("\\s+"))
-            .map { it.replace(Regex("[^\\w]"), "") }
-            .filter { it.length >= 2 }
-            .joinToString(" OR ")
+        return tokenize(query).joinToString(" OR ")
     }
 
     // ────────────────────────────────────────────────────────────────
@@ -192,11 +205,21 @@ class MemorySearchManager(
         val allRowIds = keywordHits.keys + vectorHits.keys
         if (allRowIds.isEmpty()) return emptyList()
 
-        // Build combined scores
+        val hasKeyword = keywordHits.isNotEmpty()
+        val hasVector = vectorHits.isNotEmpty()
+
+        // Build combined scores.
+        // When only one modality produced results, use its raw score so that
+        // keyword-only results aren't capped at keywordWeight (e.g. 0.3)
+        // which would fall below typical minScore thresholds.
         val scored = allRowIds.map { rowId ->
             val kwScore = keywordHits[rowId]?.score ?: 0f
             val vecScore = vectorHits[rowId]?.score ?: 0f
-            val combined = keywordWeight * kwScore + vectorWeight * vecScore
+            val combined = when {
+                hasKeyword && hasVector -> keywordWeight * kwScore + vectorWeight * vecScore
+                hasKeyword -> kwScore
+                else -> vecScore
+            }
             val chunk = keywordHits[rowId]?.chunk ?: vectorHits[rowId]!!.chunk
             chunk to combined
         }
@@ -231,7 +254,7 @@ class MemorySearchManager(
         const val DEFAULT_VECTOR_WEIGHT = 0.7f
         const val DEFAULT_KEYWORD_WEIGHT = 0.3f
         const val DEFAULT_MAX_RESULTS = 6
-        const val DEFAULT_MIN_SCORE = 0.35f
+        const val DEFAULT_MIN_SCORE = 0.20f
         const val DEFAULT_CANDIDATE_MULTIPLIER = 4
     }
 }
