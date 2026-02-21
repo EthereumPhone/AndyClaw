@@ -31,22 +31,6 @@ android {
         buildConfigField("String", "ALCHEMY_API", "\"${localProps.getProperty("ALCHEMY_API", "")}\"")
         buildConfigField("String", "PREMIUM_LLM_URL", "\"${localProps.getProperty("PREMIUM_LLM_URL", "https://api.markushaas.com/api/premium-llm-andy")}\"")
 
-        ndk {
-            abiFilters += "arm64-v8a"
-        }
-
-        externalNativeBuild {
-            cmake {
-                arguments += "-DANDROID_STL=c++_shared"
-            }
-        }
-    }
-
-    externalNativeBuild {
-        cmake {
-            path = file("src/main/cpp/CMakeLists.txt")
-            version = "3.22.1"
-        }
     }
 
     if (localProps.containsKey("RELEASE_STORE_FILE")) {
@@ -124,6 +108,8 @@ dependencies {
     implementation(libs.exifinterface)
     implementation(libs.security.crypto)
     implementation(libs.beanshell)
+    // Llamatik — Kotlin Multiplatform llama.cpp wrapper for local LLM inference
+    implementation("com.llamatik:library:0.16.0")
     // Aurora Store gplayapi for downloading apps from Play Store
     implementation(libs.gplayapi)
     // DgenSubAccountSDK — gives the LLM its own sub-account wallet (SubWalletSDK)

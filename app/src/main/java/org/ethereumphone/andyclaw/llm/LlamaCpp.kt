@@ -1,26 +1,19 @@
 package org.ethereumphone.andyclaw.llm
 
 import android.util.Log
+import com.llamatik.library.platform.GenStream
+import com.llamatik.library.platform.LlamaBridge
 
 /**
- * JNI bindings for the llama.cpp inference engine.
+ * Wrapper around [LlamaBridge] (Llamatik) for local LLM inference.
  *
- * Manages the native model lifecycle: load, inference, unload.
- * All methods are thread-safe via synchronized blocks on the instance.
+ * Manages model lifecycle and exposes generate/stream methods.
+ * All methods are thread-safe via synchronized blocks.
  */
 class LlamaCpp {
 
     companion object {
         private const val TAG = "LlamaCpp"
-
-        init {
-            try {
-                System.loadLibrary("llama_bridge")
-                Log.i(TAG, "llama_bridge native library loaded")
-            } catch (e: UnsatisfiedLinkError) {
-                Log.w(TAG, "llama_bridge native library not available: ${e.message}")
-            }
-        }
     }
 
     @Volatile
@@ -28,12 +21,13 @@ class LlamaCpp {
         private set
 
     @Synchronized
-    fun load(modelPath: String, contextSize: Int = 4096): Boolean {
+    fun load(modelPath: String): Boolean {
         if (isModelLoaded) {
-            Log.d(TAG, "Model already loaded, unloading first")
+            Log.d(TAG, "Model already loaded, shutting down first")
             unload()
         }
-        val result = loadModel(modelPath, contextSize)
+        Log.i(TAG, "Loading model via Llamatik: $modelPath")
+        val result = LlamaBridge.initGenerateModel(modelPath)
         isModelLoaded = result
         Log.i(TAG, "loadModel result: $result")
         return result
@@ -42,35 +36,19 @@ class LlamaCpp {
     @Synchronized
     fun unload() {
         if (!isModelLoaded) return
-        unloadModel()
+        LlamaBridge.shutdown()
         isModelLoaded = false
         Log.i(TAG, "Model unloaded")
     }
 
     @Synchronized
-    fun complete(requestJson: String): String {
+    fun generate(prompt: String): String {
         check(isModelLoaded) { "Model not loaded" }
-        return chatCompletion(requestJson)
+        return LlamaBridge.generate(prompt)
     }
 
-    @Synchronized
-    fun completeStream(requestJson: String, callback: LlamaStreamCallback) {
+    fun generateStream(prompt: String, callback: GenStream) {
         check(isModelLoaded) { "Model not loaded" }
-        chatCompletionStream(requestJson, callback)
+        LlamaBridge.generateStream(prompt, callback)
     }
-
-    // JNI methods
-    private external fun loadModel(modelPath: String, nCtx: Int): Boolean
-    private external fun unloadModel()
-    private external fun chatCompletion(requestJson: String): String
-    private external fun chatCompletionStream(requestJson: String, callback: LlamaStreamCallback)
-}
-
-/**
- * Callback interface for streaming tokens from llama.cpp JNI.
- */
-interface LlamaStreamCallback {
-    fun onToken(token: String)
-    fun onComplete(responseJson: String)
-    fun onError(error: String)
 }

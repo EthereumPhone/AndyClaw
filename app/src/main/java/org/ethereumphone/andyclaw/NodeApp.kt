@@ -223,7 +223,7 @@ class NodeApp : Application() {
     }
 
     private val localLlmClient: LocalLlmClient by lazy {
-        LocalLlmClient(llamaCpp)
+        LocalLlmClient(llamaCpp, modelDownloadManager)
     }
 
     /**

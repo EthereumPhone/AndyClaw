@@ -215,7 +215,7 @@ fun SettingsScreen(
                         Card(modifier = Modifier.fillMaxWidth()) {
                             Column(modifier = Modifier.padding(16.dp)) {
                                 Text(
-                                    text = "On-Device Model (Qwen3-4B)",
+                                    text = "On-Device Model (Qwen2.5-1.5B)",
                                     style = MaterialTheme.typography.bodyLarge,
                                 )
                                 Text(

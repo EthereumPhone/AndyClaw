@@ -22,7 +22,7 @@ import java.util.concurrent.TimeUnit
  */
 class TinfoilClient(
     private val apiKey: () -> String,
-    private val baseUrl: String = "https://api.tinfoil.sh/v1",
+    private val baseUrl: String = "https://inference.tinfoil.sh/v1",
 ) : LlmClient {
 
     companion object {
@@ -61,6 +61,7 @@ class TinfoilClient(
 
         if (!response.isSuccessful) {
             val errorBody = response.body?.string() ?: "Unknown error"
+            Log.e(TAG, "streamMessage failed: ${response.code} $errorBody")
             callback.onError(AnthropicApiException(response.code, errorBody))
             return@withContext
         }
@@ -74,6 +75,9 @@ class TinfoilClient(
                     accumulator.onData(data)
                 }
             }
+        } catch (e: Exception) {
+            Log.e(TAG, "streamMessage error reading stream", e)
+            callback.onError(e)
         } finally {
             reader.close()
             response.close()

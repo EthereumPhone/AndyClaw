@@ -16,7 +16,7 @@ import java.util.concurrent.TimeUnit
 /**
  * Manages downloading and storing the local GGUF model file.
  *
- * Downloads the Qwen3-4B Q4_K_M quantization (~2.5 GB) from HuggingFace
+ * Downloads the Qwen2.5-1.5B-Instruct Q2_K quantization (~753 MB) from HuggingFace
  * with progress tracking.
  */
 class ModelDownloadManager(
@@ -24,9 +24,9 @@ class ModelDownloadManager(
 ) {
     companion object {
         private const val TAG = "ModelDownloadManager"
-        private const val MODEL_FILENAME = "qwen3-4b-q4_k_m.gguf"
+        private const val MODEL_FILENAME = "qwen2.5-1.5b-instruct-q2_k.gguf"
         private const val MODEL_URL =
-            "https://huggingface.co/Qwen/Qwen3-4B-GGUF/resolve/main/qwen3-4b-q4_k_m.gguf"
+            "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q2_k.gguf"
         private const val BUFFER_SIZE = 8192
     }
 
@@ -45,7 +45,7 @@ class ModelDownloadManager(
     val isModelDownloaded: Boolean get() = modelFile.exists() && modelFile.length() > 0
 
     /** Approximate model file size in bytes. */
-    val modelSizeBytes: Long = 2_700_000_000L
+    val modelSizeBytes: Long = 753_000_000L
 
     private val client = OkHttpClient.Builder()
         .connectTimeout(30, TimeUnit.SECONDS)

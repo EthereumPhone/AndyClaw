@@ -293,7 +293,7 @@ private fun StepProviderSelection(
         // Provider cards
         ProviderCard(
             provider = LlmProvider.LOCAL,
-            label = "On-Device (Qwen3-4B)",
+            label = "On-Device (Qwen2.5-1.5B)",
             description = "Best privacy \u2014 runs entirely on your phone. No data leaves the device. Slower performance, limited capabilities.",
             isSelected = selectedProvider == LlmProvider.LOCAL,
             onClick = { onProviderSelected(LlmProvider.LOCAL) },
