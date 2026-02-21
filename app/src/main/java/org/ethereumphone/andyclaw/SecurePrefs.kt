@@ -14,6 +14,7 @@ import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonPrimitive
 import org.ethereumphone.andyclaw.gateway.KeyValueStore
+import org.ethereumphone.andyclaw.llm.LlmProvider
 import java.util.UUID
 
 class SecurePrefs(context: Context) : KeyValueStore {
@@ -114,6 +115,12 @@ class SecurePrefs(context: Context) : KeyValueStore {
 
   private val _apiKey = MutableStateFlow(prefs.getString("anthropic.apiKey", "") ?: "")
   val apiKey: StateFlow<String> = _apiKey
+
+  private val _selectedProvider = MutableStateFlow(loadSelectedProvider())
+  val selectedProvider: StateFlow<LlmProvider> = _selectedProvider
+
+  private val _tinfoilApiKey = MutableStateFlow(prefs.getString("tinfoil.apiKey", "") ?: "")
+  val tinfoilApiKey: StateFlow<String> = _tinfoilApiKey
 
   private val _selectedModel = MutableStateFlow(prefs.getString("anthropic.model", "minimax/minimax-m2.5") ?: "minimax/minimax-m2.5")
   val selectedModel: StateFlow<String> = _selectedModel
@@ -320,6 +327,17 @@ class SecurePrefs(context: Context) : KeyValueStore {
     _apiKey.value = trimmed
   }
 
+  fun setSelectedProvider(provider: LlmProvider) {
+    prefs.edit { putString("llm.provider", provider.name) }
+    _selectedProvider.value = provider
+  }
+
+  fun setTinfoilApiKey(value: String) {
+    val trimmed = value.trim()
+    prefs.edit { putString("tinfoil.apiKey", trimmed) }
+    _tinfoilApiKey.value = trimmed
+  }
+
   fun setSelectedModel(value: String) {
     val trimmed = value.trim()
     prefs.edit { putString("anthropic.model", trimmed) }
@@ -365,6 +383,11 @@ class SecurePrefs(context: Context) : KeyValueStore {
     } catch (_: Throwable) {
       emptySet()
     }
+  }
+
+  private fun loadSelectedProvider(): LlmProvider {
+    val raw = prefs.getString("llm.provider", null)
+    return LlmProvider.fromName(raw ?: "") ?: LlmProvider.OPEN_ROUTER
   }
 
   private fun loadVoiceWakeMode(): VoiceWakeMode {

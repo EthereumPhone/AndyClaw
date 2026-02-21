@@ -14,6 +14,8 @@ import org.ethereumphone.andyclaw.NodeApp
 import org.ethereumphone.andyclaw.extensions.ExtensionDescriptor
 import org.ethereumphone.andyclaw.extensions.toSkillAdapters
 import org.ethereumphone.andyclaw.llm.AnthropicModels
+import org.ethereumphone.andyclaw.llm.LlmProvider
+import org.ethereumphone.andyclaw.llm.ModelDownloadManager
 import org.ethereumphone.andyclaw.skills.tier.OsCapabilities
 
 class SettingsViewModel(application: Application) : AndroidViewModel(application) {
@@ -29,10 +31,25 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
     val heartbeatOnXmtpMessageEnabled = prefs.heartbeatOnXmtpMessageEnabled
     val heartbeatIntervalMinutes = prefs.heartbeatIntervalMinutes
 
+    val selectedProvider = prefs.selectedProvider
+    val tinfoilApiKey = prefs.tinfoilApiKey
+
     val currentTier: String get() = OsCapabilities.currentTier().name
     val isPrivileged: Boolean get() = OsCapabilities.hasPrivilegedAccess
 
-    val availableModels = AnthropicModels.entries.toList()
+    /** Available models filtered by the currently selected provider. */
+    val availableModels: List<AnthropicModels>
+        get() {
+            val provider = if (isPrivileged) null else prefs.selectedProvider.value
+            return if (provider != null) {
+                AnthropicModels.forProvider(provider)
+            } else {
+                // ethOS: show OpenRouter models (premium gateway)
+                AnthropicModels.forProvider(LlmProvider.OPEN_ROUTER)
+            }
+        }
+
+    val modelDownloadManager: ModelDownloadManager get() = app.modelDownloadManager
 
     val registeredSkills get() = app.nativeSkillRegistry.getAll()
 
@@ -63,6 +80,34 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
     }
 
     // ── Actions ─────────────────────────────────────────────────────────
+
+    fun setSelectedProvider(provider: LlmProvider) {
+        prefs.setSelectedProvider(provider)
+        // Switch to the default model for the new provider
+        val defaultModel = AnthropicModels.defaultForProvider(provider)
+        prefs.setSelectedModel(defaultModel.modelId)
+        // Unload local model when switching away from LOCAL
+        if (provider != LlmProvider.LOCAL && app.llamaCpp.isModelLoaded) {
+            app.llamaCpp.unload()
+        }
+    }
+
+    fun setTinfoilApiKey(key: String) {
+        prefs.setTinfoilApiKey(key)
+    }
+
+    fun downloadLocalModel() {
+        viewModelScope.launch {
+            app.modelDownloadManager.download()
+        }
+    }
+
+    fun deleteLocalModel() {
+        app.modelDownloadManager.deleteModel()
+        if (app.llamaCpp.isModelLoaded) {
+            app.llamaCpp.unload()
+        }
+    }
 
     fun setSelectedModel(modelId: String) {
         prefs.setSelectedModel(modelId)

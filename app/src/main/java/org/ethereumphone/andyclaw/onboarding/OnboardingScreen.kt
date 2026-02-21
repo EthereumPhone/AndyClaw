@@ -6,6 +6,8 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -42,6 +44,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import org.ethereumphone.andyclaw.llm.LlmProvider
 import org.ethereumphone.andyclaw.skills.AndyClawSkill
 import org.ethereumphone.andyclaw.skills.Tier
 import org.ethereumphone.andyclaw.skills.tier.OsCapabilities
@@ -59,6 +62,8 @@ fun OnboardingScreen(
     val walletAddress by viewModel.walletAddress.collectAsState()
     val isSigning by viewModel.isSigning.collectAsState()
     val apiKey by viewModel.apiKey.collectAsState()
+    val selectedProvider by viewModel.selectedProvider.collectAsState()
+    val tinfoilApiKey by viewModel.tinfoilApiKey.collectAsState()
     val goals by viewModel.goals.collectAsState()
     val customName by viewModel.customName.collectAsState()
     val values by viewModel.values.collectAsState()
@@ -115,7 +120,15 @@ fun OnboardingScreen(
                 label = "onboarding_step",
             ) { step ->
                 val canAdvance = when (currentStep) {
-                    0 -> if (isPrivileged) walletAddress.isNotBlank() else apiKey.isNotBlank()
+                    0 -> if (isPrivileged) {
+                        walletAddress.isNotBlank()
+                    } else {
+                        when (selectedProvider) {
+                            LlmProvider.OPEN_ROUTER -> apiKey.isNotBlank()
+                            LlmProvider.TINFOIL -> tinfoilApiKey.isNotBlank()
+                            LlmProvider.LOCAL -> true
+                        }
+                    }
                     1 -> goals.isNotBlank()
                     else -> true
                 }
@@ -129,7 +142,15 @@ fun OnboardingScreen(
                             onSign = { viewModel.signWithWallet() },
                         )
                     } else {
-                        StepApiKey(apiKey, onNext = onNext) { viewModel.apiKey.value = it }
+                        StepProviderSelection(
+                            selectedProvider = selectedProvider,
+                            apiKey = apiKey,
+                            tinfoilApiKey = tinfoilApiKey,
+                            onProviderSelected = { viewModel.selectedProvider.value = it },
+                            onApiKeyChange = { viewModel.apiKey.value = it },
+                            onTinfoilApiKeyChange = { viewModel.tinfoilApiKey.value = it },
+                            onNext = onNext,
+                        )
                     }
                     1 -> StepGoals(goals, onNext = onNext) { viewModel.goals.value = it }
                     2 -> StepName(customName, onNext = onNext) { viewModel.customName.value = it }
@@ -164,7 +185,15 @@ fun OnboardingScreen(
                     Button(
                         onClick = { viewModel.nextStep() },
                         enabled = when (currentStep) {
-                            0 -> if (isPrivileged) walletAddress.isNotBlank() else apiKey.isNotBlank()
+                            0 -> if (isPrivileged) {
+                                walletAddress.isNotBlank()
+                            } else {
+                                when (selectedProvider) {
+                                    LlmProvider.OPEN_ROUTER -> apiKey.isNotBlank()
+                                    LlmProvider.TINFOIL -> tinfoilApiKey.isNotBlank()
+                                    LlmProvider.LOCAL -> true
+                                }
+                            }
                             1 -> goals.isNotBlank()
                             else -> true
                         },
@@ -239,28 +268,144 @@ private fun StepWalletSign(
 }
 
 @Composable
-private fun StepApiKey(value: String, onNext: () -> Unit, onValueChange: (String) -> Unit) {
-    Column {
+private fun StepProviderSelection(
+    selectedProvider: LlmProvider,
+    apiKey: String,
+    tinfoilApiKey: String,
+    onProviderSelected: (LlmProvider) -> Unit,
+    onApiKeyChange: (String) -> Unit,
+    onTinfoilApiKeyChange: (String) -> Unit,
+    onNext: () -> Unit,
+) {
+    Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
         Text(
-            text = "Enter your API key",
+            text = "Choose your AI provider",
             style = MaterialTheme.typography.headlineSmall,
         )
         Spacer(Modifier.height(8.dp))
         Text(
-            text = "An OpenRouter API key is required to power your AI assistant. You can get one at openrouter.ai.",
+            text = "Select how your AI assistant processes requests. You can change this later in Settings.",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         Spacer(Modifier.height(16.dp))
-        OutlinedTextField(
-            value = value,
-            onValueChange = onValueChange,
-            modifier = Modifier.fillMaxWidth(),
-            placeholder = { Text("sk-or-v1-...") },
-            singleLine = true,
-            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
-            keyboardActions = KeyboardActions(onNext = { onNext() }),
+
+        // Provider cards
+        ProviderCard(
+            provider = LlmProvider.LOCAL,
+            label = "On-Device (Qwen3-4B)",
+            description = "Best privacy \u2014 runs entirely on your phone. No data leaves the device. Slower performance, limited capabilities.",
+            isSelected = selectedProvider == LlmProvider.LOCAL,
+            onClick = { onProviderSelected(LlmProvider.LOCAL) },
         )
+        Spacer(Modifier.height(8.dp))
+        ProviderCard(
+            provider = LlmProvider.TINFOIL,
+            label = "Tinfoil TEE",
+            description = "Best balance \u2014 cloud inference inside a verified Trusted Execution Environment. Strong privacy with good performance.",
+            isSelected = selectedProvider == LlmProvider.TINFOIL,
+            onClick = { onProviderSelected(LlmProvider.TINFOIL) },
+        )
+        Spacer(Modifier.height(8.dp))
+        ProviderCard(
+            provider = LlmProvider.OPEN_ROUTER,
+            label = "OpenRouter",
+            description = "Best performance \u2014 cloud inference via OpenRouter. Fast and capable, but prompts are processed by third-party servers.",
+            isSelected = selectedProvider == LlmProvider.OPEN_ROUTER,
+            onClick = { onProviderSelected(LlmProvider.OPEN_ROUTER) },
+        )
+
+        Spacer(Modifier.height(16.dp))
+
+        // Provider-specific input
+        when (selectedProvider) {
+            LlmProvider.OPEN_ROUTER -> {
+                OutlinedTextField(
+                    value = apiKey,
+                    onValueChange = onApiKeyChange,
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("OpenRouter API Key") },
+                    placeholder = { Text("sk-or-v1-...") },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
+                    keyboardActions = KeyboardActions(onNext = { onNext() }),
+                )
+            }
+            LlmProvider.TINFOIL -> {
+                OutlinedTextField(
+                    value = tinfoilApiKey,
+                    onValueChange = onTinfoilApiKeyChange,
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("Tinfoil API Key") },
+                    placeholder = { Text("tf-...") },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
+                    keyboardActions = KeyboardActions(onNext = { onNext() }),
+                )
+            }
+            LlmProvider.LOCAL -> {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.surfaceVariant,
+                    ),
+                ) {
+                    Text(
+                        text = "No API key needed. The model (~2.5 GB) will be downloaded after setup.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        modifier = Modifier.padding(16.dp),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ProviderCard(
+    provider: LlmProvider,
+    label: String,
+    description: String,
+    isSelected: Boolean,
+    onClick: () -> Unit,
+) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick),
+        colors = CardDefaults.cardColors(
+            containerColor = if (isSelected) {
+                MaterialTheme.colorScheme.primaryContainer
+            } else {
+                MaterialTheme.colorScheme.surfaceVariant
+            },
+        ),
+        border = if (isSelected) {
+            BorderStroke(2.dp, MaterialTheme.colorScheme.primary)
+        } else null,
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Text(
+                text = label,
+                style = MaterialTheme.typography.titleMedium,
+                color = if (isSelected) {
+                    MaterialTheme.colorScheme.onPrimaryContainer
+                } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                },
+            )
+            Spacer(Modifier.height(4.dp))
+            Text(
+                text = description,
+                style = MaterialTheme.typography.bodySmall,
+                color = if (isSelected) {
+                    MaterialTheme.colorScheme.onPrimaryContainer
+                } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                },
+            )
+        }
     }
 }
 

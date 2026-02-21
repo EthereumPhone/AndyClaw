@@ -31,6 +31,22 @@ android {
         buildConfigField("String", "ALCHEMY_API", "\"${localProps.getProperty("ALCHEMY_API", "")}\"")
         buildConfigField("String", "PREMIUM_LLM_URL", "\"${localProps.getProperty("PREMIUM_LLM_URL", "https://api.markushaas.com/api/premium-llm-andy")}\"")
 
+        ndk {
+            abiFilters += "arm64-v8a"
+        }
+
+        externalNativeBuild {
+            cmake {
+                arguments += "-DANDROID_STL=c++_shared"
+            }
+        }
+    }
+
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+            version = "3.22.1"
+        }
     }
 
     if (localProps.containsKey("RELEASE_STORE_FILE")) {

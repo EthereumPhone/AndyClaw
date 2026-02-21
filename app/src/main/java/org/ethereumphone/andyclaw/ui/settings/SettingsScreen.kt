@@ -39,7 +39,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.compose.material3.Button
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.OutlinedButton
 import org.ethereumphone.andyclaw.llm.AnthropicModels
+import org.ethereumphone.andyclaw.llm.LlmProvider
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -50,6 +54,11 @@ fun SettingsScreen(
     viewModel: SettingsViewModel = viewModel(),
 ) {
     val selectedModel by viewModel.selectedModel.collectAsState()
+    val selectedProvider by viewModel.selectedProvider.collectAsState()
+    val tinfoilApiKey by viewModel.tinfoilApiKey.collectAsState()
+    val downloadProgress by viewModel.modelDownloadManager.downloadProgress.collectAsState()
+    val isDownloading by viewModel.modelDownloadManager.isDownloading.collectAsState()
+    val downloadError by viewModel.modelDownloadManager.downloadError.collectAsState()
     val yoloMode by viewModel.yoloMode.collectAsState()
     val notificationReplyEnabled by viewModel.notificationReplyEnabled.collectAsState()
     val heartbeatOnNotificationEnabled by viewModel.heartbeatOnNotificationEnabled.collectAsState()
@@ -113,6 +122,148 @@ fun SettingsScreen(
                                 modelDropdownExpanded = false
                             },
                         )
+                    }
+                }
+            }
+
+            // AI Provider (non-ethOS only)
+            if (!viewModel.isPrivileged) {
+                Spacer(Modifier.height(24.dp))
+                HorizontalDivider()
+                Spacer(Modifier.height(16.dp))
+
+                Text(
+                    text = "AI Provider",
+                    style = MaterialTheme.typography.titleMedium,
+                )
+                Spacer(Modifier.height(8.dp))
+
+                var providerDropdownExpanded by remember { mutableStateOf(false) }
+                ExposedDropdownMenuBox(
+                    expanded = providerDropdownExpanded,
+                    onExpandedChange = { providerDropdownExpanded = it },
+                ) {
+                    OutlinedTextField(
+                        value = selectedProvider.displayName,
+                        onValueChange = {},
+                        readOnly = true,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .menuAnchor(MenuAnchorType.PrimaryNotEditable),
+                        trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = providerDropdownExpanded) },
+                        supportingText = { Text(selectedProvider.description) },
+                    )
+                    ExposedDropdownMenu(
+                        expanded = providerDropdownExpanded,
+                        onDismissRequest = { providerDropdownExpanded = false },
+                    ) {
+                        for (provider in LlmProvider.entries) {
+                            DropdownMenuItem(
+                                text = {
+                                    Column {
+                                        Text(provider.displayName)
+                                        Text(
+                                            text = provider.description,
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        )
+                                    }
+                                },
+                                onClick = {
+                                    viewModel.setSelectedProvider(provider)
+                                    providerDropdownExpanded = false
+                                },
+                            )
+                        }
+                    }
+                }
+
+                Spacer(Modifier.height(8.dp))
+
+                // Provider-specific config
+                when (selectedProvider) {
+                    LlmProvider.OPEN_ROUTER -> {
+                        Card(modifier = Modifier.fillMaxWidth()) {
+                            Column(modifier = Modifier.padding(16.dp)) {
+                                Text(
+                                    text = "OpenRouter API Key",
+                                    style = MaterialTheme.typography.bodyLarge,
+                                )
+                                Text(
+                                    text = "Configured during onboarding. Re-run onboarding to change.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        }
+                    }
+                    LlmProvider.TINFOIL -> {
+                        var editingKey by remember { mutableStateOf(tinfoilApiKey) }
+                        OutlinedTextField(
+                            value = editingKey,
+                            onValueChange = {
+                                editingKey = it
+                                viewModel.setTinfoilApiKey(it)
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                            label = { Text("Tinfoil API Key") },
+                            placeholder = { Text("tf-...") },
+                            singleLine = true,
+                        )
+                    }
+                    LlmProvider.LOCAL -> {
+                        Card(modifier = Modifier.fillMaxWidth()) {
+                            Column(modifier = Modifier.padding(16.dp)) {
+                                Text(
+                                    text = "On-Device Model (Qwen3-4B)",
+                                    style = MaterialTheme.typography.bodyLarge,
+                                )
+                                Text(
+                                    text = "~2.5 GB Q4_K_M quantization",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                                Spacer(Modifier.height(12.dp))
+
+                                if (viewModel.modelDownloadManager.isModelDownloaded) {
+                                    Text(
+                                        text = "Model downloaded",
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        color = MaterialTheme.colorScheme.primary,
+                                    )
+                                    Spacer(Modifier.height(8.dp))
+                                    OutlinedButton(
+                                        onClick = { viewModel.deleteLocalModel() },
+                                    ) {
+                                        Text("Delete Model")
+                                    }
+                                } else if (isDownloading) {
+                                    Text(
+                                        text = "Downloading... ${(downloadProgress * 100).toInt()}%",
+                                        style = MaterialTheme.typography.bodyMedium,
+                                    )
+                                    Spacer(Modifier.height(8.dp))
+                                    LinearProgressIndicator(
+                                        progress = { downloadProgress },
+                                        modifier = Modifier.fillMaxWidth(),
+                                    )
+                                } else {
+                                    if (downloadError != null) {
+                                        Text(
+                                            text = "Error: $downloadError",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.error,
+                                        )
+                                        Spacer(Modifier.height(8.dp))
+                                    }
+                                    Button(
+                                        onClick = { viewModel.downloadLocalModel() },
+                                    ) {
+                                        Text("Download Model")
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }

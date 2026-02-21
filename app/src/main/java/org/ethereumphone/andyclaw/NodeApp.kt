@@ -15,6 +15,12 @@ import org.ethereumphone.andyclaw.skills.termux.ClawHubTermuxSkillAdapter
 import org.ethereumphone.andyclaw.skills.termux.TermuxCommandRunner
 import org.ethereumphone.andyclaw.skills.termux.TermuxSkillSync
 import org.ethereumphone.andyclaw.llm.AnthropicClient
+import org.ethereumphone.andyclaw.llm.LlamaCpp
+import org.ethereumphone.andyclaw.llm.LlmClient
+import org.ethereumphone.andyclaw.llm.LlmProvider
+import org.ethereumphone.andyclaw.llm.LocalLlmClient
+import org.ethereumphone.andyclaw.llm.ModelDownloadManager
+import org.ethereumphone.andyclaw.llm.TinfoilClient
 import org.ethereumphone.andyclaw.skills.SkillRegistry
 import org.ethereumphone.andyclaw.memory.MemoryManager
 import org.ethereumphone.andyclaw.memory.OpenAiEmbeddingProvider
@@ -190,6 +196,8 @@ class NodeApp : Application() {
         }
     }
 
+    // ── LLM providers ────────────────────────────────────────────────
+
     val anthropicClient: AnthropicClient by lazy {
         if (OsCapabilities.hasPrivilegedAccess) {
             AnthropicClient(
@@ -201,6 +209,37 @@ class NodeApp : Application() {
                 apiKey = { securePrefs.apiKey.value },
                 baseUrl = "https://openrouter.ai/api/v1/messages",
             )
+        }
+    }
+
+    private val tinfoilClient: TinfoilClient by lazy {
+        TinfoilClient(apiKey = { securePrefs.tinfoilApiKey.value })
+    }
+
+    val llamaCpp: LlamaCpp by lazy { LlamaCpp() }
+
+    val modelDownloadManager: ModelDownloadManager by lazy {
+        ModelDownloadManager(this)
+    }
+
+    private val localLlmClient: LocalLlmClient by lazy {
+        LocalLlmClient(llamaCpp)
+    }
+
+    /**
+     * Returns the appropriate [LlmClient] based on the user's selected provider.
+     *
+     * ethOS (privileged) devices always use the premium gateway via [anthropicClient].
+     * Non-privileged devices use the provider selected in preferences.
+     */
+    fun getLlmClient(): LlmClient {
+        if (OsCapabilities.hasPrivilegedAccess) {
+            return anthropicClient
+        }
+        return when (securePrefs.selectedProvider.value) {
+            LlmProvider.OPEN_ROUTER -> anthropicClient
+            LlmProvider.TINFOIL -> tinfoilClient
+            LlmProvider.LOCAL -> localLlmClient
         }
     }
 
@@ -218,8 +257,15 @@ class NodeApp : Application() {
             }
         }
 
-        // Wire up the embedding provider for semantic memory search
-        memoryManager.setEmbeddingProvider(embeddingProvider)
+        // Wire up the embedding provider for semantic memory search.
+        // Only set if the user has an OpenRouter API key or is on ethOS,
+        // since embeddings require an OpenAI-compatible endpoint.
+        // Without an embedding provider, memory degrades to keyword-only search.
+        if (OsCapabilities.hasPrivilegedAccess || securePrefs.apiKey.value.isNotBlank()) {
+            memoryManager.setEmbeddingProvider(embeddingProvider)
+        } else {
+            Log.i(TAG, "No embedding provider available — memory will use keyword-only search")
+        }
 
         // Wire ClawHub reload: when ClawHubManager installs/uninstalls a skill,
         // re-sync all ClawHub adapters into the NativeSkillRegistry.

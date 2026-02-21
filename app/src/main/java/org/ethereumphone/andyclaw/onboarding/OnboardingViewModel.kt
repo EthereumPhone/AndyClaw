@@ -15,6 +15,7 @@ import org.ethereumphone.andyclaw.BuildConfig
 import org.ethereumphone.andyclaw.NodeApp
 import org.ethereumphone.andyclaw.llm.AnthropicModels
 import org.ethereumphone.andyclaw.llm.ContentBlock
+import org.ethereumphone.andyclaw.llm.LlmProvider
 import org.ethereumphone.andyclaw.llm.Message
 import org.ethereumphone.andyclaw.llm.MessagesRequest
 import org.ethereumphone.andyclaw.skills.AndyClawSkill
@@ -37,6 +38,10 @@ class OnboardingViewModel(application: Application) : AndroidViewModel(applicati
 
     // API key auth (non-ethOS only)
     val apiKey = MutableStateFlow("")
+
+    // Provider selection (non-ethOS only)
+    val selectedProvider = MutableStateFlow(LlmProvider.OPEN_ROUTER)
+    val tinfoilApiKey = MutableStateFlow("")
 
     val goals = MutableStateFlow("")
     val customName = MutableStateFlow(generateFunnyName())
@@ -117,11 +122,20 @@ class OnboardingViewModel(application: Application) : AndroidViewModel(applicati
 
         viewModelScope.launch {
             try {
-                // Save auth so the AnthropicClient can use it
+                // Save auth so the LLM client can use it
                 if (isPrivileged) {
                     app.securePrefs.setWalletAuth(walletAddress.value, walletSignature.value)
                 } else {
-                    app.securePrefs.setApiKey(apiKey.value.trim())
+                    val provider = selectedProvider.value
+                    app.securePrefs.setSelectedProvider(provider)
+                    when (provider) {
+                        LlmProvider.OPEN_ROUTER -> app.securePrefs.setApiKey(apiKey.value.trim())
+                        LlmProvider.TINFOIL -> app.securePrefs.setTinfoilApiKey(tinfoilApiKey.value.trim())
+                        LlmProvider.LOCAL -> { /* No API key needed */ }
+                    }
+                    // Set default model for the selected provider
+                    val defaultModel = AnthropicModels.defaultForProvider(provider)
+                    app.securePrefs.setSelectedModel(defaultModel.modelId)
                 }
 
                 val prompt = buildString {
@@ -141,13 +155,15 @@ class OnboardingViewModel(application: Application) : AndroidViewModel(applicati
                 }
 
                 val story = try {
+                    val provider = if (isPrivileged) LlmProvider.OPEN_ROUTER else selectedProvider.value
+                    val profileModel = AnthropicModels.defaultForProvider(provider)
                     val request = MessagesRequest(
-                        model = AnthropicModels.MINIMAX_M25.modelId,
+                        model = profileModel.modelId,
                         maxTokens = 1024,
                         messages = listOf(Message.user(prompt)),
                     )
 
-                    val response = app.anthropicClient.sendMessage(request)
+                    val response = app.getLlmClient().sendMessage(request)
                     val text = response.content
                         .filterIsInstance<ContentBlock.TextBlock>()
                         .joinToString("\n") { it.text }

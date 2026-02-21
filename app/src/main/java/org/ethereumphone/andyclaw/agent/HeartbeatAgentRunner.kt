@@ -8,6 +8,7 @@ import org.ethereumphone.andyclaw.NodeApp
 import org.ethereumphone.andyclaw.heartbeat.HeartbeatLogEntry
 import org.ethereumphone.andyclaw.heartbeat.HeartbeatLogStore
 import org.ethereumphone.andyclaw.heartbeat.HeartbeatToolCall
+import org.ethereumphone.andyclaw.llm.AnthropicModels
 import org.ethereumphone.andyclaw.skills.SkillResult
 import org.ethereumphone.andyclaw.skills.tier.OsCapabilities
 
@@ -36,13 +37,16 @@ class HeartbeatAgentRunner(
         Log.i(TAG, "=== HEARTBEAT RUN STARTING ===")
         Log.i(TAG, "Prompt: ${prompt.take(500)}")
 
-        val client = app.anthropicClient
+        val client = app.getLlmClient()
         val registry = app.nativeSkillRegistry
         val tier = OsCapabilities.currentTier()
         val aiName = app.userStoryManager.getAiName()
         val userStory = app.userStoryManager.read()
 
         Log.i(TAG, "AI name: $aiName, tier: $tier, userStory present: ${userStory != null}")
+
+        val modelId = app.securePrefs.selectedModel.value
+        val model = AnthropicModels.fromModelId(modelId) ?: AnthropicModels.MINIMAX_M25
 
         val agentLoop = AgentLoop(
             client = client,
@@ -53,6 +57,7 @@ class HeartbeatAgentRunner(
             } else {
                 app.securePrefs.enabledSkills.value
             },
+            model = model,
             aiName = aiName,
             userStory = userStory,
         )

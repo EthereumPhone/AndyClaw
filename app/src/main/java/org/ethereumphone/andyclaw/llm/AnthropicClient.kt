@@ -16,7 +16,7 @@ class AnthropicClient(
     private val signature: () -> String = { "" },
     private val apiKey: () -> String = { "" },
     private val baseUrl: String = "https://api.markushaas.com/api/premium-llm-andy",
-) {
+) : LlmClient {
     companion object {
         private const val API_VERSION = "2023-06-01"
         private val JSON_MEDIA_TYPE = "application/json".toMediaType()
@@ -52,7 +52,7 @@ class AnthropicClient(
         return builder.build()
     }
 
-    suspend fun sendMessage(request: MessagesRequest): MessagesResponse = withContext(Dispatchers.IO) {
+    override suspend fun sendMessage(request: MessagesRequest): MessagesResponse = withContext(Dispatchers.IO) {
         val nonStreamRequest = request.copy(stream = false)
         val body = serializeRequest(nonStreamRequest)
         val httpRequest = buildRequest(body)
@@ -66,7 +66,7 @@ class AnthropicClient(
         json.decodeFromString<MessagesResponse>(responseBody)
     }
 
-    suspend fun streamMessage(request: MessagesRequest, callback: StreamingCallback) = withContext(Dispatchers.IO) {
+    override suspend fun streamMessage(request: MessagesRequest, callback: StreamingCallback) = withContext(Dispatchers.IO) {
         val streamRequest = request.copy(stream = true)
         val body = serializeRequest(streamRequest)
         val httpRequest = buildRequest(body)

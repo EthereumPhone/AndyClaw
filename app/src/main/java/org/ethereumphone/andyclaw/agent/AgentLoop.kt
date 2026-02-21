@@ -3,8 +3,8 @@ package org.ethereumphone.andyclaw.agent
 import android.util.Log
 import kotlinx.coroutines.CancellationException
 import kotlinx.serialization.json.JsonObject
-import org.ethereumphone.andyclaw.llm.AnthropicClient
 import org.ethereumphone.andyclaw.llm.AnthropicModels
+import org.ethereumphone.andyclaw.llm.LlmClient
 import org.ethereumphone.andyclaw.llm.ContentBlock
 import org.ethereumphone.andyclaw.llm.Message
 import org.ethereumphone.andyclaw.llm.MessageContent
@@ -18,7 +18,7 @@ import org.ethereumphone.andyclaw.skills.SkillResult
 import org.ethereumphone.andyclaw.skills.Tier
 
 class AgentLoop(
-    private val client: AnthropicClient,
+    private val client: LlmClient,
     private val skillRegistry: NativeSkillRegistry,
     private val tier: Tier,
     private val enabledSkillIds: Set<String> = emptySet(),
@@ -65,7 +65,13 @@ class AgentLoop(
             }
         }
 
-        val toolsJson = PromptAssembler.assembleTools(skills, tier)
+        val allToolsJson = PromptAssembler.assembleTools(skills, tier)
+        val toolsJson = if (client.maxToolCount > 0 && allToolsJson.size > client.maxToolCount) {
+            Log.d(TAG, "Trimming tools from ${allToolsJson.size} to ${client.maxToolCount} for constrained provider")
+            allToolsJson.take(client.maxToolCount)
+        } else {
+            allToolsJson
+        }
 
         val messages = conversationHistory.toMutableList()
         messages.add(Message.user(userMessage))

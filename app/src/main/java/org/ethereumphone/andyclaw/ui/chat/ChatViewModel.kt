@@ -119,7 +119,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             val modelId = app.securePrefs.selectedModel.value
             val model = AnthropicModels.fromModelId(modelId) ?: AnthropicModels.MINIMAX_M25
             val agentLoop = AgentLoop(
-                client = app.anthropicClient,
+                client = app.getLlmClient(),
                 skillRegistry = app.nativeSkillRegistry,
                 tier = org.ethereumphone.andyclaw.skills.tier.OsCapabilities.currentTier(),
                 enabledSkillIds = if (app.securePrefs.yoloMode.value) {

@@ -13,6 +13,7 @@ import org.ethereumphone.andyclaw.heartbeat.HeartbeatConfig
 import org.ethereumphone.andyclaw.heartbeat.HeartbeatOutcome
 import org.ethereumphone.andyclaw.heartbeat.HeartbeatRunner
 import org.ethereumphone.andyclaw.llm.AnthropicClient
+import org.ethereumphone.andyclaw.llm.LlmClient
 import org.ethereumphone.andyclaw.llm.AnthropicModels
 import org.ethereumphone.andyclaw.skills.NativeSkillRegistry
 import org.ethereumphone.andyclaw.skills.SkillRegistry
@@ -44,8 +45,13 @@ class NodeRuntime(private val context: Context) {
     /** The native skill registry for tool_use agent loop. */
     var nativeSkillRegistry: NativeSkillRegistry? = null
 
-    /** The Anthropic client for the agent loop. */
-    var anthropicClient: AnthropicClient? = null
+    /** The LLM client for the agent loop. */
+    var llmClient: LlmClient? = null
+
+    @Deprecated("Use llmClient instead", ReplaceWith("llmClient"))
+    var anthropicClient: AnthropicClient?
+        get() = llmClient as? AnthropicClient
+        set(value) { llmClient = value }
 
     /** The agent runner - override this to provide a real LLM backend. */
     var agentRunner: AgentRunner = NoOpAgentRunner()
@@ -173,7 +179,7 @@ class NodeRuntime(private val context: Context) {
         userStory: String? = null,
         enabledSkillIds: Set<String> = emptySet(),
     ): AgentLoop? {
-        val client = anthropicClient ?: return null
+        val client = llmClient ?: return null
         val registry = nativeSkillRegistry ?: return null
         val tier = OsCapabilities.currentTier()
         return AgentLoop(client, registry, tier, enabledSkillIds, model, aiName, userStory)
