@@ -120,6 +120,11 @@ class WalletSkill(private val context: Context) : AndyClawSkill {
     // ── Tool definitions ────────────────────────────────────────────────
 
     override val baseManifest = SkillManifest(
+        description = "",
+        tools = emptyList(),
+    )
+
+    override val privilegedManifest = SkillManifest(
         description = "Interact with the ethOS wallet system. You have TWO wallets: " +
                 "(1) the user's OS system wallet — transactions require on-device approval, and " +
                 "(2) your own agent sub-account wallet — you can sign and send autonomously. " +
@@ -400,11 +405,12 @@ class WalletSkill(private val context: Context) : AndyClawSkill {
         ),
     )
 
-    override val privilegedManifest: SkillManifest? = null
-
     // ── Tool dispatch ───────────────────────────────────────────────────
 
     override suspend fun execute(tool: String, params: JsonObject, tier: Tier): SkillResult {
+        if (tier != Tier.PRIVILEGED) {
+            return SkillResult.Error("Wallet tools require ethOS (privileged access).")
+        }
 
         return when (tool) {
             // User wallet (WalletSDK)

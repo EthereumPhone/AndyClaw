@@ -61,6 +61,11 @@ class MessengerSkill(private val context: Context) : AndyClawSkill {
     }
 
     override val baseManifest = SkillManifest(
+        description = "",
+        tools = emptyList(),
+    )
+
+    override val privilegedManifest = SkillManifest(
         description = "Send and read XMTP messages using the device's Messenger app. The AI has its own " +
                 "XMTP identity and can send direct messages and read incoming conversations. " +
                 "Use send_message_to_user to write to the device owner, send_xmtp_message to " +
@@ -154,9 +159,11 @@ class MessengerSkill(private val context: Context) : AndyClawSkill {
         ),
     )
 
-    override val privilegedManifest: SkillManifest? = null
-
     override suspend fun execute(tool: String, params: JsonObject, tier: Tier): SkillResult {
+        if (tier != Tier.PRIVILEGED) {
+            return SkillResult.Error("Messenger tools require ethOS (privileged access).")
+        }
+
         return when (tool) {
             "send_message_to_user" -> sendMessageToUser(params)
             "send_xmtp_message" -> sendMessage(params)

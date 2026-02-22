@@ -57,11 +57,6 @@ class CodeExecutionSkill(private val context: Context) : AndyClawSkill {
             appendLine("- Each execution runs in a fresh interpreter (no state persists between calls)")
             appendLine("- Import any class on the Android classpath: import android.os.Build;")
         },
-        tools = emptyList(),
-    )
-
-    override val privilegedManifest = SkillManifest(
-        description = "Execute Java/BeanShell code with full Android API access on privileged OS.",
         tools = listOf(
             ToolDefinition(
                 name = "execute_code",
@@ -84,6 +79,8 @@ class CodeExecutionSkill(private val context: Context) : AndyClawSkill {
             ),
         ),
     )
+
+    override val privilegedManifest: SkillManifest? = null
 
     override suspend fun execute(tool: String, params: JsonObject, tier: Tier): SkillResult {
         return when (tool) {

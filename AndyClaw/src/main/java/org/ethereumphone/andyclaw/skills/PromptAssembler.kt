@@ -70,9 +70,16 @@ object PromptAssembler {
         sb.appendLine("You have access to the following tool categories:")
         sb.appendLine()
         for (skill in skills) {
+            val hasBaseTools = skill.baseManifest.tools.isNotEmpty()
+            val hasPrivilegedTools = tier == Tier.PRIVILEGED &&
+                    skill.privilegedManifest?.tools?.isNotEmpty() == true
+            if (!hasBaseTools && !hasPrivilegedTools) continue
+
             sb.appendLine("### ${skill.name}")
-            sb.appendLine(skill.baseManifest.description)
-            if (tier == Tier.PRIVILEGED && skill.privilegedManifest != null) {
+            if (hasBaseTools) {
+                sb.appendLine(skill.baseManifest.description)
+            }
+            if (hasPrivilegedTools) {
                 sb.appendLine(skill.privilegedManifest!!.description)
             }
             sb.appendLine()
