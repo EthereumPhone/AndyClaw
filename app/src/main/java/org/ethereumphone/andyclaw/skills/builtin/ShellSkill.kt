@@ -52,7 +52,7 @@ class ShellSkill(private val context: Context) : AndyClawSkill {
         tools = listOf(
             ToolDefinition(
                 name = "run_shell_command",
-                description = "Run a shell command in the app sandbox directory (${context.filesDir.absolutePath}). Files written with write_file are available here. Example: after writing 'hello.sh', run it with 'sh hello.sh'. On privileged OS, commands can run as root with as_root=true.",
+                description = "Run a shell command in the app sandbox directory (${context.filesDir.absolutePath}). Files written with write_file are available here. Example: after writing 'hello.sh', run it with 'sh hello.sh'.",
                 inputSchema = JsonObject(mapOf(
                     "type" to JsonPrimitive("object"),
                     "properties" to JsonObject(mapOf(

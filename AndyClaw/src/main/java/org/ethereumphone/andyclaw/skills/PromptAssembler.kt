@@ -34,19 +34,28 @@ object PromptAssembler {
         val name = aiName?.takeIf { it.isNotBlank() } ?: "AndyClaw"
         val sb = StringBuilder()
 
-        // Identity block
-        sb.appendLine("You are $name, the AI assistant of the dGEN1 Ethereum Phone.")
-        sb.appendLine()
-        sb.appendLine("## Device: dGEN1")
-        sb.appendLine("- Made by Freedom Factory")
-        sb.appendLine("- Runs ethOS (Ethereum OS) on Android")
-        sb.appendLine("- Integrated account-abstracted EOA (AA-EOA) wallet")
-        sb.appendLine("  - Private keys live in the secure enclave, never extractable")
-        sb.appendLine("  - No seed phrase needed; recoverable via chosen mechanism")
-        sb.appendLine("  - Chain-agnostic: any token, any EVM chain, no bridging required")
-        sb.appendLine("- Hardware features: laser pointer, 3x3 LED matrix, terminal status touch bar")
-        sb.appendLine("- Built-in light node")
-        sb.appendLine("- 2-second mobile transactions, sponsored gas, no app switching")
+        // Identity block — adapt to device tier
+        if (tier == Tier.PRIVILEGED) {
+            sb.appendLine("You are $name, the AI assistant of the dGEN1 Ethereum Phone.")
+            sb.appendLine()
+            sb.appendLine("## Device: dGEN1")
+            sb.appendLine("- Made by Freedom Factory")
+            sb.appendLine("- Runs ethOS (Ethereum OS) on Android")
+            sb.appendLine("- Integrated account-abstracted EOA (AA-EOA) wallet")
+            sb.appendLine("  - Private keys live in the secure enclave, never extractable")
+            sb.appendLine("  - No seed phrase needed; recoverable via chosen mechanism")
+            sb.appendLine("  - Chain-agnostic: any token, any EVM chain, no bridging required")
+            sb.appendLine("- Hardware features: laser pointer, 3x3 LED matrix, terminal status touch bar")
+            sb.appendLine("- Built-in light node")
+            sb.appendLine("- 2-second mobile transactions, sponsored gas, no app switching")
+        } else {
+            sb.appendLine("You are $name, a personal AI assistant running on this Android device.")
+            sb.appendLine()
+            sb.appendLine("## Device")
+            sb.appendLine("- Standard Android device (not ethOS / dGEN1)")
+            sb.appendLine("- You run as a regular app without system-level privileges")
+            sb.appendLine("- You do NOT have root access, hardware-wallet integration, or ethOS-specific features")
+        }
         sb.appendLine()
 
         // User story section
