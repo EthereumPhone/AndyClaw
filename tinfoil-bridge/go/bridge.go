@@ -1,27 +1,56 @@
 // Package tinfoilbridge wraps the tinfoil-go SDK for Android via gomobile.
 //
 // Build with:
-//   gomobile bind -target=android -androidapi=35 -o tinfoil-bridge.aar ./go/
+//
+//	gomobile bind -target=android -androidapi=35 -o tinfoil-bridge.aar ./go/
 //
 // The resulting .aar is consumed by the :app module.
 package tinfoilbridge
 
 import (
 	"bufio"
-	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 
-	"github.com/tinfoilsh/tinfoil-go"
+	tinfoil "github.com/tinfoilsh/tinfoil-go"
 )
 
 const (
-	tinfoilAPIBase = "https://api.tinfoil.sh/v1"
-	defaultModel   = "tinfoil/kimi-k2.5"
+	enclaveName = "inference.tinfoil.sh"
+	repoName    = "tinfoilsh/confidential-model-router"
+	apiBase     = "https://inference.tinfoil.sh/v1"
 )
+
+// cachedClient holds a verified Tinfoil HTTP client that is reused across
+// requests. The attestation check happens once during NewClientWithParams;
+// the HTTP client returned by HTTPClient() automatically re-verifies the
+// pinned TLS certificate on every connection.
+var (
+	mu         sync.Mutex
+	cachedHTTP *http.Client
+)
+
+// getVerifiedHTTPClient returns a Tinfoil-verified HTTP client. It caches the
+// client so attestation verification only happens once (or when re-init is needed).
+func getVerifiedHTTPClient() (*http.Client, error) {
+	mu.Lock()
+	defer mu.Unlock()
+
+	if cachedHTTP != nil {
+		return cachedHTTP, nil
+	}
+
+	client, err := tinfoil.NewClientWithParams(enclaveName, repoName)
+	if err != nil {
+		return nil, fmt.Errorf("tinfoil client init: %w", err)
+	}
+
+	cachedHTTP = client.HTTPClient()
+	return cachedHTTP, nil
+}
 
 // StreamCallback receives streaming chunks from Tinfoil.
 // OnData is called for each SSE data payload (the raw JSON string after "data: ").
@@ -32,22 +61,23 @@ type StreamCallback interface {
 }
 
 // VerifiedChatCompletion sends a non-streaming chat completion request
-// through Tinfoil's TEE-attested endpoint. requestJson must be a valid
+// through Tinfoil's TEE-attested endpoint with full client-side attestation
+// verification and TLS certificate pinning. requestJson must be a valid
 // OpenAI chat completion request body. Returns the full response JSON.
 func VerifiedChatCompletion(requestJson, apiKey string) (string, error) {
-	client, err := tinfoil.NewClient(tinfoilAPIBase, apiKey)
+	httpClient, err := getVerifiedHTTPClient()
 	if err != nil {
-		return "", fmt.Errorf("tinfoil client init: %w", err)
+		return "", err
 	}
 
-	req, err := http.NewRequest("POST", tinfoilAPIBase+"/chat/completions", strings.NewReader(requestJson))
+	req, err := http.NewRequest("POST", apiBase+"/chat/completions", strings.NewReader(requestJson))
 	if err != nil {
 		return "", fmt.Errorf("build request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+apiKey)
 
-	resp, err := client.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("request failed: %w", err)
 	}
@@ -66,31 +96,23 @@ func VerifiedChatCompletion(requestJson, apiKey string) (string, error) {
 }
 
 // VerifiedChatCompletionStream sends a streaming chat completion request
-// through Tinfoil's TEE-attested endpoint. SSE data chunks are delivered
+// through Tinfoil's TEE-attested endpoint with full client-side attestation
+// verification and TLS certificate pinning. SSE data chunks are delivered
 // to the callback. The function blocks until the stream completes.
 func VerifiedChatCompletionStream(requestJson, apiKey string, cb StreamCallback) error {
-	// Ensure stream=true in the request
-	var reqMap map[string]interface{}
-	if err := json.Unmarshal([]byte(requestJson), &reqMap); err != nil {
-		return fmt.Errorf("parse request: %w", err)
-	}
-	reqMap["stream"] = true
-	modifiedReq, _ := json.Marshal(reqMap)
-
-	client, err := tinfoil.NewClient(tinfoilAPIBase, apiKey)
+	httpClient, err := getVerifiedHTTPClient()
 	if err != nil {
-		return fmt.Errorf("tinfoil client init: %w", err)
+		return err
 	}
 
-	ctx := context.Background()
-	req, err := http.NewRequestWithContext(ctx, "POST", tinfoilAPIBase+"/chat/completions", strings.NewReader(string(modifiedReq)))
+	req, err := http.NewRequest("POST", apiBase+"/chat/completions", strings.NewReader(requestJson))
 	if err != nil {
 		return fmt.Errorf("build request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+apiKey)
 
-	resp, err := client.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("request failed: %w", err)
 	}

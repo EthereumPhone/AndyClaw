@@ -108,6 +108,8 @@ dependencies {
     implementation(libs.exifinterface)
     implementation(libs.security.crypto)
     implementation(libs.beanshell)
+    // Tinfoil bridge — Go wrapper around tinfoil-go SDK for TEE-attested inference
+    implementation(files("../tinfoil-bridge/tinfoil-bridge.aar"))
     // Llamatik — Kotlin Multiplatform llama.cpp wrapper for local LLM inference
     implementation("com.llamatik:library:0.16.0")
     // Aurora Store gplayapi for downloading apps from Play Store

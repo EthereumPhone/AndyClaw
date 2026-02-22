@@ -3,94 +3,75 @@ package org.ethereumphone.andyclaw.llm
 import android.util.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import okhttp3.MediaType.Companion.toMediaType
-import okhttp3.OkHttpClient
-import okhttp3.Request
-import okhttp3.RequestBody.Companion.toRequestBody
-import java.io.BufferedReader
-import java.io.InputStreamReader
-import java.util.concurrent.TimeUnit
 
 /**
- * [LlmClient] that sends requests to Tinfoil's TEE-attested inference endpoint.
+ * [LlmClient] that sends requests through Tinfoil's TEE-attested inference
+ * endpoint with full client-side attestation verification and TLS certificate
+ * pinning via the tinfoil-go SDK (bundled as tinfoil-bridge.aar).
  *
- * Currently uses a direct HTTPS client to Tinfoil's OpenAI-compatible API.
- * When the tinfoil-bridge AAR is available, this can be swapped to use the
- * Go bridge for full client-side attestation verification.
+ * On first use the Go bridge verifies the remote enclave's attestation:
+ *   1. Fetches signed runtime measurements from the enclave
+ *   2. Validates the certificate chain to AMD's hardware root key
+ *   3. Downloads and verifies the Sigstore transparency log entry
+ *   4. Compares source-code measurements against the running enclave
+ *   5. Pins the TLS certificate to the attested key
+ *
+ * All subsequent requests reuse the verified HTTP client with automatic
+ * certificate re-verification, ensuring traffic can only reach the
+ * genuine Tinfoil enclave.
  *
  * Converts between Anthropic internal format and OpenAI format via [OpenAiFormatAdapter].
  */
 class TinfoilClient(
     private val apiKey: () -> String,
-    private val baseUrl: String = "https://inference.tinfoil.sh/v1",
 ) : LlmClient {
 
     companion object {
         private const val TAG = "TinfoilClient"
-        private val JSON_MEDIA_TYPE = "application/json".toMediaType()
     }
 
-    private val httpClient = OkHttpClient.Builder()
-        .connectTimeout(30, TimeUnit.SECONDS)
-        .readTimeout(120, TimeUnit.SECONDS)
-        .writeTimeout(30, TimeUnit.SECONDS)
-        .build()
+    override suspend fun sendMessage(request: MessagesRequest): MessagesResponse =
+        withContext(Dispatchers.IO) {
+            val openAiJson = OpenAiFormatAdapter.toOpenAiRequestJson(request.copy(stream = false))
+            Log.d(TAG, "sendMessage: model=${request.model}")
 
-    override suspend fun sendMessage(request: MessagesRequest): MessagesResponse = withContext(Dispatchers.IO) {
-        val openAiJson = OpenAiFormatAdapter.toOpenAiRequestJson(request.copy(stream = false))
-        Log.d(TAG, "sendMessage: model=${request.model}")
+            val responseJson = try {
+                tinfoilbridge.Tinfoilbridge.verifiedChatCompletion(openAiJson, apiKey())
+            } catch (e: Exception) {
+                Log.e(TAG, "sendMessage failed", e)
+                throw AnthropicApiException(500, e.message ?: "Tinfoil bridge error")
+            }
 
-        val httpRequest = buildRequest(openAiJson)
-        val response = httpClient.newCall(httpRequest).execute()
-
-        if (!response.isSuccessful) {
-            val errorBody = response.body?.string() ?: "Unknown error"
-            throw AnthropicApiException(response.code, errorBody)
+            OpenAiFormatAdapter.fromOpenAiResponseJson(responseJson)
         }
 
-        val responseBody = response.body?.string() ?: throw AnthropicApiException(500, "Empty response")
-        OpenAiFormatAdapter.fromOpenAiResponseJson(responseBody)
-    }
-
-    override suspend fun streamMessage(request: MessagesRequest, callback: StreamingCallback) = withContext(Dispatchers.IO) {
+    override suspend fun streamMessage(
+        request: MessagesRequest,
+        callback: StreamingCallback,
+    ) = withContext(Dispatchers.IO) {
         val openAiJson = OpenAiFormatAdapter.toOpenAiRequestJson(request.copy(stream = true))
         Log.d(TAG, "streamMessage: model=${request.model}")
 
-        val httpRequest = buildRequest(openAiJson)
-        val response = httpClient.newCall(httpRequest).execute()
-
-        if (!response.isSuccessful) {
-            val errorBody = response.body?.string() ?: "Unknown error"
-            Log.e(TAG, "streamMessage failed: ${response.code} $errorBody")
-            callback.onError(AnthropicApiException(response.code, errorBody))
-            return@withContext
-        }
-
         val accumulator = OpenAiStreamAccumulator(callback)
-        val reader = BufferedReader(InputStreamReader(response.body!!.byteStream()))
-        try {
-            reader.forEachLine { line ->
-                if (line.startsWith("data: ")) {
-                    val data = line.removePrefix("data: ")
-                    accumulator.onData(data)
-                }
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "streamMessage error reading stream", e)
-            callback.onError(e)
-        } finally {
-            reader.close()
-            response.close()
-        }
-    }
 
-    private fun buildRequest(body: String): Request {
-        val key = apiKey()
-        return Request.Builder()
-            .url("$baseUrl/chat/completions")
-            .addHeader("Content-Type", "application/json")
-            .addHeader("Authorization", "Bearer $key")
-            .post(body.toRequestBody(JSON_MEDIA_TYPE))
-            .build()
+        try {
+            tinfoilbridge.Tinfoilbridge.verifiedChatCompletionStream(
+                openAiJson,
+                apiKey(),
+                object : tinfoilbridge.StreamCallback {
+                    override fun onData(data: String): Boolean {
+                        return accumulator.onData(data)
+                    }
+
+                    override fun onError(err: String) {
+                        Log.e(TAG, "streamMessage bridge error: $err")
+                        callback.onError(Exception(err))
+                    }
+                },
+            )
+        } catch (e: Exception) {
+            Log.e(TAG, "streamMessage failed", e)
+            callback.onError(e)
+        }
     }
 }
