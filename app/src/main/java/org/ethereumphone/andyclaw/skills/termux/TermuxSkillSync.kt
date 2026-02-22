@@ -51,7 +51,8 @@ class TermuxSkillSync(
             "${TermuxCommandRunner.TERMUX_HOME}/.termux/termux.properties"
     }
 
-    private val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+    private val prefs = context.createDeviceProtectedStorageContext()
+        .getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
     /** Returns the absolute Termux-side path for a synced skill. */
     fun skillHomePath(slug: String): String =
