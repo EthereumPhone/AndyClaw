@@ -73,9 +73,10 @@ class NodeForegroundService : Service() {
             runtime.anthropicClient = app.anthropicClient
             runtime.agentRunner = HeartbeatAgentRunner(app, app.heartbeatLogStore)
 
-            // Configure 1-hour heartbeat with standing instructions prompt
+            // Configure heartbeat with user-chosen interval
+            val intervalMinutes = app.securePrefs.heartbeatIntervalMinutes.value
             runtime.heartbeatConfig = HeartbeatConfig(
-                intervalMs = 60L * 60 * 1000, // 1 hour
+                intervalMs = intervalMinutes.toLong() * 60 * 1000,
                 heartbeatFilePath = File(filesDir, "HEARTBEAT.md").absolutePath,
             )
 
@@ -86,11 +87,14 @@ class NodeForegroundService : Service() {
             runtime.initialize()
             runtime.startHeartbeat()
 
+            // Observe interval changes and update config dynamically
+            observeHeartbeatInterval()
+
             // Start listening for XMTP new-message callbacks
             startXmtpMessageListener()
 
             serviceInitialized = true
-            Log.i(TAG, "Heartbeat service started")
+            Log.i(TAG, "Heartbeat service started (interval: ${intervalMinutes}m)")
         }
 
         // Handle XMTP broadcast wake-up
@@ -109,6 +113,24 @@ class NodeForegroundService : Service() {
         serviceScope.cancel()
         Log.i(TAG, "Heartbeat service stopped")
         super.onDestroy()
+    }
+
+    /**
+     * Observes the heartbeat interval preference and updates the runtime config
+     * whenever the user changes it in settings.
+     */
+    private fun observeHeartbeatInterval() {
+        serviceScope.launch {
+            app.securePrefs.heartbeatIntervalMinutes
+                .collect { minutes ->
+                    val newIntervalMs = minutes.toLong() * 60 * 1000
+                    Log.i(TAG, "Heartbeat interval changed to ${minutes}m")
+                    runtime.heartbeatConfig = HeartbeatConfig(
+                        intervalMs = newIntervalMs,
+                        heartbeatFilePath = File(filesDir, "HEARTBEAT.md").absolutePath,
+                    )
+                }
+        }
     }
 
     /**

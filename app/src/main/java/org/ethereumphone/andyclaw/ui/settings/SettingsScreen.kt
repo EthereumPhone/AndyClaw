@@ -365,37 +365,35 @@ fun SettingsScreen(
                 }
             }
 
-            // Heartbeat on Notification — privileged only
-            if (viewModel.isPrivileged) {
-                Spacer(Modifier.height(12.dp))
-                Text(
-                    text = "Heartbeat on Notification",
-                    style = MaterialTheme.typography.titleMedium,
-                )
-                Spacer(Modifier.height(8.dp))
-                Card(modifier = Modifier.fillMaxWidth()) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(16.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = "Trigger heartbeat on new notification",
-                                style = MaterialTheme.typography.bodyLarge,
-                            )
-                            Text(
-                                text = "When enabled, the AI heartbeat runs whenever a new notification arrives so it can react to messages and alerts",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                        Switch(
-                            checked = heartbeatOnNotificationEnabled,
-                            onCheckedChange = { viewModel.setHeartbeatOnNotificationEnabled(it) },
+            // Heartbeat on Notification
+            Spacer(Modifier.height(12.dp))
+            Text(
+                text = "Heartbeat on Notification",
+                style = MaterialTheme.typography.titleMedium,
+            )
+            Spacer(Modifier.height(8.dp))
+            Card(modifier = Modifier.fillMaxWidth()) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Trigger heartbeat on new notification",
+                            style = MaterialTheme.typography.bodyLarge,
+                        )
+                        Text(
+                            text = "When enabled, the AI heartbeat runs whenever a new notification arrives so it can react to messages and alerts",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
+                    Switch(
+                        checked = heartbeatOnNotificationEnabled,
+                        onCheckedChange = { viewModel.setHeartbeatOnNotificationEnabled(it) },
+                    )
                 }
             }
 
@@ -433,43 +431,42 @@ fun SettingsScreen(
                 }
             }
 
-            // Heartbeat Interval — privileged only
-            if (viewModel.isPrivileged) {
-                Spacer(Modifier.height(12.dp))
-                Text(
-                    text = "Heartbeat Interval",
-                    style = MaterialTheme.typography.titleMedium,
-                )
-                Spacer(Modifier.height(8.dp))
-                Card(modifier = Modifier.fillMaxWidth()) {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(16.dp),
+            // Heartbeat Interval
+            Spacer(Modifier.height(12.dp))
+            Text(
+                text = "Heartbeat Interval",
+                style = MaterialTheme.typography.titleMedium,
+            )
+            Spacer(Modifier.height(8.dp))
+            Card(modifier = Modifier.fillMaxWidth()) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp),
+                ) {
+                    Text(
+                        text = "Every $heartbeatIntervalMinutes minutes",
+                        style = MaterialTheme.typography.bodyLarge,
+                    )
+                    Text(
+                        text = if (viewModel.isPrivileged) "How often the OS triggers the AI heartbeat check"
+                        else "How often the background service runs the AI heartbeat check",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    Slider(
+                        value = heartbeatIntervalMinutes.toFloat(),
+                        onValueChange = { viewModel.setHeartbeatIntervalMinutes(it.toInt()) },
+                        valueRange = 5f..60f,
+                        steps = 10,
+                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
                     ) {
-                        Text(
-                            text = "Every $heartbeatIntervalMinutes minutes",
-                            style = MaterialTheme.typography.bodyLarge,
-                        )
-                        Text(
-                            text = "How often the OS triggers the AI heartbeat check",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                        Spacer(Modifier.height(12.dp))
-                        Slider(
-                            value = heartbeatIntervalMinutes.toFloat(),
-                            onValueChange = { viewModel.setHeartbeatIntervalMinutes(it.toInt()) },
-                            valueRange = 5f..60f,
-                            steps = 10,
-                        )
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                        ) {
-                            Text("5 min", style = MaterialTheme.typography.labelSmall)
-                            Text("60 min", style = MaterialTheme.typography.labelSmall)
-                        }
+                        Text("5 min", style = MaterialTheme.typography.labelSmall)
+                        Text("60 min", style = MaterialTheme.typography.labelSmall)
                     }
                 }
             }

@@ -67,6 +67,9 @@
     <uses-permission android:name="android.permission.USE_EXACT_ALARM" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
+    <!-- Auto-start heartbeat service after reboot -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+
     <!-- Query all packages (needed to list all installed apps on Android 11+) -->
     <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />
 
@@ -137,6 +140,14 @@
             android:authorities="org.ethereumphone.andyclaw.ai.settings"
             android:exported="true"
             android:grantUriPermissions="false" />
+
+        <receiver
+            android:name=".services.BootReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+            </intent-filter>
+        </receiver>
 
         <receiver
             android:name=".services.ReminderReceiver"
