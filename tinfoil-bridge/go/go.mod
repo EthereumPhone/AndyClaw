@@ -1,8 +1,12 @@
 module github.com/ethereumphone/andyclaw/tinfoil-bridge
 
-go 1.25.5
+go 1.26
 
-require github.com/tinfoilsh/tinfoil-go v0.12.0
+require (
+	github.com/tinfoilsh/encrypted-http-body-protocol v0.2.0
+	github.com/tinfoilsh/tinfoil-go v0.12.0
+	golang.org/x/crypto v0.48.0
+)
 
 require (
 	cel.dev/expr v0.24.0 // indirect
@@ -83,7 +87,7 @@ require (
 	github.com/sigstore/sigstore v1.10.4 // indirect
 	github.com/sigstore/sigstore-go v1.1.3 // indirect
 	github.com/sigstore/timestamp-authority v1.2.9 // indirect
-	github.com/sirupsen/logrus v1.9.3 // indirect
+	github.com/sirupsen/logrus v1.9.4 // indirect
 	github.com/spiffe/go-spiffe/v2 v2.6.0 // indirect
 	github.com/theupdateframework/go-tuf/v2 v2.4.1 // indirect
 	github.com/tidwall/gjson v1.18.0 // indirect
@@ -107,7 +111,6 @@ require (
 	go.opentelemetry.io/otel/trace v1.38.0 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
 	go.yaml.in/yaml/v3 v3.0.4 // indirect
-	golang.org/x/crypto v0.48.0 // indirect
 	golang.org/x/exp v0.0.0-20251023183803-a4bb9ffd2546 // indirect
 	golang.org/x/mobile v0.0.0-20260217195705-b56b3793a9c4 // indirect
 	golang.org/x/mod v0.33.0 // indirect

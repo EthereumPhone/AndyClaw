@@ -21,6 +21,7 @@ import org.ethereumphone.andyclaw.llm.LlmProvider
 import org.ethereumphone.andyclaw.llm.LocalLlmClient
 import org.ethereumphone.andyclaw.llm.ModelDownloadManager
 import org.ethereumphone.andyclaw.llm.TinfoilClient
+import org.ethereumphone.andyclaw.llm.TinfoilProxyClient
 import org.ethereumphone.andyclaw.skills.SkillRegistry
 import org.ethereumphone.andyclaw.memory.MemoryManager
 import org.ethereumphone.andyclaw.memory.OpenAiEmbeddingProvider
@@ -216,6 +217,13 @@ class NodeApp : Application() {
         TinfoilClient(apiKey = { securePrefs.tinfoilApiKey.value })
     }
 
+    val tinfoilProxyClient: TinfoilProxyClient by lazy {
+        TinfoilProxyClient(
+            userId = { securePrefs.walletAddress.value },
+            signature = { securePrefs.walletSignature.value },
+        )
+    }
+
     val llamaCpp: LlamaCpp by lazy { LlamaCpp() }
 
     val modelDownloadManager: ModelDownloadManager by lazy {
@@ -229,12 +237,13 @@ class NodeApp : Application() {
     /**
      * Returns the appropriate [LlmClient] based on the user's selected provider.
      *
-     * ethOS (privileged) devices always use the premium gateway via [anthropicClient].
+     * ethOS (privileged) devices use the Tinfoil proxy for TEE-based inference
+     * with server-side billing via [tinfoilProxyClient].
      * Non-privileged devices use the provider selected in preferences.
      */
     fun getLlmClient(): LlmClient {
         if (OsCapabilities.hasPrivilegedAccess) {
-            return anthropicClient
+            return tinfoilProxyClient
         }
         return when (securePrefs.selectedProvider.value) {
             LlmProvider.OPEN_ROUTER -> anthropicClient

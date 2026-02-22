@@ -122,7 +122,7 @@ class SecurePrefs(context: Context) : KeyValueStore {
   private val _tinfoilApiKey = MutableStateFlow(prefs.getString("tinfoil.apiKey", "") ?: "")
   val tinfoilApiKey: StateFlow<String> = _tinfoilApiKey
 
-  private val _selectedModel = MutableStateFlow(prefs.getString("anthropic.model", "minimax/minimax-m2.5") ?: "minimax/minimax-m2.5")
+  private val _selectedModel = MutableStateFlow(prefs.getString("anthropic.model", "kimi-k2-5") ?: "kimi-k2-5")
   val selectedModel: StateFlow<String> = _selectedModel
 
   private val _aiName = MutableStateFlow(prefs.getString("ai.name", "AndyClaw") ?: "AndyClaw")
