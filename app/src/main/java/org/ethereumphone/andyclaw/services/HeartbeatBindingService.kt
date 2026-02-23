@@ -150,7 +150,8 @@ class HeartbeatBindingService : Service() {
 
     /**
      * Handles a single incoming XMTP message (text passed from Messenger via OS relay).
-     * Runs the agent with the message as a prompt and sends the response back to the sender.
+     * Connects to MessengerSDK first to fetch conversation history, then runs the agent
+     * with the message + context as a prompt, and sends the response back to the sender.
      */
     private suspend fun handleXmtpMessage(senderAddress: String, messageText: String) {
         ensureRuntimeReady()
@@ -158,16 +159,58 @@ class HeartbeatBindingService : Service() {
 
         Log.i(TAG, "XMTP: handling message from $senderAddress: \"${messageText.take(80)}\"")
 
-        // Step 1: Build prompt
-        val prompt = buildString {
-            appendLine("You received a new XMTP message from $senderAddress:")
-            appendLine()
-            appendLine("\"$messageText\"")
-            appendLine()
-            appendLine("Write your reply. Do NOT use send_xmtp_message — your response will be sent automatically.")
+        // Step 1: Connect to MessengerSDK (needed for both history fetch and reply)
+        val sdk = try {
+            if (messengerSdk == null) {
+                messengerSdk = MessengerSDK.getInstance(this@HeartbeatBindingService)
+            }
+            val s = messengerSdk!!
+            withContext(Dispatchers.IO) {
+                s.identity.bind()
+                s.identity.awaitConnected()
+            }
+            Log.i(TAG, "XMTP: SDK connected")
+            s
+        } catch (e: Exception) {
+            Log.w(TAG, "XMTP: failed to connect SDK, proceeding without history", e)
+            null
         }
 
-        // Step 2: Run agent
+        // Step 2: Fetch conversation history for context
+        val historyLines = if (sdk != null) {
+            try {
+                fetchConversationHistory(sdk, senderAddress)
+            } catch (e: Exception) {
+                Log.w(TAG, "XMTP: failed to fetch conversation history", e)
+                emptyList()
+            }
+        } else {
+            emptyList()
+        }
+
+        // Step 3: Build prompt with history context
+        val prompt = buildString {
+            appendLine("## New incoming XMTP message")
+            appendLine()
+            appendLine("From: $senderAddress")
+            appendLine("Message: \"$messageText\"")
+
+            if (historyLines.isNotEmpty()) {
+                appendLine()
+                appendLine("## Previous conversation history (for context)")
+                appendLine()
+                for (line in historyLines) {
+                    appendLine(line)
+                }
+            }
+
+            appendLine()
+            appendLine("---")
+            appendLine("Reply to the new message above. Use the conversation history for context.")
+            appendLine("Do NOT use send_xmtp_message — your response will be sent automatically.")
+        }
+
+        // Step 4: Run agent
         Log.i(TAG, "XMTP: running agent for $senderAddress...")
         val response = app.runtime.agentRunner.run(prompt)
         Log.i(TAG, "XMTP: agent response (error=${response.isError}): \"${response.text.take(100)}\"")
@@ -182,25 +225,53 @@ class HeartbeatBindingService : Service() {
             return
         }
 
-        // Step 3: Connect to MessengerSDK to send reply
-        Log.i(TAG, "XMTP: connecting to MessengerSDK to send reply...")
-        try {
-            if (messengerSdk == null) {
-                messengerSdk = MessengerSDK.getInstance(this@HeartbeatBindingService)
+        // Step 5: Send reply via MessengerSDK
+        if (sdk != null) {
+            try {
+                withContext(Dispatchers.IO) {
+                    sdk.identity.sendMessage(senderAddress, response.text)
+                }
+                Log.i(TAG, "XMTP: sent reply to $senderAddress")
+            } catch (e: Exception) {
+                Log.e(TAG, "XMTP: failed to send reply to $senderAddress", e)
             }
-            val sdk = messengerSdk!!
-            withContext(Dispatchers.IO) {
-                sdk.identity.bind()
-                sdk.identity.awaitConnected()
-            }
-            Log.i(TAG, "XMTP: SDK connected, sending reply...")
+        } else {
+            Log.e(TAG, "XMTP: cannot send reply — SDK not connected")
+        }
+    }
 
-            withContext(Dispatchers.IO) {
-                sdk.identity.sendMessage(senderAddress, response.text)
-            }
-            Log.i(TAG, "XMTP: sent reply to $senderAddress")
-        } catch (e: Exception) {
-            Log.e(TAG, "XMTP: failed to send reply to $senderAddress", e)
+    /**
+     * Fetches the last 4 messages (before the newest) from the conversation with [peerAddress].
+     * Returns formatted lines like `[sender]: "message text"` or `[You]: "message text"`.
+     */
+    private suspend fun fetchConversationHistory(
+        sdk: MessengerSDK,
+        peerAddress: String,
+    ): List<String> = withContext(Dispatchers.IO) {
+        sdk.identity.syncConversations()
+        val conversations = sdk.identity.getConversations()
+        val conversation = conversations.find {
+            it.peerAddress.equals(peerAddress, ignoreCase = true)
+        }
+
+        if (conversation == null) {
+            Log.w(TAG, "XMTP: no conversation found for $peerAddress")
+            return@withContext emptyList()
+        }
+
+        val messages = sdk.identity.getMessages(conversation.id)
+        Log.i(TAG, "XMTP: fetched ${messages.size} messages for conversation with $peerAddress")
+
+        if (messages.size <= 1) {
+            return@withContext emptyList()
+        }
+
+        // Take the 4 messages before the newest one (the newest is the just-arrived message)
+        val history = messages.dropLast(1).takeLast(4)
+
+        history.map { msg ->
+            val sender = if (msg.isMe) "You" else peerAddress
+            "[$sender]: \"${msg.body}\""
         }
     }
 
