@@ -1,5 +1,9 @@
 package org.ethereumphone.andyclaw.services
 
+import android.annotation.SuppressLint
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
@@ -8,6 +12,7 @@ import android.os.IBinder
 import android.os.Process
 import android.os.PowerManager
 import android.util.Log
+import androidx.core.app.NotificationCompat
 import java.io.File
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
@@ -38,6 +43,9 @@ class HeartbeatBindingService : Service() {
         private const val TAG = "HeartbeatBindingService"
         private const val HEARTBEAT_TIMEOUT_MS = 55_000L // 55s (OS typically holds 60s wake lock)
         private const val WAKE_LOCK_TAG = "AndyClaw:heartbeat"
+        private const val LOW_BALANCE_CHANNEL_ID = "andyclaw_low_balance"
+        private const val LOW_BALANCE_NOTIFICATION_ID = 1001
+        private const val LOW_BALANCE_THRESHOLD = 5.0
     }
 
     private val serviceScope = CoroutineScope(
@@ -125,6 +133,7 @@ class HeartbeatBindingService : Service() {
 
     private fun performHeartbeat() {
         serviceScope.launch {
+            checkPaymasterBalance()
             runWithWakeLock {
                 (application as NodeApp).runtime.requestHeartbeatNow()
             }
@@ -301,6 +310,94 @@ class HeartbeatBindingService : Service() {
                 Log.i(TAG, "Wake lock released")
             }
         }
+    }
+
+    /**
+     * Queries the ethOS paymaster system service for the current gas balance.
+     * If the balance is below $[LOW_BALANCE_THRESHOLD], pushes a notification
+     * that deep-links to WalletManager's gas top-up screen.
+     */
+    @SuppressLint("WrongConstant")
+    private fun checkPaymasterBalance() {
+        try {
+            val proxy = getSystemService("paymaster")
+            if (proxy == null) {
+                Log.w(TAG, "Paymaster system service not available")
+                return
+            }
+
+            val proxyClass = Class.forName("android.os.PaymasterProxy")
+            if (!proxyClass.isInstance(proxy)) {
+                Log.w(TAG, "Paymaster service returned unexpected type: ${proxy.javaClass.name}")
+                return
+            }
+
+            // Query backend for fresh balance, then read it
+            val queryUpdateMethod = proxyClass.getMethod("queryUpdate")
+            queryUpdateMethod.invoke(proxy)
+
+            val getBalanceMethod = proxyClass.getMethod("getBalance")
+            val balanceStr = getBalanceMethod.invoke(proxy) as? String
+
+            if (balanceStr == null) {
+                Log.w(TAG, "Paymaster getBalance() returned null")
+                return
+            }
+
+            val balance = balanceStr.toDoubleOrNull()
+            if (balance == null) {
+                Log.w(TAG, "Paymaster balance not parseable: \"$balanceStr\"")
+                return
+            }
+
+            Log.i(TAG, "Paymaster balance: $${"%.2f".format(balance)}")
+
+            if (balance < LOW_BALANCE_THRESHOLD) {
+                showLowBalanceNotification(balance)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to check paymaster balance", e)
+        }
+    }
+
+    private fun showLowBalanceNotification(balance: Double) {
+        val manager = getSystemService(NotificationManager::class.java) ?: return
+
+        // Ensure notification channel exists
+        if (manager.getNotificationChannel(LOW_BALANCE_CHANNEL_ID) == null) {
+            val channel = NotificationChannel(
+                LOW_BALANCE_CHANNEL_ID,
+                "Low Gas Balance",
+                NotificationManager.IMPORTANCE_HIGH,
+            ).apply {
+                description = "Alerts when your gas account balance is low"
+            }
+            manager.createNotificationChannel(channel)
+        }
+
+        // Deep-link to WalletManager gas top-up screen (same intent as ChatScreen)
+        val topUpIntent = Intent("org.ethereumphone.walletmanager.ACTION_OPEN_GAS").apply {
+            setPackage("org.ethereumphone.walletmanager")
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK
+        }
+        val pendingIntent = PendingIntent.getActivity(
+            this,
+            LOW_BALANCE_NOTIFICATION_ID,
+            topUpIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+
+        val notification = NotificationCompat.Builder(this, LOW_BALANCE_CHANNEL_ID)
+            .setSmallIcon(android.R.drawable.ic_dialog_alert)
+            .setContentTitle("Gas Balance Low")
+            .setContentText("Your balance is $${"%.2f".format(balance)}. Tap to top up.")
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setContentIntent(pendingIntent)
+            .setAutoCancel(true)
+            .build()
+
+        manager.notify(LOW_BALANCE_NOTIFICATION_ID, notification)
+        Log.i(TAG, "Low balance notification shown (balance=$${"%.2f".format(balance)})")
     }
 
     private fun seedHeartbeatFile() {
