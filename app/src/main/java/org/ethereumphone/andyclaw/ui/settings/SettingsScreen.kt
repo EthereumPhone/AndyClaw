@@ -37,6 +37,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.compose.material3.Button
@@ -44,6 +45,7 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.OutlinedButton
 import org.ethereumphone.andyclaw.llm.AnthropicModels
 import org.ethereumphone.andyclaw.llm.LlmProvider
+import android.content.Intent
 import java.math.BigDecimal
 import java.math.RoundingMode
 
@@ -132,25 +134,41 @@ fun SettingsScreen(
             // Paymaster Balance (ethOS privileged only)
             if (viewModel.isPrivileged && paymasterBalance != null) {
                 Spacer(Modifier.height(16.dp))
+                val context = LocalContext.current
                 Card(modifier = Modifier.fillMaxWidth()) {
-                    Column(modifier = Modifier.padding(16.dp)) {
-                        Text(
-                            text = "Paymaster Balance",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                        Spacer(Modifier.height(4.dp))
-                        val formattedBalance = try {
-                            val bd = BigDecimal(paymasterBalance!!)
-                            "$${bd.setScale(2, RoundingMode.HALF_UP).toPlainString()}"
-                        } catch (_: NumberFormatException) {
-                            "$0.00"
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(16.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "Paymaster Balance",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            Spacer(Modifier.height(4.dp))
+                            val formattedBalance = try {
+                                val bd = BigDecimal(paymasterBalance!!)
+                                "$${bd.setScale(2, RoundingMode.HALF_UP).toPlainString()}"
+                            } catch (_: NumberFormatException) {
+                                "$0.00"
+                            }
+                            Text(
+                                text = formattedBalance,
+                                style = MaterialTheme.typography.headlineMedium,
+                                color = MaterialTheme.colorScheme.primary,
+                            )
                         }
-                        Text(
-                            text = formattedBalance,
-                            style = MaterialTheme.typography.headlineMedium,
-                            color = MaterialTheme.colorScheme.primary,
-                        )
+                        FilledTonalButton(onClick = {
+                            val intent = Intent("org.ethereumphone.walletmanager.ACTION_OPEN_GAS").apply {
+                                setPackage("org.ethereumphone.walletmanager")
+                            }
+                            context.startActivity(intent)
+                        }) {
+                            Text("Fill up")
+                        }
                     }
                 }
             }
