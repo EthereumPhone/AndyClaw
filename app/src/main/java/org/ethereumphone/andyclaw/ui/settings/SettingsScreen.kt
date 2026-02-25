@@ -44,6 +44,8 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.OutlinedButton
 import org.ethereumphone.andyclaw.llm.AnthropicModels
 import org.ethereumphone.andyclaw.llm.LlmProvider
+import java.math.BigDecimal
+import java.math.RoundingMode
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -70,6 +72,7 @@ fun SettingsScreen(
     val extensions by viewModel.extensions.collectAsState()
     val isExtensionScanning by viewModel.isExtensionScanning.collectAsState()
     val enabledSkills by viewModel.enabledSkills.collectAsState()
+    val paymasterBalance by viewModel.paymasterBalance.collectAsState()
 
     Scaffold(
         topBar = {
@@ -121,6 +124,32 @@ fun SettingsScreen(
                                 viewModel.setSelectedModel(model.modelId)
                                 modelDropdownExpanded = false
                             },
+                        )
+                    }
+                }
+            }
+
+            // Paymaster Balance (ethOS privileged only)
+            if (viewModel.isPrivileged && paymasterBalance != null) {
+                Spacer(Modifier.height(16.dp))
+                Card(modifier = Modifier.fillMaxWidth()) {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Text(
+                            text = "Paymaster Balance",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Spacer(Modifier.height(4.dp))
+                        val formattedBalance = try {
+                            val bd = BigDecimal(paymasterBalance!!)
+                            "$${bd.setScale(2, RoundingMode.HALF_UP).toPlainString()}"
+                        } catch (_: NumberFormatException) {
+                            "$0.00"
+                        }
+                        Text(
+                            text = formattedBalance,
+                            style = MaterialTheme.typography.headlineMedium,
+                            color = MaterialTheme.colorScheme.primary,
                         )
                     }
                 }

@@ -7,8 +7,11 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import org.ethereumphone.andyclaw.NodeApp
 import org.ethereumphone.andyclaw.extensions.ExtensionDescriptor
@@ -16,6 +19,7 @@ import org.ethereumphone.andyclaw.extensions.toSkillAdapters
 import org.ethereumphone.andyclaw.llm.AnthropicModels
 import org.ethereumphone.andyclaw.llm.LlmProvider
 import org.ethereumphone.andyclaw.llm.ModelDownloadManager
+import org.ethereumphone.andyclaw.PaymasterSDK
 import org.ethereumphone.andyclaw.skills.tier.OsCapabilities
 
 class SettingsViewModel(application: Application) : AndroidViewModel(application) {
@@ -53,6 +57,15 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
 
     val registeredSkills get() = app.nativeSkillRegistry.getAll()
 
+    // ── Paymaster ────────────────────────────────────────────────────────
+
+    private val paymasterSDK = PaymasterSDK(application)
+
+    private val _paymasterBalance = MutableStateFlow<String?>(null)
+    val paymasterBalance: StateFlow<String?> = _paymasterBalance.asStateFlow()
+
+    private var balancePollingJob: Job? = null
+
     // ── Memory ──────────────────────────────────────────────────────────
 
     /** Reactive memory count — auto-updates when memories are added or deleted. */
@@ -77,6 +90,7 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
     init {
         loadAutoStorePreference()
         refreshExtensions()
+        if (isPrivileged) initPaymaster()
     }
 
     // ── Actions ─────────────────────────────────────────────────────────
@@ -183,6 +197,34 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
                 _isExtensionScanning.value = false
             }
         }
+    }
+
+    // ── Paymaster internals ────────────────────────────────────────────
+
+    private fun initPaymaster() {
+        viewModelScope.launch {
+            if (paymasterSDK.initialize()) {
+                paymasterSDK.queryUpdate()
+                _paymasterBalance.value = paymasterSDK.getCurrentBalance() ?: "0.0"
+                startBalancePolling()
+            }
+        }
+    }
+
+    private fun startBalancePolling() {
+        balancePollingJob?.cancel()
+        balancePollingJob = viewModelScope.launch {
+            while (isActive) {
+                delay(5_000)
+                paymasterSDK.getCurrentBalance()?.let { _paymasterBalance.value = it }
+            }
+        }
+    }
+
+    override fun onCleared() {
+        super.onCleared()
+        balancePollingJob?.cancel()
+        paymasterSDK.cleanup()
     }
 
     // ── Internal ────────────────────────────────────────────────────────
