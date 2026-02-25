@@ -1369,11 +1369,31 @@ class WalletSkill(private val context: Context) : AndyClawSkill {
             if (resolved != null) return resolved
         }
 
-        // Fall back to explicit params
-        if (contractAddress != null && decimals != null) {
-            return contractAddress to decimals
+        // Fall back to explicit params, but cross-check decimals against
+        // the well-known registry to catch LLM-provided wrong decimals
+        if (contractAddress != null) {
+            val registryDecimals = resolveDecimalsByAddress(contractAddress, chainId)
+            if (registryDecimals != null) {
+                return contractAddress to registryDecimals
+            }
+            if (decimals != null) {
+                return contractAddress to decimals
+            }
         }
 
+        return null
+    }
+
+    /**
+     * Reverse-lookup: find the correct decimals for a contract address
+     * from the well-known registry.
+     */
+    private fun resolveDecimalsByAddress(contractAddress: String, chainId: Int): Int? {
+        val lower = contractAddress.lowercase()
+        for (token in WELL_KNOWN_TOKENS) {
+            val addr = token.addresses[chainId] ?: continue
+            if (addr.lowercase() == lower) return token.decimals
+        }
         return null
     }
 
@@ -1406,25 +1426,71 @@ class WalletSkill(private val context: Context) : AndyClawSkill {
 
         val (contractAddress, decimals) = resolved
 
-        // Delegate to the existing propose_token_transfer
-        val txParams = JsonObject(mapOf(
-            "contract_address" to JsonPrimitive(contractAddress),
-            "to" to JsonPrimitive(to),
-            "amount" to JsonPrimitive(amount),
-            "decimals" to JsonPrimitive(decimals),
-            "chain_id" to JsonPrimitive(chainId),
-        ))
-        val result = proposeTokenTransfer(txParams)
-
-        // Enhance success with symbol info
-        if (result is SkillResult.Success && symbol != null) {
-            val parsed = Json.parseToJsonElement(result.data).jsonObject
-            return SkillResult.Success(buildJsonObject {
-                for ((k, v) in parsed) put(k, v)
-                put("symbol", symbol.uppercase())
-            }.toString())
+        // Convert human-readable amount to smallest-unit amount using token decimals
+        // e.g. "1" USDC (6 decimals) → 1_000_000 smallest units
+        val rawAmount = try {
+            BigDecimal(amount)
+                .multiply(BigDecimal.TEN.pow(decimals))
+                .toBigIntegerExact()
+        } catch (e: Exception) {
+            return SkillResult.Error("Invalid amount '$amount': ${e.message}")
         }
-        return result
+
+        if (rawAmount <= BigInteger.ZERO) {
+            return SkillResult.Error("Amount must be greater than zero.")
+        }
+
+        val rpcEndpoint = chainIdToRpc(chainId)
+            ?: return SkillResult.Error(
+                "Unsupported chain ID: $chainId. " +
+                        "Supported chains: ${CHAIN_NAMES.keys.sorted().joinToString()}"
+            )
+
+        val function = Function(
+            "transfer",
+            listOf(Address(to), Uint256(rawAmount)),
+            emptyList(),
+        )
+        val encodedData = FunctionEncoder.encode(function)
+
+        val w = getOrCreateWallet(chainId)
+            ?: return walletUnavailableError()
+
+        return try {
+            val result = withContext(Dispatchers.IO) {
+                if (chainId != w.getChainId()) {
+                    w.changeChain(
+                        chainId = chainId,
+                        rpcEndpoint = rpcEndpoint,
+                        mBundlerRPCUrl = chainIdToBundler(chainId),
+                    )
+                }
+                w.sendTransaction(
+                    to = contractAddress,
+                    value = "0",
+                    data = encodedData,
+                    callGas = null,
+                    chainId = chainId,
+                    rpcEndpoint = rpcEndpoint,
+                )
+            }
+            if (result == "decline") {
+                SkillResult.Error("Transaction was declined by the user.")
+            } else {
+                SkillResult.Success(buildJsonObject {
+                    put("user_op_hash", result)
+                    put("status", "submitted")
+                    put("chain_id", chainId)
+                    put("token", contractAddress)
+                    put("to", to)
+                    put("amount", amount)
+                    put("amount_raw", rawAmount.toString())
+                    if (symbol != null) put("symbol", symbol.uppercase())
+                }.toString())
+            }
+        } catch (e: Exception) {
+            SkillResult.Error("Failed to transfer token: ${e.message}")
+        }
     }
 
     private suspend fun agentSendNativeToken(params: JsonObject): SkillResult {
@@ -1505,23 +1571,66 @@ class WalletSkill(private val context: Context) : AndyClawSkill {
 
         val (contractAddress, decimals) = resolved
 
-        val txParams = JsonObject(mapOf(
-            "contract_address" to JsonPrimitive(contractAddress),
-            "to" to JsonPrimitive(to),
-            "amount" to JsonPrimitive(amount),
-            "decimals" to JsonPrimitive(decimals),
-            "chain_id" to JsonPrimitive(chainId),
-        ))
-        val result = agentTransferToken(txParams)
-
-        if (result is SkillResult.Success && symbol != null) {
-            val parsed = Json.parseToJsonElement(result.data).jsonObject
-            return SkillResult.Success(buildJsonObject {
-                for ((k, v) in parsed) put(k, v)
-                put("symbol", symbol.uppercase())
-            }.toString())
+        // Convert human-readable amount to smallest-unit amount using token decimals
+        // e.g. "5" USDC (6 decimals) → 5_000_000 smallest units
+        val rawAmount = try {
+            BigDecimal(amount)
+                .multiply(BigDecimal.TEN.pow(decimals))
+                .toBigIntegerExact()
+        } catch (e: Exception) {
+            return SkillResult.Error("Invalid amount '$amount': ${e.message}")
         }
-        return result
+
+        if (rawAmount <= BigInteger.ZERO) {
+            return SkillResult.Error("Amount must be greater than zero.")
+        }
+
+        val rpcEndpoint = chainIdToRpc(chainId)
+            ?: return SkillResult.Error(
+                "Unsupported chain ID: $chainId. " +
+                        "Supported chains: ${CHAIN_NAMES.keys.sorted().joinToString()}"
+            )
+
+        val function = Function(
+            "transfer",
+            listOf(Address(to), Uint256(rawAmount)),
+            emptyList(),
+        )
+        val encodedData = FunctionEncoder.encode(function)
+
+        val sw = getOrCreateSubWallet(chainId)
+            ?: return subWalletUnavailableError()
+
+        return try {
+            val result = withContext(Dispatchers.IO) {
+                if (chainId != sw.getChainId()) {
+                    sw.changeChain(
+                        chainId = chainId,
+                        rpcEndpoint = rpcEndpoint,
+                        mBundlerRPCUrl = chainIdToBundler(chainId),
+                    )
+                }
+                sw.sendTransaction(
+                    to = contractAddress,
+                    value = "0",
+                    data = encodedData,
+                    callGas = null,
+                    chainId = chainId,
+                )
+            }
+            SkillResult.Success(buildJsonObject {
+                put("user_op_hash", result)
+                put("status", "submitted")
+                put("chain_id", chainId)
+                put("token", contractAddress)
+                put("to", to)
+                put("amount", amount)
+                put("amount_raw", rawAmount.toString())
+                if (symbol != null) put("symbol", symbol.uppercase())
+            }.toString())
+        } catch (e: Exception) {
+            SkillResult.Error("Failed to transfer token from agent wallet: ${e.message}")
+        }
     }
 
     // ── Balance query helpers ────────────────────────────────────────────
