@@ -15,6 +15,7 @@ appcompat = "1.7.0"
 cameraX = "1.4.1"
 exifinterface = "1.4.0"
 securityCrypto = "1.1.0-alpha07"
+splashscreen = "1.0.1"
 okhttp = "4.12.0"
 kotlinxSerialization = "1.7.3"
 room = "2.7.1"
@@ -57,6 +58,7 @@ camera-lifecycle = { group = "androidx.camera", name = "camera-lifecycle", versi
 camera-video = { group = "androidx.camera", name = "camera-video", version.ref = "cameraX" }
 exifinterface = { group = "androidx.exifinterface", name = "exifinterface", version.ref = "exifinterface" }
 security-crypto = { group = "androidx.security", name = "security-crypto", version.ref = "securityCrypto" }
+splashscreen = { group = "androidx.core", name = "core-splashscreen", version.ref = "splashscreen" }
 beanshell = { group = "org.apache-extras.beanshell", name = "bsh", version.ref = "beanshell" }
 gplayapi = { group = "com.auroraoss", name = "gplayapi", version.ref = "gplayapi" }
 

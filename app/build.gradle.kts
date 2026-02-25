@@ -107,6 +107,7 @@ dependencies {
     implementation(libs.camera.video)
     implementation(libs.exifinterface)
     implementation(libs.security.crypto)
+    implementation(libs.splashscreen)
     implementation(libs.beanshell)
     // Tinfoil bridge — Go wrapper around tinfoil-go SDK for TEE-attested inference
     implementation(files("../tinfoil-bridge/tinfoil-bridge.aar"))
