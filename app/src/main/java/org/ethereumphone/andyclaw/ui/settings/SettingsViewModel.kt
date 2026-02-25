@@ -204,8 +204,15 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
     private fun initPaymaster() {
         viewModelScope.launch {
             if (paymasterSDK.initialize()) {
-                paymasterSDK.queryUpdate()
+                // Show cached value immediately
                 _paymasterBalance.value = paymasterSDK.getCurrentBalance() ?: "0.0"
+                // Ask the OS to fetch the latest from backend
+                paymasterSDK.queryUpdate()
+                // Re-read after 500ms and 1s to pick up the updated value
+                delay(500)
+                paymasterSDK.getCurrentBalance()?.let { _paymasterBalance.value = it }
+                delay(500)
+                paymasterSDK.getCurrentBalance()?.let { _paymasterBalance.value = it }
                 startBalancePolling()
             }
         }
