@@ -9,7 +9,6 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import org.ethereumphone.andyclaw.NodeApp
-import org.ethereumphone.andyclaw.PaymasterSDK
 import org.ethereumphone.andyclaw.agent.AgentLoop
 import org.ethereumphone.andyclaw.llm.AnthropicModels
 import org.ethereumphone.andyclaw.llm.ContentBlock
@@ -23,6 +22,11 @@ import org.ethereumphone.andyclaw.sessions.model.SessionMessage
 import org.ethereumphone.andyclaw.llm.AnthropicApiException
 import org.ethereumphone.andyclaw.skills.SkillResult
 import org.ethereumphone.andyclaw.skills.tier.OsCapabilities
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import org.json.JSONObject
 import java.math.BigDecimal
 
 data class ChatUiMessage(
@@ -66,11 +70,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private var currentJob: Job? = null
     private var approvalContinuation: kotlinx.coroutines.CancellableContinuation<Boolean>? = null
 
-    private val paymasterSDK: PaymasterSDK? = if (OsCapabilities.hasPrivilegedAccess) {
-        PaymasterSDK(application).also { it.initialize() }
-    } else {
-        null
-    }
+    private val httpClient = OkHttpClient()
 
     data class ApprovalRequest(val description: String)
 
@@ -94,16 +94,19 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     fun sendMessage(text: String) {
         if (text.isBlank() || _isStreaming.value) return
 
-        // Proactive balance check for ethOS devices
-        paymasterSDK?.getCurrentBalance()?.let { balanceStr ->
-            val balance = try { BigDecimal(balanceStr) } catch (_: NumberFormatException) { BigDecimal.ZERO }
-            if (balance < BigDecimal.ONE) {
-                _insufficientBalance.value = true
-                return
-            }
-        }
-
         currentJob = viewModelScope.launch {
+            // Proactive balance check for ethOS devices
+            if (OsCapabilities.hasPrivilegedAccess) {
+                val walletAddress = app.securePrefs.walletAddress.value
+                if (walletAddress.isNotBlank()) {
+                    val balance = fetchUserBalance(walletAddress)
+                    if (balance != null && balance < BigDecimal.ONE) {
+                        _insufficientBalance.value = true
+                        return@launch
+                    }
+                }
+            }
+
             // Ensure session exists
             if (_sessionId.value == null) {
                 val model = app.securePrefs.selectedModel.value
@@ -307,6 +310,22 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
     }
+
+    private suspend fun fetchUserBalance(walletAddress: String): BigDecimal? =
+        withContext(Dispatchers.IO) {
+            try {
+                val url = "https://api.markushaas.com/api/get-user-balance?userId=$walletAddress"
+                val request = Request.Builder().url(url).get().build()
+                httpClient.newCall(request).execute().use { response ->
+                    if (!response.isSuccessful) return@withContext null
+                    val body = response.body?.string() ?: return@withContext null
+                    val balance = JSONObject(body).optDouble("balance", 0.0)
+                    BigDecimal.valueOf(balance)
+                }
+            } catch (_: Exception) {
+                null
+            }
+        }
 
     private fun SessionMessage.toUiMessage() = ChatUiMessage(
         id = id,
