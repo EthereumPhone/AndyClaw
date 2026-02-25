@@ -48,8 +48,8 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
             return if (provider != null) {
                 AnthropicModels.forProvider(provider)
             } else {
-                // ethOS: show OpenRouter models (premium gateway)
-                AnthropicModels.forProvider(LlmProvider.OPEN_ROUTER)
+                // ethOS: show Tinfoil models (requests go through tinfoilProxyClient)
+                AnthropicModels.forProvider(LlmProvider.TINFOIL)
             }
         }
 

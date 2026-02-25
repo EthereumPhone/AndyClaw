@@ -9,6 +9,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import org.ethereumphone.andyclaw.NodeApp
+import org.ethereumphone.andyclaw.PaymasterSDK
 import org.ethereumphone.andyclaw.agent.AgentLoop
 import org.ethereumphone.andyclaw.llm.AnthropicModels
 import org.ethereumphone.andyclaw.llm.ContentBlock
@@ -21,6 +22,8 @@ import org.ethereumphone.andyclaw.sessions.model.MessageRole
 import org.ethereumphone.andyclaw.sessions.model.SessionMessage
 import org.ethereumphone.andyclaw.llm.AnthropicApiException
 import org.ethereumphone.andyclaw.skills.SkillResult
+import org.ethereumphone.andyclaw.skills.tier.OsCapabilities
+import java.math.BigDecimal
 
 data class ChatUiMessage(
     val id: String,
@@ -63,6 +66,12 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private var currentJob: Job? = null
     private var approvalContinuation: kotlinx.coroutines.CancellableContinuation<Boolean>? = null
 
+    private val paymasterSDK: PaymasterSDK? = if (OsCapabilities.hasPrivilegedAccess) {
+        PaymasterSDK(application).also { it.initialize() }
+    } else {
+        null
+    }
+
     data class ApprovalRequest(val description: String)
 
     fun loadSession(sessionId: String) {
@@ -84,6 +93,15 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     fun sendMessage(text: String) {
         if (text.isBlank() || _isStreaming.value) return
+
+        // Proactive balance check for ethOS devices
+        paymasterSDK?.getCurrentBalance()?.let { balanceStr ->
+            val balance = try { BigDecimal(balanceStr) } catch (_: NumberFormatException) { BigDecimal.ZERO }
+            if (balance < BigDecimal.ONE) {
+                _insufficientBalance.value = true
+                return
+            }
+        }
 
         currentJob = viewModelScope.launch {
             // Ensure session exists
