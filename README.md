@@ -8,15 +8,16 @@ AndyClaw is a single APK that operates in two modes depending on what device it'
 
 ### On ethOS (dGEN1)
 
-When installed on a device running ethOS, AndyClaw automatically detects the OS wallet service and unlocks **privileged mode**. No API key needed — authentication is handled by signing a message with your ethOS wallet.
+When installed on a device running ethOS, AndyClaw automatically detects the OS wallet service and unlocks **privileged mode**. No API key needed. authentication is handled by signing a message with your ethOS wallet.
 
-**What you get in privileged mode:**
+**What you get in privileged mode on top of all other features:**
+
 - Wallet integration (send transactions, check balances, manage tokens across Ethereum, Optimism, Polygon, Arbitrum, Base, and more)
 - XMTP messaging (send and receive onchain messages)
 - Full device control (WiFi, Bluetooth, mobile data, audio, power)
 - Phone calls and call management
 - Calendar read/write
-- App installation and management (install, uninstall, clear data, force stop)
+- Full App management (install, uninstall, clear data, force stop)
 - Device power controls (reboot, shutdown)
 - Code execution
 - Screen time and usage stats
@@ -25,13 +26,15 @@ When installed on a device running ethOS, AndyClaw automatically detects the OS 
 
 ### On Stock Android
 
-When installed on a regular Android device, AndyClaw runs in **open mode**. You bring your own [OpenRouter](https://openrouter.ai) API key to power the LLM.
+When installed on a regular Android device, AndyClaw runs in **open mode**. You can use the integrated local model (Qwen2.5-1.5B) or bring your own API key (currently [OpenRouter](https://openrouter.ai) or [tinfoil.sh](https://tinfoil.sh/inference)).
 
 **What you get in open mode:**
+
 - Chat with the AI assistant
 - Device info (battery, storage, device details)
 - Clipboard read/write
 - Contacts read/write
+- Install apps via Aurora Store (no google play required)
 - SMS send/read
 - Camera capture
 - Location and navigation
@@ -46,8 +49,9 @@ When installed on a regular Android device, AndyClaw runs in **open mode**. You 
 - ClawHub skills (install community-made skills)
 
 **Setup:**
+
 1. Install the APK
-2. On first launch, enter your OpenRouter API key (get one at [openrouter.ai](https://openrouter.ai))
+2. On first launch, select your mode (local Qwen2.5-1.5B model) or [OpenRouter](https://openrouter.ai) or [tinfoil.sh](https://tinfoil.sh/inference) api key
 3. Tell the AI what you want help with
 4. Name your AI (or keep the default)
 5. Share your values/priorities
@@ -62,6 +66,7 @@ AndyClaw uses an agentic tool-use loop. The AI can chain multiple tool calls tog
 ### Heartbeat
 
 The heartbeat is the AI's autonomous background pulse. It wakes up periodically (default: 30 minutes, configurable) and can:
+
 - Check device status (battery, connectivity, storage)
 - Review notifications and messages
 - Execute pending tasks
@@ -73,17 +78,19 @@ Heartbeat logs are viewable in-app so you can see exactly what the AI did while 
 
 ### Skills System
 
-Skills are modular capabilities the AI can use. There are 30 built-in skills covering everything from device info to crypto wallets. Skills are tier-aware — some are available on all Android devices, others require ethOS privileged access.
+Skills are modular capabilities the AI can use. There are 30+ built-in skills covering everything from device info or  installing apps to even crypto wallets. Skills are system-aware. Some are available on all Android devices, others require ethOS privileged access.
 
-**ClawHub** lets you install community-created skills written as SKILL.md files. These can be instruction-only (the AI follows written procedures) or Termux-executable (the AI runs scripts in a Linux environment).
+**ClawHub** lets you install and manage community-created skills written as SKILL.md files. These can be instruction-only (the AI follows written procedures) or Termux-executable (the AI runs scripts in a Linux environment).
 
 ### Termux Integration
 
 If [Termux](https://termux.dev) is installed, the AI gets a full Linux environment. It can run bash commands, install packages, execute scripts, and interact with the terminal. ClawHub skills can define Termux entrypoints that get synced and executed automatically.
 
+See the **[Termux Setup Guide](guides/termux-setup.md)** for step-by-step installation and configuration instructions for stock android devices.
+
 ### Long-Term Memory
 
-The AI has a semantic memory system backed by SQLite FTS4 and vector embeddings. It can store and retrieve memories across sessions — facts you tell it, things it learns, context from conversations. Memories are automatically injected into the system prompt when relevant.
+The AI has a semantic memory system backed by SQLite FTS4 and vector embeddings. It can store and retrieve memories across sessions. Be it facts you tell it, things it learns or context from conversations. Memories are automatically injected into the system prompt when relevant.
 
 ### Sessions
 
@@ -98,12 +105,14 @@ See the **[Extension Development Guide](ExtensionExample/README.md)** for a full
 ## Requirements
 
 - Android 15+ (API 35)
-- An OpenRouter API key (stock Android only — get one at [openrouter.ai](https://openrouter.ai))
+- (Optinal) AI api keys:
+  - OpenRouter  (stock Android only — get one at [openrouter.ai](https://openrouter.ai))
+  - Tinfoil  (stock Android only — get one at [tinfoil.sh](https://tinfoil.sh/inference))
 - Optional: [Termux](https://termux.dev) for Linux command execution
 
 ## Models
 
-AndyClaw routes through [OpenRouter](https://openrouter.ai) (stock Android) or a premium gateway (ethOS). The default model is `minimax/minimax-m2.5`. You can switch models in settings.
+AndyClaw routes through either [OpenRouter](https://openrouter.ai), [tinfoil.sh](https://tinfoil.sh/inference)(stock android) or the integrated gateway (ethOS). The default model is `minimax/minimax-m2.5`. You can switch models in settings.
 
 ## Building From Source
 
@@ -115,7 +124,7 @@ cd AndyClaw
 Create `local.properties` if it doesn't exist and add any optional keys:
 
 ```properties
-# Optional — only needed for wallet/crypto features
+# Optional — only needed for wallet/crypto features, especially if running on ethOS
 BUNDLER_API=your_pimlico_bundler_key
 ALCHEMY_API=your_alchemy_api_key
 

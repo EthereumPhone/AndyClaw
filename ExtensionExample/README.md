@@ -9,22 +9,22 @@ The `ExtensionExample` module in this repository is a minimal, working reference
 ## How It Works
 
 ```
-┌──────────────────────┐         ┌──────────────────────────┐
+┌───────────────────────┐         ┌──────────────────────────┐
 │      AndyClaw         │         │   Your Extension APK     │
 │                       │         │                          │
 │  1. ApkExtensionScan  │────────▶│  <meta-data> in manifest │
 │     ner reads all     │         │  + @raw/extension_mani-  │
-│     installed pkgs    │         │    fest.json              │
+│     installed pkgs    │         │    fest.json             │
 │                       │         │                          │
 │  2. ExtensionEngine   │         │                          │
 │     registers the     │         │                          │
 │     extension         │         │                          │
 │                       │         │                          │
 │  3. ApkExtensionExe-  │◀───────▶│  IPC bridge (service,    │
-│     cutor invokes     │  IPC    │  provider, receiver, or  │
+│     cutor invokes     │   IPC   │  provider, receiver, or  │
 │     functions via     │         │  activity intent)        │
 │     detected bridge   │         │                          │
-└──────────────────────┘         └──────────────────────────┘
+└───────────────────────┘         └──────────────────────────┘
 ```
 
 **Discovery** happens by scanning every installed package's `<application>` metadata for the key `org.ethereumphone.andyclaw.EXTENSION`. When found, AndyClaw reads the extension's identity, its function manifest, and detects what IPC bridge it exposes.
