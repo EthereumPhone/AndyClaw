@@ -91,7 +91,9 @@ Chat history is persisted. You can resume previous conversations or start fresh 
 
 ### Extensions
 
-Third-party apps can register as AndyClaw extensions, providing additional skills that get discovered and loaded automatically.
+Third-party apps can register as AndyClaw extensions, providing additional functions that get discovered and loaded automatically. Any Android app can become an extension by declaring metadata in its manifest and exposing an IPC bridge — a bound service, content provider, broadcast receiver, or activity intent. AndyClaw scans all installed packages, picks up extensions, and makes their functions available to the agent.
+
+See the **[Extension Development Guide](ExtensionExample/README.md)** for a full walkthrough of the architecture, wire protocol, and step-by-step instructions for building your own extension. The `ExtensionExample/` module is a minimal working reference implementation.
 
 ## Requirements
 
