@@ -18,7 +18,7 @@ import org.ethereumphone.andyclaw.sessions.db.entity.SessionMessageEntity
 @Database(
     entities = [SessionEntity::class, SessionMessageEntity::class],
     version = 1,
-    exportSchema = false,
+    exportSchema = true,
 )
 abstract class SessionDatabase : RoomDatabase() {
 
@@ -37,7 +37,6 @@ abstract class SessionDatabase : RoomDatabase() {
                     SessionDatabase::class.java,
                     DB_NAME,
                 )
-                    .fallbackToDestructiveMigration(dropAllTables = true)
                     .build()
                     .also { INSTANCE = it }
             }

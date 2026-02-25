@@ -30,7 +30,7 @@ import org.ethereumphone.andyclaw.memory.db.entity.MemoryTagEntity
         MemoryMetaEntity::class,
     ],
     version = 1,
-    exportSchema = false,
+    exportSchema = true,
 )
 @TypeConverters(Converters::class)
 abstract class MemoryDatabase : RoomDatabase() {
@@ -64,7 +64,6 @@ abstract class MemoryDatabase : RoomDatabase() {
                     MemoryDatabase::class.java,
                     DB_NAME,
                 )
-                    .fallbackToDestructiveMigration(dropAllTables = true)
                     .build()
                     .also { INSTANCE = it }
             }

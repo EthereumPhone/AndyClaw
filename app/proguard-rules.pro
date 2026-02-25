@@ -1,21 +1,91 @@
-# Add project specific ProGuard rules here.
-# You can control the set of applied configuration files using the
-# proguardFiles setting in build.gradle.
-#
-# For more details, see
-#   http://developer.android.com/guide/developing/tools/proguard.html
+# ── AndyClaw ProGuard / R8 rules ─────────────────────────────────────
 
-# If your project uses WebView with JS, uncomment the following
-# and specify the fully qualified class name to the JavaScript interface
-# class:
-#-keepclassmembers class fqcn.of.javascript.interface.for.webview {
-#   public *;
-#}
+# Keep line numbers for crash reporting stack traces
+-keepattributes SourceFile,LineNumberTable
+-renamesourcefileattribute SourceFile
 
-# Uncomment this to preserve the line number information for
-# debugging stack traces.
-#-keepattributes SourceFile,LineNumberTable
+# ── kotlinx.serialization ────────────────────────────────────────────
+# The serialization plugin generates companion serializer() methods and
+# $serializer inner classes that R8 must not strip or rename.
+-keepattributes *Annotation*, InnerClasses
+-dontnote kotlinx.serialization.**
+-keepclassmembers class kotlinx.serialization.json.** { *** Companion; }
+-keepclasseswithmembers class kotlinx.serialization.json.** {
+    kotlinx.serialization.KSerializer serializer(...);
+}
+-keep,includedescriptorclasses class org.ethereumphone.andyclaw.**$$serializer { *; }
+-keepclassmembers class org.ethereumphone.andyclaw.** {
+    *** Companion;
+}
+-keepclasseswithmembers class org.ethereumphone.andyclaw.** {
+    kotlinx.serialization.KSerializer serializer(...);
+}
 
-# If you keep the line number information, uncomment this to
-# hide the original source file name.
-#-renamesourcefileattribute SourceFile
+# ── Room (entities, DAOs, database classes) ──────────────────────────
+-keep class * extends androidx.room.RoomDatabase
+-keep @androidx.room.Entity class *
+-keep @androidx.room.Dao interface *
+-keepclassmembers @androidx.room.Entity class * { *; }
+
+# ── OkHttp ───────────────────────────────────────────────────────────
+-dontwarn okhttp3.internal.platform.**
+-dontwarn org.bouncycastle.**
+-dontwarn org.conscrypt.**
+-dontwarn org.openjsse.**
+
+# ── Tinfoil bridge (Go AAR — JNI) ───────────────────────────────────
+-keep class tinfoilbridge.** { *; }
+
+# ── Llamatik (KMP llama.cpp wrapper — JNI) ──────────────────────────
+-keep class com.llamatik.** { *; }
+
+# ── EthereumPhone SDKs ──────────────────────────────────────────────
+-keep class com.aspect.** { *; }
+-keep class org.ethereumphone.walletsdk.** { *; }
+-keep class org.ethereumphone.contactssdk.** { *; }
+-keep class org.ethereumphone.messengersdk.** { *; }
+
+# ── BeanShell (interpreter uses reflection) ──────────────────────────
+-keep class bsh.** { *; }
+-dontwarn java.applet.**
+-dontwarn java.awt.**
+-dontwarn javax.script.**
+-dontwarn javax.servlet.**
+-dontwarn javax.swing.**
+-dontwarn org.apache.bsf.**
+
+# ── gplayapi (Aurora Store integration) ──────────────────────────────
+-keep class com.aurora.gplayapi.** { *; }
+
+# ── Reflection call targets ──────────────────────────────────────────
+# PackageManagerSkill reflects on hidden Android APIs
+-keep class android.content.pm.IPackageDataObserver { *; }
+-keep class android.content.pm.IPackageDataObserver$Stub { *; }
+# HeartbeatBindingService reflects on PaymasterProxy
+-dontwarn android.os.PaymasterProxy
+
+# ── Enums (used in serialization and Room converters) ────────────────
+-keepclassmembers,allowoptimization enum * {
+    public static **[] values();
+    public static ** valueOf(java.lang.String);
+}
+
+# ── AIDL interfaces (bound services) ────────────────────────────────
+-keep class org.ethereumphone.andyclaw.ipc.IHeartbeatService { *; }
+-keep class org.ethereumphone.andyclaw.ipc.IHeartbeatService$* { *; }
+-keep class org.ethereumphone.andyclaw.IAndyClawSkill { *; }
+-keep class org.ethereumphone.andyclaw.IAndyClawSkill$* { *; }
+
+# ── Strip verbose logging in release ─────────────────────────────────
+-assumenosideeffects class android.util.Log {
+    public static int v(...);
+    public static int d(...);
+}
+
+# ── dnsjava ──────────────────────────────────────────────────────────
+-dontwarn org.xbill.DNS.**
+-keep class org.xbill.DNS.** { *; }
+
+# ── Protobuf (transitive from MessengerSDK / XMTP) ──────────────────
+-keep class com.google.protobuf.** { *; }
+-dontwarn com.google.protobuf.**
