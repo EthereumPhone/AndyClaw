@@ -38,6 +38,10 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
     val selectedProvider = prefs.selectedProvider
     val tinfoilApiKey = prefs.tinfoilApiKey
 
+    val cliEnabled = prefs.cliEnabled
+    val cliPort = prefs.cliPort
+    val cliToken = prefs.cliToken
+
     val currentTier: String get() = OsCapabilities.currentTier().name
     val isPrivileged: Boolean get() = OsCapabilities.hasPrivilegedAccess
 
@@ -149,6 +153,21 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
 
     fun toggleSkill(skillId: String, enabled: Boolean) {
         prefs.setSkillEnabled(skillId, enabled)
+    }
+
+    fun setCliEnabled(enabled: Boolean) {
+        prefs.setCliEnabled(enabled)
+        if (enabled) app.restartCliServer() else app.stopCliServer()
+    }
+
+    fun setCliPort(port: Int) {
+        prefs.setCliPort(port)
+        if (prefs.cliEnabled.value) app.restartCliServer()
+    }
+
+    fun regenerateCliToken() {
+        prefs.regenerateCliToken()
+        if (prefs.cliEnabled.value) app.restartCliServer()
     }
 
     fun setAutoStoreEnabled(enabled: Boolean) {

@@ -89,3 +89,8 @@
 # ── Protobuf (transitive from MessengerSDK / XMTP) ──────────────────
 -keep class com.google.protobuf.** { *; }
 -dontwarn com.google.protobuf.**
+
+# ── Ktor (embedded server for CLI access) ────────────────────────────
+-keep class io.ktor.** { *; }
+-dontwarn io.ktor.**
+-dontwarn org.slf4j.**

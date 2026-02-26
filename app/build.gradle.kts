@@ -75,6 +75,10 @@ android {
                 "META-INF/io.netty.versions.properties",
                 "META-INF/FastDoubleParser-*",
                 "META-INF/BigDecimal*",
+                "META-INF/NOTICE",
+                "META-INF/LICENSE",
+                "META-INF/LICENSE.txt",
+                "META-INF/NOTICE.txt",
             )
         }
     }
@@ -116,6 +120,9 @@ dependencies {
     implementation("com.llamatik:library:0.16.0")
     // Aurora Store gplayapi for downloading apps from Play Store
     implementation(libs.gplayapi)
+    // Ktor — embedded HTTP + WebSocket server for desktop CLI access
+    implementation(libs.ktor.server.cio)
+    implementation(libs.ktor.server.websockets)
     // DgenSubAccountSDK — gives the LLM its own sub-account wallet (SubWalletSDK)
     // and exposes the OS-level system wallet (WalletSDK) transitively
     implementation("com.github.EthereumPhone:DgenSubAccountSDK:0.2.0")

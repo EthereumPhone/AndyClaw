@@ -45,6 +45,9 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.OutlinedButton
 import org.ethereumphone.andyclaw.llm.AnthropicModels
 import org.ethereumphone.andyclaw.llm.LlmProvider
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import android.content.Intent
 import java.math.BigDecimal
 import java.math.RoundingMode
@@ -75,6 +78,9 @@ fun SettingsScreen(
     val isExtensionScanning by viewModel.isExtensionScanning.collectAsState()
     val enabledSkills by viewModel.enabledSkills.collectAsState()
     val paymasterBalance by viewModel.paymasterBalance.collectAsState()
+    val cliEnabled by viewModel.cliEnabled.collectAsState()
+    val cliPort by viewModel.cliPort.collectAsState()
+    val cliToken by viewModel.cliToken.collectAsState()
 
     Scaffold(
         topBar = {
@@ -578,6 +584,20 @@ fun SettingsScreen(
             HorizontalDivider()
             Spacer(Modifier.height(16.dp))
 
+            // CLI Access
+            CliAccessSection(
+                enabled = cliEnabled,
+                port = cliPort,
+                token = cliToken,
+                onToggle = { viewModel.setCliEnabled(it) },
+                onPortChange = { viewModel.setCliPort(it) },
+                onRegenerateToken = { viewModel.regenerateCliToken() },
+            )
+
+            Spacer(Modifier.height(24.dp))
+            HorizontalDivider()
+            Spacer(Modifier.height(16.dp))
+
             // ClawHub
             Text(
                 text = "ClawHub",
@@ -618,6 +638,101 @@ fun SettingsScreen(
                 enabledSkills = enabledSkills,
                 onToggleSkill = { skillId, enabled -> viewModel.toggleSkill(skillId, enabled) },
             )
+        }
+    }
+}
+
+@Composable
+private fun CliAccessSection(
+    enabled: Boolean,
+    port: Int,
+    token: String,
+    onToggle: (Boolean) -> Unit,
+    onPortChange: (Int) -> Unit,
+    onRegenerateToken: () -> Unit,
+) {
+    val context = LocalContext.current
+
+    Text(
+        text = "CLI Access",
+        style = MaterialTheme.typography.titleMedium,
+    )
+    Spacer(Modifier.height(8.dp))
+
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "Enable CLI server",
+                        style = MaterialTheme.typography.bodyLarge,
+                    )
+                    Text(
+                        text = "Starts an HTTP + WebSocket server so you can chat with the AI from a desktop terminal",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Switch(
+                    checked = enabled,
+                    onCheckedChange = onToggle,
+                )
+            }
+
+            if (enabled) {
+                Spacer(Modifier.height(16.dp))
+
+                var editingPort by remember(port) { mutableStateOf(port.toString()) }
+                OutlinedTextField(
+                    value = editingPort,
+                    onValueChange = { value ->
+                        editingPort = value.filter { it.isDigit() }.take(5)
+                        editingPort.toIntOrNull()?.let { onPortChange(it) }
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("Port") },
+                    singleLine = true,
+                )
+
+                Spacer(Modifier.height(12.dp))
+
+                Text(
+                    text = "Bearer Token",
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                Spacer(Modifier.height(4.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Text(
+                        text = token,
+                        style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier.weight(1f),
+                        maxLines = 1,
+                    )
+                    FilledTonalButton(onClick = {
+                        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                        clipboard.setPrimaryClip(ClipData.newPlainText("CLI Token", token))
+                    }) {
+                        Text("Copy")
+                    }
+                    OutlinedButton(onClick = onRegenerateToken) {
+                        Text("Regen")
+                    }
+                }
+
+                Spacer(Modifier.height(12.dp))
+                Text(
+                    text = "Connect from desktop: andy-cli --host <phone-ip> --port $port --token <token>",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
         }
     }
 }

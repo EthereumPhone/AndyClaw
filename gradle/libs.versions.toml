@@ -24,6 +24,7 @@ navigationCompose = "2.9.0"
 lifecycleViewmodelCompose = "2.10.0"
 beanshell = "2.0b6"
 gplayapi = "3.5.7"
+ktor = "3.1.2"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -61,6 +62,8 @@ security-crypto = { group = "androidx.security", name = "security-crypto", versi
 splashscreen = { group = "androidx.core", name = "core-splashscreen", version.ref = "splashscreen" }
 beanshell = { group = "org.apache-extras.beanshell", name = "bsh", version.ref = "beanshell" }
 gplayapi = { group = "com.auroraoss", name = "gplayapi", version.ref = "gplayapi" }
+ktor-server-cio = { group = "io.ktor", name = "ktor-server-cio", version.ref = "ktor" }
+ktor-server-websockets = { group = "io.ktor", name = "ktor-server-websockets", version.ref = "ktor" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

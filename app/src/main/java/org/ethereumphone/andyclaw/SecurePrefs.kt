@@ -131,6 +131,15 @@ class SecurePrefs(context: Context) : KeyValueStore {
   private val _enabledSkills = MutableStateFlow(loadEnabledSkills())
   val enabledSkills: StateFlow<Set<String>> = _enabledSkills
 
+  private val _cliEnabled = MutableStateFlow(prefs.getBoolean("cli.enabled", false))
+  val cliEnabled: StateFlow<Boolean> = _cliEnabled
+
+  private val _cliPort = MutableStateFlow(prefs.getInt("cli.port", 8642))
+  val cliPort: StateFlow<Int> = _cliPort
+
+  private val _cliToken = MutableStateFlow(loadOrCreateCliToken())
+  val cliToken: StateFlow<String> = _cliToken
+
   fun setLastDiscoveredStableId(value: String) {
     val trimmed = value.trim()
     prefs.edit { putString("gateway.lastDiscoveredStableID", trimmed) }
@@ -366,6 +375,32 @@ class SecurePrefs(context: Context) : KeyValueStore {
   }
 
   fun isSkillEnabled(skillId: String): Boolean = skillId in _enabledSkills.value
+
+  fun setCliEnabled(value: Boolean) {
+    prefs.edit { putBoolean("cli.enabled", value) }
+    _cliEnabled.value = value
+  }
+
+  fun setCliPort(value: Int) {
+    val clamped = value.coerceIn(1024, 65535)
+    prefs.edit { putInt("cli.port", clamped) }
+    _cliPort.value = clamped
+  }
+
+  fun regenerateCliToken(): String {
+    val fresh = UUID.randomUUID().toString()
+    prefs.edit { putString("cli.token", fresh) }
+    _cliToken.value = fresh
+    return fresh
+  }
+
+  private fun loadOrCreateCliToken(): String {
+    val existing = prefs.getString("cli.token", null)?.trim()
+    if (!existing.isNullOrBlank()) return existing
+    val fresh = UUID.randomUUID().toString()
+    prefs.edit { putString("cli.token", fresh) }
+    return fresh
+  }
 
   private fun loadEnabledSkills(): Set<String> {
     val raw = prefs.getString("agent.enabledSkills", null)?.trim()

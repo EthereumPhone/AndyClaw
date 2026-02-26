@@ -93,6 +93,9 @@ class NodeForegroundService : Service() {
             // Start listening for XMTP new-message callbacks
             startXmtpMessageListener()
 
+            // Start CLI API server if enabled in settings
+            app.startCliServerIfEnabled()
+
             serviceInitialized = true
             Log.i(TAG, "Heartbeat service started (interval: ${intervalMinutes}m)")
         }
@@ -107,6 +110,7 @@ class NodeForegroundService : Service() {
     }
 
     override fun onDestroy() {
+        app.stopCliServer()
         runtime.stopHeartbeat()
         messengerSdk?.identity?.unbind()
         messengerSdk = null

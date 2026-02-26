@@ -58,6 +58,7 @@ import org.ethereumphone.andyclaw.skills.builtin.LocationSkill
 import org.ethereumphone.andyclaw.skills.builtin.SkillCreatorSkill
 import org.ethereumphone.andyclaw.skills.builtin.SkillRefinementSkill
 import org.ethereumphone.andyclaw.skills.builtin.WebSearchSkill
+import org.ethereumphone.andyclaw.cli.CliApiServer
 import org.ethereumphone.andyclaw.skills.tier.OsCapabilities
 import org.ethereumphone.andyclaw.onboarding.UserStoryManager
 import org.ethereumhpone.messengersdk.MessengerSDK
@@ -195,6 +196,34 @@ class NodeApp : Application() {
                 nativeSkillRegistry = this,
             ))
         }
+    }
+
+    // ── CLI API server ──────────────────────────────────────────────
+
+    @Volatile
+    var cliApiServer: CliApiServer? = null
+        private set
+
+    fun startCliServerIfEnabled() {
+        if (!securePrefs.cliEnabled.value) return
+        if (cliApiServer?.isRunning == true) return
+        val server = CliApiServer(
+            app = this,
+            port = securePrefs.cliPort.value,
+            bearerToken = securePrefs.cliToken.value,
+        )
+        cliApiServer = server
+        server.start()
+    }
+
+    fun stopCliServer() {
+        cliApiServer?.stop()
+        cliApiServer = null
+    }
+
+    fun restartCliServer() {
+        stopCliServer()
+        startCliServerIfEnabled()
     }
 
     // ── LLM providers ────────────────────────────────────────────────
