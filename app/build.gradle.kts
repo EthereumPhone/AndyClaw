@@ -124,6 +124,7 @@ dependencies {
     // ContactsSDK for ethOS contacts with ETH address support
     implementation("com.github.EthereumPhone:ContactsSDK:0.1.0")
     testImplementation(libs.junit)
+    testImplementation("com.squareup.okhttp3:mockwebserver:4.12.0")
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
     androidTestImplementation(platform(libs.androidx.compose.bom))
