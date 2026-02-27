@@ -135,7 +135,8 @@ class OnboardingViewModel(application: Application) : AndroidViewModel(applicati
                     when (provider) {
                         LlmProvider.OPEN_ROUTER -> app.securePrefs.setApiKey(apiKey.value.trim())
                         LlmProvider.TINFOIL -> app.securePrefs.setTinfoilApiKey(tinfoilApiKey.value.trim())
-                        LlmProvider.LOCAL -> { /* No API key needed */ }
+                        LlmProvider.LOCAL,
+                        LlmProvider.ETHOS_PREMIUM -> { /* No API key needed */ }
                     }
                     // Set default model for the selected provider
                     val defaultModel = AnthropicModels.defaultForProvider(provider)
@@ -159,7 +160,7 @@ class OnboardingViewModel(application: Application) : AndroidViewModel(applicati
                 }
 
                 val story = try {
-                    val provider = if (isPrivileged) LlmProvider.OPEN_ROUTER else selectedProvider.value
+                    val provider = if (isPrivileged) LlmProvider.ETHOS_PREMIUM else selectedProvider.value
                     val profileModel = AnthropicModels.defaultForProvider(provider)
                     val request = MessagesRequest(
                         model = profileModel.modelId,

@@ -190,9 +190,9 @@ fun SettingsScreen(
             Spacer(Modifier.height(8.dp))
 
             val providerChoices = if (viewModel.isPrivileged) {
-                listOf(LlmProvider.TINFOIL, LlmProvider.OPEN_ROUTER)
+                listOf(LlmProvider.ETHOS_PREMIUM, LlmProvider.OPEN_ROUTER, LlmProvider.TINFOIL)
             } else {
-                LlmProvider.entries.toList()
+                listOf(LlmProvider.OPEN_ROUTER, LlmProvider.TINFOIL, LlmProvider.LOCAL)
             }
 
             var providerDropdownExpanded by remember { mutableStateOf(false) }
@@ -235,91 +235,103 @@ fun SettingsScreen(
                 }
             }
 
-            // Provider-specific config (non-ethOS only — ethOS routes through premium gateway)
-            if (!viewModel.isPrivileged) {
-                Spacer(Modifier.height(8.dp))
+            Spacer(Modifier.height(8.dp))
 
-                when (selectedProvider) {
-                    LlmProvider.OPEN_ROUTER -> {
-                        var editingOpenRouterKey by remember { mutableStateOf(openRouterApiKey) }
-                        OutlinedTextField(
-                            value = editingOpenRouterKey,
-                            onValueChange = {
-                                editingOpenRouterKey = it
-                                viewModel.setApiKey(it)
-                            },
-                            modifier = Modifier.fillMaxWidth(),
-                            label = { Text("OpenRouter API Key") },
-                            placeholder = { Text("sk-or-...") },
-                            singleLine = true,
-                            visualTransformation = PasswordVisualTransformation(),
-                        )
+            when (selectedProvider) {
+                LlmProvider.ETHOS_PREMIUM -> {
+                    Card(modifier = Modifier.fillMaxWidth()) {
+                        Column(modifier = Modifier.padding(16.dp)) {
+                            Text(
+                                text = "Billed via paymaster balance",
+                                style = MaterialTheme.typography.bodyLarge,
+                            )
+                            Text(
+                                text = "No API key needed. Inference is charged against your ethOS paymaster balance.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
                     }
-                    LlmProvider.TINFOIL -> {
-                        var editingKey by remember { mutableStateOf(tinfoilApiKey) }
-                        OutlinedTextField(
-                            value = editingKey,
-                            onValueChange = {
-                                editingKey = it
-                                viewModel.setTinfoilApiKey(it)
-                            },
-                            modifier = Modifier.fillMaxWidth(),
-                            label = { Text("Tinfoil API Key") },
-                            placeholder = { Text("tf-...") },
-                            singleLine = true,
-                            visualTransformation = PasswordVisualTransformation(),
-                        )
-                    }
-                    LlmProvider.LOCAL -> {
-                        Card(modifier = Modifier.fillMaxWidth()) {
-                            Column(modifier = Modifier.padding(16.dp)) {
-                                Text(
-                                    text = "On-Device Model (Qwen2.5-1.5B)",
-                                    style = MaterialTheme.typography.bodyLarge,
-                                )
-                                Text(
-                                    text = "~2.5 GB Q4_K_M quantization",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                                Spacer(Modifier.height(12.dp))
+                }
+                LlmProvider.OPEN_ROUTER -> {
+                    var editingOpenRouterKey by remember { mutableStateOf(openRouterApiKey) }
+                    OutlinedTextField(
+                        value = editingOpenRouterKey,
+                        onValueChange = {
+                            editingOpenRouterKey = it
+                            viewModel.setApiKey(it)
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("OpenRouter API Key") },
+                        placeholder = { Text("sk-or-...") },
+                        singleLine = true,
+                        visualTransformation = PasswordVisualTransformation(),
+                    )
+                }
+                LlmProvider.TINFOIL -> {
+                    var editingKey by remember { mutableStateOf(tinfoilApiKey) }
+                    OutlinedTextField(
+                        value = editingKey,
+                        onValueChange = {
+                            editingKey = it
+                            viewModel.setTinfoilApiKey(it)
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("Tinfoil API Key") },
+                        placeholder = { Text("tf-...") },
+                        singleLine = true,
+                        visualTransformation = PasswordVisualTransformation(),
+                    )
+                }
+                LlmProvider.LOCAL -> {
+                    Card(modifier = Modifier.fillMaxWidth()) {
+                        Column(modifier = Modifier.padding(16.dp)) {
+                            Text(
+                                text = "On-Device Model (Qwen2.5-1.5B)",
+                                style = MaterialTheme.typography.bodyLarge,
+                            )
+                            Text(
+                                text = "~2.5 GB Q4_K_M quantization",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            Spacer(Modifier.height(12.dp))
 
-                                if (viewModel.modelDownloadManager.isModelDownloaded) {
+                            if (viewModel.modelDownloadManager.isModelDownloaded) {
+                                Text(
+                                    text = "Model downloaded",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.primary,
+                                )
+                                Spacer(Modifier.height(8.dp))
+                                OutlinedButton(
+                                    onClick = { viewModel.deleteLocalModel() },
+                                ) {
+                                    Text("Delete Model")
+                                }
+                            } else if (isDownloading) {
+                                Text(
+                                    text = "Downloading... ${(downloadProgress * 100).toInt()}%",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                )
+                                Spacer(Modifier.height(8.dp))
+                                LinearProgressIndicator(
+                                    progress = { downloadProgress },
+                                    modifier = Modifier.fillMaxWidth(),
+                                )
+                            } else {
+                                if (downloadError != null) {
                                     Text(
-                                        text = "Model downloaded",
-                                        style = MaterialTheme.typography.bodyMedium,
-                                        color = MaterialTheme.colorScheme.primary,
+                                        text = "Error: $downloadError",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.error,
                                     )
                                     Spacer(Modifier.height(8.dp))
-                                    OutlinedButton(
-                                        onClick = { viewModel.deleteLocalModel() },
-                                    ) {
-                                        Text("Delete Model")
-                                    }
-                                } else if (isDownloading) {
-                                    Text(
-                                        text = "Downloading... ${(downloadProgress * 100).toInt()}%",
-                                        style = MaterialTheme.typography.bodyMedium,
-                                    )
-                                    Spacer(Modifier.height(8.dp))
-                                    LinearProgressIndicator(
-                                        progress = { downloadProgress },
-                                        modifier = Modifier.fillMaxWidth(),
-                                    )
-                                } else {
-                                    if (downloadError != null) {
-                                        Text(
-                                            text = "Error: $downloadError",
-                                            style = MaterialTheme.typography.bodySmall,
-                                            color = MaterialTheme.colorScheme.error,
-                                        )
-                                        Spacer(Modifier.height(8.dp))
-                                    }
-                                    Button(
-                                        onClick = { viewModel.downloadLocalModel() },
-                                    ) {
-                                        Text("Download Model")
-                                    }
+                                }
+                                Button(
+                                    onClick = { viewModel.downloadLocalModel() },
+                                ) {
+                                    Text("Download Model")
                                 }
                             }
                         }

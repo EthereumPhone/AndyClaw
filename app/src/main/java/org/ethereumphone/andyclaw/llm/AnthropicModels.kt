@@ -24,11 +24,16 @@ enum class AnthropicModels(
         fun fromModelId(id: String): AnthropicModels? = entries.find { it.modelId == id }
 
         /** Return models available for the given provider. */
-        fun forProvider(provider: LlmProvider): List<AnthropicModels> =
-            entries.filter { it.provider == provider }
+        fun forProvider(provider: LlmProvider): List<AnthropicModels> = when (provider) {
+            LlmProvider.ETHOS_PREMIUM -> entries.filter {
+                it.provider == LlmProvider.TINFOIL || it.provider == LlmProvider.OPEN_ROUTER
+            }
+            else -> entries.filter { it.provider == provider }
+        }
 
         /** Default model for a given provider. */
         fun defaultForProvider(provider: LlmProvider): AnthropicModels = when (provider) {
+            LlmProvider.ETHOS_PREMIUM -> TINFOIL_KIMI_K25
             LlmProvider.OPEN_ROUTER -> CLAUDE_SONNET_4_6
             LlmProvider.TINFOIL -> TINFOIL_KIMI_K25
             LlmProvider.LOCAL -> QWEN2_5_1_5B

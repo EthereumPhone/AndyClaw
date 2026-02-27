@@ -1,6 +1,10 @@
 package org.ethereumphone.andyclaw.llm
 
 enum class LlmProvider(val displayName: String, val description: String) {
+    ETHOS_PREMIUM(
+        displayName = "ethOS Premium LLM",
+        description = "Uses your ethOS paymaster balance for inference. No API key required.",
+    ),
     OPEN_ROUTER(
         displayName = "OpenRouter",
         description = "Cloud inference via OpenRouter. Fast and capable, but prompts are processed by third-party servers.",

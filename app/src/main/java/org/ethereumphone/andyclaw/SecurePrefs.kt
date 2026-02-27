@@ -406,7 +406,7 @@ class SecurePrefs(context: Context) : KeyValueStore {
   private fun loadSelectedProvider(): LlmProvider {
     val raw = prefs.getString("llm.provider", null)
     return LlmProvider.fromName(raw ?: "")
-      ?: if (OsCapabilities.hasPrivilegedAccess) LlmProvider.TINFOIL else LlmProvider.OPEN_ROUTER
+      ?: if (OsCapabilities.hasPrivilegedAccess) LlmProvider.ETHOS_PREMIUM else LlmProvider.OPEN_ROUTER
   }
 
   private fun loadVoiceWakeMode(): VoiceWakeMode {

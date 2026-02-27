@@ -72,7 +72,7 @@ class NodeForegroundService : Service() {
         if (!serviceInitialized) {
             // Wire up the real heartbeat agent runner with tool_use
             runtime.nativeSkillRegistry = app.nativeSkillRegistry
-            runtime.anthropicClient = app.anthropicClient
+            runtime.llmClient = app.getLlmClient()
             runtime.agentRunner = HeartbeatAgentRunner(app, app.heartbeatLogStore)
 
             // Configure heartbeat with user-chosen interval

@@ -20,6 +20,7 @@ import org.ethereumphone.andyclaw.sessions.SessionManager
 import org.ethereumphone.andyclaw.sessions.model.MessageRole
 import org.ethereumphone.andyclaw.sessions.model.SessionMessage
 import org.ethereumphone.andyclaw.llm.AnthropicApiException
+import org.ethereumphone.andyclaw.llm.LlmProvider
 import org.ethereumphone.andyclaw.skills.SkillResult
 import org.ethereumphone.andyclaw.skills.tier.OsCapabilities
 import kotlinx.coroutines.Dispatchers
@@ -95,8 +96,10 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         if (text.isBlank() || _isStreaming.value) return
 
         currentJob = viewModelScope.launch {
-            // Proactive balance check for ethOS devices
-            if (OsCapabilities.hasPrivilegedAccess) {
+            // Proactive balance check — only when using the premium gateway
+            if (OsCapabilities.hasPrivilegedAccess &&
+                app.securePrefs.selectedProvider.value == LlmProvider.ETHOS_PREMIUM
+            ) {
                 val walletAddress = app.securePrefs.walletAddress.value
                 if (walletAddress.isNotBlank()) {
                     val balance = fetchUserBalance(walletAddress)
@@ -217,7 +220,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     flushStreamingText(sid)
                     if (error is AnthropicApiException &&
                         error.statusCode == 403 &&
-                        error.message?.contains("Insufficient balance") == true
+                        error.message?.contains("Insufficient balance") == true &&
+                        app.securePrefs.selectedProvider.value == LlmProvider.ETHOS_PREMIUM
                     ) {
                         _insufficientBalance.value = true
                     } else {

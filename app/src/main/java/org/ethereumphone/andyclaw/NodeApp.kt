@@ -63,6 +63,7 @@ import org.ethereumphone.andyclaw.skills.builtin.WebSearchSkill
 import org.ethereumphone.andyclaw.skills.tier.OsCapabilities
 import org.ethereumphone.andyclaw.onboarding.UserStoryManager
 import org.ethereumhpone.messengersdk.MessengerSDK
+import org.ethereumphone.andyclaw.llm.AnthropicModels
 
 class NodeApp : Application() {
 
@@ -229,6 +230,14 @@ class NodeApp : Application() {
         }
     }
 
+    /** BYOK OpenRouter client — always uses the user's own API key. */
+    private val openRouterClient: AnthropicClient by lazy {
+        AnthropicClient(
+            apiKey = { securePrefs.apiKey.value },
+            baseUrl = "https://openrouter.ai/api/v1/messages",
+        )
+    }
+
     private val tinfoilClient: TinfoilClient by lazy {
         TinfoilClient(apiKey = { securePrefs.tinfoilApiKey.value })
     }
@@ -253,19 +262,28 @@ class NodeApp : Application() {
     /**
      * Returns the appropriate [LlmClient] based on the user's selected provider.
      *
-     * ethOS (privileged) devices route through the premium gateway
-     * (`api.markushaas.com`) with wallet-signature billing.
-     * Non-privileged devices use the provider selected in preferences.
+     * ethOS (privileged) devices default to the premium gateway
+     * (`api.markushaas.com`) with wallet-signature billing via [ETHOS_PREMIUM].
+     * When an ethOS user explicitly selects [OPEN_ROUTER] or [TINFOIL],
+     * their own API key is used instead (BYOK).
+     *
+     * Non-privileged devices always use the user's own keys.
      */
     fun getLlmClient(): LlmClient {
         if (OsCapabilities.hasPrivilegedAccess) {
             return when (securePrefs.selectedProvider.value) {
-                LlmProvider.OPEN_ROUTER -> anthropicClient
-                LlmProvider.TINFOIL -> tinfoilProxyClient
-                LlmProvider.LOCAL -> tinfoilProxyClient // LOCAL not supported on ethOS
+                LlmProvider.ETHOS_PREMIUM -> {
+                    val model = AnthropicModels.fromModelId(securePrefs.selectedModel.value)
+                    if (model?.provider == LlmProvider.OPEN_ROUTER) anthropicClient
+                    else tinfoilProxyClient
+                }
+                LlmProvider.OPEN_ROUTER -> openRouterClient
+                LlmProvider.TINFOIL -> tinfoilClient
+                LlmProvider.LOCAL -> tinfoilProxyClient
             }
         }
         return when (securePrefs.selectedProvider.value) {
+            LlmProvider.ETHOS_PREMIUM -> openRouterClient
             LlmProvider.OPEN_ROUTER -> anthropicClient
             LlmProvider.TINFOIL -> tinfoilClient
             LlmProvider.LOCAL -> localLlmClient

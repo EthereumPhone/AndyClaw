@@ -126,7 +126,8 @@ fun OnboardingScreen(
                         when (selectedProvider) {
                             LlmProvider.OPEN_ROUTER -> apiKey.isNotBlank()
                             LlmProvider.TINFOIL -> tinfoilApiKey.isNotBlank()
-                            LlmProvider.LOCAL -> true
+                            LlmProvider.LOCAL,
+                            LlmProvider.ETHOS_PREMIUM -> true
                         }
                     }
                     1 -> goals.isNotBlank()
@@ -191,7 +192,8 @@ fun OnboardingScreen(
                                 when (selectedProvider) {
                                     LlmProvider.OPEN_ROUTER -> apiKey.isNotBlank()
                                     LlmProvider.TINFOIL -> tinfoilApiKey.isNotBlank()
-                                    LlmProvider.LOCAL -> true
+                                    LlmProvider.LOCAL,
+                                    LlmProvider.ETHOS_PREMIUM -> true
                                 }
                             }
                             1 -> goals.isNotBlank()
@@ -343,7 +345,8 @@ private fun StepProviderSelection(
                     keyboardActions = KeyboardActions(onNext = { onNext() }),
                 )
             }
-            LlmProvider.LOCAL -> {
+            LlmProvider.LOCAL,
+            LlmProvider.ETHOS_PREMIUM -> {
                 Card(
                     modifier = Modifier.fillMaxWidth(),
                     colors = CardDefaults.cardColors(

@@ -49,8 +49,7 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
     val availableModels: List<AnthropicModels>
         get() {
             val provider = prefs.selectedProvider.value
-            // LOCAL not supported on ethOS — fall back to Tinfoil
-            val effective = if (isPrivileged && provider == LlmProvider.LOCAL) LlmProvider.TINFOIL else provider
+            val effective = if (isPrivileged && provider == LlmProvider.LOCAL) LlmProvider.ETHOS_PREMIUM else provider
             return AnthropicModels.forProvider(effective)
         }
 

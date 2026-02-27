@@ -171,7 +171,7 @@ class HeartbeatBindingService : Service() {
         val runtime = app.runtime
 
         runtime.nativeSkillRegistry = app.nativeSkillRegistry
-        runtime.anthropicClient = app.anthropicClient
+        runtime.llmClient = app.getLlmClient()
         runtime.agentRunner = HeartbeatAgentRunner(app, app.heartbeatLogStore)
 
         runtime.heartbeatConfig = HeartbeatConfig(
