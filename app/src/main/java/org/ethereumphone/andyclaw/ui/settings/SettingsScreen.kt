@@ -61,6 +61,7 @@ fun SettingsScreen(
     val selectedModel by viewModel.selectedModel.collectAsState()
     val selectedProvider by viewModel.selectedProvider.collectAsState()
     val tinfoilApiKey by viewModel.tinfoilApiKey.collectAsState()
+    val openRouterApiKey by viewModel.apiKey.collectAsState()
     val downloadProgress by viewModel.modelDownloadManager.downloadProgress.collectAsState()
     val isDownloading by viewModel.modelDownloadManager.isDownloading.collectAsState()
     val downloadError by viewModel.modelDownloadManager.downloadError.collectAsState()
@@ -239,19 +240,19 @@ fun SettingsScreen(
 
                 when (selectedProvider) {
                     LlmProvider.OPEN_ROUTER -> {
-                        Card(modifier = Modifier.fillMaxWidth()) {
-                            Column(modifier = Modifier.padding(16.dp)) {
-                                Text(
-                                    text = "OpenRouter API Key",
-                                    style = MaterialTheme.typography.bodyLarge,
-                                )
-                                Text(
-                                    text = "Configured during onboarding. Re-run onboarding to change.",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                            }
-                        }
+                        var editingOpenRouterKey by remember { mutableStateOf(openRouterApiKey) }
+                        OutlinedTextField(
+                            value = editingOpenRouterKey,
+                            onValueChange = {
+                                editingOpenRouterKey = it
+                                viewModel.setApiKey(it)
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                            label = { Text("OpenRouter API Key") },
+                            placeholder = { Text("sk-or-...") },
+                            singleLine = true,
+                            visualTransformation = PasswordVisualTransformation(),
+                        )
                     }
                     LlmProvider.TINFOIL -> {
                         var editingKey by remember { mutableStateOf(tinfoilApiKey) }
@@ -265,6 +266,7 @@ fun SettingsScreen(
                             label = { Text("Tinfoil API Key") },
                             placeholder = { Text("tf-...") },
                             singleLine = true,
+                            visualTransformation = PasswordVisualTransformation(),
                         )
                     }
                     LlmProvider.LOCAL -> {

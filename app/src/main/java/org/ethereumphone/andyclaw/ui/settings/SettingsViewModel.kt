@@ -37,6 +37,7 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
 
     val selectedProvider = prefs.selectedProvider
     val tinfoilApiKey = prefs.tinfoilApiKey
+    val apiKey = prefs.apiKey
 
     val telegramBotToken = prefs.telegramBotToken
     val telegramBotEnabled = prefs.telegramBotEnabled
@@ -108,6 +109,10 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
 
     fun setTinfoilApiKey(key: String) {
         prefs.setTinfoilApiKey(key)
+    }
+
+    fun setApiKey(key: String) {
+        prefs.setApiKey(key)
     }
 
     fun downloadLocalModel() {
