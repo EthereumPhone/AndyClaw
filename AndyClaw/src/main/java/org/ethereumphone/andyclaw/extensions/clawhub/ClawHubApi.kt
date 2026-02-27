@@ -14,6 +14,7 @@ import okhttp3.Response
 import okhttp3.ResponseBody
 import java.io.File
 import java.io.IOException
+import java.io.OutputStream
 import java.util.concurrent.TimeUnit
 import java.util.logging.Logger
 import java.util.zip.ZipInputStream
@@ -188,31 +189,116 @@ class ClawHubApi(
 
     /**
      * Extract a ZIP response body into [targetDir], writing files relative
-     * to the target. Skips entries outside the target (zip-slip guard).
+     * to the target.
+     *
+     * Security controls:
+     * - path containment check using canonical paths + separator-safe matching
+     * - max entry count
+     * - max single-entry uncompressed bytes
+     * - max total uncompressed bytes (zip-bomb mitigation)
      */
     private fun extractZip(body: ResponseBody, targetDir: File) {
+        val canonicalTargetDir = targetDir.canonicalFile
+        val canonicalTargetPath = canonicalTargetDir.toPath()
+        var entryCount = 0
+        var totalUncompressedBytes = 0L
+
         ZipInputStream(body.byteStream()).use { zis ->
             var entry = zis.nextEntry
             while (entry != null) {
-                val outFile = File(targetDir, entry.name).canonicalFile
+                entryCount++
+                if (entryCount > MAX_ZIP_ENTRIES) {
+                    throw SecurityException("Zip exceeds entry limit ($MAX_ZIP_ENTRIES)")
+                }
 
-                // Zip-slip guard: ensure extracted path stays within targetDir
-                if (!outFile.path.startsWith(targetDir.canonicalPath)) {
+                if (entry.name.length > MAX_ZIP_ENTRY_NAME_CHARS) {
+                    throw SecurityException("Zip entry name too long: ${entry.name.take(80)}")
+                }
+
+                if (entry.size > MAX_ZIP_ENTRY_UNCOMPRESSED_BYTES) {
+                    throw SecurityException(
+                        "Zip entry too large by declared size: ${entry.name}"
+                    )
+                }
+
+                val outFile = File(canonicalTargetDir, entry.name).canonicalFile
+
+                // Zip-slip guard: ensure extracted path stays within target directory.
+                if (!outFile.toPath().startsWith(canonicalTargetPath)) {
                     throw SecurityException("Zip entry escapes target dir: ${entry.name}")
                 }
 
                 if (entry.isDirectory) {
-                    outFile.mkdirs()
+                    if (!outFile.exists() && !outFile.mkdirs()) {
+                        throw IOException("Failed to create directory for zip entry: ${entry.name}")
+                    }
                 } else {
-                    outFile.parentFile?.mkdirs()
-                    outFile.outputStream().use { out ->
-                        zis.copyTo(out)
+                    val parent = outFile.parentFile
+                    if (parent != null && !parent.exists() && !parent.mkdirs()) {
+                        throw IOException("Failed to create parent directory for ${entry.name}")
+                    }
+
+                    val bytesRemaining = MAX_ZIP_TOTAL_UNCOMPRESSED_BYTES - totalUncompressedBytes
+                    if (bytesRemaining <= 0) {
+                        throw SecurityException(
+                            "Zip exceeds total uncompressed size limit ($MAX_ZIP_TOTAL_UNCOMPRESSED_BYTES bytes)"
+                        )
+                    }
+
+                    val bytesWritten = outFile.outputStream().use { out ->
+                        copyZipEntryWithLimits(
+                            zis = zis,
+                            out = out,
+                            entryName = entry.name,
+                            entryLimitBytes = MAX_ZIP_ENTRY_UNCOMPRESSED_BYTES,
+                            totalRemainingBytes = bytesRemaining,
+                        )
+                    }
+                    totalUncompressedBytes += bytesWritten
+
+                    if (totalUncompressedBytes > MAX_ZIP_TOTAL_UNCOMPRESSED_BYTES) {
+                        throw SecurityException(
+                            "Zip exceeds total uncompressed size limit ($MAX_ZIP_TOTAL_UNCOMPRESSED_BYTES bytes)"
+                        )
                     }
                 }
+
                 zis.closeEntry()
                 entry = zis.nextEntry
             }
         }
+    }
+
+    private fun copyZipEntryWithLimits(
+        zis: ZipInputStream,
+        out: OutputStream,
+        entryName: String,
+        entryLimitBytes: Long,
+        totalRemainingBytes: Long,
+    ): Long {
+        val buffer = ByteArray(ZIP_COPY_BUFFER_BYTES)
+        var entryBytes = 0L
+
+        while (true) {
+            val read = zis.read(buffer)
+            if (read <= 0) break
+
+            entryBytes += read
+            if (entryBytes > entryLimitBytes) {
+                throw SecurityException(
+                    "Zip entry exceeds uncompressed size limit ($entryLimitBytes bytes): $entryName"
+                )
+            }
+            if (entryBytes > totalRemainingBytes) {
+                throw SecurityException(
+                    "Zip exceeds total uncompressed size limit ($MAX_ZIP_TOTAL_UNCOMPRESSED_BYTES bytes)"
+                )
+            }
+
+            out.write(buffer, 0, read)
+        }
+
+        return entryBytes
     }
 
     companion object {
@@ -223,6 +309,13 @@ class ClawHubApi(
         private const val V1_SKILLS = "/api/v1/skills"
         private const val V1_RESOLVE = "/api/v1/resolve"
         private const val V1_DOWNLOAD = "/api/v1/download"
+
+        // ZIP hardening caps to mitigate zip-bomb and path abuse.
+        private const val MAX_ZIP_ENTRIES = 2_000
+        private const val MAX_ZIP_ENTRY_NAME_CHARS = 512
+        private const val MAX_ZIP_ENTRY_UNCOMPRESSED_BYTES = 5L * 1024 * 1024
+        private const val MAX_ZIP_TOTAL_UNCOMPRESSED_BYTES = 25L * 1024 * 1024
+        private const val ZIP_COPY_BUFFER_BYTES = 8 * 1024
 
         private fun defaultClient(): OkHttpClient = OkHttpClient.Builder()
             .connectTimeout(15, TimeUnit.SECONDS)
