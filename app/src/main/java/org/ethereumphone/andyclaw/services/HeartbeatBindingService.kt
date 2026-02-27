@@ -29,6 +29,7 @@ import org.ethereumphone.andyclaw.heartbeat.HeartbeatConfig
 import org.ethereumphone.andyclaw.heartbeat.HeartbeatInstructions
 import org.ethereumphone.andyclaw.ipc.IHeartbeatService
 import org.ethereumphone.andyclaw.skills.tier.OsCapabilities
+import org.ethereumphone.andyclaw.telegram.TelegramBotService
 import org.ethereumhpone.messengersdk.MessengerSDK
 
 /**
@@ -57,6 +58,7 @@ class HeartbeatBindingService : Service() {
 
     private var runtimeReady = false
     private var messengerSdk: MessengerSDK? = null
+    private var telegramBotService: TelegramBotService? = null
     private val xmtpMutex = Mutex()
 
     private val binder = object : IHeartbeatService.Stub() {
@@ -113,6 +115,8 @@ class HeartbeatBindingService : Service() {
 
     override fun onDestroy() {
         Log.i(TAG, "HeartbeatBindingService destroyed")
+        telegramBotService?.stop()
+        telegramBotService = null
         messengerSdk?.identity?.unbind()
         messengerSdk = null
         serviceScope.cancel()
@@ -151,7 +155,64 @@ class HeartbeatBindingService : Service() {
         seedHeartbeatFile()
         runtime.initialize()
 
+        startTelegramBot()
+        observeTelegramPrefs()
+
         Log.i(TAG, "Runtime initialized for OS-triggered heartbeat")
+    }
+
+    private fun startTelegramBot() {
+        val app = application as NodeApp
+        val enabled = app.securePrefs.telegramBotEnabled.value
+        val token = app.securePrefs.telegramBotToken.value
+        if (!enabled || token.isBlank()) {
+            Log.d(TAG, "Telegram bot not enabled or no token configured")
+            return
+        }
+
+        val service = TelegramBotService(app, serviceScope)
+        telegramBotService = service
+        service.start()
+        Log.i(TAG, "Telegram bot started (ethOS)")
+    }
+
+    private fun observeTelegramPrefs() {
+        val app = application as NodeApp
+
+        serviceScope.launch {
+            app.securePrefs.telegramBotEnabled.collect { enabled ->
+                val token = app.securePrefs.telegramBotToken.value
+                if (enabled && token.isNotBlank()) {
+                    if (telegramBotService?.isRunning != true) {
+                        telegramBotService?.stop()
+                        val service = TelegramBotService(app, serviceScope)
+                        telegramBotService = service
+                        service.start()
+                        Log.i(TAG, "Telegram bot started via pref change (ethOS)")
+                    }
+                } else {
+                    telegramBotService?.stop()
+                    telegramBotService = null
+                    Log.i(TAG, "Telegram bot stopped via pref change (ethOS)")
+                }
+            }
+        }
+
+        serviceScope.launch {
+            app.securePrefs.telegramBotToken.collect { token ->
+                val enabled = app.securePrefs.telegramBotEnabled.value
+                if (enabled && token.isNotBlank()) {
+                    telegramBotService?.stop()
+                    val service = TelegramBotService(app, serviceScope)
+                    telegramBotService = service
+                    service.start()
+                    Log.i(TAG, "Telegram bot restarted with new token (ethOS)")
+                } else if (token.isBlank()) {
+                    telegramBotService?.stop()
+                    telegramBotService = null
+                }
+            }
+        }
     }
 
     private fun performHeartbeat() {

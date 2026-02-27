@@ -25,6 +25,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.MenuAnchorType
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
@@ -75,6 +76,8 @@ fun SettingsScreen(
     val isExtensionScanning by viewModel.isExtensionScanning.collectAsState()
     val enabledSkills by viewModel.enabledSkills.collectAsState()
     val paymasterBalance by viewModel.paymasterBalance.collectAsState()
+    val telegramBotToken by viewModel.telegramBotToken.collectAsState()
+    val telegramBotEnabled by viewModel.telegramBotEnabled.collectAsState()
 
     Scaffold(
         topBar = {
@@ -552,6 +555,56 @@ fun SettingsScreen(
                     FilledTonalButton(onClick = onNavigateToHeartbeatLogs) {
                         Text("Open")
                     }
+                }
+            }
+
+            // Telegram Bot
+            Spacer(Modifier.height(24.dp))
+            HorizontalDivider()
+            Spacer(Modifier.height(16.dp))
+
+            Text(
+                text = "Telegram Bot",
+                style = MaterialTheme.typography.titleMedium,
+            )
+            Spacer(Modifier.height(8.dp))
+            Card(modifier = Modifier.fillMaxWidth()) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "Enable Telegram Bot",
+                                style = MaterialTheme.typography.bodyLarge,
+                            )
+                            Text(
+                                text = "Chat with the AI via a Telegram bot. Create one with @BotFather and paste the token below.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        Switch(
+                            checked = telegramBotEnabled,
+                            onCheckedChange = { viewModel.setTelegramBotEnabled(it) },
+                        )
+                    }
+                    Spacer(Modifier.height(12.dp))
+                    var editingToken by remember { mutableStateOf(telegramBotToken) }
+                    OutlinedTextField(
+                        value = editingToken,
+                        onValueChange = {
+                            editingToken = it
+                            viewModel.setTelegramBotToken(it)
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("Bot Token") },
+                        placeholder = { Text("123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11") },
+                        singleLine = true,
+                        enabled = telegramBotEnabled,
+                        visualTransformation = PasswordVisualTransformation(),
+                    )
                 }
             }
 

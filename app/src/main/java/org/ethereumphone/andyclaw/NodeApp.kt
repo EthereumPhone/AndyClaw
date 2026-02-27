@@ -57,6 +57,7 @@ import org.ethereumphone.andyclaw.skills.builtin.AuroraStoreSkill
 import org.ethereumphone.andyclaw.skills.builtin.LocationSkill
 import org.ethereumphone.andyclaw.skills.builtin.SkillCreatorSkill
 import org.ethereumphone.andyclaw.skills.builtin.SkillRefinementSkill
+import org.ethereumphone.andyclaw.skills.builtin.TelegramSkill
 import org.ethereumphone.andyclaw.skills.builtin.WebSearchSkill
 import org.ethereumphone.andyclaw.skills.tier.OsCapabilities
 import org.ethereumphone.andyclaw.onboarding.UserStoryManager
@@ -104,6 +105,12 @@ class NodeApp : Application() {
 
     val extensionEngine: ExtensionEngine by lazy {
         ExtensionEngine(this)
+    }
+
+    // ── Telegram subsystem ───────────────────────────────────────────────
+
+    val telegramChatStore: org.ethereumphone.andyclaw.telegram.TelegramChatStore by lazy {
+        org.ethereumphone.andyclaw.telegram.TelegramChatStore(this)
     }
 
     // ── Termux subsystem (shared by TermuxSkill + ClawHub adapters) ────
@@ -181,6 +188,12 @@ class NodeApp : Application() {
             register(WebSearchSkill(this@NodeApp))
             // Location — GPS position, nearby places, maps & navigation
             register(LocationSkill(this@NodeApp))
+            // Telegram — send proactive messages to the user via Telegram bot
+            register(TelegramSkill(
+                chatStore = telegramChatStore,
+                botToken = { securePrefs.telegramBotToken.value },
+                botEnabled = { securePrefs.telegramBotEnabled.value },
+            ))
             // Skill Creator — AI can author new SKILL.md-based skills at runtime
             register(SkillCreatorSkill(
                 aiSkillsDir = aiSkillsDir,

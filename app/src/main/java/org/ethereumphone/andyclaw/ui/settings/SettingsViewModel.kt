@@ -38,6 +38,9 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
     val selectedProvider = prefs.selectedProvider
     val tinfoilApiKey = prefs.tinfoilApiKey
 
+    val telegramBotToken = prefs.telegramBotToken
+    val telegramBotEnabled = prefs.telegramBotEnabled
+
     val currentTier: String get() = OsCapabilities.currentTier().name
     val isPrivileged: Boolean get() = OsCapabilities.hasPrivilegedAccess
 
@@ -146,6 +149,14 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
 
     fun toggleSkill(skillId: String, enabled: Boolean) {
         prefs.setSkillEnabled(skillId, enabled)
+    }
+
+    fun setTelegramBotToken(token: String) {
+        prefs.setTelegramBotToken(token)
+    }
+
+    fun setTelegramBotEnabled(enabled: Boolean) {
+        prefs.setTelegramBotEnabled(enabled)
     }
 
     fun setAutoStoreEnabled(enabled: Boolean) {

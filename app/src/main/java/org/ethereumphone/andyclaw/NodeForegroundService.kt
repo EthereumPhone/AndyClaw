@@ -19,6 +19,7 @@ import org.ethereumphone.andyclaw.heartbeat.HeartbeatConfig
 import org.ethereumphone.andyclaw.heartbeat.HeartbeatInstructions
 import org.ethereumphone.andyclaw.skills.Capability
 import org.ethereumphone.andyclaw.skills.tier.OsCapabilities
+import org.ethereumphone.andyclaw.telegram.TelegramBotService
 import org.ethereumhpone.messengersdk.MessengerSDK
 import org.ethereumhpone.messengersdk.SdkException
 
@@ -54,6 +55,7 @@ class NodeForegroundService : Service() {
 
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var messengerSdk: MessengerSDK? = null
+    private var telegramBotService: TelegramBotService? = null
     private var serviceInitialized = false
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -93,6 +95,10 @@ class NodeForegroundService : Service() {
             // Start listening for XMTP new-message callbacks
             startXmtpMessageListener()
 
+            // Start Telegram bot if configured
+            startTelegramBot()
+            observeTelegramPrefs()
+
             serviceInitialized = true
             Log.i(TAG, "Heartbeat service started (interval: ${intervalMinutes}m)")
         }
@@ -108,6 +114,8 @@ class NodeForegroundService : Service() {
 
     override fun onDestroy() {
         runtime.stopHeartbeat()
+        telegramBotService?.stop()
+        telegramBotService = null
         messengerSdk?.identity?.unbind()
         messengerSdk = null
         serviceScope.cancel()
@@ -130,6 +138,65 @@ class NodeForegroundService : Service() {
                         heartbeatFilePath = File(filesDir, "HEARTBEAT.md").absolutePath,
                     )
                 }
+        }
+    }
+
+    /**
+     * Starts the Telegram bot polling service if enabled and a token is configured.
+     */
+    private fun startTelegramBot() {
+        val enabled = app.securePrefs.telegramBotEnabled.value
+        val token = app.securePrefs.telegramBotToken.value
+        if (!enabled || token.isBlank()) {
+            Log.d(TAG, "Telegram bot not enabled or no token configured")
+            return
+        }
+
+        val service = TelegramBotService(app, serviceScope)
+        telegramBotService = service
+        service.start()
+        Log.i(TAG, "Telegram bot started")
+    }
+
+    /**
+     * Observes Telegram-related preferences and auto-starts or stops the bot
+     * when the user toggles it or changes the token in settings.
+     */
+    private fun observeTelegramPrefs() {
+        serviceScope.launch {
+            app.securePrefs.telegramBotEnabled.collect { enabled ->
+                val token = app.securePrefs.telegramBotToken.value
+                if (enabled && token.isNotBlank()) {
+                    if (telegramBotService?.isRunning != true) {
+                        telegramBotService?.stop()
+                        val service = TelegramBotService(app, serviceScope)
+                        telegramBotService = service
+                        service.start()
+                        Log.i(TAG, "Telegram bot started via pref change")
+                    }
+                } else {
+                    telegramBotService?.stop()
+                    telegramBotService = null
+                    Log.i(TAG, "Telegram bot stopped via pref change")
+                }
+            }
+        }
+
+        serviceScope.launch {
+            app.securePrefs.telegramBotToken.collect { token ->
+                val enabled = app.securePrefs.telegramBotEnabled.value
+                if (enabled && token.isNotBlank()) {
+                    // Restart with new token
+                    telegramBotService?.stop()
+                    val service = TelegramBotService(app, serviceScope)
+                    telegramBotService = service
+                    service.start()
+                    Log.i(TAG, "Telegram bot restarted with new token")
+                } else if (token.isBlank()) {
+                    telegramBotService?.stop()
+                    telegramBotService = null
+                }
+            }
         }
     }
 
