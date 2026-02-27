@@ -609,10 +609,9 @@ class HeartbeatBindingService : Service() {
             manager.createNotificationChannel(channel)
         }
 
-        // Deep-link to WalletManager gas top-up screen (same intent as ChatScreen)
-        val topUpIntent = Intent("org.ethereumphone.walletmanager.ACTION_OPEN_GAS").apply {
-            setPackage("org.ethereumphone.walletmanager")
-            flags = Intent.FLAG_ACTIVITY_NEW_TASK
+        val topUpIntent = Intent().apply {
+            setClassName("io.freedomfactory.paymaster", "io.freedomfactory.paymaster.MainActivity")
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         }
         val pendingIntent = PendingIntent.getActivity(
             this,

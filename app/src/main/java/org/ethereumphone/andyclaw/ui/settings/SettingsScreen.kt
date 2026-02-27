@@ -166,8 +166,9 @@ fun SettingsScreen(
                             )
                         }
                         FilledTonalButton(onClick = {
-                            val intent = Intent("org.ethereumphone.walletmanager.ACTION_OPEN_GAS").apply {
-                                setPackage("org.ethereumphone.walletmanager")
+                            val intent = Intent().apply {
+                                setClassName("io.freedomfactory.paymaster", "io.freedomfactory.paymaster.MainActivity")
+                                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                             }
                             context.startActivity(intent)
                         }) {
