@@ -55,8 +55,10 @@ class TermuxSkillSync(
         .getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
     /** Returns the absolute Termux-side path for a synced skill. */
-    fun skillHomePath(slug: String): String =
-        "${TermuxCommandRunner.TERMUX_HOME}/$SKILLS_BASE/$slug"
+    fun skillHomePath(slug: String): String {
+        val safeSlug = TermuxShell.validateSlug(slug)
+        return "${TermuxCommandRunner.TERMUX_HOME}/$SKILLS_BASE/$safeSlug"
+    }
 
     // ── Sync tracking ───────────────────────────────────────────────
 
@@ -64,12 +66,22 @@ class TermuxSkillSync(
         prefs.getStringSet(KEY_SYNCED_SLUGS, emptySet()) ?: emptySet()
 
     private fun markSynced(slug: String) {
-        val slugs = getSyncedSlugs().toMutableSet().apply { add(slug) }
+        val safeSlug = runCatching { TermuxShell.validateSlug(slug) }
+            .getOrElse {
+                Log.w(TAG, "Refusing to mark invalid synced slug '$slug': ${it.message}")
+                return
+            }
+        val slugs = getSyncedSlugs().toMutableSet().apply { add(safeSlug) }
         prefs.edit().putStringSet(KEY_SYNCED_SLUGS, slugs).apply()
     }
 
     private fun markRemoved(slug: String) {
-        val slugs = getSyncedSlugs().toMutableSet().apply { remove(slug) }
+        val safeSlug = runCatching { TermuxShell.validateSlug(slug) }
+            .getOrElse {
+                Log.w(TAG, "Refusing to remove invalid synced slug '$slug': ${it.message}")
+                return
+            }
+        val slugs = getSyncedSlugs().toMutableSet().apply { remove(safeSlug) }
         prefs.edit().putStringSet(KEY_SYNCED_SLUGS, slugs).apply()
     }
 
@@ -86,7 +98,13 @@ class TermuxSkillSync(
             return SyncResult(false, "Termux is not installed")
         }
 
-        val skillHome = skillHomePath(slug)
+        val safeSlug = try {
+            TermuxShell.validateSlug(slug)
+        } catch (e: IllegalArgumentException) {
+            return SyncResult(false, "Invalid slug '$slug': ${e.message}")
+        }
+
+        val skillHome = skillHomePath(safeSlug)
 
         // Collect files, respecting size limits
         val files = sourceDir.walkTopDown()
@@ -99,7 +117,7 @@ class TermuxSkillSync(
 
         // Wipe old version and create base directory
         val mkdirResult = runner.run(
-            "rm -rf '$skillHome' && mkdir -p '$skillHome'",
+            "rm -rf ${TermuxShell.quote(skillHome)} && mkdir -p ${TermuxShell.quote(skillHome)}",
             timeoutMs = SYNC_TIMEOUT_MS,
         )
         if (!mkdirResult.isSuccess) {
@@ -108,29 +126,37 @@ class TermuxSkillSync(
 
         // Write each file via base64
         for (file in files) {
-            val relativePath = file.relativeTo(sourceDir).path
+            val rawRelativePath = file.relativeTo(sourceDir).path.replace(File.separatorChar, '/')
+            val relativePath = try {
+                TermuxShell.validateRelativePath(rawRelativePath, "skill file path")
+            } catch (e: IllegalArgumentException) {
+                return SyncResult(false, "Invalid file path '$rawRelativePath': ${e.message}")
+            }
+
             val targetPath = "$skillHome/$relativePath"
-            val targetDir = targetPath.substringBeforeLast('/')
+            val targetDir = targetPath.substringBeforeLast('/', skillHome)
             val base64 = Base64.getEncoder().encodeToString(file.readBytes())
 
             val writeResult = runner.run(
-                "mkdir -p '$targetDir' && printf '%s' '$base64' | base64 -d > '$targetPath'",
+                "mkdir -p ${TermuxShell.quote(targetDir)} && " +
+                    "printf '%s' ${TermuxShell.quote(base64)} | " +
+                    "base64 -d > ${TermuxShell.quote(targetPath)}",
                 timeoutMs = 15_000,
             )
             if (!writeResult.isSuccess) {
-                Log.w(TAG, "Failed to write $relativePath for $slug: ${writeResult.stderr}")
+                Log.w(TAG, "Failed to write $relativePath for $safeSlug: ${writeResult.stderr}")
                 return SyncResult(false, "Failed to write $relativePath: ${writeResult.stderr}")
             }
         }
 
         // Mark all scripts executable
         runner.run(
-            "find '$skillHome' -type f \\( -name '*.sh' -o -path '*/scripts/*' \\) -exec chmod +x {} +",
+            "find ${TermuxShell.quote(skillHome)} -type f \\( -name '*.sh' -o -path '*/scripts/*' \\) -exec chmod +x {} +",
             timeoutMs = 10_000,
         )
 
-        markSynced(slug)
-        Log.i(TAG, "Synced $slug (${files.size} files, ${totalBytes / 1024} KB)")
+        markSynced(safeSlug)
+        Log.i(TAG, "Synced $safeSlug (${files.size} files, ${totalBytes / 1024} KB)")
         return SyncResult(true, fileCount = files.size)
     }
 
@@ -138,9 +164,31 @@ class TermuxSkillSync(
      * Run the skill's declared setup script (if any) after sync.
      */
     suspend fun runSetup(slug: String, setupPath: String): TermuxCommandResult {
-        val skillHome = skillHomePath(slug)
+        val safeSlug = try {
+            TermuxShell.validateSlug(slug)
+        } catch (e: IllegalArgumentException) {
+            return TermuxCommandResult(
+                exitCode = -1,
+                stdout = "",
+                stderr = "",
+                internalError = "Invalid slug '$slug': ${e.message}",
+            )
+        }
+        val safeSetupPath = try {
+            TermuxShell.validateRelativePath(setupPath, "setup path")
+        } catch (e: IllegalArgumentException) {
+            return TermuxCommandResult(
+                exitCode = -1,
+                stdout = "",
+                stderr = "",
+                internalError = "Invalid setup path '$setupPath': ${e.message}",
+            )
+        }
+
+        val skillHome = skillHomePath(safeSlug)
+        val quotedSetupPath = TermuxShell.quote(safeSetupPath)
         return runner.run(
-            "cd '$skillHome' && chmod +x '$setupPath' && bash '$setupPath'",
+            "cd ${TermuxShell.quote(skillHome)} && chmod +x $quotedSetupPath && bash $quotedSetupPath",
             timeoutMs = 120_000,
         )
     }
@@ -211,10 +259,21 @@ class TermuxSkillSync(
             return TermuxCommandResult(exitCode = 0, stdout = "", stderr = "")
         }
 
+        val safeBins = try {
+            bins.map { TermuxShell.validateBinName(it) }.distinct()
+        } catch (e: IllegalArgumentException) {
+            return TermuxCommandResult(
+                exitCode = -1,
+                stdout = "",
+                stderr = "",
+                internalError = "Invalid required binary name: ${e.message}",
+            )
+        }
+
         ensureNonInteractiveDefaults()
 
-        val checkScript = bins.joinToString("; ") { bin ->
-            "command -v '$bin' >/dev/null 2>&1 || MISSING=\"\$MISSING $bin\""
+        val checkScript = safeBins.joinToString("; ") { bin ->
+            "command -v ${TermuxShell.quote(bin)} >/dev/null 2>&1 || MISSING=\"\$MISSING $bin\""
         }
         val script = "MISSING=''; $checkScript; " +
             "if [ -n \"\$MISSING\" ]; then " +
@@ -232,9 +291,15 @@ class TermuxSkillSync(
      * Remove a synced skill from Termux home.
      */
     suspend fun removeSkill(slug: String): Boolean {
-        val skillHome = skillHomePath(slug)
-        val result = runner.run("rm -rf '$skillHome'", timeoutMs = 10_000)
-        markRemoved(slug)
+        val safeSlug = runCatching { TermuxShell.validateSlug(slug) }
+            .getOrElse {
+                Log.w(TAG, "Cannot remove invalid slug '$slug': ${it.message}")
+                return false
+            }
+
+        val skillHome = skillHomePath(safeSlug)
+        val result = runner.run("rm -rf ${TermuxShell.quote(skillHome)}", timeoutMs = 10_000)
+        markRemoved(safeSlug)
         return result.isSuccess
     }
 
