@@ -17,4 +17,10 @@ oneway interface IHeartbeatService {
     // for this app's isolated identity. The actual message content is passed
     // through so the app doesn't need to read it from the SDK.
     void heartbeatNowWithXmtpMessages(String senderAddress, String messageText);
+
+    // Delivers a fired reminder from the OS-level alarm scheduler.
+    // On ethOS, reminders are scheduled by the system service via AlarmManager
+    // for reliability (survives Doze, deep sleep, reboot, app process death).
+    // When the alarm fires, the OS calls this method to trigger the notification.
+    void reminderFired(int reminderId, long time, String message, String label);
 }

@@ -73,6 +73,13 @@ class HeartbeatBindingService : Service() {
             ensureRuntimeReady()
             performHeartbeatWithXmtp(senderAddress, messageText)
         }
+
+        override fun reminderFired(reminderId: Int, time: Long, message: String, label: String) {
+            enforceSystemCaller()
+            Log.i(TAG, "reminderFired() from OS: id=$reminderId label=$label message=\"${message.take(80)}\"")
+            ReminderReceiver.fireNotification(applicationContext, reminderId, message, label)
+            ReminderReceiver.removeStoredReminder(applicationContext, reminderId)
+        }
     }
 
     private fun enforceSystemCaller() {

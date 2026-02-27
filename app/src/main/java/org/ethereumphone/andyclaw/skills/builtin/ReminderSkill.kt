@@ -22,6 +22,7 @@ import org.ethereumphone.andyclaw.skills.SkillManifest
 import org.ethereumphone.andyclaw.skills.SkillResult
 import org.ethereumphone.andyclaw.skills.Tier
 import org.ethereumphone.andyclaw.skills.ToolDefinition
+import org.ethereumphone.andyclaw.skills.tier.OsCapabilities
 
 class ReminderSkill(private val context: Context) : AndyClawSkill {
     override val id = "reminders"
@@ -30,6 +31,8 @@ class ReminderSkill(private val context: Context) : AndyClawSkill {
     companion object {
         private const val TAG = "ReminderSkill"
         private const val PREFS_NAME = "andyclaw_reminders"
+        private const val ACTION_REMINDER_SCHEDULE = "org.ethereumphone.andyclaw.REMINDER_SCHEDULE"
+        private const val ACTION_REMINDER_CANCEL = "org.ethereumphone.andyclaw.REMINDER_CANCEL"
     }
 
     override val baseManifest = SkillManifest(
@@ -108,7 +111,8 @@ class ReminderSkill(private val context: Context) : AndyClawSkill {
             return SkillResult.Error("Reminder time must be in the future. Current time: $now, provided: $time")
         }
 
-        // Preflight: check notification permission (Android 13+)
+        // Preflight: check notification permission — needed on both paths since the app
+        // always shows the notification (even on ethOS where the OS delivers via binder)
         val notifManager = context.getSystemService(NotificationManager::class.java)
         if (!notifManager.areNotificationsEnabled()) {
             Log.w(TAG, "Notifications are disabled for this app")
@@ -118,7 +122,58 @@ class ReminderSkill(private val context: Context) : AndyClawSkill {
             )
         }
 
-        // Preflight: check exact alarm permission (Android 12+)
+        val reminderId = (now % Int.MAX_VALUE).toInt()
+
+        return if (OsCapabilities.hasPrivilegedAccess) {
+            createReminderViaOs(reminderId, time, message, label, now)
+        } else {
+            createReminderLocal(reminderId, time, message, label, now)
+        }
+    }
+
+    /**
+     * ethOS path: delegate alarm scheduling to the OS system service.
+     * The OS handles AlarmManager + disk persistence (survives Doze, reboot, app death).
+     * We still write to local SharedPreferences as a mirror for list_reminders.
+     */
+    private fun createReminderViaOs(
+        reminderId: Int, time: Long, message: String, label: String, now: Long,
+    ): SkillResult {
+        return try {
+            val intent = Intent(ACTION_REMINDER_SCHEDULE).apply {
+                putExtra("reminder_id", reminderId)
+                putExtra("time", time)
+                putExtra("message", message)
+                putExtra("label", label)
+            }
+            context.sendBroadcast(intent)
+            Log.i(TAG, "Sent OS reminder broadcast: id=$reminderId at $time (in ${time - now}ms)")
+
+            // Mirror to local prefs for list_reminders / cancel_reminder tracking
+            persistToLocalPrefs(reminderId, time, message, label, now)
+
+            SkillResult.Success(buildJsonObject {
+                put("created", true)
+                put("reminder_id", reminderId)
+                put("time", time)
+                put("label", label)
+                put("message", message)
+                put("scheduled_by", "os")
+                put("current_device_time", now)
+            }.toString())
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to send reminder to OS", e)
+            SkillResult.Error("Failed to schedule OS reminder: ${e.message}")
+        }
+    }
+
+    /**
+     * Non-ethOS path: schedule locally via AlarmManager (existing behavior).
+     */
+    private fun createReminderLocal(
+        reminderId: Int, time: Long, message: String, label: String, now: Long,
+    ): SkillResult {
+        // Preflight: check exact alarm permission (Android 12+) — only needed for local path
         val alarmManager = context.getSystemService(AlarmManager::class.java)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && !alarmManager.canScheduleExactAlarms()) {
             Log.w(TAG, "Exact alarm permission not granted")
@@ -127,8 +182,6 @@ class ReminderSkill(private val context: Context) : AndyClawSkill {
                 "Settings > Apps > AndyClaw > Alarms & reminders."
             )
         }
-
-        val reminderId = (now % Int.MAX_VALUE).toInt()
 
         return try {
             val intent = Intent(context, ReminderReceiver::class.java).apply {
@@ -142,18 +195,9 @@ class ReminderSkill(private val context: Context) : AndyClawSkill {
             )
 
             alarmManager.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, time, pending)
-            Log.i(TAG, "Scheduled reminder id=$reminderId at $time (in ${time - now}ms)")
+            Log.i(TAG, "Scheduled local reminder id=$reminderId at $time (in ${time - now}ms)")
 
-            // Persist so we can list/cancel later
-            val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            val entry = buildJsonObject {
-                put("id", reminderId)
-                put("time", time)
-                put("message", message)
-                put("label", label)
-                put("created_at", now)
-            }
-            prefs.edit().putString(reminderId.toString(), entry.toString()).apply()
+            persistToLocalPrefs(reminderId, time, message, label, now)
 
             SkillResult.Success(buildJsonObject {
                 put("created", true)
@@ -170,6 +214,20 @@ class ReminderSkill(private val context: Context) : AndyClawSkill {
             Log.e(TAG, "Failed to create reminder", e)
             SkillResult.Error("Failed to create reminder: ${e.message}")
         }
+    }
+
+    private fun persistToLocalPrefs(
+        reminderId: Int, time: Long, message: String, label: String, now: Long,
+    ) {
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val entry = buildJsonObject {
+            put("id", reminderId)
+            put("time", time)
+            put("message", message)
+            put("label", label)
+            put("created_at", now)
+        }
+        prefs.edit().putString(reminderId.toString(), entry.toString()).apply()
     }
 
     private fun listReminders(): SkillResult {
@@ -205,6 +263,41 @@ class ReminderSkill(private val context: Context) : AndyClawSkill {
         val reminderId = params["reminder_id"]?.jsonPrimitive?.contentOrNull?.toIntOrNull()
             ?: return SkillResult.Error("Missing required parameter: reminder_id")
 
+        return if (OsCapabilities.hasPrivilegedAccess) {
+            cancelReminderViaOs(reminderId)
+        } else {
+            cancelReminderLocal(reminderId)
+        }
+    }
+
+    /**
+     * ethOS path: tell the OS to cancel the alarm and remove from disk persistence.
+     */
+    private fun cancelReminderViaOs(reminderId: Int): SkillResult {
+        return try {
+            val intent = Intent(ACTION_REMINDER_CANCEL).apply {
+                putExtra("reminder_id", reminderId)
+            }
+            context.sendBroadcast(intent)
+            Log.i(TAG, "Sent OS reminder cancel broadcast: id=$reminderId")
+
+            // Remove from local mirror
+            val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            prefs.edit().remove(reminderId.toString()).apply()
+
+            SkillResult.Success(buildJsonObject {
+                put("cancelled", true)
+                put("reminder_id", reminderId)
+            }.toString())
+        } catch (e: Exception) {
+            SkillResult.Error("Failed to cancel OS reminder: ${e.message}")
+        }
+    }
+
+    /**
+     * Non-ethOS path: cancel locally via AlarmManager (existing behavior).
+     */
+    private fun cancelReminderLocal(reminderId: Int): SkillResult {
         return try {
             val alarmManager = context.getSystemService(AlarmManager::class.java)
             val intent = Intent(context, ReminderReceiver::class.java)
