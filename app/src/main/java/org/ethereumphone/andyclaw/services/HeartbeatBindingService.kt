@@ -28,6 +28,7 @@ import org.ethereumphone.andyclaw.agent.HeartbeatAgentRunner
 import org.ethereumphone.andyclaw.heartbeat.HeartbeatConfig
 import org.ethereumphone.andyclaw.heartbeat.HeartbeatInstructions
 import org.ethereumphone.andyclaw.ipc.IHeartbeatService
+import org.ethereumphone.andyclaw.util.OsCapabilities
 import org.ethereumhpone.messengersdk.MessengerSDK
 
 /**
@@ -110,6 +111,20 @@ class HeartbeatBindingService : Service() {
         super.onDestroy()
     }
 
+    /**
+     * On privileged (ethOS) devices the TinfoilProxyClient needs wallet auth.
+     * If the user hasn't signed in yet, skip the heartbeat silently.
+     */
+    private fun isWalletAuthReady(): Boolean {
+        if (!OsCapabilities.hasPrivilegedAccess) return true
+        val app = application as NodeApp
+        if (app.securePrefs.walletAddress.value.isBlank()) {
+            Log.w(TAG, "Skipping heartbeat: wallet auth not yet configured")
+            return false
+        }
+        return true
+    }
+
     private fun ensureRuntimeReady() {
         if (runtimeReady) return
         runtimeReady = true
@@ -132,6 +147,7 @@ class HeartbeatBindingService : Service() {
     }
 
     private fun performHeartbeat() {
+        if (!isWalletAuthReady()) return
         serviceScope.launch {
             checkPaymasterBalance()
             runWithWakeLock {
@@ -141,6 +157,7 @@ class HeartbeatBindingService : Service() {
     }
 
     private fun performHeartbeatWithXmtp(senderAddress: String, messageText: String) {
+        if (!isWalletAuthReady()) return
         serviceScope.launch {
             // Prevent duplicate processing (OS may relay the same event twice)
             if (!xmtpMutex.tryLock()) {
