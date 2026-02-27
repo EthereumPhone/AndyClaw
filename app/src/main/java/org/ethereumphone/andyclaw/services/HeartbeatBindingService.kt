@@ -77,8 +77,9 @@ class HeartbeatBindingService : Service() {
         override fun reminderFired(reminderId: Int, time: Long, message: String, label: String) {
             enforceSystemCaller()
             Log.i(TAG, "reminderFired() from OS: id=$reminderId label=$label message=\"${message.take(80)}\"")
-            ReminderReceiver.fireNotification(applicationContext, reminderId, message, label)
+            ensureRuntimeReady()
             ReminderReceiver.removeStoredReminder(applicationContext, reminderId)
+            performReminder(reminderId, time, message, label)
         }
     }
 
@@ -159,6 +160,38 @@ class HeartbeatBindingService : Service() {
             checkPaymasterBalance()
             runWithWakeLock {
                 (application as NodeApp).runtime.requestHeartbeatNow()
+            }
+        }
+    }
+
+    /**
+     * Runs the AI agent with the fired reminder as context.
+     * The agent decides what to do: check device info, send a message, show a
+     * notification, or anything else it has tool access for.
+     */
+    private fun performReminder(reminderId: Int, time: Long, message: String, label: String) {
+        if (!isWalletAuthReady()) return
+        serviceScope.launch {
+            runWithWakeLock {
+                val app = application as NodeApp
+                val prompt = buildString {
+                    appendLine("## Reminder Fired")
+                    appendLine()
+                    appendLine("A reminder that the user previously asked you to set has now triggered.")
+                    appendLine("- Label: $label")
+                    appendLine("- Message: $message")
+                    appendLine("- Reminder ID: $reminderId")
+                    appendLine("- Scheduled time: $time (epoch ms)")
+                    appendLine("- Current time: ${System.currentTimeMillis()} (epoch ms)")
+                    appendLine()
+                    appendLine("Act on this reminder now. If the user asked you to do something")
+                    appendLine("(e.g. check battery, look something up, send a message), do it using")
+                    appendLine("your available tools. If it's a simple reminder to alert the user,")
+                    appendLine("create a notification so they see it.")
+                }
+                val response = app.runtime.agentRunner.run(prompt)
+                Log.i(TAG, "Reminder agent response (error=${response.isError}): " +
+                        "\"${response.text.take(100)}\"")
             }
         }
     }
