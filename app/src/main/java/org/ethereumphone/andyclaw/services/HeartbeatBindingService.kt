@@ -28,6 +28,7 @@ import org.ethereumphone.andyclaw.agent.HeartbeatAgentRunner
 import org.ethereumphone.andyclaw.heartbeat.HeartbeatConfig
 import org.ethereumphone.andyclaw.heartbeat.HeartbeatInstructions
 import org.ethereumphone.andyclaw.ipc.IHeartbeatService
+import org.ethereumphone.andyclaw.skills.builtin.CronjobSkill
 import org.ethereumphone.andyclaw.skills.tier.OsCapabilities
 import org.ethereumphone.andyclaw.telegram.TelegramBotService
 import org.ethereumhpone.messengersdk.MessengerSDK
@@ -82,6 +83,13 @@ class HeartbeatBindingService : Service() {
             ensureRuntimeReady()
             ReminderReceiver.removeStoredReminder(applicationContext, reminderId)
             performReminder(reminderId, time, message, label)
+        }
+
+        override fun cronjobFired(cronjobId: Int, intervalMs: Long, reason: String, label: String) {
+            enforceSystemCaller()
+            Log.i(TAG, "cronjobFired() from OS: id=$cronjobId label=$label interval=${intervalMs / 60000}min reason=\"${reason.take(80)}\"")
+            ensureRuntimeReady()
+            performCronjob(cronjobId, intervalMs, reason, label)
         }
     }
 
@@ -257,6 +265,36 @@ class HeartbeatBindingService : Service() {
         }
     }
 
+    /**
+     * Runs the AI agent when a recurring cron job fires.
+     * The agent receives the reason and can use all tools to act on it.
+     * Unlike reminders, cron jobs keep recurring — the OS re-schedules automatically.
+     */
+    private fun performCronjob(cronjobId: Int, intervalMs: Long, reason: String, label: String) {
+        if (!isWalletAuthReady()) return
+        serviceScope.launch {
+            runWithWakeLock {
+                val app = application as NodeApp
+                val prompt = buildString {
+                    appendLine("## Cron Job Fired")
+                    appendLine()
+                    appendLine("A recurring cron job has triggered. This job runs automatically at a fixed interval.")
+                    appendLine("- Label: $label")
+                    appendLine("- Reason: $reason")
+                    appendLine("- Cron Job ID: $cronjobId")
+                    appendLine("- Interval: ${intervalMs / 60000} minutes")
+                    appendLine("- Current time: ${System.currentTimeMillis()} (epoch ms)")
+                    appendLine()
+                    appendLine("Execute the task described in the reason above. Use your available tools")
+                    appendLine("as needed. This cron job will fire again in ${intervalMs / 60000} minutes.")
+                }
+                val response = app.runtime.agentRunner.run(prompt)
+                Log.i(TAG, "Cronjob agent response (error=${response.isError}): " +
+                        "\"${response.text.take(100)}\"")
+            }
+        }
+    }
+
     private fun performHeartbeatWithXmtp(senderAddress: String, messageText: String) {
         if (!isWalletAuthReady()) return
         serviceScope.launch {
@@ -389,12 +427,12 @@ class HeartbeatBindingService : Service() {
         val messages = sdk.identity.getMessages(conversation.id)
         Log.i(TAG, "XMTP: fetched ${messages.size} messages for conversation with $peerAddress")
 
-        if (messages.size <= 1) {
+        if (messages.isEmpty()) {
             return@withContext emptyList()
         }
 
-        // Take the 4 messages before the newest one (the newest is the just-arrived message)
-        val history = messages.dropLast(1).takeLast(4)
+        // Take the last 4 messages as conversation history context
+        val history = messages.takeLast(4)
 
         history.map { msg ->
             val sender = if (msg.isMe) "You" else peerAddress

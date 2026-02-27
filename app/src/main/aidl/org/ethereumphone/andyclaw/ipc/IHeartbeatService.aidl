@@ -23,4 +23,10 @@ oneway interface IHeartbeatService {
     // for reliability (survives Doze, deep sleep, reboot, app process death).
     // When the alarm fires, the OS calls this method to trigger the notification.
     void reminderFired(int reminderId, long time, String message, String label);
+
+    // Delivers a fired cron job from the OS-level recurring alarm scheduler.
+    // Unlike reminders (one-shot), cron jobs fire repeatedly at a fixed interval.
+    // The OS re-schedules the next alarm automatically after each fire.
+    // The reason string describes what the agent should do on each execution.
+    void cronjobFired(int cronjobId, long intervalMs, String reason, String label);
 }
