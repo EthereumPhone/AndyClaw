@@ -21,6 +21,8 @@ import org.ethereumphone.andyclaw.skills.SkillManifest
 import org.ethereumphone.andyclaw.skills.SkillResult
 import org.ethereumphone.andyclaw.skills.Tier
 import org.ethereumphone.andyclaw.skills.ToolDefinition
+import okhttp3.OkHttpClient
+import okhttp3.Request
 import org.ethereumphone.subwalletsdk.SubWalletSDK
 import org.ethereumphone.walletsdk.WalletSDK
 import org.web3j.abi.FunctionEncoder
@@ -42,6 +44,14 @@ class WalletSkill(private val context: Context) : AndyClawSkill {
 
     companion object {
         private const val TAG = "WalletSkill"
+
+        // ── 0x Swap API constants ─────────────────────────────────────
+        private const val ZEROX_API_BASE_URL = "https://api.0x.org"
+        private const val ZEROX_API_VERSION = "v2"
+        private const val ETH_TOKEN_ADDRESS = "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE"
+        private const val SWAP_FEE_BPS = 15 // 0.15%
+        private const val SWAP_FEE_RECIPIENT = "0xF1F39090D2bE5010Cc1Dd633b6dCe476A38b5675"
+        private val ZEROX_SUPPORTED_CHAIN_IDS = setOf(1, 10, 137, 42161, 8453)
 
         /** Alchemy network names keyed by chain ID. */
         private val CHAIN_NAMES = mapOf(
@@ -224,6 +234,14 @@ class WalletSkill(private val context: Context) : AndyClawSkill {
     /** Cache of per-chain SubWalletSDK instances (agent's own wallet). */
     private val subWalletsByChain = mutableMapOf<Int, SubWalletSDK>()
 
+    /** HTTP client for direct 0x API calls (agent swap). */
+    private val swapHttpClient by lazy {
+        OkHttpClient.Builder()
+            .connectTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
+            .readTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
+            .build()
+    }
+
     /**
      * Default WalletSDK instance (Ethereum mainnet) used for non-chain-specific
      * calls like getAddress() and token queries via WalletManager content providers.
@@ -290,6 +308,7 @@ class WalletSkill(private val context: Context) : AndyClawSkill {
                 "IMPORTANT: For sending crypto, prefer the high-level tools: " +
                 "send_token/agent_send_token for ERC-20s (auto-resolves USDC, USDT, WETH, DAI, etc.), " +
                 "send_native_token/agent_send_native_token for ETH/MATIC/BNB/AVAX. " +
+                "For swapping tokens from the agent wallet, use agent_swap (accepts symbols like 'USDC', 'WETH', 'ETH'). " +
                 "These take human-readable amounts (e.g., '100' for 100 USDC) and handle all conversions. " +
                 "Use read_wallet_holdings to check the user's portfolio, " +
                 "read_agent_balance to check the agent wallet's balance.",
@@ -784,6 +803,78 @@ class WalletSkill(private val context: Context) : AndyClawSkill {
                     )),
                 )),
             ),
+            // ── Agent swap ────────────────────────────────────────────
+            ToolDefinition(
+                name = "agent_swap",
+                description = "Swap tokens from the agent's sub-account wallet via DEX (0x aggregator). " +
+                        "Accepts token symbols (USDC, WETH, DAI, etc.) or 'ETH' for native currency — " +
+                        "contract addresses and decimals are resolved automatically for well-known tokens. " +
+                        "Takes a HUMAN-READABLE sell amount (e.g., '100' to swap 100 USDC). " +
+                        "Handles token approval and swap execution atomically in a single transaction. " +
+                        "Does NOT require user approval. " +
+                        "Use read_agent_balance first to check the agent has sufficient funds. " +
+                        "Supported swap chains: Ethereum (1), Optimism (10), Polygon (137), " +
+                        "Arbitrum (42161), Base (8453).",
+                inputSchema = JsonObject(mapOf(
+                    "type" to JsonPrimitive("object"),
+                    "properties" to JsonObject(mapOf(
+                        "sell_token" to JsonObject(mapOf(
+                            "type" to JsonPrimitive("string"),
+                            "description" to JsonPrimitive(
+                                "Token to sell: a symbol like 'USDC', 'WETH', 'DAI', " +
+                                        "'ETH' for native currency, or a 0x-prefixed contract address. " +
+                                        "If using a contract address not in the well-known registry, " +
+                                        "also provide sell_decimals."
+                            ),
+                        )),
+                        "buy_token" to JsonObject(mapOf(
+                            "type" to JsonPrimitive("string"),
+                            "description" to JsonPrimitive(
+                                "Token to buy: a symbol like 'USDC', 'WETH', 'DAI', " +
+                                        "'ETH' for native currency, or a 0x-prefixed contract address. " +
+                                        "If using a contract address not in the well-known registry, " +
+                                        "also provide buy_decimals."
+                            ),
+                        )),
+                        "sell_amount" to JsonObject(mapOf(
+                            "type" to JsonPrimitive("string"),
+                            "description" to JsonPrimitive(
+                                "Amount to sell in human-readable form " +
+                                        "(e.g., '100' for 100 USDC, '0.05' for 0.05 ETH). " +
+                                        "NOT in smallest unit — decimal conversion is handled automatically."
+                            ),
+                        )),
+                        "chain_id" to JsonObject(mapOf(
+                            "type" to JsonPrimitive("integer"),
+                            "description" to JsonPrimitive(
+                                "Chain ID where the swap will occur. " +
+                                        "Supported: Ethereum (1), Optimism (10), Polygon (137), " +
+                                        "Arbitrum (42161), Base (8453)."
+                            ),
+                        )),
+                        "sell_decimals" to JsonObject(mapOf(
+                            "type" to JsonPrimitive("integer"),
+                            "description" to JsonPrimitive(
+                                "Optional: decimals of the sell token. Only needed when sell_token " +
+                                        "is a contract address not in the well-known registry."
+                            ),
+                        )),
+                        "buy_decimals" to JsonObject(mapOf(
+                            "type" to JsonPrimitive("integer"),
+                            "description" to JsonPrimitive(
+                                "Optional: decimals of the buy token. Only needed when buy_token " +
+                                        "is a contract address not in the well-known registry."
+                            ),
+                        )),
+                    )),
+                    "required" to JsonArray(listOf(
+                        JsonPrimitive("sell_token"),
+                        JsonPrimitive("buy_token"),
+                        JsonPrimitive("sell_amount"),
+                        JsonPrimitive("chain_id"),
+                    )),
+                )),
+            ),
             // ── Balance queries ───────────────────────────────────────
             ToolDefinition(
                 name = "read_wallet_holdings",
@@ -878,6 +969,7 @@ class WalletSkill(private val context: Context) : AndyClawSkill {
             "send_token" -> sendToken(params)
             "agent_send_native_token" -> agentSendNativeToken(params)
             "agent_send_token" -> agentSendToken(params)
+            "agent_swap" -> agentSwap(params)
             "read_wallet_holdings" -> readWalletHoldings(params)
             "read_agent_balance" -> readAgentBalance(params)
 
@@ -1630,6 +1722,250 @@ class WalletSkill(private val context: Context) : AndyClawSkill {
             }.toString())
         } catch (e: Exception) {
             SkillResult.Error("Failed to transfer token from agent wallet: ${e.message}")
+        }
+    }
+
+    // ── Agent swap (0x API → SubWalletSDK batch) ──────────────────────────
+
+    /**
+     * Resolve a token identifier (symbol, "ETH", or 0x-address) into
+     * (contractAddress, decimals, symbol?) for swap purposes.
+     */
+    private fun resolveSwapToken(
+        token: String,
+        chainId: Int,
+        explicitDecimals: Int?,
+    ): Triple<String, Int, String?>? {
+        // Native currency keywords
+        val nativeKeywords = setOf("ETH", "MATIC", "POL", "BNB", "AVAX")
+        if (token.uppercase() in nativeKeywords) {
+            return Triple(ETH_TOKEN_ADDRESS, 18, token.uppercase())
+        }
+
+        // 0x-prefixed contract address
+        if (token.startsWith("0x")) {
+            val decimals = resolveDecimalsByAddress(token, chainId)
+                ?: explicitDecimals
+                ?: return null
+            val symbol = WELL_KNOWN_TOKENS.find {
+                it.addresses[chainId]?.equals(token, ignoreCase = true) == true
+            }?.symbol
+            return Triple(token, decimals, symbol)
+        }
+
+        // Try well-known symbol resolution
+        val resolved = resolveWellKnownToken(token, chainId)
+        if (resolved != null) {
+            return Triple(resolved.first, resolved.second, token.uppercase())
+        }
+
+        return null
+    }
+
+    private fun isEthLike(address: String, symbol: String?, chainId: Int): Boolean {
+        return address.equals(ETH_TOKEN_ADDRESS, ignoreCase = true) ||
+                address == "0x0000000000000000000000000000000000000000" ||
+                (symbol != null && symbol.equals("ETH", ignoreCase = true) &&
+                        NATIVE_TOKENS[chainId]?.symbol == "ETH")
+    }
+
+    private suspend fun agentSwap(params: JsonObject): SkillResult {
+        val sellTokenParam = params["sell_token"]?.jsonPrimitive?.contentOrNull
+            ?: return SkillResult.Error("Missing required parameter: sell_token")
+        val buyTokenParam = params["buy_token"]?.jsonPrimitive?.contentOrNull
+            ?: return SkillResult.Error("Missing required parameter: buy_token")
+        val sellAmount = params["sell_amount"]?.jsonPrimitive?.contentOrNull
+            ?: return SkillResult.Error("Missing required parameter: sell_amount")
+        val chainId = params["chain_id"]?.jsonPrimitive?.intOrNull
+            ?: return SkillResult.Error("Missing required parameter: chain_id")
+        val explicitSellDecimals = params["sell_decimals"]?.jsonPrimitive?.intOrNull
+        val explicitBuyDecimals = params["buy_decimals"]?.jsonPrimitive?.intOrNull
+
+        if (chainId !in ZEROX_SUPPORTED_CHAIN_IDS) {
+            return SkillResult.Error(
+                "Chain $chainId is not supported for swaps. " +
+                        "Supported: ${ZEROX_SUPPORTED_CHAIN_IDS.sorted().joinToString()}"
+            )
+        }
+
+        if (BuildConfig.ZEROX_API_KEY.isBlank()) {
+            return SkillResult.Error("0x API key is not configured. Add ZEROX_API_KEY to local.properties.")
+        }
+
+        // Resolve sell token
+        val sellResolved = resolveSwapToken(sellTokenParam, chainId, explicitSellDecimals)
+            ?: return SkillResult.Error(
+                "Cannot resolve sell token '$sellTokenParam' on chain $chainId. " +
+                        "Use a well-known symbol (USDC, WETH, DAI, …), 'ETH' for native, " +
+                        "or provide a 0x-prefixed address with sell_decimals."
+            )
+        val (sellAddress, sellDecimals, sellSymbol) = sellResolved
+
+        // Resolve buy token
+        val buyResolved = resolveSwapToken(buyTokenParam, chainId, explicitBuyDecimals)
+            ?: return SkillResult.Error(
+                "Cannot resolve buy token '$buyTokenParam' on chain $chainId. " +
+                        "Use a well-known symbol (USDC, WETH, DAI, …), 'ETH' for native, " +
+                        "or provide a 0x-prefixed address with buy_decimals."
+            )
+        val (buyAddress, buyDecimals, _) = buyResolved
+
+        val isSellingEth = isEthLike(sellAddress, sellSymbol, chainId)
+
+        // Convert human-readable amount to smallest unit
+        val rawSellAmount = try {
+            BigDecimal(sellAmount)
+                .multiply(BigDecimal.TEN.pow(sellDecimals))
+                .toBigInteger()
+        } catch (e: Exception) {
+            return SkillResult.Error("Invalid sell_amount '$sellAmount': ${e.message}")
+        }
+        if (rawSellAmount <= BigInteger.ZERO) {
+            return SkillResult.Error("sell_amount must be greater than zero.")
+        }
+
+        val rpcEndpoint = chainIdToRpc(chainId)
+            ?: return SkillResult.Error("No RPC endpoint for chain $chainId")
+
+        val sw = getOrCreateSubWallet(chainId)
+            ?: return subWalletUnavailableError()
+
+        return try {
+            val agentAddress = withContext(Dispatchers.IO) { sw.getAddress() }
+
+            // Normalise addresses for 0x API
+            val apiSellToken = if (isSellingEth) ETH_TOKEN_ADDRESS else sellAddress
+            val apiBuyToken = if (isEthLike(buyAddress, null, chainId)) ETH_TOKEN_ADDRESS else buyAddress
+
+            // Call 0x API
+            val url = "$ZEROX_API_BASE_URL/swap/allowance-holder/quote" +
+                    "?chainId=$chainId" +
+                    "&sellToken=$apiSellToken" +
+                    "&buyToken=$apiBuyToken" +
+                    "&sellAmount=$rawSellAmount" +
+                    "&taker=$agentAddress" +
+                    "&swapFeeRecipient=$SWAP_FEE_RECIPIENT" +
+                    "&swapFeeBps=$SWAP_FEE_BPS" +
+                    "&swapFeeToken=$apiSellToken"
+
+            val request = Request.Builder()
+                .url(url)
+                .addHeader("0x-api-key", BuildConfig.ZEROX_API_KEY)
+                .addHeader("0x-version", ZEROX_API_VERSION)
+                .get()
+                .build()
+
+            val body = withContext(Dispatchers.IO) {
+                val response = swapHttpClient.newCall(request).execute()
+                val responseBody = response.body?.string()
+                if (!response.isSuccessful || responseBody == null) {
+                    Log.e(TAG, "0x API error: ${response.code} – $responseBody")
+                    return@withContext null to "0x API error (${response.code}): ${responseBody ?: "no body"}"
+                }
+                responseBody to null
+            }
+
+            val (responseBody, apiError) = body
+            if (responseBody == null) {
+                return SkillResult.Error(apiError ?: "Unknown 0x API error")
+            }
+
+            // Parse 0x response
+            val json = Json.parseToJsonElement(responseBody).jsonObject
+
+            val liquidityAvailable = json["liquidityAvailable"]?.jsonPrimitive?.contentOrNull?.toBoolean()
+            if (liquidityAvailable == false) {
+                return SkillResult.Error("No liquidity available for this swap pair on chain $chainId.")
+            }
+
+            // Check balance issues
+            val issues = json["issues"]?.jsonObject
+            issues?.get("balance")?.let { balanceNode ->
+                if (balanceNode !is kotlinx.serialization.json.JsonNull) {
+                    val expected = balanceNode.jsonObject["expected"]?.jsonPrimitive?.contentOrNull
+                    val actual = balanceNode.jsonObject["actual"]?.jsonPrimitive?.contentOrNull
+                    return SkillResult.Error(
+                        "Insufficient balance for swap. Expected: $expected, actual: $actual"
+                    )
+                }
+            }
+
+            // Extract transaction data
+            val transaction = json["transaction"]?.jsonObject
+                ?: return SkillResult.Error("0x API response missing transaction data.")
+            val txTo = transaction["to"]?.jsonPrimitive?.contentOrNull
+                ?: return SkillResult.Error("0x API response missing transaction.to")
+            val txData = transaction["data"]?.jsonPrimitive?.contentOrNull
+                ?: return SkillResult.Error("0x API response missing transaction.data")
+            val txValue = transaction["value"]?.jsonPrimitive?.contentOrNull ?: "0"
+
+            // Build transaction list (approval + swap)
+            val txList = mutableListOf<SubWalletSDK.TxParams>()
+
+            // Add approval if needed (only for ERC-20 sells)
+            if (!isSellingEth) {
+                issues?.get("allowance")?.let { allowanceNode ->
+                    if (allowanceNode !is kotlinx.serialization.json.JsonNull) {
+                        val spender = allowanceNode.jsonObject["spender"]?.jsonPrimitive?.contentOrNull
+                        if (spender != null) {
+                            val maxApproval = BigInteger("2").pow(256).subtract(BigInteger.ONE)
+                            val approveFn = Function(
+                                "approve",
+                                listOf(Address(spender), Uint256(maxApproval)),
+                                emptyList(),
+                            )
+                            txList.add(SubWalletSDK.TxParams(
+                                to = apiSellToken,
+                                value = "0",
+                                data = FunctionEncoder.encode(approveFn),
+                            ))
+                        }
+                    }
+                }
+            }
+
+            // Add swap transaction
+            txList.add(SubWalletSDK.TxParams(to = txTo, value = txValue, data = txData))
+
+            // Execute batch via SubWalletSDK
+            val result = withContext(Dispatchers.IO) {
+                if (chainId != sw.getChainId()) {
+                    sw.changeChain(chainId, rpcEndpoint, chainIdToBundler(chainId))
+                }
+                sw.sendTransaction(
+                    txParamsList = txList,
+                    callGas = null,
+                    chainId = chainId,
+                )
+            }
+
+            // Format buy amount for response
+            val rawBuyAmount = json["buyAmount"]?.jsonPrimitive?.contentOrNull ?: "0"
+            val humanBuyAmount = try {
+                BigDecimal(rawBuyAmount)
+                    .divide(BigDecimal.TEN.pow(buyDecimals), buyDecimals, RoundingMode.HALF_UP)
+                    .stripTrailingZeros()
+                    .toPlainString()
+            } catch (_: Exception) { rawBuyAmount }
+
+            when {
+                result.startsWith("0x") -> SkillResult.Success(buildJsonObject {
+                    put("user_op_hash", result)
+                    put("status", "submitted")
+                    put("chain_id", chainId)
+                    put("sell_token", sellTokenParam)
+                    put("buy_token", buyTokenParam)
+                    put("sell_amount", sellAmount)
+                    put("expected_buy_amount", humanBuyAmount)
+                }.toString())
+                result.contains("AA21") -> SkillResult.Error(
+                    "Insufficient gas in agent wallet to execute swap on chain $chainId."
+                )
+                else -> SkillResult.Error("Swap failed: $result")
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "agent_swap failed", e)
+            SkillResult.Error("Failed to execute agent swap: ${e.message}")
         }
     }
 

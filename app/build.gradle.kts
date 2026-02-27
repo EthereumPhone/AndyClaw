@@ -30,6 +30,8 @@ android {
         buildConfigField("String", "BUNDLER_API", "\"${localProps.getProperty("BUNDLER_API", "")}\"")
         buildConfigField("String", "ALCHEMY_API", "\"${localProps.getProperty("ALCHEMY_API", "")}\"")
         buildConfigField("String", "PREMIUM_LLM_URL", "\"${localProps.getProperty("PREMIUM_LLM_URL", "https://api.markushaas.com/api/premium-llm-andy")}\"")
+        buildConfigField("String", "ZEROX_API_KEY", "\"${localProps.getProperty("ZEROX_API_KEY", "")}\"")
+
 
     }
 
