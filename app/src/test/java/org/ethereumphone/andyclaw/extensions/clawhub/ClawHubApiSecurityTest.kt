@@ -75,6 +75,21 @@ class ClawHubApiSecurityTest {
         }
     }
 
+    @Test
+    fun `downloadAndExtract rejects total uncompressed size bomb`() {
+        // 7 entries × 4 MB each = 28 MB total, exceeds the 25 MB total limit
+        val chunk = ByteArray(4 * 1024 * 1024) { 'a'.code.toByte() }
+        val entries = (1..7).map { idx -> "chunk$idx.bin" to chunk }
+        val zip = buildZip(entries)
+
+        withApiServingZip(zip) { api ->
+            withTempDir { dir ->
+                val ok = api.downloadAndExtract(slug = "total-bomb", targetDir = dir)
+                assertFalse(ok)
+            }
+        }
+    }
+
     private fun withApiServingZip(zipBytes: ByteArray, block: suspend (ClawHubApi) -> Unit) {
         runBlocking {
             val server = MockWebServer()
