@@ -237,13 +237,17 @@ class NodeApp : Application() {
     /**
      * Returns the appropriate [LlmClient] based on the user's selected provider.
      *
-     * ethOS (privileged) devices use the Tinfoil proxy for TEE-based inference
-     * with server-side billing via [tinfoilProxyClient].
+     * ethOS (privileged) devices route through the premium gateway
+     * (`api.markushaas.com`) with wallet-signature billing.
      * Non-privileged devices use the provider selected in preferences.
      */
     fun getLlmClient(): LlmClient {
         if (OsCapabilities.hasPrivilegedAccess) {
-            return tinfoilProxyClient
+            return when (securePrefs.selectedProvider.value) {
+                LlmProvider.OPEN_ROUTER -> anthropicClient
+                LlmProvider.TINFOIL -> tinfoilProxyClient
+                LlmProvider.LOCAL -> tinfoilProxyClient // LOCAL not supported on ethOS
+            }
         }
         return when (securePrefs.selectedProvider.value) {
             LlmProvider.OPEN_ROUTER -> anthropicClient

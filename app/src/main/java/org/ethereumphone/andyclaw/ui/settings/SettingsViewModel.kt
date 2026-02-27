@@ -44,13 +44,10 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
     /** Available models filtered by the currently selected provider. */
     val availableModels: List<AnthropicModels>
         get() {
-            val provider = if (isPrivileged) null else prefs.selectedProvider.value
-            return if (provider != null) {
-                AnthropicModels.forProvider(provider)
-            } else {
-                // ethOS: show Tinfoil models (requests go through tinfoilProxyClient)
-                AnthropicModels.forProvider(LlmProvider.TINFOIL)
-            }
+            val provider = prefs.selectedProvider.value
+            // LOCAL not supported on ethOS — fall back to Tinfoil
+            val effective = if (isPrivileged && provider == LlmProvider.LOCAL) LlmProvider.TINFOIL else provider
+            return AnthropicModels.forProvider(effective)
         }
 
     val modelDownloadManager: ModelDownloadManager get() = app.modelDownloadManager

@@ -173,61 +173,67 @@ fun SettingsScreen(
                 }
             }
 
-            // AI Provider (non-ethOS only)
-            if (!viewModel.isPrivileged) {
-                Spacer(Modifier.height(24.dp))
-                HorizontalDivider()
-                Spacer(Modifier.height(16.dp))
+            // AI Provider
+            Spacer(Modifier.height(24.dp))
+            HorizontalDivider()
+            Spacer(Modifier.height(16.dp))
 
-                Text(
-                    text = "AI Provider",
-                    style = MaterialTheme.typography.titleMedium,
+            Text(
+                text = "AI Provider",
+                style = MaterialTheme.typography.titleMedium,
+            )
+            Spacer(Modifier.height(8.dp))
+
+            val providerChoices = if (viewModel.isPrivileged) {
+                listOf(LlmProvider.TINFOIL, LlmProvider.OPEN_ROUTER)
+            } else {
+                LlmProvider.entries.toList()
+            }
+
+            var providerDropdownExpanded by remember { mutableStateOf(false) }
+            ExposedDropdownMenuBox(
+                expanded = providerDropdownExpanded,
+                onExpandedChange = { providerDropdownExpanded = it },
+            ) {
+                OutlinedTextField(
+                    value = selectedProvider.displayName,
+                    onValueChange = {},
+                    readOnly = true,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .menuAnchor(MenuAnchorType.PrimaryNotEditable),
+                    trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = providerDropdownExpanded) },
+                    supportingText = { Text(selectedProvider.description) },
                 )
-                Spacer(Modifier.height(8.dp))
-
-                var providerDropdownExpanded by remember { mutableStateOf(false) }
-                ExposedDropdownMenuBox(
+                ExposedDropdownMenu(
                     expanded = providerDropdownExpanded,
-                    onExpandedChange = { providerDropdownExpanded = it },
+                    onDismissRequest = { providerDropdownExpanded = false },
                 ) {
-                    OutlinedTextField(
-                        value = selectedProvider.displayName,
-                        onValueChange = {},
-                        readOnly = true,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .menuAnchor(MenuAnchorType.PrimaryNotEditable),
-                        trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = providerDropdownExpanded) },
-                        supportingText = { Text(selectedProvider.description) },
-                    )
-                    ExposedDropdownMenu(
-                        expanded = providerDropdownExpanded,
-                        onDismissRequest = { providerDropdownExpanded = false },
-                    ) {
-                        for (provider in LlmProvider.entries) {
-                            DropdownMenuItem(
-                                text = {
-                                    Column {
-                                        Text(provider.displayName)
-                                        Text(
-                                            text = provider.description,
-                                            style = MaterialTheme.typography.bodySmall,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        )
-                                    }
-                                },
-                                onClick = {
-                                    viewModel.setSelectedProvider(provider)
-                                    providerDropdownExpanded = false
-                                },
-                            )
-                        }
+                    for (provider in providerChoices) {
+                        DropdownMenuItem(
+                            text = {
+                                Column {
+                                    Text(provider.displayName)
+                                    Text(
+                                        text = provider.description,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
+                            },
+                            onClick = {
+                                viewModel.setSelectedProvider(provider)
+                                providerDropdownExpanded = false
+                            },
+                        )
                     }
                 }
+            }
 
+            // Provider-specific config (non-ethOS only — ethOS routes through premium gateway)
+            if (!viewModel.isPrivileged) {
                 Spacer(Modifier.height(8.dp))
 
-                // Provider-specific config
                 when (selectedProvider) {
                     LlmProvider.OPEN_ROUTER -> {
                         Card(modifier = Modifier.fillMaxWidth()) {

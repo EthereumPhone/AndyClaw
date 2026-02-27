@@ -15,6 +15,7 @@ import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonPrimitive
 import org.ethereumphone.andyclaw.gateway.KeyValueStore
 import org.ethereumphone.andyclaw.llm.LlmProvider
+import org.ethereumphone.andyclaw.skills.tier.OsCapabilities
 import java.util.UUID
 
 class SecurePrefs(context: Context) : KeyValueStore {
@@ -387,7 +388,8 @@ class SecurePrefs(context: Context) : KeyValueStore {
 
   private fun loadSelectedProvider(): LlmProvider {
     val raw = prefs.getString("llm.provider", null)
-    return LlmProvider.fromName(raw ?: "") ?: LlmProvider.OPEN_ROUTER
+    return LlmProvider.fromName(raw ?: "")
+      ?: if (OsCapabilities.hasPrivilegedAccess) LlmProvider.TINFOIL else LlmProvider.OPEN_ROUTER
   }
 
   private fun loadVoiceWakeMode(): VoiceWakeMode {
