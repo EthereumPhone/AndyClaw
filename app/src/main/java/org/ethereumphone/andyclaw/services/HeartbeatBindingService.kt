@@ -28,7 +28,7 @@ import org.ethereumphone.andyclaw.agent.HeartbeatAgentRunner
 import org.ethereumphone.andyclaw.heartbeat.HeartbeatConfig
 import org.ethereumphone.andyclaw.heartbeat.HeartbeatInstructions
 import org.ethereumphone.andyclaw.ipc.IHeartbeatService
-import org.ethereumphone.andyclaw.util.OsCapabilities
+import org.ethereumphone.andyclaw.skills.tier.OsCapabilities
 import org.ethereumhpone.messengersdk.MessengerSDK
 
 /**
@@ -118,8 +118,8 @@ class HeartbeatBindingService : Service() {
     private fun isWalletAuthReady(): Boolean {
         if (!OsCapabilities.hasPrivilegedAccess) return true
         val app = application as NodeApp
-        if (app.securePrefs.walletAddress.value.isBlank()) {
-            Log.w(TAG, "Skipping heartbeat: wallet auth not yet configured")
+        if (!app.securePrefs.walletSignature.value.startsWith("0x")) {
+            Log.w(TAG, "Skipping heartbeat: wallet signature missing or invalid")
             return false
         }
         return true

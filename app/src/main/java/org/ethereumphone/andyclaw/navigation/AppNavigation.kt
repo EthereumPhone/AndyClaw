@@ -36,9 +36,9 @@ fun AppNavigation() {
     val startDestination = remember {
         when {
             !app.userStoryManager.exists() -> Routes.ONBOARDING
-            // Existing ethOS user who hasn't signed yet — require wallet signature
+            // Existing ethOS user with missing or invalid wallet signature
             OsCapabilities.hasPrivilegedAccess &&
-                app.securePrefs.walletAddress.value.isBlank() -> Routes.WALLET_SIGN
+                !app.securePrefs.walletSignature.value.startsWith("0x") -> Routes.WALLET_SIGN
             else -> Routes.CHAT
         }
     }

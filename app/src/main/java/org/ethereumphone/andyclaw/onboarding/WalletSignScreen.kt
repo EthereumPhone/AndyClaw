@@ -142,6 +142,10 @@ class WalletSignViewModel(application: Application) : AndroidViewModel(applicati
                 )
                 val address = withContext(Dispatchers.IO) { sdk.getAddress() }
                 val sig = sdk.signMessage("Signing into AndyClaw", chainId = 8453)
+                if (!sig.startsWith("0x")) {
+                    _error.value = "Wallet signing was declined or returned an invalid result. Please try again."
+                    return@launch
+                }
                 _walletAddress.value = address
                 _walletSignature.value = sig
             } catch (e: Exception) {
