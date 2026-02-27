@@ -57,6 +57,7 @@ import org.ethereumphone.andyclaw.skills.builtin.AuroraStoreSkill
 import org.ethereumphone.andyclaw.skills.builtin.LocationSkill
 import org.ethereumphone.andyclaw.skills.builtin.SkillCreatorSkill
 import org.ethereumphone.andyclaw.skills.builtin.SkillRefinementSkill
+import org.ethereumphone.andyclaw.skills.builtin.UiAutomationSkill
 import org.ethereumphone.andyclaw.skills.builtin.WebSearchSkill
 import org.ethereumphone.andyclaw.skills.tier.OsCapabilities
 import org.ethereumphone.andyclaw.onboarding.UserStoryManager
@@ -179,6 +180,8 @@ class NodeApp : Application() {
             register(AuroraStoreSkill(this@NodeApp))
             // Web Search — search the web and fetch webpage content
             register(WebSearchSkill(this@NodeApp))
+            // UI Automation — interact with other apps via accessibility service
+            register(UiAutomationSkill(this@NodeApp))
             // Location — GPS position, nearby places, maps & navigation
             register(LocationSkill(this@NodeApp))
             // Skill Creator — AI can author new SKILL.md-based skills at runtime

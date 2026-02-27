@@ -67,7 +67,8 @@ object OsCapabilities {
             Capability.LOCATION_ACCESS,
             Capability.CONNECTIVITY_READ,
             Capability.PHONE_READ,
-            Capability.CALENDAR_READ -> true // Guarded by runtime permissions
+            Capability.CALENDAR_READ,
+            Capability.UI_AUTOMATION -> true // Guarded by accessibility service toggle
         }
     }
 

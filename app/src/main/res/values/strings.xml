@@ -1,3 +1,4 @@
 <resources>
     <string name="app_name">AndyClaw</string>
+    <string name="accessibility_service_description">Allows AndyClaw to read and interact with other apps\' UI elements on your behalf. Used for UI automation tasks like tapping buttons, reading screen content, and filling forms in other apps.</string>
 </resources>
