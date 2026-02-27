@@ -29,4 +29,10 @@ oneway interface IHeartbeatService {
     // The OS re-schedules the next alarm automatically after each fire.
     // The reason string describes what the agent should do on each execution.
     void cronjobFired(int cronjobId, long intervalMs, String reason, String label);
+
+    // Delivers an incoming Telegram message from the OS-level polling loop.
+    // On ethOS, the system service polls the Telegram Bot API via long-polling
+    // and relays each message to the app through this method.
+    // The app processes it through the agent and sends a response back via HTTP.
+    void telegramMessageReceived(long chatId, String text, String username, String firstName);
 }

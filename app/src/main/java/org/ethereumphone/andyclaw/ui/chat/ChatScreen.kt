@@ -97,8 +97,8 @@ fun ChatScreen(
     if (insufficientBalance) {
         AlertDialog(
             onDismissRequest = { viewModel.clearInsufficientBalance() },
-            title = { Text("Balance Depleted") },
-            text = { Text("Your balance has run out. Please top up using the Gas Paymaster.") },
+            title = { Text("Paymaster Depleted") },
+            text = { Text("The paymaster that covers your AI usage has been depleted. Please fill it up to continue using $aiName.") },
             confirmButton = {
                 TextButton(onClick = {
                     viewModel.clearInsufficientBalance()

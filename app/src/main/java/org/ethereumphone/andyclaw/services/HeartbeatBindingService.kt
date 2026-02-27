@@ -21,6 +21,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import org.ethereumphone.andyclaw.NodeApp
@@ -30,7 +31,8 @@ import org.ethereumphone.andyclaw.heartbeat.HeartbeatInstructions
 import org.ethereumphone.andyclaw.ipc.IHeartbeatService
 import org.ethereumphone.andyclaw.skills.builtin.CronjobSkill
 import org.ethereumphone.andyclaw.skills.tier.OsCapabilities
-import org.ethereumphone.andyclaw.telegram.TelegramBotService
+import org.ethereumphone.andyclaw.telegram.TelegramAgentRunner
+import org.ethereumphone.andyclaw.telegram.TelegramBotClient
 import org.ethereumhpone.messengersdk.MessengerSDK
 
 /**
@@ -49,6 +51,10 @@ class HeartbeatBindingService : Service() {
         private const val LOW_BALANCE_CHANNEL_ID = "andyclaw_low_balance"
         private const val LOW_BALANCE_NOTIFICATION_ID = 1001
         private const val LOW_BALANCE_THRESHOLD = 5.0
+
+        // Broadcast actions for OS-level Telegram polling
+        private const val ACTION_TELEGRAM_REGISTER = "org.ethereumphone.andyclaw.TELEGRAM_REGISTER"
+        private const val ACTION_TELEGRAM_UNREGISTER = "org.ethereumphone.andyclaw.TELEGRAM_UNREGISTER"
     }
 
     private val serviceScope = CoroutineScope(
@@ -59,7 +65,9 @@ class HeartbeatBindingService : Service() {
 
     private var runtimeReady = false
     private var messengerSdk: MessengerSDK? = null
-    private var telegramBotService: TelegramBotService? = null
+    private var telegramAgentRunner: TelegramAgentRunner? = null
+    private var telegramBotClient: TelegramBotClient? = null
+    private val telegramChatMutexes = mutableMapOf<Long, Mutex>()
     private val xmtpMutex = Mutex()
 
     private val binder = object : IHeartbeatService.Stub() {
@@ -90,6 +98,13 @@ class HeartbeatBindingService : Service() {
             Log.i(TAG, "cronjobFired() from OS: id=$cronjobId label=$label interval=${intervalMs / 60000}min reason=\"${reason.take(80)}\"")
             ensureRuntimeReady()
             performCronjob(cronjobId, intervalMs, reason, label)
+        }
+
+        override fun telegramMessageReceived(chatId: Long, text: String, username: String?, firstName: String?) {
+            enforceSystemCaller()
+            Log.i(TAG, "telegramMessageReceived() from OS: chat=$chatId user=$username text=\"${text.take(80)}\"")
+            ensureRuntimeReady()
+            performTelegramMessage(chatId, text, username, firstName)
         }
     }
 
@@ -123,8 +138,11 @@ class HeartbeatBindingService : Service() {
 
     override fun onDestroy() {
         Log.i(TAG, "HeartbeatBindingService destroyed")
-        telegramBotService?.stop()
-        telegramBotService = null
+        sendBroadcast(Intent(ACTION_TELEGRAM_UNREGISTER))
+        telegramAgentRunner?.clearAllHistory()
+        telegramAgentRunner = null
+        telegramBotClient = null
+        telegramChatMutexes.clear()
         messengerSdk?.identity?.unbind()
         messengerSdk = null
         serviceScope.cancel()
@@ -178,10 +196,13 @@ class HeartbeatBindingService : Service() {
             return
         }
 
-        val service = TelegramBotService(app, serviceScope)
-        telegramBotService = service
-        service.start()
-        Log.i(TAG, "Telegram bot started (ethOS)")
+        // Create runner and client locally (needed for processing messages and sending responses)
+        telegramAgentRunner = TelegramAgentRunner(app)
+        telegramBotClient = TelegramBotClient(token = { app.securePrefs.telegramBotToken.value })
+
+        // Tell the OS system service to start polling
+        sendBroadcast(Intent(ACTION_TELEGRAM_REGISTER).putExtra("token", token))
+        Log.i(TAG, "Telegram bot registered with OS (ethOS)")
     }
 
     private fun observeTelegramPrefs() {
@@ -191,17 +212,17 @@ class HeartbeatBindingService : Service() {
             app.securePrefs.telegramBotEnabled.collect { enabled ->
                 val token = app.securePrefs.telegramBotToken.value
                 if (enabled && token.isNotBlank()) {
-                    if (telegramBotService?.isRunning != true) {
-                        telegramBotService?.stop()
-                        val service = TelegramBotService(app, serviceScope)
-                        telegramBotService = service
-                        service.start()
-                        Log.i(TAG, "Telegram bot started via pref change (ethOS)")
-                    }
+                    telegramAgentRunner = TelegramAgentRunner(app)
+                    telegramBotClient = TelegramBotClient(token = { app.securePrefs.telegramBotToken.value })
+                    sendBroadcast(Intent(ACTION_TELEGRAM_REGISTER).putExtra("token", token))
+                    Log.i(TAG, "Telegram bot registered via pref change (ethOS)")
                 } else {
-                    telegramBotService?.stop()
-                    telegramBotService = null
-                    Log.i(TAG, "Telegram bot stopped via pref change (ethOS)")
+                    sendBroadcast(Intent(ACTION_TELEGRAM_UNREGISTER))
+                    telegramAgentRunner?.clearAllHistory()
+                    telegramAgentRunner = null
+                    telegramBotClient = null
+                    telegramChatMutexes.clear()
+                    Log.i(TAG, "Telegram bot unregistered via pref change (ethOS)")
                 }
             }
         }
@@ -210,14 +231,17 @@ class HeartbeatBindingService : Service() {
             app.securePrefs.telegramBotToken.collect { token ->
                 val enabled = app.securePrefs.telegramBotEnabled.value
                 if (enabled && token.isNotBlank()) {
-                    telegramBotService?.stop()
-                    val service = TelegramBotService(app, serviceScope)
-                    telegramBotService = service
-                    service.start()
-                    Log.i(TAG, "Telegram bot restarted with new token (ethOS)")
+                    telegramAgentRunner?.clearAllHistory()
+                    telegramAgentRunner = TelegramAgentRunner(app)
+                    telegramBotClient = TelegramBotClient(token = { app.securePrefs.telegramBotToken.value })
+                    sendBroadcast(Intent(ACTION_TELEGRAM_REGISTER).putExtra("token", token))
+                    Log.i(TAG, "Telegram bot re-registered with new token (ethOS)")
                 } else if (token.isBlank()) {
-                    telegramBotService?.stop()
-                    telegramBotService = null
+                    sendBroadcast(Intent(ACTION_TELEGRAM_UNREGISTER))
+                    telegramAgentRunner?.clearAllHistory()
+                    telegramAgentRunner = null
+                    telegramBotClient = null
+                    telegramChatMutexes.clear()
                 }
             }
         }
@@ -291,6 +315,60 @@ class HeartbeatBindingService : Service() {
                 val response = app.runtime.agentRunner.run(prompt)
                 Log.i(TAG, "Cronjob agent response (error=${response.isError}): " +
                         "\"${response.text.take(100)}\"")
+            }
+        }
+    }
+
+    /**
+     * Processes an incoming Telegram message relayed from the OS system service.
+     * Records the chat, handles commands (/start, /clear), and runs the agent
+     * for regular messages with per-chat serialization.
+     */
+    private fun performTelegramMessage(chatId: Long, text: String, username: String?, firstName: String?) {
+        if (!isWalletAuthReady()) return
+        val app = application as NodeApp
+        val runner = telegramAgentRunner
+        val client = telegramBotClient
+
+        if (runner == null || client == null) {
+            Log.w(TAG, "Telegram runner/client not initialized, ignoring message")
+            return
+        }
+
+        app.telegramChatStore.record(chatId, username, firstName)
+
+        serviceScope.launch {
+            try {
+                // Handle /start command
+                if (text.startsWith("/start")) {
+                    val aiName = app.userStoryManager.getAiName() ?: "AndyClaw"
+                    client.sendMessage(chatId, "Hello! I'm $aiName. How can I help you?")
+                    return@launch
+                }
+
+                // Handle /clear command
+                if (text == "/clear") {
+                    runner.clearHistory(chatId)
+                    client.sendMessage(chatId, "Conversation history cleared.")
+                    return@launch
+                }
+
+                // Regular messages: acquire per-chat mutex to prevent interleaving
+                val mutex = synchronized(telegramChatMutexes) {
+                    telegramChatMutexes.getOrPut(chatId) { Mutex() }
+                }
+                mutex.withLock {
+                    client.sendChatAction(chatId)
+                    val response = runner.run(chatId, text)
+                    if (response.isNotBlank()) {
+                        client.sendMessage(chatId, response)
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to process Telegram message for chat $chatId", e)
+                try {
+                    client.sendMessage(chatId, "Sorry, something went wrong processing your message.")
+                } catch (_: Exception) {}
             }
         }
     }
