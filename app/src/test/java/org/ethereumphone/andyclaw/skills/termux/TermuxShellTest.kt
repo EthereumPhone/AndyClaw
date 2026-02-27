@@ -25,6 +25,8 @@ class TermuxShellTest {
         expectIllegal { TermuxShell.validateSlug("bad\\slug") }
         expectIllegal { TermuxShell.validateSlug("..") }
         expectIllegal { TermuxShell.validateSlug("bad\u0000slug") }
+        expectIllegal { TermuxShell.validateSlug("bad\nslug") }
+        expectIllegal { TermuxShell.validateSlug("bad\rslug") }
     }
 
     @Test
