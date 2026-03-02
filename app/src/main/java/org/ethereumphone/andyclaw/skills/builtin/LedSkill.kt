@@ -218,13 +218,22 @@ class LedSkill(
 
             ToolDefinition(
                 name = "led_set_all",
-                description = "Set all 9 LEDs to the same color.",
+                description = buildString {
+                    append("Set all 9 LEDs to the same color. ")
+                    append("Optionally set duration_ms to automatically clear after that many milliseconds. ")
+                    append("This returns immediately — the timer runs in the background. ")
+                    append("Use this for timed displays like 'show red for 10 seconds' (duration_ms=10000).")
+                },
                 inputSchema = buildJsonObject {
                     put("type", "object")
                     putJsonObject("properties") {
                         putJsonObject("color") {
                             put("type", "string")
                             put("description", "Hex color string (e.g. '#0000FF' for blue, '#000000' for off)")
+                        }
+                        putJsonObject("duration_ms") {
+                            put("type", "integer")
+                            put("description", "Auto-clear after this many milliseconds. Omit or 0 for indefinite (stays on until next command).")
                         }
                     }
                     putJsonArray("required") { add(JsonPrimitive("color")) }
@@ -380,9 +389,14 @@ class LedSkill(
     private fun executeSetAll(params: JsonObject): SkillResult {
         val color = params["color"]?.jsonPrimitive?.content
             ?: return SkillResult.Error("Missing required parameter: color")
+        val durationMs = params["duration_ms"]?.jsonPrimitive?.longOrNull ?: 0L
 
-        return if (controller.setAllLeds(color)) {
-            SkillResult.Success("All LEDs set to $color.")
+        return if (controller.setAllLeds(color, durationMs)) {
+            if (durationMs > 0) {
+                SkillResult.Success("All LEDs set to $color — will auto-clear after ${durationMs}ms.")
+            } else {
+                SkillResult.Success("All LEDs set to $color.")
+            }
         } else {
             SkillResult.Error("Failed to set LEDs.")
         }
