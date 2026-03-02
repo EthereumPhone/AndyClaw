@@ -16,6 +16,7 @@ import org.ethereumphone.andyclaw.ui.chat.ChatScreen
 import org.ethereumphone.andyclaw.ui.chat.SessionListScreen
 import org.ethereumphone.andyclaw.ui.clawhub.ClawHubScreen
 import org.ethereumphone.andyclaw.ui.heartbeatlogs.HeartbeatLogsScreen
+import org.ethereumphone.andyclaw.ui.settings.AgentDisplayTestScreen
 import org.ethereumphone.andyclaw.ui.settings.SettingsScreen
 
 object Routes {
@@ -27,6 +28,7 @@ object Routes {
     const val SETTINGS = "settings"
     const val CLAWHUB = "clawhub"
     const val HEARTBEAT_LOGS = "heartbeat_logs"
+    const val AGENT_DISPLAY_TEST = "agent_display_test"
 }
 
 @Composable
@@ -109,6 +111,7 @@ fun AppNavigation() {
                 onNavigateBack = { navController.popBackStack() },
                 onNavigateToClawHub = { navController.navigate(Routes.CLAWHUB) },
                 onNavigateToHeartbeatLogs = { navController.navigate(Routes.HEARTBEAT_LOGS) },
+                onNavigateToAgentDisplayTest = { navController.navigate(Routes.AGENT_DISPLAY_TEST) },
             )
         }
 
@@ -120,6 +123,12 @@ fun AppNavigation() {
 
         composable(Routes.HEARTBEAT_LOGS) {
             HeartbeatLogsScreen(
+                onNavigateBack = { navController.popBackStack() },
+            )
+        }
+
+        composable(Routes.AGENT_DISPLAY_TEST) {
+            AgentDisplayTestScreen(
                 onNavigateBack = { navController.popBackStack() },
             )
         }

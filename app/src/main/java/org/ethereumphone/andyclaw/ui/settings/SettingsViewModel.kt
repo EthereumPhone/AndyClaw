@@ -19,6 +19,9 @@ import org.ethereumphone.andyclaw.extensions.toSkillAdapters
 import org.ethereumphone.andyclaw.llm.AnthropicModels
 import org.ethereumphone.andyclaw.llm.LlmProvider
 import org.ethereumphone.andyclaw.llm.ModelDownloadManager
+import android.os.IBinder
+import android.os.Parcel
+import android.util.Log
 import org.ethereumphone.andyclaw.PaymasterSDK
 import org.ethereumphone.andyclaw.skills.tier.OsCapabilities
 
@@ -39,8 +42,8 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
     val tinfoilApiKey = prefs.tinfoilApiKey
     val apiKey = prefs.apiKey
 
-    val telegramBotToken = prefs.telegramBotToken
     val telegramBotEnabled = prefs.telegramBotEnabled
+    val telegramOwnerChatId = prefs.telegramOwnerChatId
 
     val currentTier: String get() = OsCapabilities.currentTier().name
     val isPrivileged: Boolean get() = OsCapabilities.hasPrivilegedAccess
@@ -155,12 +158,54 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
         prefs.setSkillEnabled(skillId, enabled)
     }
 
-    fun setTelegramBotToken(token: String) {
+    fun completeTelegramSetup(token: String, ownerChatId: Long) {
         prefs.setTelegramBotToken(token)
+        prefs.setTelegramOwnerChatId(ownerChatId)
+        prefs.setTelegramBotEnabled(true)
+        // Immediately tell the OS to start polling via direct binder transact.
+        // HeartbeatBindingService's observeTelegramPrefs() will also pick this up,
+        // but we send it eagerly in case the service hasn't started observing yet.
+        notifyOsTelegramRegister(token)
     }
 
-    fun setTelegramBotEnabled(enabled: Boolean) {
-        prefs.setTelegramBotEnabled(enabled)
+    fun clearTelegramSetup() {
+        prefs.clearTelegramSetup()
+        notifyOsTelegramUnregister()
+    }
+
+    private fun notifyOsTelegramRegister(token: String) {
+        try {
+            val smClass = Class.forName("android.os.ServiceManager")
+            val getService = smClass.getMethod("getService", String::class.java)
+            val binder = getService.invoke(null, "andyclawheartbeat") as? IBinder ?: return
+            val data = Parcel.obtain()
+            try {
+                data.writeInterfaceToken("com.android.server.IAndyClawHeartbeat")
+                data.writeString(token)
+                binder.transact(IBinder.FIRST_CALL_TRANSACTION + 0, data, null, IBinder.FLAG_ONEWAY)
+            } finally {
+                data.recycle()
+            }
+        } catch (e: Exception) {
+            Log.w("SettingsViewModel", "Failed to notify OS of Telegram register", e)
+        }
+    }
+
+    private fun notifyOsTelegramUnregister() {
+        try {
+            val smClass = Class.forName("android.os.ServiceManager")
+            val getService = smClass.getMethod("getService", String::class.java)
+            val binder = getService.invoke(null, "andyclawheartbeat") as? IBinder ?: return
+            val data = Parcel.obtain()
+            try {
+                data.writeInterfaceToken("com.android.server.IAndyClawHeartbeat")
+                binder.transact(IBinder.FIRST_CALL_TRANSACTION + 1, data, null, IBinder.FLAG_ONEWAY)
+            } finally {
+                data.recycle()
+            }
+        } catch (e: Exception) {
+            Log.w("SettingsViewModel", "Failed to notify OS of Telegram unregister", e)
+        }
     }
 
     fun setAutoStoreEnabled(enabled: Boolean) {

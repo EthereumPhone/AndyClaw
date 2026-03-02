@@ -9,6 +9,7 @@ import android.content.Context
 import android.content.Intent
 import android.os.Binder
 import android.os.IBinder
+import android.os.Parcel
 import android.os.Process
 import android.os.PowerManager
 import android.util.Log
@@ -52,9 +53,65 @@ class HeartbeatBindingService : Service() {
         private const val LOW_BALANCE_NOTIFICATION_ID = 1001
         private const val LOW_BALANCE_THRESHOLD = 5.0
 
-        // Broadcast actions for OS-level Telegram polling
-        private const val ACTION_TELEGRAM_REGISTER = "org.ethereumphone.andyclaw.TELEGRAM_REGISTER"
-        private const val ACTION_TELEGRAM_UNREGISTER = "org.ethereumphone.andyclaw.TELEGRAM_UNREGISTER"
+        // Binder transact constants for OS-level Telegram registration.
+        // These match AndyClawHeartbeatService.java's onTransact() codes.
+        private const val OS_SERVICE_NAME = "andyclawheartbeat"
+        private const val OS_BINDER_DESCRIPTOR = "com.android.server.IAndyClawHeartbeat"
+        private const val TRANSACTION_APP_REGISTER_TELEGRAM = android.os.IBinder.FIRST_CALL_TRANSACTION + 0
+        private const val TRANSACTION_APP_UNREGISTER_TELEGRAM = android.os.IBinder.FIRST_CALL_TRANSACTION + 1
+    }
+
+    /**
+     * Sends a Telegram register call to the OS system service via direct binder transact.
+     * The OS service "andyclawheartbeat" is registered in ServiceManager and handles
+     * TRANSACTION_APP_REGISTER_TELEGRAM in its onTransact() to start long-polling.
+     */
+    private fun registerTelegramWithOs(token: String) {
+        try {
+            val smClass = Class.forName("android.os.ServiceManager")
+            val getService = smClass.getMethod("getService", String::class.java)
+            val binder = getService.invoke(null, OS_SERVICE_NAME) as? IBinder
+            if (binder == null) {
+                Log.w(TAG, "OS heartbeat binder not available, cannot register Telegram")
+                return
+            }
+            val data = Parcel.obtain()
+            try {
+                data.writeInterfaceToken(OS_BINDER_DESCRIPTOR)
+                data.writeString(token)
+                binder.transact(TRANSACTION_APP_REGISTER_TELEGRAM, data, null, IBinder.FLAG_ONEWAY)
+                Log.i(TAG, "Telegram REGISTER sent to OS via binder transact")
+            } finally {
+                data.recycle()
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to register Telegram with OS via binder", e)
+        }
+    }
+
+    /**
+     * Sends a Telegram unregister call to the OS system service via direct binder transact.
+     */
+    private fun unregisterTelegramWithOs() {
+        try {
+            val smClass = Class.forName("android.os.ServiceManager")
+            val getService = smClass.getMethod("getService", String::class.java)
+            val binder = getService.invoke(null, OS_SERVICE_NAME) as? IBinder
+            if (binder == null) {
+                Log.w(TAG, "OS heartbeat binder not available, cannot unregister Telegram")
+                return
+            }
+            val data = Parcel.obtain()
+            try {
+                data.writeInterfaceToken(OS_BINDER_DESCRIPTOR)
+                binder.transact(TRANSACTION_APP_UNREGISTER_TELEGRAM, data, null, IBinder.FLAG_ONEWAY)
+                Log.i(TAG, "Telegram UNREGISTER sent to OS via binder transact")
+            } finally {
+                data.recycle()
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to unregister Telegram with OS via binder", e)
+        }
     }
 
     private val serviceScope = CoroutineScope(
@@ -121,6 +178,20 @@ class HeartbeatBindingService : Service() {
     override fun onCreate() {
         super.onCreate()
         Log.i(TAG, "HeartbeatBindingService created")
+        // If Telegram was configured in a previous session, immediately tell the OS
+        // to start polling — don't wait for the first heartbeat to fire.
+        // Guard: credential-encrypted storage is unavailable before first unlock.
+        val userManager = getSystemService(android.os.UserManager::class.java)
+        if (userManager?.isUserUnlocked != true) {
+            Log.w(TAG, "Device not yet unlocked, deferring Telegram registration")
+            return
+        }
+        val app = application as NodeApp
+        val enabled = app.securePrefs.telegramBotEnabled.value
+        val token = app.securePrefs.telegramBotToken.value
+        if (enabled && token.isNotBlank()) {
+            registerTelegramWithOs(token)
+        }
     }
 
     override fun onBind(intent: Intent?): IBinder {
@@ -138,7 +209,9 @@ class HeartbeatBindingService : Service() {
 
     override fun onDestroy() {
         Log.i(TAG, "HeartbeatBindingService destroyed")
-        sendBroadcast(Intent(ACTION_TELEGRAM_UNREGISTER))
+        // Do NOT unregister Telegram with the OS here — the OS should keep
+        // polling even when the app process dies. That's the whole point of
+        // OS-level Telegram polling.
         telegramAgentRunner?.clearAllHistory()
         telegramAgentRunner = null
         telegramBotClient = null
@@ -200,9 +273,8 @@ class HeartbeatBindingService : Service() {
         telegramAgentRunner = TelegramAgentRunner(app)
         telegramBotClient = TelegramBotClient(token = { app.securePrefs.telegramBotToken.value })
 
-        // Tell the OS system service to start polling
-        sendBroadcast(Intent(ACTION_TELEGRAM_REGISTER).putExtra("token", token))
-        Log.i(TAG, "Telegram bot registered with OS (ethOS)")
+        // Tell the OS system service to start polling via direct binder transact
+        registerTelegramWithOs(token)
     }
 
     private fun observeTelegramPrefs() {
@@ -214,15 +286,13 @@ class HeartbeatBindingService : Service() {
                 if (enabled && token.isNotBlank()) {
                     telegramAgentRunner = TelegramAgentRunner(app)
                     telegramBotClient = TelegramBotClient(token = { app.securePrefs.telegramBotToken.value })
-                    sendBroadcast(Intent(ACTION_TELEGRAM_REGISTER).putExtra("token", token))
-                    Log.i(TAG, "Telegram bot registered via pref change (ethOS)")
+                    registerTelegramWithOs(token)
                 } else {
-                    sendBroadcast(Intent(ACTION_TELEGRAM_UNREGISTER))
+                    unregisterTelegramWithOs()
                     telegramAgentRunner?.clearAllHistory()
                     telegramAgentRunner = null
                     telegramBotClient = null
                     telegramChatMutexes.clear()
-                    Log.i(TAG, "Telegram bot unregistered via pref change (ethOS)")
                 }
             }
         }
@@ -234,10 +304,9 @@ class HeartbeatBindingService : Service() {
                     telegramAgentRunner?.clearAllHistory()
                     telegramAgentRunner = TelegramAgentRunner(app)
                     telegramBotClient = TelegramBotClient(token = { app.securePrefs.telegramBotToken.value })
-                    sendBroadcast(Intent(ACTION_TELEGRAM_REGISTER).putExtra("token", token))
-                    Log.i(TAG, "Telegram bot re-registered with new token (ethOS)")
+                    registerTelegramWithOs(token)
                 } else if (token.isBlank()) {
-                    sendBroadcast(Intent(ACTION_TELEGRAM_UNREGISTER))
+                    unregisterTelegramWithOs()
                     telegramAgentRunner?.clearAllHistory()
                     telegramAgentRunner = null
                     telegramBotClient = null
@@ -327,13 +396,18 @@ class HeartbeatBindingService : Service() {
     private fun performTelegramMessage(chatId: Long, text: String, username: String?, firstName: String?) {
         if (!isWalletAuthReady()) return
         val app = application as NodeApp
-        val runner = telegramAgentRunner
-        val client = telegramBotClient
 
-        if (runner == null || client == null) {
-            Log.w(TAG, "Telegram runner/client not initialized, ignoring message")
-            return
+        // Lazily initialize runner/client — the OS may deliver messages before
+        // the first heartbeat fires (which normally calls startTelegramBot()).
+        if (telegramAgentRunner == null) {
+            telegramAgentRunner = TelegramAgentRunner(app)
         }
+        if (telegramBotClient == null) {
+            telegramBotClient = TelegramBotClient(token = { app.securePrefs.telegramBotToken.value })
+        }
+
+        val runner = telegramAgentRunner!!
+        val client = telegramBotClient!!
 
         app.telegramChatStore.record(chatId, username, firstName)
 

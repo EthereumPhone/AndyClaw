@@ -138,6 +138,9 @@ class SecurePrefs(context: Context) : KeyValueStore {
   private val _telegramBotEnabled = MutableStateFlow(prefs.getBoolean("telegram.botEnabled", false))
   val telegramBotEnabled: StateFlow<Boolean> = _telegramBotEnabled
 
+  private val _telegramOwnerChatId = MutableStateFlow(prefs.getLong("telegram.ownerChatId", 0L))
+  val telegramOwnerChatId: StateFlow<Long> = _telegramOwnerChatId
+
   fun setLastDiscoveredStableId(value: String) {
     val trimmed = value.trim()
     prefs.edit { putString("gateway.lastDiscoveredStableID", trimmed) }
@@ -383,6 +386,22 @@ class SecurePrefs(context: Context) : KeyValueStore {
   fun setTelegramBotEnabled(value: Boolean) {
     prefs.edit { putBoolean("telegram.botEnabled", value) }
     _telegramBotEnabled.value = value
+  }
+
+  fun setTelegramOwnerChatId(value: Long) {
+    prefs.edit { putLong("telegram.ownerChatId", value) }
+    _telegramOwnerChatId.value = value
+  }
+
+  fun clearTelegramSetup() {
+    prefs.edit {
+      putString("telegram.botToken", "")
+      putLong("telegram.ownerChatId", 0L)
+      putBoolean("telegram.botEnabled", false)
+    }
+    _telegramBotToken.value = ""
+    _telegramOwnerChatId.value = 0L
+    _telegramBotEnabled.value = false
   }
 
   private fun loadEnabledSkills(): Set<String> {

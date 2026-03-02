@@ -172,6 +172,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     _currentToolExecution.value = null
                     val resultText = when (result) {
                         is SkillResult.Success -> result.data
+                        is SkillResult.ImageSuccess -> result.text
                         is SkillResult.Error -> "Error: ${result.message}"
                         is SkillResult.RequiresApproval -> "Requires approval: ${result.description}"
                     }

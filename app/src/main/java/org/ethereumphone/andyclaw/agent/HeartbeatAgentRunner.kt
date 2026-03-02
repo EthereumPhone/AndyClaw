@@ -80,6 +80,7 @@ class HeartbeatAgentRunner(
             override fun onToolResult(toolName: String, result: SkillResult) {
                 val resultStr = when (result) {
                     is SkillResult.Success -> "Success: ${result.data.take(500)}"
+                    is SkillResult.ImageSuccess -> "ImageSuccess: ${result.text.take(500)}"
                     is SkillResult.Error -> "Error: ${result.message}"
                     is SkillResult.RequiresApproval -> "RequiresApproval: ${result.description}"
                 }

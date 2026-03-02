@@ -128,5 +128,20 @@ sealed class ContentBlock {
         @SerialName("tool_use_id") val toolUseId: String,
         val content: String,
         @SerialName("is_error") val isError: Boolean = false,
+        /** When non-null, serialization uses array format with text + image blocks. */
+        @kotlinx.serialization.Transient
+        val contentBlocks: List<ToolResultContent>? = null,
     ) : ContentBlock()
 }
+
+/** Content part inside a multimodal tool result. */
+sealed class ToolResultContent {
+    data class Text(val text: String) : ToolResultContent()
+    data class Image(val source: ImageSource) : ToolResultContent()
+}
+
+data class ImageSource(
+    val type: String = "base64",
+    val mediaType: String,
+    val data: String,
+)

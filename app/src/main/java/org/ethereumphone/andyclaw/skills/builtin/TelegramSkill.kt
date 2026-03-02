@@ -8,7 +8,6 @@ import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonPrimitive
-import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.put
 import org.ethereumphone.andyclaw.skills.AndyClawSkill
 import org.ethereumphone.andyclaw.skills.SkillManifest
@@ -22,6 +21,7 @@ class TelegramSkill(
     private val chatStore: TelegramChatStore,
     private val botToken: () -> String,
     private val botEnabled: () -> Boolean,
+    private val ownerChatId: () -> Long,
 ) : AndyClawSkill {
 
     companion object {
@@ -36,17 +36,13 @@ class TelegramSkill(
         tools = listOf(
             ToolDefinition(
                 name = "send_telegram_message",
-                description = "Send a message to a Telegram chat. If no chat_id is provided, sends to the most recent chat (the bot owner). Use this for proactive messages like reminders, alerts, or scheduled follow-ups.",
+                description = "Send a message to the user via Telegram bot. Always sends to the verified bot owner. Use this for proactive messages like reminders, alerts, or scheduled follow-ups.",
                 inputSchema = JsonObject(mapOf(
                     "type" to JsonPrimitive("object"),
                     "properties" to JsonObject(mapOf(
                         "text" to JsonObject(mapOf(
                             "type" to JsonPrimitive("string"),
                             "description" to JsonPrimitive("The message text to send"),
-                        )),
-                        "chat_id" to JsonObject(mapOf(
-                            "type" to JsonPrimitive("integer"),
-                            "description" to JsonPrimitive("Target Telegram chat ID. Omit to send to the default (most recent) chat."),
                         )),
                     )),
                     "required" to JsonArray(listOf(JsonPrimitive("text"))),
@@ -88,11 +84,12 @@ class TelegramSkill(
         val text = params["text"]?.jsonPrimitive?.contentOrNull
             ?: return SkillResult.Error("Missing required parameter: text")
 
-        val chatId = params["chat_id"]?.jsonPrimitive?.longOrNull
-            ?: chatStore.getOwnerChatId()
+        val prefsChatId = ownerChatId()
+        val chatId = if (prefsChatId != 0L) prefsChatId
+            else chatStore.getOwnerChatId()
             ?: return SkillResult.Error(
-                "No chat_id provided and no known Telegram chats. " +
-                "The user must message the bot on Telegram first before you can send proactive messages."
+                "No verified Telegram owner. " +
+                "The user must complete Telegram setup in Settings before you can send messages."
             )
 
         return try {

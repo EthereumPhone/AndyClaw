@@ -6,7 +6,9 @@ import kotlinx.serialization.json.JsonObject
 import org.ethereumphone.andyclaw.llm.AnthropicModels
 import org.ethereumphone.andyclaw.llm.LlmClient
 import org.ethereumphone.andyclaw.llm.ContentBlock
+import org.ethereumphone.andyclaw.llm.ImageSource
 import org.ethereumphone.andyclaw.llm.Message
+import org.ethereumphone.andyclaw.llm.ToolResultContent
 import org.ethereumphone.andyclaw.llm.MessageContent
 import org.ethereumphone.andyclaw.llm.MessagesRequest
 import org.ethereumphone.andyclaw.llm.MessagesResponse
@@ -30,8 +32,59 @@ class AgentLoop(
     companion object {
         private const val TAG = "AgentLoop"
         private const val MAX_ITERATIONS = 20
+        private const val KEEP_RECENT_IMAGES = 2
         private const val MEMORY_CONTEXT_MAX_RESULTS = 3
         private const val MEMORY_CONTEXT_MIN_SCORE = 0.25f
+
+        /**
+         * Strip image data from older tool results, keeping only the [keep] most
+         * recent image-bearing results. Older images are replaced with a text-only
+         * placeholder so the LLM still knows a screenshot was taken.
+         *
+         * Mirrors Anthropic's `only_n_most_recent_images` strategy from their
+         * computer-use reference implementation.
+         */
+        fun pruneOldImages(messages: MutableList<Message>, keep: Int = KEEP_RECENT_IMAGES) {
+            // Collect indices of messages that contain image-bearing tool results.
+            data class ImageLocation(val msgIndex: Int, val blockIndex: Int)
+
+            val locations = mutableListOf<ImageLocation>()
+            for ((mi, msg) in messages.withIndex()) {
+                val blocks = (msg.content as? MessageContent.Blocks)?.blocks ?: continue
+                for ((bi, block) in blocks.withIndex()) {
+                    if (block is ContentBlock.ToolResult && block.contentBlocks != null) {
+                        locations.add(ImageLocation(mi, bi))
+                    }
+                }
+            }
+
+            Log.d("AGENT_VIRTUAL_SCREEN", "pruneOldImages: found ${locations.size} image-bearing tool results, keep=$keep")
+            if (locations.size <= keep) {
+                Log.d("AGENT_VIRTUAL_SCREEN", "pruneOldImages: nothing to strip (${locations.size} <= $keep)")
+                return
+            }
+
+            // Keep the last `keep` entries, strip the rest.
+            val toStrip = locations.dropLast(keep)
+            Log.i("AGENT_VIRTUAL_SCREEN", "pruneOldImages: STRIPPING ${toStrip.size} old image(s), keeping $keep most recent")
+            // Group by message index so we rebuild each affected message once.
+            for ((msgIndex, locs) in toStrip.groupBy { it.msgIndex }) {
+                val msg = messages[msgIndex]
+                val blocks = (msg.content as MessageContent.Blocks).blocks.toMutableList()
+                val stripSet = locs.map { it.blockIndex }.toSet()
+                for (bi in stripSet) {
+                    val tr = blocks[bi] as ContentBlock.ToolResult
+                    val base64Len = tr.contentBlocks?.filterIsInstance<ToolResultContent.Image>()?.sumOf { it.source.data.length } ?: 0
+                    Log.d("AGENT_VIRTUAL_SCREEN", "pruneOldImages: stripping image at msg[$msgIndex] block[$bi] base64Len=$base64Len")
+                    blocks[bi] = tr.copy(
+                        content = tr.content + " [image removed from history to save bandwidth]",
+                        contentBlocks = null,
+                    )
+                }
+                messages[msgIndex] = msg.copy(content = MessageContent.Blocks(blocks))
+            }
+            Log.d(TAG, "pruneOldImages: stripped ${toStrip.size} old image(s), kept $keep most recent")
+        }
     }
 
     interface Callbacks {
@@ -82,6 +135,8 @@ class AgentLoop(
         try {
             while (iterations < MAX_ITERATIONS) {
                 iterations++
+
+                pruneOldImages(messages)
 
                 val request = MessagesRequest(
                     model = model.modelId,
@@ -190,34 +245,89 @@ class AgentLoop(
                     val result = skillRegistry.executeTool(toolUse.name, toolUse.input, tier)
                     callbacks.onToolResult(toolUse.name, result)
 
-                    val (content, isError) = when (result) {
-                        is SkillResult.Success -> result.data to false
-                        is SkillResult.Error -> result.message to true
+                    val toolResult = when (result) {
+                        is SkillResult.Success -> {
+                            Log.d("AGENT_VIRTUAL_SCREEN", "AgentLoop: tool=${toolUse.name} → Success, dataLen=${result.data.length}")
+                            ContentBlock.ToolResult(
+                                toolUseId = toolUse.id,
+                                content = result.data,
+                                isError = false,
+                            )
+                        }
+                        is SkillResult.ImageSuccess -> {
+                            Log.i("AGENT_VIRTUAL_SCREEN", "AgentLoop: tool=${toolUse.name} → ImageSuccess, base64Len=${result.base64.length}, mediaType=${result.mediaType}, textLen=${result.text.length}")
+                            ContentBlock.ToolResult(
+                                toolUseId = toolUse.id,
+                                content = result.text,
+                                isError = false,
+                                contentBlocks = listOf(
+                                    ToolResultContent.Text(result.text),
+                                    ToolResultContent.Image(ImageSource(
+                                        mediaType = result.mediaType,
+                                        data = result.base64,
+                                    )),
+                                ),
+                            )
+                        }
+                        is SkillResult.Error -> ContentBlock.ToolResult(
+                            toolUseId = toolUse.id,
+                            content = result.message,
+                            isError = true,
+                        )
                         is SkillResult.RequiresApproval -> {
                             val approved = callbacks.onApprovalNeeded(result.description)
                             if (approved) {
                                 val retryResult = skillRegistry.executeTool(toolUse.name, toolUse.input, tier)
                                 when (retryResult) {
-                                    is SkillResult.Success -> retryResult.data to false
-                                    is SkillResult.Error -> retryResult.message to true
-                                    is SkillResult.RequiresApproval -> "Approval required but not granted." to true
+                                    is SkillResult.Success -> ContentBlock.ToolResult(
+                                        toolUseId = toolUse.id,
+                                        content = retryResult.data,
+                                        isError = false,
+                                    )
+                                    is SkillResult.ImageSuccess -> ContentBlock.ToolResult(
+                                        toolUseId = toolUse.id,
+                                        content = retryResult.text,
+                                        isError = false,
+                                        contentBlocks = listOf(
+                                            ToolResultContent.Text(retryResult.text),
+                                            ToolResultContent.Image(ImageSource(
+                                                mediaType = retryResult.mediaType,
+                                                data = retryResult.base64,
+                                            )),
+                                        ),
+                                    )
+                                    is SkillResult.Error -> ContentBlock.ToolResult(
+                                        toolUseId = toolUse.id,
+                                        content = retryResult.message,
+                                        isError = true,
+                                    )
+                                    is SkillResult.RequiresApproval -> ContentBlock.ToolResult(
+                                        toolUseId = toolUse.id,
+                                        content = "Approval required but not granted.",
+                                        isError = true,
+                                    )
                                 }
                             } else {
-                                "User denied approval." to true
+                                ContentBlock.ToolResult(
+                                    toolUseId = toolUse.id,
+                                    content = "User denied approval.",
+                                    isError = true,
+                                )
                             }
                         }
                     }
 
-                    toolResults.add(
-                        ContentBlock.ToolResult(
-                            toolUseId = toolUse.id,
-                            content = content,
-                            isError = isError,
-                        )
-                    )
+                    toolResults.add(toolResult)
                 }
 
                 // Add tool results as user message
+                val imageCount = toolResults.count { (it as? ContentBlock.ToolResult)?.contentBlocks != null }
+                val totalBase64 = toolResults.sumOf { block ->
+                    (block as? ContentBlock.ToolResult)?.contentBlocks
+                        ?.filterIsInstance<ToolResultContent.Image>()
+                        ?.sumOf { it.source.data.length } ?: 0
+                }
+                Log.i("AGENT_VIRTUAL_SCREEN", "AgentLoop: adding ${toolResults.size} tool results as user message, imageCount=$imageCount, totalBase64Chars=$totalBase64")
                 messages.add(Message("user", MessageContent.Blocks(toolResults)))
             }
 

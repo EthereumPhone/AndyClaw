@@ -118,7 +118,26 @@ object OpenAiFormatAdapter {
                     result.add(buildJsonObject {
                         put("role", "tool")
                         put("tool_call_id", tr.toolUseId)
-                        put("content", tr.content)
+                        if (tr.contentBlocks != null) {
+                            put("content", buildJsonArray {
+                                for (part in tr.contentBlocks) {
+                                    when (part) {
+                                        is ToolResultContent.Text -> add(buildJsonObject {
+                                            put("type", "text")
+                                            put("text", part.text)
+                                        })
+                                        is ToolResultContent.Image -> add(buildJsonObject {
+                                            put("type", "image_url")
+                                            put("image_url", buildJsonObject {
+                                                put("url", "data:${part.source.mediaType};base64,${part.source.data}")
+                                            })
+                                        })
+                                    }
+                                }
+                            })
+                        } else {
+                            put("content", tr.content)
+                        }
                     })
                 }
 

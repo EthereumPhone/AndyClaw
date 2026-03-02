@@ -56,6 +56,7 @@ fun SettingsScreen(
     onNavigateBack: () -> Unit,
     onNavigateToClawHub: () -> Unit = {},
     onNavigateToHeartbeatLogs: () -> Unit = {},
+    onNavigateToAgentDisplayTest: () -> Unit = {},
     viewModel: SettingsViewModel = viewModel(),
 ) {
     val selectedModel by viewModel.selectedModel.collectAsState()
@@ -77,8 +78,9 @@ fun SettingsScreen(
     val isExtensionScanning by viewModel.isExtensionScanning.collectAsState()
     val enabledSkills by viewModel.enabledSkills.collectAsState()
     val paymasterBalance by viewModel.paymasterBalance.collectAsState()
-    val telegramBotToken by viewModel.telegramBotToken.collectAsState()
     val telegramBotEnabled by viewModel.telegramBotEnabled.collectAsState()
+    val telegramOwnerChatId by viewModel.telegramOwnerChatId.collectAsState()
+    var showTelegramOnboarding by remember { mutableStateOf(false) }
 
     Scaffold(
         topBar = {
@@ -583,44 +585,58 @@ fun SettingsScreen(
                 style = MaterialTheme.typography.titleMedium,
             )
             Spacer(Modifier.height(8.dp))
+
+            val telegramConfigured = telegramBotEnabled && telegramOwnerChatId != 0L
             Card(modifier = Modifier.fillMaxWidth()) {
-                Column(modifier = Modifier.padding(16.dp)) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Column(modifier = Modifier.weight(1f)) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        if (telegramConfigured) {
                             Text(
-                                text = "Enable Telegram Bot",
+                                text = "Telegram bot connected",
                                 style = MaterialTheme.typography.bodyLarge,
                             )
                             Text(
-                                text = "Chat with the AI via a Telegram bot. Create one with @BotFather and paste the token below.",
+                                text = "The AI can send you proactive messages via Telegram",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        } else {
+                            Text(
+                                text = "Not configured",
+                                style = MaterialTheme.typography.bodyLarge,
+                            )
+                            Text(
+                                text = "Set up a Telegram bot so the AI can reach you via Telegram",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                         }
-                        Switch(
-                            checked = telegramBotEnabled,
-                            onCheckedChange = { viewModel.setTelegramBotEnabled(it) },
-                        )
                     }
-                    Spacer(Modifier.height(12.dp))
-                    var editingToken by remember { mutableStateOf(telegramBotToken) }
-                    OutlinedTextField(
-                        value = editingToken,
-                        onValueChange = {
-                            editingToken = it
-                            viewModel.setTelegramBotToken(it)
-                        },
-                        modifier = Modifier.fillMaxWidth(),
-                        label = { Text("Bot Token") },
-                        placeholder = { Text("123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11") },
-                        singleLine = true,
-                        enabled = telegramBotEnabled,
-                        visualTransformation = PasswordVisualTransformation(),
-                    )
+                    if (telegramConfigured) {
+                        OutlinedButton(onClick = { viewModel.clearTelegramSetup() }) {
+                            Text("Disconnect")
+                        }
+                    } else {
+                        Button(onClick = { showTelegramOnboarding = true }) {
+                            Text("Set up")
+                        }
+                    }
                 }
+            }
+
+            if (showTelegramOnboarding) {
+                TelegramOnboardingDialog(
+                    onComplete = { token, ownerChatId ->
+                        viewModel.completeTelegramSetup(token, ownerChatId)
+                        showTelegramOnboarding = false
+                    },
+                    onDismiss = { showTelegramOnboarding = false },
+                )
             }
 
             Spacer(Modifier.height(24.dp))
@@ -692,6 +708,75 @@ fun SettingsScreen(
                 enabledSkills = enabledSkills,
                 onToggleSkill = { skillId, enabled -> viewModel.toggleSkill(skillId, enabled) },
             )
+
+            // Hidden Agent Display Test (ethOS only)
+            if (viewModel.isPrivileged) {
+                Spacer(Modifier.height(24.dp))
+                HorizontalDivider()
+                Spacer(Modifier.height(16.dp))
+
+                Text(
+                    text = "Agent Display",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(8.dp))
+
+                // AI toggle
+                Card(modifier = Modifier.fillMaxWidth()) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(16.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "Allow AI to use Agent Display",
+                                style = MaterialTheme.typography.bodyLarge,
+                            )
+                            Text(
+                                text = "Let the AI create a virtual display, launch apps, take screenshots, and interact with UI elements",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        Switch(
+                            checked = enabledSkills.contains("agent_display"),
+                            onCheckedChange = { enabled ->
+                                viewModel.toggleSkill("agent_display", enabled)
+                            },
+                        )
+                    }
+                }
+
+                Spacer(Modifier.height(8.dp))
+
+                // Test screen
+                Card(modifier = Modifier.fillMaxWidth()) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(16.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "Virtual Display Test",
+                                style = MaterialTheme.typography.bodyLarge,
+                            )
+                            Text(
+                                text = "Test the AgentDisplay service (create display, launch apps, capture frames)",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        FilledTonalButton(onClick = onNavigateToAgentDisplayTest) {
+                            Text("Open")
+                        }
+                    }
+                }
+            }
         }
     }
 }

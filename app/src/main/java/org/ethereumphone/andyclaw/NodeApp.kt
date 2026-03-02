@@ -59,6 +59,7 @@ import org.ethereumphone.andyclaw.skills.builtin.LocationSkill
 import org.ethereumphone.andyclaw.skills.builtin.ClawHubSkill
 import org.ethereumphone.andyclaw.skills.builtin.SkillCreatorSkill
 import org.ethereumphone.andyclaw.skills.builtin.SkillRefinementSkill
+import org.ethereumphone.andyclaw.skills.builtin.AgentDisplaySkill
 import org.ethereumphone.andyclaw.skills.builtin.TelegramSkill
 import org.ethereumphone.andyclaw.skills.builtin.WebSearchSkill
 import org.ethereumphone.andyclaw.skills.tier.OsCapabilities
@@ -198,7 +199,10 @@ class NodeApp : Application() {
                 chatStore = telegramChatStore,
                 botToken = { securePrefs.telegramBotToken.value },
                 botEnabled = { securePrefs.telegramBotEnabled.value },
+                ownerChatId = { securePrefs.telegramOwnerChatId.value },
             ))
+            // Agent Display — operate a virtual display (ethOS privileged only)
+            register(AgentDisplaySkill())
             // Skill Creator — AI can author new SKILL.md-based skills at runtime
             register(SkillCreatorSkill(
                 aiSkillsDir = aiSkillsDir,
