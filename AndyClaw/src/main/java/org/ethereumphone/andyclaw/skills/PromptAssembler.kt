@@ -89,6 +89,22 @@ object PromptAssembler {
         sb.appendLine("Always prefer taking action over just reporting — if you can fix something, fix it.")
         sb.appendLine()
 
+        // Virtual display guidance (only when agent_display tools are available)
+        val hasAgentDisplay = tier == Tier.PRIVILEGED && skills.any { skill ->
+            skill.privilegedManifest?.tools?.any { it.name == "agent_display_create" } == true
+        }
+        if (hasAgentDisplay) {
+            sb.appendLine("## Virtual Display")
+            sb.appendLine("You have your own virtual screen on this device. When a user asks you to do something that involves using an app — for example sending a message, changing a setting, looking something up, or performing any UI-driven task — you should:")
+            sb.appendLine("1. Create the virtual display with `agent_display_create`")
+            sb.appendLine("2. Launch the relevant app with `agent_display_launch_app`")
+            sb.appendLine("3. Navigate the app using taps, swipes, text input, and the accessibility tree — just like a human would")
+            sb.appendLine("4. Destroy the display with `agent_display_destroy` when done")
+            sb.appendLine()
+            sb.appendLine("The user can see a live preview of your screen while you work. Prefer this approach over telling the user to do things manually — you can operate apps yourself.")
+            sb.appendLine()
+        }
+
         // Code execution fallback hint (only when execute_code is available)
         val hasCodeExecution = skills.any { skill ->
             skill.baseManifest.tools.any { it.name == "execute_code" } ||

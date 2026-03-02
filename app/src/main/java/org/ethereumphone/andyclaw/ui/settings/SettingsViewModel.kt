@@ -136,6 +136,9 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
 
     fun setYoloMode(enabled: Boolean) {
         prefs.setYoloMode(enabled)
+        if (enabled) {
+            prefs.setSkillEnabled("agent_display", true)
+        }
     }
 
     fun setNotificationReplyEnabled(enabled: Boolean) {
