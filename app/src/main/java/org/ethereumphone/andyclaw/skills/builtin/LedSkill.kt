@@ -51,10 +51,8 @@ class LedSkill(
             append("run multi-frame animations, or control individual LEDs. ")
             append("The grid is 3 rows × 3 columns (indices 0–2). ")
             append("Colors are hex strings like \"#FF0000\" (red), \"#00FF00\" (green), \"#000000\" (off). ")
-            append("IMPORTANT: Always use full-brightness colors (at least one channel at FF). ")
-            append("The LEDs get very dim below RGB value ~100, so stay in the upper range. ")
-            append("For a dim effect, use a darker hue (e.g. \"#800000\" dark red) rather than very low values. ")
-            append("The user's brightness cap is applied automatically on top of your colors. ")
+            append("Use vivid, full-brightness colors (e.g. \"#FF0000\" not \"#400000\") — ")
+            append("brightness is controlled by the hardware automatically based on the user's preference. ")
             append("Only available on dGEN1 hardware running ethOS.")
         },
         tools = listOf(

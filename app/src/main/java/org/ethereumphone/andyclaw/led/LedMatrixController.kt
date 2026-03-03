@@ -22,12 +22,14 @@ import org.ethereumphone.terminalsdk.TerminalSDK
  * is unavailable. All animations run on a background coroutine scope with
  * thread-safe cancellation.
  *
- * Colors are output in `0xFFRRGGBB` format (with full alpha) because the
- * TerminalSDK passes `0x`-prefixed strings through to the driver unchanged,
- * and the driver expects the alpha byte.
+ * Colors are output in `#RRGGBB` format. The SDK's `normalizeColor` converts
+ * this to the `0xRRGGBB` format expected by the hardware driver. Brightness is
+ * controlled via the SDK's hardware brightness parameter (0–8), mapped from the
+ * user's max RGB preference (0–255) by [hwBrightness].
  *
  * @param context Application context used to initialize TerminalSDK.
- * @param maxRgbProvider Lambda returning the user's configured max RGB cap (0–255).
+ * @param maxRgbProvider Lambda returning the user's configured max RGB preference (0–255),
+ *                       mapped to hardware brightness levels 0–8.
  */
 class LedMatrixController(
     context: Context,
@@ -35,7 +37,7 @@ class LedMatrixController(
 ) {
     companion object {
         private const val TAG = "LedMatrixController"
-        private const val OFF = "0xFF000000"
+        private const val OFF = "#000000"
         private const val SPINNER_FRAME_MS = 120L
         private const val COMPLETION_DISPLAY_MS = 3000L
 
@@ -52,8 +54,9 @@ class LedMatrixController(
         if (sdk.isLedAvailable) {
             val led = sdk.led!!
             Log.i(TAG, "TerminalLED available=${led.isAvailable}, systemColor=${led.getSystemColor()}, patterns=${led.getAvailablePatterns()}")
-            led.setBrightness(8)
-            Log.i(TAG, "Driver brightness set to 8 (max)")
+            val hw = hwBrightness()
+            led.setBrightness(hw)
+            Log.i(TAG, "Driver brightness set to $hw (from maxRgb=${maxRgbProvider()})")
             sdk
         } else {
             Log.w(TAG, "LED subsystem not available on this device")
@@ -73,14 +76,27 @@ class LedMatrixController(
     private var completionJob: Job? = null
     private var timedClearJob: Job? = null
 
+    /** Maps the user's 0–255 max RGB preference to the SDK's 0–8 hardware brightness range. */
+    private fun hwBrightness(): Int {
+        val maxRgb = maxRgbProvider().coerceIn(0, 255)
+        return ((maxRgb * 8.0) / 255.0 + 0.5).toInt().coerceIn(0, 8)
+    }
+
+    /** Syncs the global hardware brightness before built-in pattern/flash operations. */
+    private fun syncBrightness() {
+        led?.setBrightness(hwBrightness())
+    }
+
     // ═══════════════════════════════════════════════════════════════════════
     //  Agent lifecycle hooks (automatic — driven by ChatViewModel etc.)
     // ═══════════════════════════════════════════════════════════════════════
 
     fun onPromptStart() {
         if (led == null) return
-        Log.i(TAG, "onPromptStart — starting spinner animation, maxBrightness=${maxRgbProvider()}")
+        val hw = hwBrightness()
+        Log.i(TAG, "onPromptStart — starting spinner, hwBrightness=$hw, maxRgb=${maxRgbProvider()}")
         cancelAll()
+        syncBrightness()
         animationJob = scope.launch {
             runSpinnerAnimation()
         }
@@ -89,8 +105,9 @@ class LedMatrixController(
     fun onPromptComplete(responseText: String) {
         if (led == null) return
         cancelAll()
+        syncBrightness()
         val intent = LedIntent.classifyResponse(responseText)
-        Log.i(TAG, "onPromptComplete — intent=$intent, maxBrightness=${maxRgbProvider()}")
+        Log.i(TAG, "onPromptComplete — intent=$intent, hwBrightness=${hwBrightness()}, maxRgb=${maxRgbProvider()}")
         completionJob = scope.launch {
             showCompletionPattern(intent)
             delay(COMPLETION_DISPLAY_MS)
@@ -100,8 +117,9 @@ class LedMatrixController(
 
     fun onPromptError() {
         if (led == null) return
-        Log.i(TAG, "onPromptError — showing error blink, maxBrightness=${maxRgbProvider()}")
+        Log.i(TAG, "onPromptError — showing error blink, hwBrightness=${hwBrightness()}, maxRgb=${maxRgbProvider()}")
         cancelAll()
+        syncBrightness()
         completionJob = scope.launch {
             showErrorBlink()
             delay(COMPLETION_DISPLAY_MS)
@@ -123,16 +141,18 @@ class LedMatrixController(
     fun displayNamedPattern(name: String, color: String? = null): Boolean {
         val led = led ?: return false
         cancelAll()
-        val capped = color?.let { capColor(it) }
-        Log.i(TAG, "displayNamedPattern name=$name, inputColor=$color, cappedColor=$capped, maxBrightness=${maxRgbProvider()}")
-        led.displayPattern(name, capped)
+        syncBrightness()
+        val normalized = color?.let { normalizeColor(it) }
+        Log.i(TAG, "displayNamedPattern name=$name, color=$normalized, hwBrightness=${hwBrightness()}")
+        led.displayPattern(name, normalized)
         return true
     }
 
     fun flashPattern(name: String, durationMs: Long = 1000L): Boolean {
         val led = led ?: return false
         cancelAll()
-        Log.i(TAG, "flashPattern name=$name, durationMs=$durationMs, maxBrightness=${maxRgbProvider()}")
+        syncBrightness()
+        Log.i(TAG, "flashPattern name=$name, durationMs=$durationMs, hwBrightness=${hwBrightness()}")
         when (name.lowercase()) {
             "success" -> led.flashSuccess(durationMs = durationMs)
             "error" -> led.flashError(durationMs = durationMs)
@@ -146,26 +166,28 @@ class LedMatrixController(
     fun setCustomPattern(pattern: Array<Array<String>>): Boolean {
         val led = led ?: return false
         cancelAll()
-        val capped = Array(3) { r ->
-            Array(3) { c -> capColor(pattern[r][c]) }
+        val hw = hwBrightness()
+        val normalized = Array(3) { r ->
+            Array(3) { c -> normalizeColor(pattern[r][c]) }
         }
-        Log.i(TAG, "setCustomPattern maxBrightness=${maxRgbProvider()}, row0=${capped[0].joinToString()}, row1=${capped[1].joinToString()}, row2=${capped[2].joinToString()}")
-        led.setCustomPattern(capped, 8)
+        Log.i(TAG, "setCustomPattern hwBrightness=$hw, row0=${normalized[0].joinToString()}, row1=${normalized[1].joinToString()}, row2=${normalized[2].joinToString()}")
+        led.setCustomPattern(normalized, hw)
         return true
     }
 
     fun setSingleLed(row: Int, col: Int, color: String): Boolean {
         val led = led ?: return false
-        val capped = capColor(color)
-        Log.i(TAG, "setSingleLed [$row,$col] input=$color, capped=$capped, maxBrightness=${maxRgbProvider()}")
-        led.setColor(row, col, capped, 8)
+        val hw = hwBrightness()
+        val normalized = normalizeColor(color)
+        Log.i(TAG, "setSingleLed [$row,$col] color=$normalized, hwBrightness=$hw")
+        led.setColor(row, col, normalized, hw)
         return true
     }
 
     /**
-     * Set all 9 LEDs to the same color.
+     * Set all 9 LEDs to the same colour.
      *
-     * @param color Hex color string.
+     * @param color      Hex colour string (e.g. `"#FF0000"`).
      * @param durationMs If > 0, automatically clear after this many milliseconds.
      *                   The clear happens asynchronously and is cancelled by any
      *                   subsequent LED command or user message.
@@ -174,9 +196,10 @@ class LedMatrixController(
     fun setAllLeds(color: String, durationMs: Long = 0L): Boolean {
         val led = led ?: return false
         cancelAll()
-        val capped = capColor(color)
-        Log.i(TAG, "setAllLeds input=$color, capped=$capped, durationMs=$durationMs, maxBrightness=${maxRgbProvider()}")
-        led.setAllColor(capped, 8)
+        val hw = hwBrightness()
+        val normalized = normalizeColor(color)
+        Log.i(TAG, "setAllLeds color=$normalized, durationMs=$durationMs, hwBrightness=$hw")
+        led.setAllColor(normalized, hw)
         if (durationMs > 0) {
             timedClearJob = scope.launch {
                 delay(durationMs)
@@ -195,19 +218,20 @@ class LedMatrixController(
         if (led == null || frames.isEmpty()) return false
         cancelAll()
 
-        val cappedFrames = frames.map { frame ->
-            Array(3) { r -> Array(3) { c -> capColor(frame[r][c]) } }
+        val normalizedFrames = frames.map { frame ->
+            Array(3) { r -> Array(3) { c -> normalizeColor(frame[r][c]) } }
         }
-        Log.i(TAG, "runCustomAnimation frames=${cappedFrames.size}, intervalMs=$intervalMs, loops=$loops, maxBrightness=${maxRgbProvider()}")
-        for ((i, frame) in cappedFrames.withIndex()) {
+        Log.i(TAG, "runCustomAnimation frames=${normalizedFrames.size}, intervalMs=$intervalMs, loops=$loops, hwBrightness=${hwBrightness()}")
+        for ((i, frame) in normalizedFrames.withIndex()) {
             Log.d(TAG, "  frame[$i]: ${frame.joinToString(" | ") { it.joinToString() }}")
         }
 
         animationJob = scope.launch {
             var cycle = 0
+            val hw = hwBrightness()
             while (loops == 0 || cycle < loops) {
-                for (frame in cappedFrames) {
-                    led?.setCustomPattern(frame, 8)
+                for (frame in normalizedFrames) {
+                    led?.setCustomPattern(frame, hw)
                     delay(intervalMs)
                 }
                 cycle++
@@ -243,17 +267,18 @@ class LedMatrixController(
             2 to 2, 2 to 1, 2 to 0,
             1 to 0,
         )
-        val color = capColor("#FFFFFF")
-        val trailColor = capColor("#8080FF")
+        val color = "#FFFFFF"
+        val trailColor = "#8080FF"
         var index = 0
 
         while (true) {
+            val hw = hwBrightness()
             val pattern = Array(3) { Array(3) { OFF } }
             val curr = positions[index % positions.size]
             val prev = positions[(index - 1 + positions.size) % positions.size]
             pattern[curr.first][curr.second] = color
             pattern[prev.first][prev.second] = trailColor
-            led?.setCustomPattern(pattern, 8)
+            led?.setCustomPattern(pattern, hw)
             delay(SPINNER_FRAME_MS)
             index++
         }
@@ -261,38 +286,41 @@ class LedMatrixController(
 
     private fun showCompletionPattern(intent: LedIntent) {
         val led = led ?: return
+        val hw = hwBrightness()
         when (intent) {
             LedIntent.GREETING -> showSmilePattern()
             LedIntent.SUCCESS -> led.flashSuccess()
             LedIntent.ERROR -> led.flashError()
             LedIntent.PROCESSING -> led.displayInfo()
-            LedIntent.IDLE -> led.setAllColor(capColor("#00FF00"), 8)
+            LedIntent.IDLE -> led.setAllColor("#00FF00", hw)
         }
     }
 
     private fun showSmilePattern() {
-        val c = capColor("#FFFF00")
+        val c = "#FFFF00"
+        val hw = hwBrightness()
         led?.setCustomPattern(arrayOf(
             arrayOf(c,   OFF, c),
             arrayOf(OFF, OFF, OFF),
             arrayOf(c,   c,   c),
-        ), 8)
+        ), hw)
     }
 
     private suspend fun showErrorBlink() {
-        val red = capColor("#FF0000")
+        val red = "#FF0000"
+        val hw = hwBrightness()
         val cornerPattern = arrayOf(
             arrayOf(red, OFF, red),
             arrayOf(OFF, OFF, OFF),
             arrayOf(red, OFF, red),
         )
         repeat(3) {
-            led?.setCustomPattern(cornerPattern, 8)
+            led?.setCustomPattern(cornerPattern, hw)
             delay(250)
             led?.clear()
             delay(200)
         }
-        led?.setCustomPattern(cornerPattern, 8)
+        led?.setCustomPattern(cornerPattern, hw)
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -300,36 +328,22 @@ class LedMatrixController(
     // ═══════════════════════════════════════════════════════════════════════
 
     /**
-     * Apply the user's max RGB cap and output in `0xFFRRGGBB` format.
+     * Normalises a hex colour to `#RRGGBB` format for the TerminalSDK.
      *
-     * The `0xFF` alpha prefix is critical: the TerminalSDK's `normalizeColor`
-     * passes `0x`-prefixed strings through to the driver unchanged. The WalletManager
-     * uses `0xFFRRGGBB` format and the driver expects the alpha byte — without it
-     * the LEDs appear very dim or off.
+     * The SDK's own `normalizeColor` converts `#RRGGBB` → `0xRRGGBB` (stripping
+     * alpha from `#AARRGGBB`). We output `#RRGGBB` so the SDK handles the final
+     * conversion to the driver-expected `0xRRGGBB` format.
+     *
+     * Brightness is handled separately via the SDK's hardware brightness parameter
+     * (0–8), mapped from the user's max RGB preference by [hwBrightness].
      */
-    internal fun capColor(hex: String): String {
+    internal fun normalizeColor(hex: String): String {
         val clean = hex.removePrefix("#").removePrefix("0x")
         val offset = if (clean.length == 8) 2 else 0
         val r = clean.substring(offset, offset + 2).toInt(16)
         val g = clean.substring(offset + 2, offset + 4).toInt(16)
         val b = clean.substring(offset + 4, offset + 6).toInt(16)
-
-        val maxRgb = maxRgbProvider().coerceIn(0, 255)
-        val cr: Int
-        val cg: Int
-        val cb: Int
-        if (maxRgb >= 255) {
-            cr = r; cg = g; cb = b
-        } else {
-            val scale = maxRgb / 255.0
-            cr = (r * scale).toInt().coerceIn(0, 255)
-            cg = (g * scale).toInt().coerceIn(0, 255)
-            cb = (b * scale).toInt().coerceIn(0, 255)
-        }
-
-        val result = "0xFF%02X%02X%02X".format(cr, cg, cb)
-        Log.d(TAG, "capColor $hex → $result (rgb $r,$g,$b → $cr,$cg,$cb, maxBrightness=$maxRgb)")
-        return result
+        return "#%02X%02X%02X".format(r, g, b)
     }
 
     private fun cancelAll() {
