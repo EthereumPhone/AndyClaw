@@ -215,7 +215,9 @@ class NodeApp : Application() {
             // Agent Display — operate a virtual display (ethOS privileged only)
             register(AgentDisplaySkill())
             // LED Matrix — control the 3×3 LED matrix on dGEN1 devices
-            register(LedSkill(ledController))
+            if (ledController.isAvailable) {
+                register(LedSkill(ledController))
+            }
             // Skill Creator — AI can author new SKILL.md-based skills at runtime
             register(SkillCreatorSkill(
                 aiSkillsDir = aiSkillsDir,
