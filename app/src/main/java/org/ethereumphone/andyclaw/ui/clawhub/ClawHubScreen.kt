@@ -200,16 +200,15 @@ private fun BrowseTab(
     val listState = rememberLazyListState()
     val showSearch = searchQuery.isNotBlank() || searchResults.isNotEmpty()
 
-    // Trigger load more when user scrolls near the bottom
-    val shouldLoadMore by remember {
+    val nearEnd by remember {
         derivedStateOf {
             val lastVisible = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
             val total = listState.layoutInfo.totalItemsCount
-            lastVisible >= total - 3 && !isBrowsing
+            total > 0 && lastVisible >= total - 3
         }
     }
-    LaunchedEffect(shouldLoadMore) {
-        if (shouldLoadMore && !showSearch) onLoadMore()
+    LaunchedEffect(nearEnd, isBrowsing, showSearch) {
+        if (nearEnd && !isBrowsing && !showSearch) onLoadMore()
     }
 
     LazyColumn(
