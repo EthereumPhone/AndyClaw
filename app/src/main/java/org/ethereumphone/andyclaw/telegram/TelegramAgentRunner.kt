@@ -5,12 +5,16 @@ import android.util.Log
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.serialization.json.JsonObject
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import org.ethereumphone.andyclaw.NodeApp
 import org.ethereumphone.andyclaw.agent.AgentLoop
+import org.ethereumphone.andyclaw.extensions.clawhub.DownloadAssessResult
+import org.ethereumphone.andyclaw.extensions.clawhub.ThreatAssessment
 import org.ethereumphone.andyclaw.llm.AnthropicModels
 import org.ethereumphone.andyclaw.llm.ContentBlock
 import org.ethereumphone.andyclaw.llm.LlmClient
@@ -19,6 +23,8 @@ import org.ethereumphone.andyclaw.llm.MessagesRequest
 import org.ethereumphone.andyclaw.memory.model.MemorySource
 import org.ethereumphone.andyclaw.skills.SkillResult
 import org.ethereumphone.andyclaw.skills.tier.OsCapabilities
+import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 
 /**
  * Headless agent runner for Telegram messages.
@@ -27,15 +33,29 @@ import org.ethereumphone.andyclaw.skills.tier.OsCapabilities
  * but maintains per-chat conversation history so multi-turn context
  * is preserved within a service lifecycle.
  */
-class TelegramAgentRunner(private val app: NodeApp) {
+class TelegramAgentRunner(
+    private val app: NodeApp,
+    private val botClient: TelegramBotClient,
+) {
 
     companion object {
         private const val TAG = "TelegramAgentRunner"
         private const val MAX_HISTORY_PER_CHAT = 40 // 20 user + 20 assistant
+        private const val APPROVAL_TIMEOUT_MS = 3L * 60 * 1000 // 3 minutes
     }
 
     private val chatHistories = mutableMapOf<Long, MutableList<Message>>()
     private val memoryScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    private val pendingApprovals = ConcurrentHashMap<String, CompletableDeferred<Boolean>>()
+
+    /**
+     * Called by [TelegramBotService] when a callback query button press arrives.
+     * Resolves the suspended [onApprovalNeeded] coroutine.
+     */
+    fun resolveApproval(requestId: String, approved: Boolean) {
+        pendingApprovals.remove(requestId)?.complete(approved)
+    }
 
     suspend fun run(chatId: Long, userMessage: String): String {
         Log.i(TAG, "=== TELEGRAM RUN (chat=$chatId) ===")
@@ -96,6 +116,12 @@ class TelegramAgentRunner(private val app: NodeApp) {
 
             override fun onSecurityBlock(toolName: String, reason: String) {
                 Log.w(TAG, "SECURITY BLOCK (chat=$chatId, $toolName): $reason")
+                memoryScope.launch {
+                    botClient.sendMessage(
+                        chatId,
+                        "Security block on `$toolName`: $reason",
+                    )
+                }
             }
 
             override suspend fun onApprovalNeeded(
@@ -103,8 +129,66 @@ class TelegramAgentRunner(private val app: NodeApp) {
                 toolName: String?,
                 toolInput: JsonObject?,
             ): Boolean {
-                Log.i(TAG, "Auto-approving (chat=$chatId): $description")
-                return true
+                if (app.securePrefs.yoloMode.value) return true
+
+                var threatAssessment: ThreatAssessment? = null
+                var slug: String? = null
+
+                if (toolName == "clawhub_install" && toolInput != null) {
+                    slug = toolInput["slug"]?.jsonPrimitive?.content
+                    val version = toolInput["version"]?.jsonPrimitive?.content
+                    if (slug != null) {
+                        try {
+                            val result = app.clawHubManager.downloadAndAssess(slug, version)
+                            if (result is DownloadAssessResult.Ready) {
+                                threatAssessment = result.assessment
+                            }
+                        } catch (e: Exception) {
+                            Log.w(TAG, "Threat assessment failed for '$slug': ${e.message}")
+                        }
+                    }
+                }
+
+                val warningText = buildApprovalMessage(description, toolName, slug, threatAssessment)
+                val requestId = UUID.randomUUID().toString()
+                val deferred = CompletableDeferred<Boolean>()
+                pendingApprovals[requestId] = deferred
+
+                val sentMessageId = botClient.sendMessageWithInlineKeyboard(
+                    chatId = chatId,
+                    text = warningText,
+                    buttons = listOf(
+                        InlineButton("Approve", "approve::$requestId"),
+                        InlineButton("Decline", "decline::$requestId"),
+                    ),
+                )
+
+                val approved = withTimeoutOrNull(APPROVAL_TIMEOUT_MS) {
+                    deferred.await()
+                }
+
+                if (approved == null) {
+                    pendingApprovals.remove(requestId)
+                    Log.w(TAG, "Approval timed out (chat=$chatId, tool=$toolName)")
+                    if (sentMessageId != null) {
+                        botClient.editMessageText(
+                            chatId, sentMessageId,
+                            "Approval timed out — automatically declined.",
+                        )
+                    }
+                }
+
+                val result = approved ?: false
+
+                if (!result && slug != null) {
+                    try {
+                        app.clawHubManager.cancelPendingInstall(slug)
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Cleanup after denial/timeout failed: ${e.message}")
+                    }
+                }
+
+                return result
             }
 
             override suspend fun onPermissionsNeeded(permissions: List<String>): Boolean {
@@ -155,12 +239,41 @@ class TelegramAgentRunner(private val app: NodeApp) {
 
         val executionText = completion.await()
 
-        // If no tools were used, the response is already a direct reply — return as-is.
         if (!usedTools) return executionText
 
-        // Tools were used, so executionText contains the full process (intermediate
-        // reasoning + tool call narration). Ask the LLM to compose a clean reply.
         return summarizeForTelegram(client, model, aiName, userMessage, executionText)
+    }
+
+    private fun buildApprovalMessage(
+        description: String,
+        toolName: String?,
+        slug: String?,
+        assessment: ThreatAssessment?,
+    ): String = buildString {
+        if (assessment != null) {
+            appendLine("*Security Warning*")
+            appendLine()
+            if (slug != null) appendLine("Skill: `$slug`")
+            appendLine("Threat level: *${assessment.level.displayName}*")
+            appendLine()
+            appendLine(assessment.summary)
+
+            if (assessment.indicators.isNotEmpty()) {
+                appendLine()
+                appendLine("_Detected issues:_")
+                for (indicator in assessment.indicators) {
+                    appendLine("  - [${indicator.severity}] ${indicator.category}: ${indicator.description}")
+                }
+            }
+
+            appendLine()
+            appendLine("Only approve if you trust the skill author.")
+        } else {
+            appendLine("*Approval Required*")
+            appendLine()
+            if (toolName != null) appendLine("Tool: `$toolName`")
+            appendLine(description)
+        }
     }
 
     /**

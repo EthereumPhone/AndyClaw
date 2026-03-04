@@ -38,6 +38,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import org.ethereumphone.andyclaw.telegram.TelegramBotClient
+import org.ethereumphone.andyclaw.telegram.TelegramUpdate
 
 private const val TAG = "TelegramOnboarding"
 
@@ -287,8 +288,9 @@ private suspend fun pollForVerification(
         try {
             val updates = client.getUpdates(offset = offset, timeout = 30)
             if (updates.isNotEmpty()) {
-                val first = updates.first()
                 offset = updates.last().updateId + 1
+                val first = updates.filterIsInstance<TelegramUpdate.MessageUpdate>().firstOrNull()
+                    ?: continue
 
                 val code = generateCode()
                 val sent = client.sendMessage(

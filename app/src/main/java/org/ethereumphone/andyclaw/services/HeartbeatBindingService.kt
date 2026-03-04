@@ -269,9 +269,9 @@ class HeartbeatBindingService : Service() {
             return
         }
 
-        // Create runner and client locally (needed for processing messages and sending responses)
-        telegramAgentRunner = TelegramAgentRunner(app)
+        // Create client first, then runner (runner needs the client for approval buttons)
         telegramBotClient = TelegramBotClient(token = { app.securePrefs.telegramBotToken.value })
+        telegramAgentRunner = TelegramAgentRunner(app, telegramBotClient!!)
 
         // Tell the OS system service to start polling via direct binder transact
         registerTelegramWithOs(token)
@@ -284,8 +284,8 @@ class HeartbeatBindingService : Service() {
             app.securePrefs.telegramBotEnabled.collect { enabled ->
                 val token = app.securePrefs.telegramBotToken.value
                 if (enabled && token.isNotBlank()) {
-                    telegramAgentRunner = TelegramAgentRunner(app)
                     telegramBotClient = TelegramBotClient(token = { app.securePrefs.telegramBotToken.value })
+                    telegramAgentRunner = TelegramAgentRunner(app, telegramBotClient!!)
                     registerTelegramWithOs(token)
                 } else {
                     unregisterTelegramWithOs()
@@ -302,8 +302,8 @@ class HeartbeatBindingService : Service() {
                 val enabled = app.securePrefs.telegramBotEnabled.value
                 if (enabled && token.isNotBlank()) {
                     telegramAgentRunner?.clearAllHistory()
-                    telegramAgentRunner = TelegramAgentRunner(app)
                     telegramBotClient = TelegramBotClient(token = { app.securePrefs.telegramBotToken.value })
+                    telegramAgentRunner = TelegramAgentRunner(app, telegramBotClient!!)
                     registerTelegramWithOs(token)
                 } else if (token.isBlank()) {
                     unregisterTelegramWithOs()
@@ -399,11 +399,11 @@ class HeartbeatBindingService : Service() {
 
         // Lazily initialize runner/client — the OS may deliver messages before
         // the first heartbeat fires (which normally calls startTelegramBot()).
-        if (telegramAgentRunner == null) {
-            telegramAgentRunner = TelegramAgentRunner(app)
-        }
         if (telegramBotClient == null) {
             telegramBotClient = TelegramBotClient(token = { app.securePrefs.telegramBotToken.value })
+        }
+        if (telegramAgentRunner == null) {
+            telegramAgentRunner = TelegramAgentRunner(app, telegramBotClient!!)
         }
 
         val runner = telegramAgentRunner!!

@@ -30,7 +30,7 @@ class TelegramBotService(
     }
 
     private val client = TelegramBotClient(token = { app.securePrefs.telegramBotToken.value })
-    private val runner = TelegramAgentRunner(app)
+    private val runner = TelegramAgentRunner(app, client)
 
     private var pollingJob: Job? = null
     private val chatMutexes = mutableMapOf<Long, Mutex>()
@@ -88,6 +88,13 @@ class TelegramBotService(
     }
 
     private suspend fun handleUpdate(update: TelegramUpdate) {
+        when (update) {
+            is TelegramUpdate.MessageUpdate -> handleMessageUpdate(update)
+            is TelegramUpdate.CallbackQueryUpdate -> handleCallbackQueryUpdate(update)
+        }
+    }
+
+    private suspend fun handleMessageUpdate(update: TelegramUpdate.MessageUpdate) {
         val chatId = update.chatId
         val text = update.text
 
@@ -120,5 +127,37 @@ class TelegramBotService(
                 client.sendMessage(chatId, "Sorry, something went wrong processing your message.")
             }
         }
+    }
+
+    /**
+     * Handles inline keyboard button presses. This must NOT acquire the per-chat
+     * mutex because the agent run that sent the approval buttons is currently
+     * suspended inside that mutex waiting for this callback.
+     */
+    private suspend fun handleCallbackQueryUpdate(update: TelegramUpdate.CallbackQueryUpdate) {
+        val parts = update.data.split("::", limit = 2)
+        val action = parts.getOrNull(0)
+        val requestId = parts.getOrNull(1)
+
+        if (action == null || requestId == null) {
+            Log.w(TAG, "Malformed callback data: ${update.data}")
+            client.answerCallbackQuery(update.callbackQueryId)
+            return
+        }
+
+        val approved = action == "approve"
+        runner.resolveApproval(requestId, approved)
+
+        client.answerCallbackQuery(
+            update.callbackQueryId,
+            text = if (approved) "Approved" else "Declined",
+        )
+
+        val resultText = if (approved) {
+            "Approved — proceeding with execution."
+        } else {
+            "Declined — operation cancelled."
+        }
+        client.editMessageText(update.chatId, update.messageId, resultText)
     }
 }

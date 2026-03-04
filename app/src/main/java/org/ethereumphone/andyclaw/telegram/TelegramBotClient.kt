@@ -11,13 +11,26 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.util.concurrent.TimeUnit
 
-data class TelegramUpdate(
-    val updateId: Long,
-    val chatId: Long,
-    val text: String,
-    val fromUsername: String?,
-    val fromFirstName: String?,
-)
+data class InlineButton(val text: String, val callbackData: String)
+
+sealed class TelegramUpdate(val updateId: Long) {
+    data class MessageUpdate(
+        val id: Long,
+        val chatId: Long,
+        val text: String,
+        val fromUsername: String?,
+        val fromFirstName: String?,
+    ) : TelegramUpdate(id)
+
+    data class CallbackQueryUpdate(
+        val id: Long,
+        val callbackQueryId: String,
+        val chatId: Long,
+        val messageId: Long,
+        val data: String,
+        val fromUsername: String?,
+    ) : TelegramUpdate(id)
+}
 
 class TelegramBotClient(
     private val token: () -> String,
@@ -49,7 +62,7 @@ class TelegramBotClient(
             val body = JSONObject().apply {
                 if (offset != null) put("offset", offset)
                 put("timeout", timeout)
-                put("allowed_updates", JSONArray().put("message"))
+                put("allowed_updates", JSONArray().put("message").put("callback_query"))
             }
 
             val request = Request.Builder()
@@ -157,23 +170,203 @@ class TelegramBotClient(
             }
         }
 
+    /**
+     * Sends a message with an inline keyboard and returns the sent message_id,
+     * or null if the send failed.
+     */
+    suspend fun sendMessageWithInlineKeyboard(
+        chatId: Long,
+        text: String,
+        buttons: List<InlineButton>,
+    ): Long? = withContext(Dispatchers.IO) {
+        val keyboard = JSONArray().put(
+            JSONArray().apply {
+                for (btn in buttons) {
+                    put(JSONObject().apply {
+                        put("text", btn.text)
+                        put("callback_data", btn.callbackData)
+                    })
+                }
+            }
+        )
+
+        val body = JSONObject().apply {
+            put("chat_id", chatId)
+            put("text", text)
+            put("parse_mode", "Markdown")
+            put("reply_markup", JSONObject().put("inline_keyboard", keyboard))
+        }
+
+        val request = Request.Builder()
+            .url(apiUrl("sendMessage"))
+            .post(body.toString().toRequestBody(jsonMediaType))
+            .build()
+
+        try {
+            sendClient.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) {
+                    val errorBody = response.body?.string() ?: ""
+                    if (response.code == 400 && errorBody.contains("parse")) {
+                        return@withContext sendPlainMessageWithInlineKeyboard(chatId, text, buttons)
+                    }
+                    Log.w(TAG, "sendMessageWithInlineKeyboard failed: ${response.code} $errorBody")
+                    return@withContext null
+                }
+                val json = JSONObject(response.body?.string() ?: return@withContext null)
+                json.optJSONObject("result")?.optLong("message_id")
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "sendMessageWithInlineKeyboard error: ${e.message}")
+            null
+        }
+    }
+
+    private fun sendPlainMessageWithInlineKeyboard(
+        chatId: Long,
+        text: String,
+        buttons: List<InlineButton>,
+    ): Long? {
+        val keyboard = JSONArray().put(
+            JSONArray().apply {
+                for (btn in buttons) {
+                    put(JSONObject().apply {
+                        put("text", btn.text)
+                        put("callback_data", btn.callbackData)
+                    })
+                }
+            }
+        )
+
+        val body = JSONObject().apply {
+            put("chat_id", chatId)
+            put("text", text)
+            put("reply_markup", JSONObject().put("inline_keyboard", keyboard))
+        }
+
+        val request = Request.Builder()
+            .url(apiUrl("sendMessage"))
+            .post(body.toString().toRequestBody(jsonMediaType))
+            .build()
+
+        return try {
+            sendClient.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) return@use null
+                val json = JSONObject(response.body?.string() ?: return@use null)
+                json.optJSONObject("result")?.optLong("message_id")
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "sendPlainMessageWithInlineKeyboard error: ${e.message}")
+            null
+        }
+    }
+
+    suspend fun answerCallbackQuery(callbackQueryId: String, text: String? = null): Unit =
+        withContext(Dispatchers.IO) {
+            val body = JSONObject().apply {
+                put("callback_query_id", callbackQueryId)
+                if (text != null) put("text", text)
+            }
+
+            val request = Request.Builder()
+                .url(apiUrl("answerCallbackQuery"))
+                .post(body.toString().toRequestBody(jsonMediaType))
+                .build()
+
+            try {
+                sendClient.newCall(request).execute().close()
+            } catch (e: Exception) {
+                Log.w(TAG, "answerCallbackQuery error: ${e.message}")
+            }
+        }
+
+    suspend fun editMessageText(chatId: Long, messageId: Long, text: String): Unit =
+        withContext(Dispatchers.IO) {
+            val body = JSONObject().apply {
+                put("chat_id", chatId)
+                put("message_id", messageId)
+                put("text", text)
+                put("parse_mode", "Markdown")
+            }
+
+            val request = Request.Builder()
+                .url(apiUrl("editMessageText"))
+                .post(body.toString().toRequestBody(jsonMediaType))
+                .build()
+
+            try {
+                sendClient.newCall(request).execute().use { response ->
+                    if (!response.isSuccessful) {
+                        val errorBody = response.body?.string() ?: ""
+                        if (response.code == 400 && errorBody.contains("parse")) {
+                            editMessageTextPlain(chatId, messageId, text)
+                            return@withContext
+                        }
+                        Log.w(TAG, "editMessageText failed: ${response.code} $errorBody")
+                    }
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "editMessageText error: ${e.message}")
+            }
+        }
+
+    private fun editMessageTextPlain(chatId: Long, messageId: Long, text: String) {
+        val body = JSONObject().apply {
+            put("chat_id", chatId)
+            put("message_id", messageId)
+            put("text", text)
+        }
+
+        val request = Request.Builder()
+            .url(apiUrl("editMessageText"))
+            .post(body.toString().toRequestBody(jsonMediaType))
+            .build()
+
+        try {
+            sendClient.newCall(request).execute().close()
+        } catch (e: Exception) {
+            Log.w(TAG, "editMessageTextPlain error: ${e.message}")
+        }
+    }
+
     private fun parseUpdates(array: JSONArray): List<TelegramUpdate> {
         val updates = mutableListOf<TelegramUpdate>()
         for (i in 0 until array.length()) {
             val obj = array.getJSONObject(i)
-            val message = obj.optJSONObject("message") ?: continue
-            val text = message.optString("text", "").takeIf { it.isNotBlank() } ?: continue
-            val chat = message.getJSONObject("chat")
-            val from = message.optJSONObject("from")
-            updates.add(
-                TelegramUpdate(
-                    updateId = obj.getLong("update_id"),
-                    chatId = chat.getLong("id"),
-                    text = text,
-                    fromUsername = from?.optString("username", null),
-                    fromFirstName = from?.optString("first_name", null),
+            val updateId = obj.getLong("update_id")
+
+            val message = obj.optJSONObject("message")
+            if (message != null) {
+                val text = message.optString("text", "").takeIf { it.isNotBlank() } ?: continue
+                val chat = message.getJSONObject("chat")
+                val from = message.optJSONObject("from")
+                updates.add(
+                    TelegramUpdate.MessageUpdate(
+                        id = updateId,
+                        chatId = chat.getLong("id"),
+                        text = text,
+                        fromUsername = from?.optString("username", null),
+                        fromFirstName = from?.optString("first_name", null),
+                    )
                 )
-            )
+                continue
+            }
+
+            val callbackQuery = obj.optJSONObject("callback_query")
+            if (callbackQuery != null) {
+                val cbMessage = callbackQuery.optJSONObject("message") ?: continue
+                val chat = cbMessage.getJSONObject("chat")
+                val from = callbackQuery.optJSONObject("from")
+                updates.add(
+                    TelegramUpdate.CallbackQueryUpdate(
+                        id = updateId,
+                        callbackQueryId = callbackQuery.getString("id"),
+                        chatId = chat.getLong("id"),
+                        messageId = cbMessage.getLong("message_id"),
+                        data = callbackQuery.optString("data", ""),
+                        fromUsername = from?.optString("username", null),
+                    )
+                )
+            }
         }
         return updates
     }
