@@ -371,7 +371,7 @@ fun SettingsScreen(
             }
 
             // LED Matrix Brightness (ethOS + dGEN1 only)
-            if (viewModel.isPrivileged && viewModel.isLedAvailable) {
+            if (viewModel.isPrivileged) {
                 Spacer(Modifier.height(24.dp))
                 HorizontalDivider()
                 Spacer(Modifier.height(16.dp))
