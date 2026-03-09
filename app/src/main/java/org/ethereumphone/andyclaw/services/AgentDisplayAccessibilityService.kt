@@ -31,6 +31,21 @@ class AgentDisplayAccessibilityService : AccessibilityService() {
 
         override fun setNodeTextByViewId(displayId: Int, viewId: String, text: String): Boolean =
             doSetNodeText(displayId, viewId, text)
+
+        override fun longClickNodeByViewId(displayId: Int, viewId: String): Boolean =
+            doLongClickNode(displayId, viewId)
+
+        override fun scrollNodeForwardByViewId(displayId: Int, viewId: String): Boolean =
+            doScrollNode(displayId, viewId, AccessibilityNodeInfo.ACTION_SCROLL_FORWARD)
+
+        override fun scrollNodeBackwardByViewId(displayId: Int, viewId: String): Boolean =
+            doScrollNode(displayId, viewId, AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD)
+
+        override fun focusNodeByViewId(displayId: Int, viewId: String): Boolean =
+            doFocusNode(displayId, viewId)
+
+        override fun getNodeInfoByViewId(displayId: Int, viewId: String): String =
+            doGetNodeInfo(displayId, viewId)
     }
 
     override fun onServiceConnected() {
@@ -160,6 +175,64 @@ class AgentDisplayAccessibilityService : AccessibilityService() {
         node.recycle()
         Log.d(TAG, "setNodeText $viewId -> $result")
         return result
+    }
+
+    private fun doLongClickNode(displayId: Int, viewId: String): Boolean {
+        val node = findNodeByViewId(displayId, viewId) ?: return false
+        val result = node.performAction(AccessibilityNodeInfo.ACTION_LONG_CLICK)
+        node.recycle()
+        Log.d(TAG, "longClickNode $viewId -> $result")
+        return result
+    }
+
+    private fun doScrollNode(displayId: Int, viewId: String, action: Int): Boolean {
+        val node = findNodeByViewId(displayId, viewId) ?: return false
+        val result = node.performAction(action)
+        node.recycle()
+        Log.d(TAG, "scrollNode $viewId action=$action -> $result")
+        return result
+    }
+
+    private fun doFocusNode(displayId: Int, viewId: String): Boolean {
+        val node = findNodeByViewId(displayId, viewId) ?: return false
+        val result = node.performAction(AccessibilityNodeInfo.ACTION_ACCESSIBILITY_FOCUS)
+        node.recycle()
+        Log.d(TAG, "focusNode $viewId -> $result")
+        return result
+    }
+
+    private fun doGetNodeInfo(displayId: Int, viewId: String): String {
+        val node = findNodeByViewId(displayId, viewId)
+            ?: return "{\"error\":\"Node not found: $viewId\"}"
+        return try {
+            val bounds = Rect()
+            node.getBoundsInScreen(bounds)
+            JSONObject().apply {
+                put("viewId", node.viewIdResourceName ?: viewId)
+                put("className", node.className?.toString() ?: "")
+                node.text?.let { put("text", it.toString()) }
+                node.contentDescription?.let { put("contentDescription", it.toString()) }
+                put("bounds", JSONObject().apply {
+                    put("left", bounds.left)
+                    put("top", bounds.top)
+                    put("right", bounds.right)
+                    put("bottom", bounds.bottom)
+                })
+                put("enabled", node.isEnabled)
+                put("clickable", node.isClickable)
+                put("scrollable", node.isScrollable)
+                put("focused", node.isFocused)
+                put("checked", node.isChecked)
+                put("selected", node.isSelected)
+                put("editable", node.isEditable)
+                put("childCount", node.childCount)
+            }.toString()
+        } catch (e: Exception) {
+            Log.e(TAG, "getNodeInfo $viewId failed", e)
+            "{\"error\":\"${e.message}\"}"
+        } finally {
+            node.recycle()
+        }
     }
 
     private fun findNodeByViewId(displayId: Int, viewId: String): AccessibilityNodeInfo? {
