@@ -160,7 +160,10 @@ class AgentLoop(
             }
         }
 
-        val allToolsJson = PromptAssembler.assembleTools(skills, tier)
+        val nameResolver: (String, String) -> String = { skillId, name ->
+            skillRegistry.getEffectiveName(skillId, name)
+        }
+        val allToolsJson = PromptAssembler.assembleTools(skills, tier, nameResolver)
         val toolsJson = if (client.maxToolCount > 0 && allToolsJson.size > client.maxToolCount) {
             Log.d(TAG, "Trimming tools from ${allToolsJson.size} to ${client.maxToolCount} for constrained provider")
             allToolsJson.take(client.maxToolCount)

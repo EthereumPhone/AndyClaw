@@ -9,16 +9,19 @@ import kotlinx.serialization.json.put
 
 object PromptAssembler {
 
-    fun assembleTools(skills: List<AndyClawSkill>, tier: Tier): List<JsonObject> {
+    fun assembleTools(
+        skills: List<AndyClawSkill>,
+        tier: Tier,
+        effectiveNameOf: (skillId: String, toolName: String) -> String = { _, name -> name },
+    ): List<JsonObject> {
         val tools = mutableListOf<JsonObject>()
         for (skill in skills) {
-            val manifest = skill.baseManifest
-            for (tool in manifest.tools) {
-                tools.add(toolToJson(tool))
+            for (tool in skill.baseManifest.tools) {
+                tools.add(toolToJson(tool, effectiveNameOf(skill.id, tool.name)))
             }
             if (tier == Tier.PRIVILEGED) {
                 skill.privilegedManifest?.tools?.forEach { tool ->
-                    tools.add(toolToJson(tool))
+                    tools.add(toolToJson(tool, effectiveNameOf(skill.id, tool.name)))
                 }
             }
         }
@@ -135,13 +138,17 @@ object PromptAssembler {
         return sb.toString()
     }
 
-    fun assembleToolsJsonArray(skills: List<AndyClawSkill>, tier: Tier): JsonArray {
-        return JsonArray(assembleTools(skills, tier))
+    fun assembleToolsJsonArray(
+        skills: List<AndyClawSkill>,
+        tier: Tier,
+        effectiveNameOf: (skillId: String, toolName: String) -> String = { _, name -> name },
+    ): JsonArray {
+        return JsonArray(assembleTools(skills, tier, effectiveNameOf))
     }
 
-    private fun toolToJson(tool: ToolDefinition): JsonObject {
+    private fun toolToJson(tool: ToolDefinition, effectiveName: String = tool.name): JsonObject {
         return buildJsonObject {
-            put("name", tool.name)
+            put("name", effectiveName)
             put("description", tool.description)
             put("input_schema", tool.inputSchema)
         }
