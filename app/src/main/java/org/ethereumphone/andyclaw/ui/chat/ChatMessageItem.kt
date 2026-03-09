@@ -1,6 +1,10 @@
 package org.ethereumphone.andyclaw.ui.chat
 
+import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.spring
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -23,12 +27,15 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontFamily
 import org.ethereumphone.andyclaw.ui.components.GlowStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
 @Composable
 fun ChatMessageItem(
     message: ChatUiMessage,
+    isExpanded: Boolean = false,
+    onToggleExpand: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
 ) {
     val isUser = message.role == "user"
@@ -86,15 +93,11 @@ fun ChatMessageItem(
                 }
             }
         } else if (isTool) {
-            Text(
-                text = "[${message.toolName ?: "Tool"}]",
-                style = MaterialTheme.typography.bodyLarge.copy(
-                    fontFamily = FontFamily.Monospace,
-                    fontSize = 17.sp,
-                    shadow = GlowStyle.subtitle(primaryColor),
-                ),
-                color = primaryColor.copy(alpha = 0.7f),
-                modifier = Modifier.padding(vertical = 2.dp),
+            CollapsibleToolResult(
+                message = message,
+                isExpanded = isExpanded,
+                onToggle = onToggleExpand,
+                primaryColor = primaryColor,
             )
         } else if (isUser) {
             SelectionContainer {
@@ -115,6 +118,71 @@ fun ChatMessageItem(
                     text = message.content,
                     color = primaryColor,
                     modifier = Modifier.padding(vertical = 2.dp),
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun CollapsibleToolResult(
+    message: ChatUiMessage,
+    isExpanded: Boolean,
+    onToggle: (() -> Unit)?,
+    primaryColor: androidx.compose.ui.graphics.Color,
+    modifier: Modifier = Modifier,
+) {
+    val chevron = if (isExpanded) "▾" else "▸"
+    val toolLabel = message.toolName ?: "Tool"
+
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(6.dp))
+            .clickable(enabled = onToggle != null) { onToggle?.invoke() }
+            .animateContentSize(
+                animationSpec = spring(
+                    dampingRatio = Spring.DampingRatioLowBouncy,
+                    stiffness = Spring.StiffnessMedium,
+                ),
+            )
+            .padding(vertical = 2.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                text = chevron,
+                style = MaterialTheme.typography.bodyLarge.copy(
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 14.sp,
+                    shadow = GlowStyle.subtitle(primaryColor),
+                ),
+                color = primaryColor.copy(alpha = 0.6f),
+            )
+            Spacer(Modifier.width(6.dp))
+            Text(
+                text = "[$toolLabel]",
+                style = MaterialTheme.typography.bodyLarge.copy(
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 17.sp,
+                    shadow = GlowStyle.subtitle(primaryColor),
+                ),
+                color = primaryColor.copy(alpha = 0.7f),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+
+        if (isExpanded && message.content.isNotBlank()) {
+            SelectionContainer {
+                Text(
+                    text = message.content,
+                    style = MaterialTheme.typography.bodySmall.copy(
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = 13.sp,
+                        shadow = GlowStyle.body(primaryColor),
+                    ),
+                    color = primaryColor.copy(alpha = 0.5f),
+                    modifier = Modifier.padding(start = 20.dp, top = 4.dp, bottom = 4.dp),
                 )
             }
         }

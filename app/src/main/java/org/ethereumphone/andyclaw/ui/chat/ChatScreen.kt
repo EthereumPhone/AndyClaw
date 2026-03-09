@@ -36,6 +36,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -84,6 +85,7 @@ fun ChatScreen(
     val listState = rememberLazyListState()
     val keyboardController = LocalSoftwareKeyboardController.current
     var autoScroll by remember { mutableStateOf(true) }
+    val expandedToolResults = remember { mutableStateListOf<String>() }
 
     // Disable auto-scroll when the user touches/drags the list.
     // NestedScrollConnection.onPreScroll only fires for user gestures,
@@ -200,7 +202,19 @@ fun ChatScreen(
                     verticalArrangement = Arrangement.spacedBy(4.dp),
                 ) {
                     items(messages, key = { it.id }) { message ->
-                        ChatMessageItem(message = message)
+                        ChatMessageItem(
+                            message = message,
+                            isExpanded = expandedToolResults.contains(message.id),
+                            onToggleExpand = if (message.role == "tool") {
+                                {
+                                    if (expandedToolResults.contains(message.id)) {
+                                        expandedToolResults.remove(message.id)
+                                    } else {
+                                        expandedToolResults.add(message.id)
+                                    }
+                                }
+                            } else null,
+                        )
                     }
 
                     if (isStreaming && streamingText.isNotEmpty()) {
