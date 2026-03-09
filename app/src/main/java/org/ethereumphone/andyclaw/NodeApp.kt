@@ -380,6 +380,34 @@ class NodeApp : Application() {
             }
         }
 
+        // HeartbeatBindingService is directBootAware, so this process may start
+        // before the user unlocks the device.  Credential-encrypted storage
+        // (filesDir, SharedPreferences, EncryptedSharedPreferences) is unavailable
+        // until after first unlock, so defer all CE-dependent init.
+        val userManager = getSystemService(android.os.UserManager::class.java)
+        if (userManager?.isUserUnlocked == true) {
+            onUserUnlocked()
+        } else {
+            Log.i(TAG, "Device not yet unlocked — deferring CE-dependent initialization")
+            registerReceiver(
+                object : android.content.BroadcastReceiver() {
+                    override fun onReceive(context: android.content.Context, intent: android.content.Intent) {
+                        unregisterReceiver(this)
+                        onUserUnlocked()
+                    }
+                },
+                android.content.IntentFilter(android.content.Intent.ACTION_USER_UNLOCKED),
+                android.content.Context.RECEIVER_NOT_EXPORTED,
+            )
+        }
+    }
+
+    /**
+     * Runs all initialization that requires credential-encrypted (CE) storage.
+     * Called immediately from [onCreate] when the device is already unlocked,
+     * or deferred until [Intent.ACTION_USER_UNLOCKED] during Direct Boot.
+     */
+    private fun onUserUnlocked() {
         // Wire up the embedding provider for semantic memory search.
         // Only set if the user has an OpenRouter API key or is on ethOS,
         // since embeddings require an OpenAI-compatible endpoint.
