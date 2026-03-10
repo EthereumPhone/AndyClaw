@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -24,6 +25,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.font.FontFamily
 import org.ethereumphone.andyclaw.ui.components.GlowStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -120,6 +122,24 @@ fun ChatMessageItem(
                     modifier = Modifier.padding(vertical = 2.dp),
                 )
             }
+            if (message.explorerUrl != null) {
+                val uriHandler = LocalUriHandler.current
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    text = "[ View on Explorer ]",
+                    style = MaterialTheme.typography.labelMedium.copy(
+                        fontFamily = FontFamily.Monospace,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 13.sp,
+                        shadow = GlowStyle.subtitle(primaryColor),
+                    ),
+                    color = primaryColor.copy(alpha = 0.8f),
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(4.dp))
+                        .clickable { uriHandler.openUri(message.explorerUrl) }
+                        .padding(vertical = 4.dp, horizontal = 8.dp),
+                )
+            }
         }
     }
 }
@@ -202,5 +222,6 @@ private fun CollapsibleToolResult(
                 )
             }
         }
+
     }
 }

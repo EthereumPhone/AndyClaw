@@ -47,6 +47,7 @@ data class ChatUiMessage(
     val content: String,
     val toolName: String? = null,
     val toolSummary: String? = null,
+    val explorerUrl: String? = null,
     val isStreaming: Boolean = false,
     val isSecurityBlock: Boolean = false,
 )
@@ -88,6 +89,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private var agentDisplayJob: Job? = null
     private var currentJob: Job? = null
     private var approvalContinuation: kotlinx.coroutines.CancellableContinuation<Boolean>? = null
+    private val pendingExplorerUrls = mutableListOf<String>()
 
     private val httpClient = OkHttpClient()
 
@@ -102,7 +104,23 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             _sessionId.value = sessionId
             val messages = sessionManager.getMessages(sessionId)
-            _messages.value = messages.map { it.toUiMessage() }
+            // Attach explorer URLs: when a tool message has one, forward it
+            // to the next assistant message so the button renders there.
+            var pendingUrl: String? = null
+            _messages.value = messages.map { msg ->
+                val ui = msg.toUiMessage()
+                if (msg.role == MessageRole.TOOL && msg.toolName != null) {
+                    val formatted = ToolResultFormatter.format(msg.toolName!!, msg.content)
+                    if (formatted.explorerUrl != null) pendingUrl = formatted.explorerUrl
+                    ui
+                } else if (msg.role == MessageRole.ASSISTANT && pendingUrl != null) {
+                    val url = pendingUrl
+                    pendingUrl = null
+                    ui.copy(explorerUrl = url)
+                } else {
+                    ui
+                }
+            }
         }
     }
 
@@ -206,6 +224,9 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                         sessionManager.addMessage(sid, MessageRole.TOOL, resultText, toolName = toolName)
                     }
                     val formatted = ToolResultFormatter.format(toolName, resultText, input)
+                    if (formatted.explorerUrl != null) {
+                        pendingExplorerUrls.add(formatted.explorerUrl)
+                    }
                     val toolMsg = ChatUiMessage(
                         id = java.util.UUID.randomUUID().toString(),
                         role = "tool",
@@ -336,6 +357,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         _isStreaming.value = false
         _streamingText.value = ""
         _currentToolExecution.value = null
+        pendingExplorerUrls.clear()
         stopDisplayCapture()
     }
 
@@ -386,10 +408,13 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private fun flushStreamingText(sessionId: String) {
         val currentText = _streamingText.value
         if (currentText.isNotBlank()) {
+            val urls = pendingExplorerUrls.toList()
+            pendingExplorerUrls.clear()
             val assistantMsg = ChatUiMessage(
                 id = java.util.UUID.randomUUID().toString(),
                 role = "assistant",
                 content = currentText,
+                explorerUrl = urls.lastOrNull(),
             )
             _messages.value = _messages.value + assistantMsg
             viewModelScope.launch {

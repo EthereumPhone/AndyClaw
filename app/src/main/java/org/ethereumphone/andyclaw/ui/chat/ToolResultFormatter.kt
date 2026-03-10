@@ -15,6 +15,7 @@ object ToolResultFormatter {
     data class Formatted(
         val summary: String,
         val detail: String,
+        val explorerUrl: String? = null,
     )
 
     fun format(toolName: String, rawResult: String, input: JsonObject? = null): Formatted {
@@ -32,6 +33,15 @@ object ToolResultFormatter {
                 "file_info" -> formatFileInfo(unwrap(rawResult))
                 "agent_display_get_ui_tree" -> formatUiTree(rawResult)
                 "agent_display_get_info" -> formatDisplayInfo(rawResult)
+                "propose_transaction",
+                "agent_send_transaction",
+                "send_native_token",
+                "agent_send_native_token",
+                "send_token",
+                "agent_send_token",
+                "propose_token_transfer",
+                "agent_transfer_token",
+                "agent_swap" -> formatTransaction(unwrap(rawResult))
                 else -> formatDefault(rawResult)
             }
         } catch (_: Exception) {
@@ -253,6 +263,43 @@ object ToolResultFormatter {
         } catch (_: Exception) {
             fallback(raw)
         }
+    }
+
+    // ── transactions ──────────────────────────────────────────────
+
+    private fun txExplorerUrl(txHash: String): String {
+        return "https://blockscan.com/tx/$txHash"
+    }
+
+    private fun formatTransaction(raw: String): Formatted {
+        val json = JSONObject(raw)
+        val userOpHash = json.optString("user_op_hash", "")
+        val chainId = json.optInt("chain_id", 1)
+        val status = json.optString("status", "")
+        val amount = json.optString("amount", "")
+        val token = json.optString("symbol", json.optString("token", ""))
+        val to = json.optString("to", "")
+
+        val summary = buildString {
+            if (status == "submitted") append("Submitted")
+            else append(status.replaceFirstChar { it.uppercase() })
+            if (amount.isNotBlank() && token.isNotBlank()) {
+                append(" — $amount $token")
+            }
+        }.ifBlank { "Transaction submitted" }
+
+        val detail = buildString {
+            if (amount.isNotBlank() && token.isNotBlank()) appendLine("Amount: $amount $token")
+            if (to.isNotBlank()) appendLine("To: $to")
+            if (userOpHash.isNotBlank()) appendLine("UserOp: ${userOpHash.take(18)}…")
+            appendLine("Chain: $chainId")
+        }.trimEnd()
+
+        val explorerUrl = if (userOpHash.isNotBlank()) {
+            txExplorerUrl(userOpHash)
+        } else null
+
+        return Formatted(summary, detail, explorerUrl)
     }
 
     // ── default / fallback ──────────────────────────────────────
