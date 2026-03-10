@@ -94,6 +94,20 @@ object PromptAssembler {
         sb.appendLine("Always prefer taking action over just reporting — if you can fix something, fix it.")
         sb.appendLine()
 
+        // Wallet address guidance (only when wallet tools are available)
+        if (tier == Tier.PRIVILEGED && skills.any { it.id == "wallet" }) {
+            sb.appendLine("## Wallets")
+            sb.appendLine("You have TWO wallets:")
+            sb.appendLine("- User's wallet: the ethOS system wallet. Transactions require on-device user approval.")
+            sb.appendLine("- Your own wallet: a sub-account (smart wallet) you control autonomously. No user approval needed.")
+            sb.appendLine()
+            sb.appendLine("IMPORTANT: You do NOT know the wallet addresses in advance.")
+            sb.appendLine("- Use `get_user_wallet_address` to fetch the user's wallet address.")
+            sb.appendLine("- Use `get_agent_wallet_address` to fetch your agent wallet address.")
+            sb.appendLine("- NEVER guess, assume, or hallucinate a wallet address. Always call the tool first.")
+            sb.appendLine()
+        }
+
         // Virtual display guidance (only when agent_display tools are available)
         val hasAgentDisplay = tier == Tier.PRIVILEGED && skills.any { skill ->
             skill.privilegedManifest?.tools?.any { it.name == "agent_display_create" } == true
