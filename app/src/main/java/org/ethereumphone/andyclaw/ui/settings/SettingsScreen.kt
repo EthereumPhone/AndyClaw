@@ -73,9 +73,18 @@ import com.example.dgenlibrary.ui.theme.button_fontSize
 import com.example.dgenlibrary.ui.theme.label_fontSize
 import org.ethereumphone.andyclaw.ui.components.AppTextStyles
 import org.ethereumphone.andyclaw.ui.components.GlowStyle
+import androidx.compose.foundation.border
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
+import androidx.compose.ui.text.input.KeyboardType
 import java.math.BigDecimal
 import java.math.RoundingMode
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun SettingsScreen(
     onNavigateBack: () -> Unit,
@@ -112,7 +121,6 @@ fun SettingsScreen(
     var showTelegramOnboarding by remember { mutableStateOf(false) }
     var currentSubScreen by remember { mutableStateOf(SettingsSubScreen.Main) }
     var lastBrightnessValue by remember { mutableStateOf(ledMaxBrightness) }
-    var lastHeartbeatValue by remember { mutableStateOf(heartbeatIntervalMinutes) }
 
     inspectedSkill?.let { skill ->
         SkillInspectionDialog(
@@ -677,13 +685,37 @@ fun SettingsScreen(
                 style = sectionTitleStyle,
             )
             Spacer(Modifier.height(8.dp))
+
+            // Preset intervals: value in minutes -> display label
+            val presetIntervals = remember {
+                listOf(
+                    5 to "5M", 10 to "10M", 15 to "15M", 30 to "30M",
+                    60 to "1H", 120 to "2H", 240 to "4H", 480 to "8H",
+                    720 to "12H", 1440 to "24H",
+                )
+            }
+            val isCustomValue = heartbeatIntervalMinutes !in presetIntervals.map { it.first }
+            var showCustomDialog by remember { mutableStateOf(false) }
+
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(vertical = 8.dp),
             ) {
+                val displayText = remember(heartbeatIntervalMinutes) {
+                    if (heartbeatIntervalMinutes >= 60 && heartbeatIntervalMinutes % 60 == 0) {
+                        val hours = heartbeatIntervalMinutes / 60
+                        "EVERY $hours HOUR${if (hours > 1) "S" else ""}"
+                    } else if (heartbeatIntervalMinutes >= 60) {
+                        val hours = heartbeatIntervalMinutes / 60
+                        val mins = heartbeatIntervalMinutes % 60
+                        "EVERY ${hours}H ${mins}M"
+                    } else {
+                        "EVERY $heartbeatIntervalMinutes MINUTES"
+                    }
+                }
                 Text(
-                    text = "EVERY $heartbeatIntervalMinutes MINUTES",
+                    text = displayText,
                     style = contentTitleStyle,
                     color = primaryColor,
                 )
@@ -694,32 +726,152 @@ fun SettingsScreen(
                     color = dgenWhite,
                 )
                 Spacer(Modifier.height(12.dp))
-                Slider(
-                    value = heartbeatIntervalMinutes.toFloat(),
-                    onValueChange = {
-                        val newVal = it.toInt()
-                        if (newVal != lastHeartbeatValue) {
-                            view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
-                            lastHeartbeatValue = newVal
-                        }
-                        viewModel.setHeartbeatIntervalMinutes(newVal)
-                    },
-                    valueRange = 5f..60f,
-                    steps = 10,
-                    colors = SliderDefaults.colors(
-                        thumbColor = primaryColor,
-                        activeTrackColor = primaryColor,
-                        inactiveTrackColor = primaryColor.copy(alpha = 0.2f),
-                    ),
-                    modifier = Modifier.sliderGlow(primaryColor),
-                )
-                Row(
+                FlowRow(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    Text("5 MIN", style = contentBodyStyle, color = dgenWhite)
-                    Text("60 MIN", style = contentBodyStyle, color = dgenWhite)
+                    presetIntervals.forEach { (minutes, label) ->
+                        val isSelected = heartbeatIntervalMinutes == minutes
+                        Box(
+                            modifier = Modifier
+                                .border(
+                                    width = 1.dp,
+                                    color = if (isSelected) primaryColor else primaryColor.copy(alpha = 0.3f),
+                                    shape = RoundedCornerShape(6.dp),
+                                )
+                                .background(
+                                    color = if (isSelected) primaryColor.copy(alpha = 0.15f) else Color.Transparent,
+                                    shape = RoundedCornerShape(6.dp),
+                                )
+                                .clickable {
+                                    view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+                                    viewModel.setHeartbeatIntervalMinutes(minutes)
+                                }
+                                .padding(horizontal = 14.dp, vertical = 8.dp),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Text(
+                                text = label,
+                                style = contentBodyStyle,
+                                color = if (isSelected) primaryColor else dgenWhite,
+                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                            )
+                        }
+                    }
+                    // Custom chip
+                    Box(
+                        modifier = Modifier
+                            .border(
+                                width = 1.dp,
+                                color = if (isCustomValue) primaryColor else primaryColor.copy(alpha = 0.3f),
+                                shape = RoundedCornerShape(6.dp),
+                            )
+                            .background(
+                                color = if (isCustomValue) primaryColor.copy(alpha = 0.15f) else Color.Transparent,
+                                shape = RoundedCornerShape(6.dp),
+                            )
+                            .clickable {
+                                view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+                                showCustomDialog = true
+                            }
+                            .padding(horizontal = 14.dp, vertical = 8.dp),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(
+                            text = if (isCustomValue) "CUSTOM (${heartbeatIntervalMinutes}M)" else "CUSTOM",
+                            style = contentBodyStyle,
+                            color = if (isCustomValue) primaryColor else dgenWhite,
+                            fontWeight = if (isCustomValue) FontWeight.Bold else FontWeight.Normal,
+                        )
+                    }
                 }
+            }
+
+            // Custom interval dialog
+            if (showCustomDialog) {
+                var hoursText by remember { mutableStateOf((heartbeatIntervalMinutes / 60).toString()) }
+                var minutesText by remember { mutableStateOf((heartbeatIntervalMinutes % 60).toString()) }
+                AlertDialog(
+                    onDismissRequest = { showCustomDialog = false },
+                    containerColor = Color(0xFF1A1A1A),
+                    title = {
+                        Text(
+                            "CUSTOM INTERVAL",
+                            style = contentTitleStyle,
+                            color = primaryColor,
+                        )
+                    },
+                    text = {
+                        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                            Text(
+                                "Set a custom heartbeat interval (min 5 minutes, max 24 hours)",
+                                style = contentBodyStyle,
+                                color = dgenWhite,
+                            )
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                OutlinedTextField(
+                                    value = hoursText,
+                                    onValueChange = { hoursText = it.filter { c -> c.isDigit() }.take(2) },
+                                    label = { Text("HOURS", color = dgenWhite.copy(alpha = 0.6f)) },
+                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                    singleLine = true,
+                                    colors = OutlinedTextFieldDefaults.colors(
+                                        focusedTextColor = primaryColor,
+                                        unfocusedTextColor = dgenWhite,
+                                        focusedBorderColor = primaryColor,
+                                        unfocusedBorderColor = primaryColor.copy(alpha = 0.3f),
+                                        cursorColor = primaryColor,
+                                    ),
+                                    textStyle = TextStyle(
+                                        fontFamily = SpaceMono,
+                                        fontSize = body1_fontSize,
+                                    ),
+                                    modifier = Modifier.weight(1f),
+                                )
+                                Text(":", color = primaryColor, style = contentTitleStyle)
+                                OutlinedTextField(
+                                    value = minutesText,
+                                    onValueChange = { minutesText = it.filter { c -> c.isDigit() }.take(2) },
+                                    label = { Text("MINUTES", color = dgenWhite.copy(alpha = 0.6f)) },
+                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                    singleLine = true,
+                                    colors = OutlinedTextFieldDefaults.colors(
+                                        focusedTextColor = primaryColor,
+                                        unfocusedTextColor = dgenWhite,
+                                        focusedBorderColor = primaryColor,
+                                        unfocusedBorderColor = primaryColor.copy(alpha = 0.3f),
+                                        cursorColor = primaryColor,
+                                    ),
+                                    textStyle = TextStyle(
+                                        fontFamily = SpaceMono,
+                                        fontSize = body1_fontSize,
+                                    ),
+                                    modifier = Modifier.weight(1f),
+                                )
+                            }
+                        }
+                    },
+                    confirmButton = {
+                        TextButton(onClick = {
+                            val h = hoursText.toIntOrNull() ?: 0
+                            val m = minutesText.toIntOrNull() ?: 0
+                            val totalMinutes = (h * 60 + m).coerceIn(5, 1440)
+                            viewModel.setHeartbeatIntervalMinutes(totalMinutes)
+                            showCustomDialog = false
+                        }) {
+                            Text("SET", color = primaryColor, fontFamily = SpaceMono)
+                        }
+                    },
+                    dismissButton = {
+                        TextButton(onClick = { showCustomDialog = false }) {
+                            Text("CANCEL", color = dgenWhite, fontFamily = SpaceMono)
+                        }
+                    },
+                )
             }
 
             // Heartbeat Logs
