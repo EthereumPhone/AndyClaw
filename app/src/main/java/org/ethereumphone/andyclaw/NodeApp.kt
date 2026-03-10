@@ -2,6 +2,7 @@ package org.ethereumphone.andyclaw
 
 import android.app.Application
 import android.util.Log
+import org.ethereumphone.andyclaw.agenttx.AgentTxRepository
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -93,6 +94,7 @@ class NodeApp : Application() {
     val securePrefs: SecurePrefs by lazy { SecurePrefs(this) }
     val userStoryManager: UserStoryManager by lazy { UserStoryManager(this) }
     val sessionManager: SessionManager by lazy { SessionManager(this) }
+    val agentTxRepository: AgentTxRepository by lazy { AgentTxRepository(this) }
     val heartbeatLogStore: HeartbeatLogStore by lazy { HeartbeatLogStore(filesDir) }
     val whisperTranscriber: WhisperTranscriber by lazy { WhisperTranscriber(this) }
 
@@ -197,7 +199,7 @@ class NodeApp : Application() {
             register(CameraSkill(this@NodeApp))
             register(SMSSkill(this@NodeApp))
             // ethOS wallet skill
-            register(WalletSkill(this@NodeApp))
+            register(WalletSkill(this@NodeApp, agentTxRepository))
             // ENS name resolution (forward and reverse)
             register(ENSSkill())
             // Token lookup, price, and launched tokens (DexScreener + Clanker)
@@ -443,6 +445,56 @@ class NodeApp : Application() {
                 Log.i(TAG, "Discovered ${adapters.size} extension(s)")
             } catch (e: Exception) {
                 Log.w(TAG, "Extension discovery failed: ${e.message}", e)
+            }
+        }
+
+        // One-time backfill of agent tx history from existing session messages
+        backfillAgentTxHistory()
+    }
+
+    private fun backfillAgentTxHistory() {
+        appScope.launch(Dispatchers.IO) {
+            val key = "agent_tx_backfill_done"
+            if (securePrefs.getString(key) == "true") return@launch
+            try {
+                val agentToolNames = listOf(
+                    "agent_send_transaction",
+                    "agent_transfer_token",
+                    "agent_send_native_token",
+                    "agent_send_token",
+                    "agent_swap",
+                )
+                val messages = sessionManager.getToolMessagesByNames(agentToolNames)
+                var count = 0
+                for (msg in messages) {
+                    try {
+                        val json = org.json.JSONObject(msg.content)
+                        val userOpHash = json.optString("user_op_hash", "")
+                        if (userOpHash.isBlank()) continue
+                        val chainId = json.optInt("chain_id", 1)
+                        val to = json.optString("to", "")
+                        val amount = json.optString("amount", json.optString("sell_amount", ""))
+                        val token = json.optString("symbol",
+                            json.optString("token",
+                                json.optString("sell_token", "RAW")))
+                        agentTxRepository.save(
+                            userOpHash = userOpHash,
+                            chainId = chainId,
+                            to = to,
+                            amount = amount,
+                            token = token,
+                            toolName = msg.toolName ?: "unknown",
+                        )
+                        count++
+                    } catch (_: Exception) {
+                        // Skip malformed entries
+                    }
+                }
+                Log.i(TAG, "Backfilled $count agent transaction(s) from session history")
+            } catch (e: Exception) {
+                Log.w(TAG, "Agent tx backfill failed: ${e.message}", e)
+            } finally {
+                securePrefs.putString(key, "true")
             }
         }
     }

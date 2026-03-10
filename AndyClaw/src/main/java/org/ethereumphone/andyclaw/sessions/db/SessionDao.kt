@@ -183,6 +183,16 @@ interface SessionDao {
     @Query("DELETE FROM sessions WHERE id IN (:sessionIds)")
     suspend fun deleteSessionsByIds(sessionIds: List<String>)
 
+    @Query(
+        """
+        SELECT * FROM session_messages
+        WHERE role = 'TOOL'
+        AND toolName IN (:toolNames)
+        ORDER BY timestamp ASC
+        """
+    )
+    suspend fun getToolMessagesByNames(toolNames: List<String>): List<SessionMessageEntity>
+
     /**
      * Transactional reset: wipe messages and reset token counters,
      * keeping the session shell intact.

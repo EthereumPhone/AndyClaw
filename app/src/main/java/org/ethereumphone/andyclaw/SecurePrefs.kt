@@ -331,9 +331,9 @@ class SecurePrefs(context: Context) : KeyValueStore {
   }
 
   fun setHeartbeatIntervalMinutes(value: Int) {
-    val clamped = value.coerceIn(5, 1440)
-    prefs.edit { putInt("agent.heartbeatIntervalMinutes", clamped) }
-    _heartbeatIntervalMinutes.value = clamped
+    val stored = if (value <= 0) -1 else value.coerceIn(5, 1440)
+    prefs.edit { putInt("agent.heartbeatIntervalMinutes", stored) }
+    _heartbeatIntervalMinutes.value = stored
     // Notify OS heartbeat service to re-schedule at the new interval
     try {
       appContext.sendBroadcast(

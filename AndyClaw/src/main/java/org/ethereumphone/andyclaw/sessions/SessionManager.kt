@@ -241,4 +241,23 @@ class SessionManager(
     fun close() {
         database.close()
     }
+
+    /**
+     * Retrieve all tool messages whose [toolName] is in [toolNames].
+     * Used for one-time backfill of agent transaction history.
+     */
+    suspend fun getToolMessagesByNames(toolNames: List<String>): List<SessionMessage> {
+        return dao.getToolMessagesByNames(toolNames).map { entity ->
+            SessionMessage(
+                id = entity.id,
+                sessionId = entity.sessionId,
+                role = MessageRole.fromString(entity.role),
+                content = entity.content,
+                toolName = entity.toolName,
+                toolCallId = entity.toolCallId,
+                timestamp = entity.timestamp,
+                orderIndex = entity.orderIndex,
+            )
+        }
+    }
 }

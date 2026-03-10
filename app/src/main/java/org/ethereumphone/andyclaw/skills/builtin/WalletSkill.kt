@@ -3,6 +3,7 @@ package org.ethereumphone.andyclaw.skills.builtin
 import android.content.Context
 import android.util.Log
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
@@ -38,9 +39,34 @@ import java.math.BigDecimal
 import java.math.BigInteger
 import java.math.RoundingMode
 
-class WalletSkill(private val context: Context) : AndyClawSkill {
+class WalletSkill(
+    private val context: Context,
+    private val agentTxRepository: org.ethereumphone.andyclaw.agenttx.AgentTxRepository? = null,
+) : AndyClawSkill {
     override val id = "wallet"
     override val name = "Wallet"
+
+    private val txScope = kotlinx.coroutines.CoroutineScope(
+        kotlinx.coroutines.SupervisorJob() + Dispatchers.IO
+    )
+
+    private fun saveAgentTx(
+        userOpHash: String,
+        chainId: Int,
+        to: String,
+        amount: String,
+        token: String,
+        toolName: String,
+    ) {
+        val repo = agentTxRepository ?: return
+        txScope.launch {
+            try {
+                repo.save(userOpHash, chainId, to, amount, token, toolName)
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to save agent tx: ${e.message}")
+            }
+        }
+    }
 
     companion object {
         private const val TAG = "WalletSkill"
@@ -1264,7 +1290,9 @@ class WalletSkill(private val context: Context) : AndyClawSkill {
                 put("user_op_hash", result)
                 put("status", "submitted")
                 put("chain_id", chainId)
-            }.toString())
+            }.toString()).also {
+                saveAgentTx(result, chainId, to, value, "RAW", "agent_send_transaction")
+            }
         } catch (e: Exception) {
             SkillResult.Error("Failed to send agent transaction: ${e.message}")
         }
@@ -1323,6 +1351,7 @@ class WalletSkill(private val context: Context) : AndyClawSkill {
                     chainId = chainId,
                 )
             }
+            saveAgentTx(result, chainId, to, amount, contractAddress, "agent_transfer_token")
             SkillResult.Success(buildJsonObject {
                 put("user_op_hash", result)
                 put("status", "submitted")
@@ -1710,6 +1739,7 @@ class WalletSkill(private val context: Context) : AndyClawSkill {
                     chainId = chainId,
                 )
             }
+            saveAgentTx(result, chainId, to, amount, symbol?.uppercase() ?: contractAddress, "agent_send_token")
             SkillResult.Success(buildJsonObject {
                 put("user_op_hash", result)
                 put("status", "submitted")
@@ -1949,15 +1979,18 @@ class WalletSkill(private val context: Context) : AndyClawSkill {
             } catch (_: Exception) { rawBuyAmount }
 
             when {
-                result.startsWith("0x") -> SkillResult.Success(buildJsonObject {
-                    put("user_op_hash", result)
-                    put("status", "submitted")
-                    put("chain_id", chainId)
-                    put("sell_token", sellTokenParam)
-                    put("buy_token", buyTokenParam)
-                    put("sell_amount", sellAmount)
-                    put("expected_buy_amount", humanBuyAmount)
-                }.toString())
+                result.startsWith("0x") -> {
+                    saveAgentTx(result, chainId, "", sellAmount, "$sellTokenParam->$buyTokenParam", "agent_swap")
+                    SkillResult.Success(buildJsonObject {
+                        put("user_op_hash", result)
+                        put("status", "submitted")
+                        put("chain_id", chainId)
+                        put("sell_token", sellTokenParam)
+                        put("buy_token", buyTokenParam)
+                        put("sell_amount", sellAmount)
+                        put("expected_buy_amount", humanBuyAmount)
+                    }.toString())
+                }
                 result.contains("AA21") -> SkillResult.Error(
                     "Insufficient gas in agent wallet to execute swap on chain $chainId."
                 )

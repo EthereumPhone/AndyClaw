@@ -35,6 +35,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -74,8 +75,6 @@ import com.example.dgenlibrary.ui.theme.label_fontSize
 import org.ethereumphone.andyclaw.ui.components.AppTextStyles
 import org.ethereumphone.andyclaw.ui.components.GlowStyle
 import androidx.compose.foundation.border
-import androidx.compose.foundation.layout.ExperimentalLayoutApi
-import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.OutlinedTextField
@@ -84,13 +83,13 @@ import androidx.compose.ui.text.input.KeyboardType
 import java.math.BigDecimal
 import java.math.RoundingMode
 
-@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun SettingsScreen(
     onNavigateBack: () -> Unit,
     onNavigateToClawHub: () -> Unit = {},
     onNavigateToHeartbeatLogs: () -> Unit = {},
     onNavigateToAgentDisplayTest: () -> Unit = {},
+    onNavigateToAgentTxHistory: () -> Unit = {},
     viewModel: SettingsViewModel = viewModel(),
 ) {
     val selectedModel by viewModel.selectedModel.collectAsState()
@@ -252,6 +251,20 @@ fun SettingsScreen(
                         context.startActivity(intent)
                     })
                 }
+            }
+
+            // Agent Wallet (ethOS privileged only)
+            if (viewModel.isPrivileged) {
+                Spacer(Modifier.height(24.dp))
+                GlowingDivider(primaryColor)
+                Spacer(Modifier.height(16.dp))
+                AgentWalletSection(
+                    primaryColor = primaryColor,
+                    sectionTitleStyle = sectionTitleStyle,
+                    contentTitleStyle = contentTitleStyle,
+                    contentBodyStyle = contentBodyStyle,
+                    onNavigateToTxHistory = onNavigateToAgentTxHistory,
+                )
             }
 
             // AI Provider
@@ -607,10 +620,16 @@ fun SettingsScreen(
                 )
             }
 
-            // Heartbeat on Notification
+            // Heartbeat Disable Switch
+            val heartbeatDisabled = heartbeatIntervalMinutes <= 0
+            var lastHeartbeatInterval by remember { mutableIntStateOf(if (heartbeatIntervalMinutes > 0) heartbeatIntervalMinutes else 15) }
+            // Keep track of the last positive interval so we can restore it
+            LaunchedEffect(heartbeatIntervalMinutes) {
+                if (heartbeatIntervalMinutes > 0) lastHeartbeatInterval = heartbeatIntervalMinutes
+            }
             Spacer(Modifier.height(12.dp))
             Text(
-                text = "HEARTBEAT ON NOTIFICATION",
+                text = "HEARTBEAT SYSTEM",
                 color = primaryColor,
                 style = sectionTitleStyle,
             )
@@ -623,29 +642,35 @@ fun SettingsScreen(
             ) {
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        text = "TRIGGER HEARTBEAT ON NEW NOTIFICATION",
+                        text = "DISABLE HEARTBEAT",
                         style = contentTitleStyle,
                         color = primaryColor,
                     )
                     Text(
-                        text = "When enabled, the AI heartbeat runs whenever a new notification arrives so it can react to messages and alerts",
+                        text = "When enabled, the AI heartbeat system is completely turned off and will not run",
                         style = contentBodyStyle,
                         color = dgenWhite,
                     )
                 }
                 Spacer(Modifier.width(rowControlSpacing))
                 DgenSquareSwitch(
-                    checked = heartbeatOnNotificationEnabled,
-                    onCheckedChange = { viewModel.setHeartbeatOnNotificationEnabled(it) },
+                    checked = heartbeatDisabled,
+                    onCheckedChange = { disabled ->
+                        if (disabled) {
+                            viewModel.setHeartbeatIntervalMinutes(-1)
+                        } else {
+                            viewModel.setHeartbeatIntervalMinutes(lastHeartbeatInterval)
+                        }
+                    },
                     activeColor = primaryColor,
                 )
             }
 
-            // Heartbeat on XMTP Message — privileged only
-            if (viewModel.isPrivileged) {
+            if (!heartbeatDisabled) {
+                // Heartbeat on Notification
                 Spacer(Modifier.height(12.dp))
                 Text(
-                    text = "HEARTBEAT ON XMTP MESSAGE",
+                    text = "HEARTBEAT ON NOTIFICATION",
                     color = primaryColor,
                     style = sectionTitleStyle,
                 )
@@ -658,254 +683,270 @@ fun SettingsScreen(
                 ) {
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            text = "TRIGGER HEARTBEAT ON NEW XMTP MESSAGE",
+                            text = "TRIGGER HEARTBEAT ON NEW NOTIFICATION",
                             style = contentTitleStyle,
                             color = primaryColor,
                         )
                         Text(
-                            text = "When enabled, the AI heartbeat runs with the new messages as context whenever the background sync detects incoming XMTP messages",
+                            text = "When enabled, the AI heartbeat runs whenever a new notification arrives so it can react to messages and alerts",
                             style = contentBodyStyle,
                             color = dgenWhite,
                         )
                     }
                     Spacer(Modifier.width(rowControlSpacing))
                     DgenSquareSwitch(
-                        checked = heartbeatOnXmtpMessageEnabled,
-                        onCheckedChange = { viewModel.setHeartbeatOnXmtpMessageEnabled(it) },
+                        checked = heartbeatOnNotificationEnabled,
+                        onCheckedChange = { viewModel.setHeartbeatOnNotificationEnabled(it) },
                         activeColor = primaryColor,
                     )
                 }
-            }
 
-            // Heartbeat Interval
-            Spacer(Modifier.height(12.dp))
-            Text(
-                text = "HEARTBEAT INTERVAL",
-                color = primaryColor,
-                style = sectionTitleStyle,
-            )
-            Spacer(Modifier.height(8.dp))
-
-            // Preset intervals: value in minutes -> display label
-            val presetIntervals = remember {
-                listOf(
-                    5 to "5M", 10 to "10M", 15 to "15M", 30 to "30M",
-                    60 to "1H", 120 to "2H", 240 to "4H", 480 to "8H",
-                    720 to "12H", 1440 to "24H",
-                )
-            }
-            val isCustomValue = heartbeatIntervalMinutes !in presetIntervals.map { it.first }
-            var showCustomDialog by remember { mutableStateOf(false) }
-
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(vertical = 8.dp),
-            ) {
-                val displayText = remember(heartbeatIntervalMinutes) {
-                    if (heartbeatIntervalMinutes >= 60 && heartbeatIntervalMinutes % 60 == 0) {
-                        val hours = heartbeatIntervalMinutes / 60
-                        "EVERY $hours HOUR${if (hours > 1) "S" else ""}"
-                    } else if (heartbeatIntervalMinutes >= 60) {
-                        val hours = heartbeatIntervalMinutes / 60
-                        val mins = heartbeatIntervalMinutes % 60
-                        "EVERY ${hours}H ${mins}M"
-                    } else {
-                        "EVERY $heartbeatIntervalMinutes MINUTES"
-                    }
-                }
-                Text(
-                    text = displayText,
-                    style = contentTitleStyle,
-                    color = primaryColor,
-                )
-                Text(
-                    text = if (viewModel.isPrivileged) "How often the OS triggers the AI heartbeat check"
-                    else "How often the background service runs the AI heartbeat check",
-                    style = contentBodyStyle,
-                    color = dgenWhite,
-                )
-                Spacer(Modifier.height(12.dp))
-                FlowRow(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    presetIntervals.forEach { (minutes, label) ->
-                        val isSelected = heartbeatIntervalMinutes == minutes
-                        Box(
-                            modifier = Modifier
-                                .border(
-                                    width = 1.dp,
-                                    color = if (isSelected) primaryColor else primaryColor.copy(alpha = 0.3f),
-                                    shape = RoundedCornerShape(6.dp),
-                                )
-                                .background(
-                                    color = if (isSelected) primaryColor.copy(alpha = 0.15f) else Color.Transparent,
-                                    shape = RoundedCornerShape(6.dp),
-                                )
-                                .clickable {
-                                    view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
-                                    viewModel.setHeartbeatIntervalMinutes(minutes)
-                                }
-                                .padding(horizontal = 14.dp, vertical = 8.dp),
-                            contentAlignment = Alignment.Center,
-                        ) {
-                            Text(
-                                text = label,
-                                style = contentBodyStyle,
-                                color = if (isSelected) primaryColor else dgenWhite,
-                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
-                            )
-                        }
-                    }
-                    // Custom chip
-                    Box(
+                // Heartbeat on XMTP Message — privileged only
+                if (viewModel.isPrivileged) {
+                    Spacer(Modifier.height(12.dp))
+                    Text(
+                        text = "HEARTBEAT ON XMTP MESSAGE",
+                        color = primaryColor,
+                        style = sectionTitleStyle,
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Row(
                         modifier = Modifier
-                            .border(
-                                width = 1.dp,
-                                color = if (isCustomValue) primaryColor else primaryColor.copy(alpha = 0.3f),
-                                shape = RoundedCornerShape(6.dp),
-                            )
-                            .background(
-                                color = if (isCustomValue) primaryColor.copy(alpha = 0.15f) else Color.Transparent,
-                                shape = RoundedCornerShape(6.dp),
-                            )
-                            .clickable {
-                                view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
-                                showCustomDialog = true
-                            }
-                            .padding(horizontal = 14.dp, vertical = 8.dp),
-                        contentAlignment = Alignment.Center,
+                            .fillMaxWidth()
+                            .padding(vertical = 16.dp),
+                        verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Text(
-                            text = if (isCustomValue) "CUSTOM (${heartbeatIntervalMinutes}M)" else "CUSTOM",
-                            style = contentBodyStyle,
-                            color = if (isCustomValue) primaryColor else dgenWhite,
-                            fontWeight = if (isCustomValue) FontWeight.Bold else FontWeight.Normal,
-                        )
-                    }
-                }
-            }
-
-            // Custom interval dialog
-            if (showCustomDialog) {
-                var hoursText by remember { mutableStateOf((heartbeatIntervalMinutes / 60).toString()) }
-                var minutesText by remember { mutableStateOf((heartbeatIntervalMinutes % 60).toString()) }
-                AlertDialog(
-                    onDismissRequest = { showCustomDialog = false },
-                    containerColor = Color(0xFF1A1A1A),
-                    title = {
-                        Text(
-                            "CUSTOM INTERVAL",
-                            style = contentTitleStyle,
-                            color = primaryColor,
-                        )
-                    },
-                    text = {
-                        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Column(modifier = Modifier.weight(1f)) {
                             Text(
-                                "Set a custom heartbeat interval (min 5 minutes, max 24 hours)",
+                                text = "TRIGGER HEARTBEAT ON NEW XMTP MESSAGE",
+                                style = contentTitleStyle,
+                                color = primaryColor,
+                            )
+                            Text(
+                                text = "When enabled, the AI heartbeat runs with the new messages as context whenever the background sync detects incoming XMTP messages",
                                 style = contentBodyStyle,
                                 color = dgenWhite,
                             )
-                            Row(
-                                horizontalArrangement = Arrangement.spacedBy(12.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                            ) {
-                                OutlinedTextField(
-                                    value = hoursText,
-                                    onValueChange = { hoursText = it.filter { c -> c.isDigit() }.take(2) },
-                                    label = { Text("HOURS", color = dgenWhite.copy(alpha = 0.6f)) },
-                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                                    singleLine = true,
-                                    colors = OutlinedTextFieldDefaults.colors(
-                                        focusedTextColor = primaryColor,
-                                        unfocusedTextColor = dgenWhite,
-                                        focusedBorderColor = primaryColor,
-                                        unfocusedBorderColor = primaryColor.copy(alpha = 0.3f),
-                                        cursorColor = primaryColor,
-                                    ),
-                                    textStyle = TextStyle(
-                                        fontFamily = SpaceMono,
-                                        fontSize = body1_fontSize,
-                                    ),
-                                    modifier = Modifier.weight(1f),
-                                )
-                                Text(":", color = primaryColor, style = contentTitleStyle)
-                                OutlinedTextField(
-                                    value = minutesText,
-                                    onValueChange = { minutesText = it.filter { c -> c.isDigit() }.take(2) },
-                                    label = { Text("MINUTES", color = dgenWhite.copy(alpha = 0.6f)) },
-                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                                    singleLine = true,
-                                    colors = OutlinedTextFieldDefaults.colors(
-                                        focusedTextColor = primaryColor,
-                                        unfocusedTextColor = dgenWhite,
-                                        focusedBorderColor = primaryColor,
-                                        unfocusedBorderColor = primaryColor.copy(alpha = 0.3f),
-                                        cursorColor = primaryColor,
-                                    ),
-                                    textStyle = TextStyle(
-                                        fontFamily = SpaceMono,
-                                        fontSize = body1_fontSize,
-                                    ),
-                                    modifier = Modifier.weight(1f),
-                                )
-                            }
                         }
-                    },
-                    confirmButton = {
-                        TextButton(onClick = {
-                            val h = hoursText.toIntOrNull() ?: 0
-                            val m = minutesText.toIntOrNull() ?: 0
-                            val totalMinutes = (h * 60 + m).coerceIn(5, 1440)
-                            viewModel.setHeartbeatIntervalMinutes(totalMinutes)
-                            showCustomDialog = false
-                        }) {
-                            Text("SET", color = primaryColor, fontFamily = SpaceMono)
-                        }
-                    },
-                    dismissButton = {
-                        TextButton(onClick = { showCustomDialog = false }) {
-                            Text("CANCEL", color = dgenWhite, fontFamily = SpaceMono)
-                        }
-                    },
-                )
-            }
+                        Spacer(Modifier.width(rowControlSpacing))
+                        DgenSquareSwitch(
+                            checked = heartbeatOnXmtpMessageEnabled,
+                            onCheckedChange = { viewModel.setHeartbeatOnXmtpMessageEnabled(it) },
+                            activeColor = primaryColor,
+                        )
+                    }
+                }
 
-            // Heartbeat Logs
-            Spacer(Modifier.height(12.dp))
-            Text(
-                text = "HEARTBEAT LOGS",
-                color = primaryColor,
-                style = sectionTitleStyle,
-            )
-            Spacer(Modifier.height(8.dp))
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(vertical = 16.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
+                // Heartbeat Interval
+                Spacer(Modifier.height(12.dp))
+                Text(
+                    text = "HEARTBEAT INTERVAL",
+                    color = primaryColor,
+                    style = sectionTitleStyle,
+                )
+                Spacer(Modifier.height(8.dp))
+
+                // Preset intervals: value in minutes -> display label
+                val presetIntervals = remember {
+                    listOf(
+                        5 to "5M", 10 to "10M", 15 to "15M", 30 to "30M",
+                        60 to "1H", 120 to "2H", 240 to "4H", 480 to "8H",
+                        720 to "12H", 1440 to "24H",
+                    )
+                }
+                val isCustomValue = heartbeatIntervalMinutes !in presetIntervals.map { it.first }
+                var showCustomDialog by remember { mutableStateOf(false) }
+
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 8.dp),
+                ) {
+                    val displayText = remember(heartbeatIntervalMinutes) {
+                        if (heartbeatIntervalMinutes >= 60 && heartbeatIntervalMinutes % 60 == 0) {
+                            val hours = heartbeatIntervalMinutes / 60
+                            "EVERY $hours HOUR${if (hours > 1) "S" else ""}"
+                        } else if (heartbeatIntervalMinutes >= 60) {
+                            val hours = heartbeatIntervalMinutes / 60
+                            val mins = heartbeatIntervalMinutes % 60
+                            "EVERY ${hours}H ${mins}M"
+                        } else {
+                            "EVERY $heartbeatIntervalMinutes MINUTES"
+                        }
+                    }
                     Text(
-                        text = "RUN HISTORY",
+                        text = displayText,
                         style = contentTitleStyle,
                         color = primaryColor,
                     )
                     Text(
-                        text = "View past heartbeat runs, tool calls, and responses",
+                        text = if (viewModel.isPrivileged) "How often the OS triggers the AI heartbeat check"
+                        else "How often the background service runs the AI heartbeat check",
                         style = contentBodyStyle,
                         color = dgenWhite,
                     )
+                    Spacer(Modifier.height(12.dp))
+                    val allChips = presetIntervals + listOf(
+                        -1 to if (isCustomValue) "CUSTOM (${heartbeatIntervalMinutes}M)" else "CUSTOM"
+                    )
+                    allChips.chunked(5).forEach { rowItems ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            rowItems.forEach { (minutes, label) ->
+                                val isSelected = if (minutes == -1) isCustomValue else heartbeatIntervalMinutes == minutes
+                                Box(
+                                    modifier = Modifier
+                                        .border(
+                                            width = 1.dp,
+                                            color = if (isSelected) primaryColor else primaryColor.copy(alpha = 0.3f),
+                                            shape = RoundedCornerShape(6.dp),
+                                        )
+                                        .background(
+                                            color = if (isSelected) primaryColor.copy(alpha = 0.15f) else Color.Transparent,
+                                            shape = RoundedCornerShape(6.dp),
+                                        )
+                                        .clickable {
+                                            view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+                                            if (minutes == -1) showCustomDialog = true
+                                            else viewModel.setHeartbeatIntervalMinutes(minutes)
+                                        }
+                                        .padding(horizontal = 14.dp, vertical = 8.dp),
+                                    contentAlignment = Alignment.Center,
+                                ) {
+                                    Text(
+                                        text = label,
+                                        style = contentBodyStyle,
+                                        color = if (isSelected) primaryColor else dgenWhite,
+                                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                                    )
+                                }
+                            }
+                        }
+                        Spacer(Modifier.height(8.dp))
+                    }
                 }
-                Spacer(Modifier.width(rowControlSpacing))
-                DgenSmallPrimaryButton(
-                    text = "Open",
-                    primaryColor = primaryColor,
-                    onClick = onNavigateToHeartbeatLogs,
+
+                // Custom interval dialog
+                if (showCustomDialog) {
+                    var hoursText by remember { mutableStateOf((heartbeatIntervalMinutes / 60).toString()) }
+                    var minutesText by remember { mutableStateOf((heartbeatIntervalMinutes % 60).toString()) }
+                    AlertDialog(
+                        onDismissRequest = { showCustomDialog = false },
+                        containerColor = Color(0xFF1A1A1A),
+                        title = {
+                            Text(
+                                "CUSTOM INTERVAL",
+                                style = contentTitleStyle,
+                                color = primaryColor,
+                            )
+                        },
+                        text = {
+                            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                                Text(
+                                    "Set a custom heartbeat interval (min 5 minutes, max 24 hours)",
+                                    style = contentBodyStyle,
+                                    color = dgenWhite,
+                                )
+                                Row(
+                                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    OutlinedTextField(
+                                        value = hoursText,
+                                        onValueChange = { hoursText = it.filter { c -> c.isDigit() }.take(2) },
+                                        label = { Text("HOURS", color = dgenWhite.copy(alpha = 0.6f)) },
+                                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                        singleLine = true,
+                                        colors = OutlinedTextFieldDefaults.colors(
+                                            focusedTextColor = primaryColor,
+                                            unfocusedTextColor = dgenWhite,
+                                            focusedBorderColor = primaryColor,
+                                            unfocusedBorderColor = primaryColor.copy(alpha = 0.3f),
+                                            cursorColor = primaryColor,
+                                        ),
+                                        textStyle = TextStyle(
+                                            fontFamily = SpaceMono,
+                                            fontSize = body1_fontSize,
+                                        ),
+                                        modifier = Modifier.weight(1f),
+                                    )
+                                    Text(":", color = primaryColor, style = contentTitleStyle)
+                                    OutlinedTextField(
+                                        value = minutesText,
+                                        onValueChange = { minutesText = it.filter { c -> c.isDigit() }.take(2) },
+                                        label = { Text("MINUTES", color = dgenWhite.copy(alpha = 0.6f)) },
+                                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                        singleLine = true,
+                                        colors = OutlinedTextFieldDefaults.colors(
+                                            focusedTextColor = primaryColor,
+                                            unfocusedTextColor = dgenWhite,
+                                            focusedBorderColor = primaryColor,
+                                            unfocusedBorderColor = primaryColor.copy(alpha = 0.3f),
+                                            cursorColor = primaryColor,
+                                        ),
+                                        textStyle = TextStyle(
+                                            fontFamily = SpaceMono,
+                                            fontSize = body1_fontSize,
+                                        ),
+                                        modifier = Modifier.weight(1f),
+                                    )
+                                }
+                            }
+                        },
+                        confirmButton = {
+                            TextButton(onClick = {
+                                val h = hoursText.toIntOrNull() ?: 0
+                                val m = minutesText.toIntOrNull() ?: 0
+                                val totalMinutes = (h * 60 + m).coerceIn(5, 1440)
+                                viewModel.setHeartbeatIntervalMinutes(totalMinutes)
+                                showCustomDialog = false
+                            }) {
+                                Text("SET", color = primaryColor, fontFamily = SpaceMono)
+                            }
+                        },
+                        dismissButton = {
+                            TextButton(onClick = { showCustomDialog = false }) {
+                                Text("CANCEL", color = dgenWhite, fontFamily = SpaceMono)
+                            }
+                        },
+                    )
+                }
+
+                // Heartbeat Logs
+                Spacer(Modifier.height(12.dp))
+                Text(
+                    text = "HEARTBEAT LOGS",
+                    color = primaryColor,
+                    style = sectionTitleStyle,
                 )
+                Spacer(Modifier.height(8.dp))
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 16.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "RUN HISTORY",
+                            style = contentTitleStyle,
+                            color = primaryColor,
+                        )
+                        Text(
+                            text = "View past heartbeat runs, tool calls, and responses",
+                            style = contentBodyStyle,
+                            color = dgenWhite,
+                        )
+                    }
+                    Spacer(Modifier.width(rowControlSpacing))
+                    DgenSmallPrimaryButton(
+                        text = "Open",
+                        primaryColor = primaryColor,
+                        onClick = onNavigateToHeartbeatLogs,
+                    )
+                }
             }
 
             // Telegram Bot
@@ -1299,6 +1340,138 @@ private fun Modifier.sliderGlow(primaryColor: Color) = drawBehind {
             )
         },
     )
+}
+
+@Composable
+private fun AgentWalletSection(
+    primaryColor: Color,
+    sectionTitleStyle: TextStyle,
+    contentTitleStyle: TextStyle,
+    contentBodyStyle: TextStyle,
+    onNavigateToTxHistory: () -> Unit,
+) {
+    val context = LocalContext.current
+    val app = context.applicationContext as org.ethereumphone.andyclaw.NodeApp
+    val uriHandler = androidx.compose.ui.platform.LocalUriHandler.current
+
+    var agentAddress by remember { mutableStateOf<String?>(null) }
+
+    LaunchedEffect(Unit) {
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            try {
+                val sdk = org.ethereumphone.subwalletsdk.SubWalletSDK(
+                    context = context,
+                    web3jInstance = org.web3j.protocol.Web3j.build(
+                        org.web3j.protocol.http.HttpService(
+                            "https://eth-mainnet.g.alchemy.com/v2/${org.ethereumphone.andyclaw.BuildConfig.ALCHEMY_API}"
+                        )
+                    ),
+                    bundlerRPCUrl = "https://api.pimlico.io/v2/1/rpc?apikey=${org.ethereumphone.andyclaw.BuildConfig.BUNDLER_API}",
+                )
+                agentAddress = sdk.getAddress()
+            } catch (_: Exception) {
+                // SubWallet not available
+            }
+        }
+    }
+
+    Text(
+        text = "AGENT WALLET",
+        color = primaryColor,
+        style = sectionTitleStyle,
+    )
+    Spacer(Modifier.height(8.dp))
+
+    if (agentAddress != null) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "ADDRESS",
+                    style = contentTitleStyle,
+                    color = primaryColor,
+                )
+                Spacer(Modifier.height(2.dp))
+                SelectionContainer {
+                    Text(
+                        text = agentAddress!!,
+                        style = contentBodyStyle.copy(
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = 12.sp,
+                        ),
+                        color = dgenWhite,
+                    )
+                }
+            }
+        }
+        Spacer(Modifier.height(8.dp))
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable {
+                    uriHandler.openUri("https://blockscan.com/address/${agentAddress}")
+                }
+                .padding(vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "VIEW ON BLOCKSCAN",
+                    style = contentTitleStyle,
+                    color = primaryColor,
+                )
+                Text(
+                    text = "Open agent wallet on block explorer",
+                    style = contentBodyStyle,
+                    color = dgenWhite,
+                )
+            }
+            Spacer(Modifier.width(20.dp))
+            Text(
+                text = ">",
+                style = sectionTitleStyle,
+                color = primaryColor,
+            )
+        }
+    } else {
+        Text(
+            text = "Agent wallet not available",
+            style = contentBodyStyle,
+            color = dgenWhite.copy(alpha = 0.5f),
+        )
+    }
+
+    Spacer(Modifier.height(4.dp))
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onNavigateToTxHistory)
+            .padding(vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = "TRANSACTION HISTORY",
+                style = contentTitleStyle,
+                color = primaryColor,
+            )
+            Text(
+                text = "View all agent wallet transactions",
+                style = contentBodyStyle,
+                color = dgenWhite,
+            )
+        }
+        Spacer(Modifier.width(20.dp))
+        DgenSmallPrimaryButton(
+            text = "Open",
+            primaryColor = primaryColor,
+            onClick = onNavigateToTxHistory,
+        )
+    }
 }
 
 private enum class SettingsSubScreen {

@@ -29,6 +29,7 @@ object Routes {
     const val CLAWHUB = "clawhub"
     const val HEARTBEAT_LOGS = "heartbeat_logs"
     const val AGENT_DISPLAY_TEST = "agent_display_test"
+    const val AGENT_TX_HISTORY = "agent_tx_history"
 }
 
 @Composable
@@ -112,6 +113,7 @@ fun AppNavigation() {
                 onNavigateToClawHub = { navController.navigate(Routes.CLAWHUB) },
                 onNavigateToHeartbeatLogs = { navController.navigate(Routes.HEARTBEAT_LOGS) },
                 onNavigateToAgentDisplayTest = { navController.navigate(Routes.AGENT_DISPLAY_TEST) },
+                onNavigateToAgentTxHistory = { navController.navigate(Routes.AGENT_TX_HISTORY) },
             )
         }
 
@@ -129,6 +131,12 @@ fun AppNavigation() {
 
         composable(Routes.AGENT_DISPLAY_TEST) {
             AgentDisplayTestScreen(
+                onNavigateBack = { navController.popBackStack() },
+            )
+        }
+
+        composable(Routes.AGENT_TX_HISTORY) {
+            org.ethereumphone.andyclaw.ui.agenttx.AgentTxHistoryScreen(
                 onNavigateBack = { navController.popBackStack() },
             )
         }
