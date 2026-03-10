@@ -218,7 +218,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     // Agent display preview lifecycle
                     if (toolName == "agent_display_create" && result !is SkillResult.Error) {
                         startDisplayCapture()
-                    } else if (toolName == "agent_display_destroy") {
+                    } else if (toolName == "agent_display_destroy" || toolName == "agent_display_destroy_and_promote") {
                         stopDisplayCapture()
                     }
                 }

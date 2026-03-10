@@ -65,7 +65,12 @@ class AgentDisplaySkill : AndyClawSkill {
             ),
             tool(
                 name = "agent_display_destroy",
-                description = "Destroy the virtual display and release resources.",
+                description = "Destroy the virtual display and release resources. The app that was running on the virtual display is closed. Use this when you are done with a task and the user does NOT need the app to remain open.",
+                props = emptyMap(),
+            ),
+            tool(
+                name = "agent_display_destroy_and_promote",
+                description = "Destroy the virtual display but move the currently running app to the user's main screen so they can continue using it. Use this when the user will want to keep interacting with the app after you are done — for example after starting navigation, playing music, opening a webpage, or setting up a video call.",
                 props = emptyMap(),
             ),
             tool(
@@ -374,6 +379,7 @@ class AgentDisplaySkill : AndyClawSkill {
                 // Display lifecycle
                 "agent_display_create" -> doCreate()
                 "agent_display_destroy" -> doDestroy()
+                "agent_display_destroy_and_promote" -> doDestroyAndPromote()
                 "agent_display_get_info" -> doGetInfo()
                 "agent_display_resize" -> doResize(params)
                 // App management
@@ -548,6 +554,12 @@ class AgentDisplaySkill : AndyClawSkill {
         getService().destroyAgentDisplay()
         displayActive = false
         return SkillResult.Success("Virtual display destroyed.")
+    }
+
+    private fun doDestroyAndPromote(): SkillResult {
+        getService().destroyAgentDisplayAndPromote()
+        displayActive = false
+        return SkillResult.Success("Virtual display destroyed and the running app has been moved to the user's main screen.")
     }
 
     private fun doGetInfo(): SkillResult {

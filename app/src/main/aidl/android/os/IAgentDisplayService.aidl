@@ -6,6 +6,7 @@ interface IAgentDisplayService {
     // ── Display Lifecycle ───────────────────────────────────────────────
     void createAgentDisplay(int width, int height, int dpi);
     void destroyAgentDisplay();
+    void destroyAgentDisplayAndPromote();
     int getDisplayId();
     void resizeAgentDisplay(int width, int height, int dpi);
     String getDisplayInfo();
