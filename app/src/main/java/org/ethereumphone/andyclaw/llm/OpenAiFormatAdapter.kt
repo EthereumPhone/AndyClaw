@@ -202,7 +202,7 @@ object OpenAiFormatAdapter {
         }
 
         // Tool calls
-        val toolCalls = message?.get("tool_calls")?.jsonArray
+        val toolCalls = message?.get("tool_calls")?.takeIf { it !is kotlinx.serialization.json.JsonNull }?.jsonArray
         if (toolCalls != null) {
             for (tc in toolCalls) {
                 val tcObj = tc.jsonObject

@@ -79,6 +79,8 @@ fun OnboardingScreen(
     val selectedProvider by viewModel.selectedProvider.collectAsState()
     val tinfoilApiKey by viewModel.tinfoilApiKey.collectAsState()
     val claudeOauthRefreshToken by viewModel.claudeOauthRefreshToken.collectAsState()
+    val openaiApiKey by viewModel.openaiApiKey.collectAsState()
+    val veniceApiKey by viewModel.veniceApiKey.collectAsState()
     val goals by viewModel.goals.collectAsState()
     val customName by viewModel.customName.collectAsState()
     val values by viewModel.values.collectAsState()
@@ -155,6 +157,8 @@ fun OnboardingScreen(
                             LlmProvider.OPEN_ROUTER -> apiKey.isNotBlank()
                             LlmProvider.CLAUDE_OAUTH -> claudeOauthRefreshToken.isNotBlank()
                             LlmProvider.TINFOIL -> tinfoilApiKey.isNotBlank()
+                            LlmProvider.OPENAI -> openaiApiKey.isNotBlank()
+                            LlmProvider.VENICE -> veniceApiKey.isNotBlank()
                             LlmProvider.LOCAL,
                             LlmProvider.ETHOS_PREMIUM -> true
                         }
@@ -177,10 +181,14 @@ fun OnboardingScreen(
                             apiKey = apiKey,
                             tinfoilApiKey = tinfoilApiKey,
                             claudeOauthRefreshToken = viewModel.claudeOauthRefreshToken.collectAsState().value,
+                            openaiApiKey = openaiApiKey,
+                            veniceApiKey = veniceApiKey,
                             onProviderSelected = { viewModel.selectedProvider.value = it },
                             onApiKeyChange = { viewModel.apiKey.value = it },
                             onTinfoilApiKeyChange = { viewModel.tinfoilApiKey.value = it },
                             onClaudeOauthTokenChange = { viewModel.claudeOauthRefreshToken.value = it },
+                            onOpenaiApiKeyChange = { viewModel.openaiApiKey.value = it },
+                            onVeniceApiKeyChange = { viewModel.veniceApiKey.value = it },
                             onNext = onNext,
                         )
                     }
@@ -226,6 +234,8 @@ fun OnboardingScreen(
                                     LlmProvider.OPEN_ROUTER -> apiKey.isNotBlank()
                                     LlmProvider.CLAUDE_OAUTH -> claudeOauthRefreshToken.isNotBlank()
                                     LlmProvider.TINFOIL -> tinfoilApiKey.isNotBlank()
+                                    LlmProvider.OPENAI -> openaiApiKey.isNotBlank()
+                                    LlmProvider.VENICE -> veniceApiKey.isNotBlank()
                                     LlmProvider.LOCAL,
                                     LlmProvider.ETHOS_PREMIUM -> true
                                 }
@@ -347,10 +357,14 @@ private fun StepProviderSelection(
     apiKey: String,
     tinfoilApiKey: String,
     claudeOauthRefreshToken: String,
+    openaiApiKey: String,
+    veniceApiKey: String,
     onProviderSelected: (LlmProvider) -> Unit,
     onApiKeyChange: (String) -> Unit,
     onTinfoilApiKeyChange: (String) -> Unit,
     onClaudeOauthTokenChange: (String) -> Unit,
+    onOpenaiApiKeyChange: (String) -> Unit,
+    onVeniceApiKeyChange: (String) -> Unit,
     onNext: () -> Unit,
 ) {
     val primaryColor = SystemColorManager.primaryColor
@@ -387,6 +401,20 @@ private fun StepProviderSelection(
             description = "Best performance — cloud inference via OpenRouter. Fast and capable.",
             isSelected = selectedProvider == LlmProvider.OPEN_ROUTER,
             onClick = { onProviderSelected(LlmProvider.OPEN_ROUTER) },
+        )
+        Spacer(Modifier.height(8.dp))
+        ProviderCard(
+            label = "OPENAI",
+            description = "Cloud inference via OpenAI's API. GPT-4o, o3, and more.",
+            isSelected = selectedProvider == LlmProvider.OPENAI,
+            onClick = { onProviderSelected(LlmProvider.OPENAI) },
+        )
+        Spacer(Modifier.height(8.dp))
+        ProviderCard(
+            label = "VENICE AI",
+            description = "Privacy-focused inference. Uncensored models available.",
+            isSelected = selectedProvider == LlmProvider.VENICE,
+            onClick = { onProviderSelected(LlmProvider.VENICE) },
         )
 
         Spacer(Modifier.height(16.dp))
@@ -431,6 +459,26 @@ private fun StepProviderSelection(
                     modifier = Modifier.fillMaxWidth(),
                     label = "API KEY",
                     placeholder = { Text("tf-...", color = dgenWhite.copy(alpha = 0.3f), fontSize = label_fontSize) },
+                    primaryColor = primaryColor,
+                )
+            }
+            LlmProvider.OPENAI -> {
+                DgenCursorTextfield(
+                    value = openaiApiKey,
+                    onValueChange = onOpenaiApiKeyChange,
+                    modifier = Modifier.fillMaxWidth(),
+                    label = "API KEY",
+                    placeholder = { Text("sk-...", color = dgenWhite.copy(alpha = 0.3f), fontSize = label_fontSize) },
+                    primaryColor = primaryColor,
+                )
+            }
+            LlmProvider.VENICE -> {
+                DgenCursorTextfield(
+                    value = veniceApiKey,
+                    onValueChange = onVeniceApiKeyChange,
+                    modifier = Modifier.fillMaxWidth(),
+                    label = "API KEY",
+                    placeholder = { Text("vce-...", color = dgenWhite.copy(alpha = 0.3f), fontSize = label_fontSize) },
                     primaryColor = primaryColor,
                 )
             }
@@ -712,10 +760,14 @@ private fun PreviewStepProviderSelection() {
                     apiKey = "",
                     tinfoilApiKey = "",
                     claudeOauthRefreshToken = "",
+                    openaiApiKey = "",
+                    veniceApiKey = "",
                     onProviderSelected = {},
                     onApiKeyChange = {},
                     onTinfoilApiKeyChange = {},
                     onClaudeOauthTokenChange = {},
+                    onOpenaiApiKeyChange = {},
+                    onVeniceApiKeyChange = {},
                     onNext = {},
                 )
             }

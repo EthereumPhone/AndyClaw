@@ -56,8 +56,8 @@ class OpenAiStreamAccumulator(private val callback: StreamingCallback) {
                 callback.onToken(textDelta)
             }
 
-            // Tool call deltas
-            val toolCalls = delta["tool_calls"]?.jsonArray
+            // Tool call deltas (guard against explicit null from some providers)
+            val toolCalls = delta["tool_calls"]?.takeIf { it !is kotlinx.serialization.json.JsonNull }?.jsonArray
             if (toolCalls != null) {
                 for (tc in toolCalls) {
                     val tcObj = tc.jsonObject

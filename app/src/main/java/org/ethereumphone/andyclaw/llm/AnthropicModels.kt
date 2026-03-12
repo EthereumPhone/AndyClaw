@@ -21,6 +21,64 @@ enum class AnthropicModels(
     TINFOIL_DEEPSEEK_R1("deepseek-r1-0528", 8192, LlmProvider.TINFOIL),
     TINFOIL_GPT_OSS_120B("gpt-oss-120b", 8192, LlmProvider.TINFOIL),
 
+    // OpenAI models — flagship/frontier
+    OPENAI_GPT_5_4("gpt-5.4", 128000, LlmProvider.OPENAI),
+    OPENAI_GPT_5("gpt-5", 128000, LlmProvider.OPENAI),
+    OPENAI_GPT_5_MINI("gpt-5-mini", 128000, LlmProvider.OPENAI),
+    OPENAI_GPT_4_1("gpt-4.1", 32768, LlmProvider.OPENAI),
+    OPENAI_GPT_4_1_MINI("gpt-4.1-mini", 32768, LlmProvider.OPENAI),
+    OPENAI_GPT_4_1_NANO("gpt-4.1-nano", 32768, LlmProvider.OPENAI),
+    OPENAI_GPT_4O("gpt-4o", 16384, LlmProvider.OPENAI),
+    OPENAI_GPT_4O_MINI("gpt-4o-mini", 16384, LlmProvider.OPENAI),
+    OPENAI_O3("o3", 100000, LlmProvider.OPENAI),
+    OPENAI_O4_MINI("o4-mini", 100000, LlmProvider.OPENAI),
+
+    // Venice AI models
+    VENICE_CLAUDE_OPUS_4_6("claude-opus-4-6", 8192, LlmProvider.VENICE),
+    VENICE_CLAUDE_OPUS_4_5("claude-opus-4-5", 8192, LlmProvider.VENICE),
+    VENICE_CLAUDE_SONNET_4_6("claude-sonnet-4-6", 8192, LlmProvider.VENICE),
+    VENICE_CLAUDE_SONNET_4_5("claude-sonnet-4-5", 8192, LlmProvider.VENICE),
+    VENICE_OPENAI_GPT_5_4("openai-gpt-54", 8192, LlmProvider.VENICE),
+    VENICE_OPENAI_GPT_5_4_PRO("openai-gpt-54-pro", 8192, LlmProvider.VENICE),
+    VENICE_OPENAI_GPT_5_2("openai-gpt-52", 8192, LlmProvider.VENICE),
+    VENICE_OPENAI_GPT_5_2_CODEX("openai-gpt-52-codex", 8192, LlmProvider.VENICE),
+    VENICE_OPENAI_GPT_5_3_CODEX("openai-gpt-53-codex", 8192, LlmProvider.VENICE),
+    VENICE_OPENAI_GPT_4O("openai-gpt-4o-2024-11-20", 8192, LlmProvider.VENICE),
+    VENICE_OPENAI_GPT_4O_MINI("openai-gpt-4o-mini-2024-07-18", 8192, LlmProvider.VENICE),
+    VENICE_OPENAI_GPT_OSS_120B("openai-gpt-oss-120b", 8192, LlmProvider.VENICE),
+    VENICE_DEEPSEEK_V3_2("deepseek-v3.2", 8192, LlmProvider.VENICE),
+    VENICE_LLAMA_3_3_70B("llama-3.3-70b", 8192, LlmProvider.VENICE),
+    VENICE_LLAMA_3_2_3B("llama-3.2-3b", 8192, LlmProvider.VENICE),
+    VENICE_HERMES_3_405B("hermes-3-llama-3.1-405b", 8192, LlmProvider.VENICE),
+    VENICE_QWEN3_235B_INSTRUCT("qwen3-235b-a22b-instruct-2507", 8192, LlmProvider.VENICE),
+    VENICE_QWEN3_235B_THINKING("qwen3-235b-a22b-thinking-2507", 8192, LlmProvider.VENICE),
+    VENICE_QWEN3_CODER("qwen3-coder-480b-a35b-instruct", 8192, LlmProvider.VENICE),
+    VENICE_QWEN3_CODER_TURBO("qwen3-coder-480b-a35b-instruct-turbo", 8192, LlmProvider.VENICE),
+    VENICE_QWEN3_NEXT_80B("qwen3-next-80b", 8192, LlmProvider.VENICE),
+    VENICE_QWEN3_5_35B("qwen3-5-35b-a3b", 8192, LlmProvider.VENICE),
+    VENICE_QWEN3_4B("qwen3-4b", 8192, LlmProvider.VENICE),
+    VENICE_QWEN3_VL_235B("qwen3-vl-235b-a22b", 8192, LlmProvider.VENICE),
+    VENICE_GLM_5("zai-org-glm-5", 8192, LlmProvider.VENICE),
+    VENICE_GLM_4_7("zai-org-glm-4.7", 8192, LlmProvider.VENICE),
+    VENICE_GLM_4_7_FLASH("zai-org-glm-4.7-flash", 8192, LlmProvider.VENICE),
+    VENICE_GLM_4_7_FLASH_HERETIC("olafangensan-glm-4.7-flash-heretic", 8192, LlmProvider.VENICE),
+    VENICE_GLM_4_6("zai-org-glm-4.6", 8192, LlmProvider.VENICE),
+    VENICE_GEMINI_3_1_PRO("gemini-3-1-pro-preview", 8192, LlmProvider.VENICE),
+    VENICE_GEMINI_3_PRO("gemini-3-pro-preview", 8192, LlmProvider.VENICE),
+    VENICE_GEMINI_3_FLASH("gemini-3-flash-preview", 8192, LlmProvider.VENICE),
+    VENICE_GROK_4_1_FAST("grok-41-fast", 8192, LlmProvider.VENICE),
+    VENICE_GROK_CODE_FAST_1("grok-code-fast-1", 8192, LlmProvider.VENICE),
+    VENICE_KIMI_K2_THINKING("kimi-k2-thinking", 8192, LlmProvider.VENICE),
+    VENICE_KIMI_K25("kimi-k2-5", 8192, LlmProvider.VENICE),
+    VENICE_MINIMAX_M25("minimax-m25", 8192, LlmProvider.VENICE),
+    VENICE_MINIMAX_M21("minimax-m21", 8192, LlmProvider.VENICE),
+    VENICE_MISTRAL_SMALL("mistral-small-3-2-24b-instruct", 8192, LlmProvider.VENICE),
+    VENICE_MISTRAL_31("mistral-31-24b", 8192, LlmProvider.VENICE),
+    VENICE_GOOGLE_GEMMA_3_27B("google-gemma-3-27b-it", 8192, LlmProvider.VENICE),
+    VENICE_NVIDIA_NEMOTRON("nvidia-nemotron-3-nano-30b-a3b", 8192, LlmProvider.VENICE),
+    VENICE_UNCENSORED("venice-uncensored", 8192, LlmProvider.VENICE),
+    VENICE_UNCENSORED_RP("venice-uncensored-role-play", 8192, LlmProvider.VENICE),
+
     // Local models
     QWEN2_5_1_5B("qwen2.5-1.5b-instruct", 4096, LlmProvider.LOCAL);
 
@@ -50,6 +108,8 @@ enum class AnthropicModels(
             LlmProvider.OPEN_ROUTER -> CLAUDE_SONNET_4_6
             LlmProvider.CLAUDE_OAUTH -> CLAUDE_OAUTH_SONNET_4_6
             LlmProvider.TINFOIL -> TINFOIL_KIMI_K25
+            LlmProvider.OPENAI -> OPENAI_GPT_4_1
+            LlmProvider.VENICE -> VENICE_LLAMA_3_3_70B
             LlmProvider.LOCAL -> QWEN2_5_1_5B
         }
     }

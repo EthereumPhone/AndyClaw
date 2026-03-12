@@ -135,6 +135,12 @@ class SecurePrefs(context: Context) : KeyValueStore {
   private val _claudeOauthExpiresAt = MutableStateFlow(prefs.getLong("claude.oauth.expiresAt", 0L))
   val claudeOauthExpiresAt: StateFlow<Long> = _claudeOauthExpiresAt
 
+  private val _openaiApiKey = MutableStateFlow(prefs.getString("openai.apiKey", "") ?: "")
+  val openaiApiKey: StateFlow<String> = _openaiApiKey
+
+  private val _veniceApiKey = MutableStateFlow(prefs.getString("venice.apiKey", "") ?: "")
+  val veniceApiKey: StateFlow<String> = _veniceApiKey
+
   private val _selectedModel = MutableStateFlow(prefs.getString("anthropic.model", "kimi-k2-5") ?: "kimi-k2-5")
   val selectedModel: StateFlow<String> = _selectedModel
 
@@ -383,6 +389,18 @@ class SecurePrefs(context: Context) : KeyValueStore {
   fun setClaudeOauthExpiresAt(value: Long) {
     prefs.edit { putLong("claude.oauth.expiresAt", value) }
     _claudeOauthExpiresAt.value = value
+  }
+
+  fun setOpenaiApiKey(value: String) {
+    val trimmed = value.trim()
+    prefs.edit { putString("openai.apiKey", trimmed) }
+    _openaiApiKey.value = trimmed
+  }
+
+  fun setVeniceApiKey(value: String) {
+    val trimmed = value.trim()
+    prefs.edit { putString("venice.apiKey", trimmed) }
+    _veniceApiKey.value = trimmed
   }
 
   fun setSelectedModel(value: String) {

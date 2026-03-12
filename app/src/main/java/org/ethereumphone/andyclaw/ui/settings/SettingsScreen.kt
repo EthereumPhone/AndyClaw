@@ -96,6 +96,8 @@ fun SettingsScreen(
     val selectedProvider by viewModel.selectedProvider.collectAsState()
     val tinfoilApiKey by viewModel.tinfoilApiKey.collectAsState()
     val openRouterApiKey by viewModel.apiKey.collectAsState()
+    val openaiApiKey by viewModel.openaiApiKey.collectAsState()
+    val veniceApiKey by viewModel.veniceApiKey.collectAsState()
     val claudeOauthRefreshToken by viewModel.claudeOauthRefreshToken.collectAsState()
     val downloadProgress by viewModel.modelDownloadManager.downloadProgress.collectAsState()
     val isDownloading by viewModel.modelDownloadManager.isDownloading.collectAsState()
@@ -142,9 +144,9 @@ fun SettingsScreen(
     val rowControlSpacing = 20.dp
 
     val providerChoices = if (viewModel.isPrivileged) {
-        listOf(LlmProvider.ETHOS_PREMIUM, LlmProvider.OPEN_ROUTER, LlmProvider.CLAUDE_OAUTH, LlmProvider.TINFOIL)
+        listOf(LlmProvider.ETHOS_PREMIUM, LlmProvider.OPEN_ROUTER, LlmProvider.CLAUDE_OAUTH, LlmProvider.OPENAI, LlmProvider.VENICE, LlmProvider.TINFOIL)
     } else {
-        listOf(LlmProvider.OPEN_ROUTER, LlmProvider.CLAUDE_OAUTH, LlmProvider.TINFOIL, LlmProvider.LOCAL)
+        listOf(LlmProvider.OPEN_ROUTER, LlmProvider.CLAUDE_OAUTH, LlmProvider.OPENAI, LlmProvider.VENICE, LlmProvider.TINFOIL, LlmProvider.LOCAL)
     }
 
     DgenBackNavigationBackground(
@@ -369,6 +371,36 @@ fun SettingsScreen(
                         modifier = Modifier.fillMaxWidth(),
                         label = "Tinfoil API Key",
                         placeholder = { Text("tf-...", color = dgenWhite.copy(alpha = 0.3f), style = MaterialTheme.typography.bodySmall.copy(shadow = GlowStyle.placeholder(dgenWhite))) },
+                        visualTransformation = PasswordVisualTransformation(),
+                        primaryColor = primaryColor,
+                    )
+                }
+                LlmProvider.OPENAI -> {
+                    var editingKey by remember { mutableStateOf(openaiApiKey) }
+                    DgenCursorTextfield(
+                        value = editingKey,
+                        onValueChange = {
+                            editingKey = it
+                            viewModel.setOpenaiApiKey(it)
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = "OpenAI API Key",
+                        placeholder = { Text("sk-...", color = dgenWhite.copy(alpha = 0.3f), style = MaterialTheme.typography.bodySmall.copy(shadow = GlowStyle.placeholder(dgenWhite))) },
+                        visualTransformation = PasswordVisualTransformation(),
+                        primaryColor = primaryColor,
+                    )
+                }
+                LlmProvider.VENICE -> {
+                    var editingKey by remember { mutableStateOf(veniceApiKey) }
+                    DgenCursorTextfield(
+                        value = editingKey,
+                        onValueChange = {
+                            editingKey = it
+                            viewModel.setVeniceApiKey(it)
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = "Venice API Key",
+                        placeholder = { Text("vce-...", color = dgenWhite.copy(alpha = 0.3f), style = MaterialTheme.typography.bodySmall.copy(shadow = GlowStyle.placeholder(dgenWhite))) },
                         visualTransformation = PasswordVisualTransformation(),
                         primaryColor = primaryColor,
                     )

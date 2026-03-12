@@ -17,6 +17,14 @@ enum class LlmProvider(val displayName: String, val description: String) {
         displayName = "Claude (OAuth)",
         description = "Uses your Claude Pro/Max subscription directly via Anthropic's API. Requires a setup-token from Claude Code CLI.",
     ),
+    OPENAI(
+        displayName = "OpenAI",
+        description = "Cloud inference via OpenAI's API. Requires an OpenAI API key.",
+    ),
+    VENICE(
+        displayName = "Venice AI",
+        description = "Privacy-focused cloud inference via Venice AI. Uncensored models available. Requires a Venice API key.",
+    ),
     LOCAL(
         displayName = "On-Device",
         description = "Runs entirely on your phone. No data leaves the device. Slower performance, limited capabilities.",

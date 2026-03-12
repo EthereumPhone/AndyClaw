@@ -22,6 +22,7 @@ import org.ethereumphone.andyclaw.llm.LlmClient
 import org.ethereumphone.andyclaw.llm.LlmProvider
 import org.ethereumphone.andyclaw.llm.LocalLlmClient
 import org.ethereumphone.andyclaw.llm.ModelDownloadManager
+import org.ethereumphone.andyclaw.llm.OpenAiNativeClient
 import org.ethereumphone.andyclaw.llm.TinfoilClient
 import org.ethereumphone.andyclaw.llm.TinfoilProxyClient
 import org.ethereumphone.andyclaw.skills.SkillRegistry
@@ -301,6 +302,17 @@ class NodeApp : Application() {
         TinfoilClient(apiKey = { securePrefs.tinfoilApiKey.value })
     }
 
+    private val openAiNativeClient: OpenAiNativeClient by lazy {
+        OpenAiNativeClient(apiKey = { securePrefs.openaiApiKey.value })
+    }
+
+    private val veniceClient: OpenAiNativeClient by lazy {
+        OpenAiNativeClient(
+            apiKey = { securePrefs.veniceApiKey.value },
+            baseUrl = "https://api.venice.ai/api/v1/chat/completions",
+        )
+    }
+
     val tinfoilProxyClient: TinfoilProxyClient by lazy {
         TinfoilProxyClient(
             userId = { securePrefs.walletAddress.value },
@@ -345,6 +357,8 @@ class NodeApp : Application() {
                 LlmProvider.OPEN_ROUTER -> openRouterClient
                 LlmProvider.CLAUDE_OAUTH -> claudeOauthClient
                 LlmProvider.TINFOIL -> tinfoilClient
+                LlmProvider.OPENAI -> openAiNativeClient
+                LlmProvider.VENICE -> veniceClient
                 LlmProvider.LOCAL -> tinfoilProxyClient
             }
         }
@@ -353,6 +367,8 @@ class NodeApp : Application() {
             LlmProvider.OPEN_ROUTER -> anthropicClient
             LlmProvider.CLAUDE_OAUTH -> claudeOauthClient
             LlmProvider.TINFOIL -> tinfoilClient
+            LlmProvider.OPENAI -> openAiNativeClient
+            LlmProvider.VENICE -> veniceClient
             LlmProvider.LOCAL -> localLlmClient
         }
     }

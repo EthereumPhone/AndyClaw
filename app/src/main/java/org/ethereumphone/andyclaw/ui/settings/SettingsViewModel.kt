@@ -45,6 +45,8 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
     val selectedProvider = prefs.selectedProvider
     val tinfoilApiKey = prefs.tinfoilApiKey
     val apiKey = prefs.apiKey
+    val openaiApiKey = prefs.openaiApiKey
+    val veniceApiKey = prefs.veniceApiKey
     val claudeOauthRefreshToken = prefs.claudeOauthRefreshToken
 
     val telegramBotEnabled = prefs.telegramBotEnabled
@@ -126,6 +128,14 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
 
     fun setApiKey(key: String) {
         prefs.setApiKey(key)
+    }
+
+    fun setOpenaiApiKey(key: String) {
+        prefs.setOpenaiApiKey(key)
+    }
+
+    fun setVeniceApiKey(key: String) {
+        prefs.setVeniceApiKey(key)
     }
 
     fun setClaudeOauthRefreshToken(token: String) {
