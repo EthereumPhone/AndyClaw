@@ -121,6 +121,9 @@ fun SettingsScreen(
     val telegramBotEnabled by viewModel.telegramBotEnabled.collectAsState()
     val telegramOwnerChatId by viewModel.telegramOwnerChatId.collectAsState()
     val ledMaxBrightness by viewModel.ledMaxBrightness.collectAsState()
+    val googleRefreshToken by viewModel.googleOauthRefreshToken.collectAsState()
+    val googleClientId by viewModel.googleOauthClientId.collectAsState()
+    val googleClientSecret by viewModel.googleOauthClientSecret.collectAsState()
     val inspectedSkill by viewModel.inspectedSkill.collectAsState()
     var showTelegramOnboarding by remember { mutableStateOf(false) }
     var currentSubScreen by remember { mutableStateOf(SettingsSubScreen.Main) }
@@ -1156,6 +1159,213 @@ fun SettingsScreen(
                     },
                     onDismiss = { showTelegramOnboarding = false },
                 )
+            }
+
+            // Google Workspace
+            Spacer(Modifier.height(24.dp))
+            GlowingDivider(primaryColor)
+            Spacer(Modifier.height(16.dp))
+
+            Text(
+                text = "GOOGLE WORKSPACE",
+                color = primaryColor,
+                style = sectionTitleStyle,
+            )
+            Spacer(Modifier.height(8.dp))
+
+            val googleConnected = googleRefreshToken.isNotBlank()
+            var googleMissingFields by remember { mutableStateOf(false) }
+            var googleSetupGuideExpanded by remember { mutableStateOf(false) }
+
+            if (!googleConnected) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { googleSetupGuideExpanded = !googleSetupGuideExpanded }
+                        .padding(vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = if (googleSetupGuideExpanded) "▼ " else "▶ ",
+                        style = contentTitleStyle,
+                        color = primaryColor,
+                    )
+                    Text(
+                        text = "SETUP GUIDE",
+                        style = contentTitleStyle,
+                        color = primaryColor,
+                    )
+                }
+
+                if (googleSetupGuideExpanded) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .border(1.dp, primaryColor.copy(alpha = 0.2f), RoundedCornerShape(8.dp))
+                            .padding(12.dp),
+                    ) {
+                        Text(
+                            text = "1. CREATE A GOOGLE CLOUD PROJECT",
+                            style = contentTitleStyle,
+                            color = primaryColor,
+                        )
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            text = "Go to console.cloud.google.com and create a new project (or select an existing one).",
+                            style = contentBodyStyle,
+                            color = dgenWhite.copy(alpha = 0.8f),
+                        )
+
+                        Spacer(Modifier.height(12.dp))
+                        Text(
+                            text = "2. ENABLE 4 APIS",
+                            style = contentTitleStyle,
+                            color = primaryColor,
+                        )
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            text = "Go to APIs & Services > Library and enable:\n" +
+                                "• Gmail API\n" +
+                                "• Google Drive API\n" +
+                                "• Google Calendar API\n" +
+                                "• Google Sheets API",
+                            style = contentBodyStyle,
+                            color = dgenWhite.copy(alpha = 0.8f),
+                        )
+
+                        Spacer(Modifier.height(12.dp))
+                        Text(
+                            text = "3. CONFIGURE OAUTH CONSENT SCREEN",
+                            style = contentTitleStyle,
+                            color = primaryColor,
+                        )
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            text = "Go to APIs & Services > OAuth consent screen:\n" +
+                                "• User type: External\n" +
+                                "• Fill in app name (anything)\n" +
+                                "• Add your Google email as a test user under Audience\n" +
+                                "• Save (no need for verification for personal use)",
+                            style = contentBodyStyle,
+                            color = dgenWhite.copy(alpha = 0.8f),
+                        )
+
+                        Spacer(Modifier.height(12.dp))
+                        Text(
+                            text = "4. CREATE OAUTH CREDENTIALS",
+                            style = contentTitleStyle,
+                            color = primaryColor,
+                        )
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            text = "Go to APIs & Services > Credentials:\n" +
+                                "• Create Credentials > OAuth client ID\n" +
+                                "• Application type: Desktop app\n" +
+                                "• Copy the Client ID and Client Secret below",
+                            style = contentBodyStyle,
+                            color = dgenWhite.copy(alpha = 0.8f),
+                        )
+
+                        Spacer(Modifier.height(12.dp))
+                        Text(
+                            text = "5. CONNECT",
+                            style = contentTitleStyle,
+                            color = primaryColor,
+                        )
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            text = "Paste the credentials below and tap Connect. A browser window will open for Google sign-in. If you see \"Google hasn't verified this app\", click Advanced > Continue.",
+                            style = contentBodyStyle,
+                            color = dgenWhite.copy(alpha = 0.8f),
+                        )
+                    }
+                    Spacer(Modifier.height(12.dp))
+                }
+
+                DgenCursorTextfield(
+                    modifier = Modifier.fillMaxWidth(),
+                    label = "OAuth Client ID",
+                    value = googleClientId,
+                    onValueChange = {
+                        viewModel.setGoogleOauthClientId(it)
+                        googleMissingFields = false
+                    },
+                    primaryColor = primaryColor,
+                )
+                Spacer(Modifier.height(8.dp))
+                DgenCursorTextfield(
+                    modifier = Modifier.fillMaxWidth(),
+                    label = "OAuth Client Secret",
+                    value = googleClientSecret,
+                    onValueChange = {
+                        viewModel.setGoogleOauthClientSecret(it)
+                        googleMissingFields = false
+                    },
+                    primaryColor = primaryColor,
+                    visualTransformation = PasswordVisualTransformation(),
+                )
+                if (googleMissingFields) {
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        text = "Enter Client ID and Client Secret first",
+                        style = contentBodyStyle,
+                        color = Color(0xFFFF6B6B),
+                    )
+                }
+                Spacer(Modifier.height(8.dp))
+            }
+
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 16.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    if (googleConnected) {
+                        Text(
+                            text = "GOOGLE ACCOUNT CONNECTED",
+                            style = contentTitleStyle,
+                            color = primaryColor,
+                        )
+                        Text(
+                            text = "Gmail, Drive, Calendar, and Sheets are available",
+                            style = contentBodyStyle,
+                            color = dgenWhite,
+                        )
+                    } else {
+                        Text(
+                            text = "NOT CONNECTED",
+                            style = contentTitleStyle,
+                            color = primaryColor,
+                        )
+                        Text(
+                            text = "Connect your Google account to enable Gmail, Drive, Calendar, and Sheets",
+                            style = contentBodyStyle,
+                            color = dgenWhite,
+                        )
+                    }
+                }
+                Spacer(Modifier.width(rowControlSpacing))
+                if (googleConnected) {
+                    DgenSmallPrimaryButton(
+                        text = "Disconnect",
+                        primaryColor = primaryColor,
+                        onClick = { viewModel.disconnectGoogle() },
+                    )
+                } else {
+                    DgenSmallPrimaryButton(
+                        text = "Connect",
+                        primaryColor = primaryColor,
+                        onClick = {
+                            if (googleClientId.isNotBlank() && googleClientSecret.isNotBlank()) {
+                                viewModel.startGoogleOAuthFlow(context)
+                            } else {
+                                googleMissingFields = true
+                            }
+                        },
+                    )
+                }
             }
 
             Spacer(Modifier.height(24.dp))

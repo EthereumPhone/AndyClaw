@@ -71,6 +71,11 @@ import org.ethereumphone.andyclaw.skills.builtin.ENSSkill
 import org.ethereumphone.andyclaw.skills.builtin.TokenLookupSkill
 import org.ethereumphone.andyclaw.skills.builtin.BankrTradingSkill
 import org.ethereumphone.andyclaw.skills.builtin.SwapSkill
+import org.ethereumphone.andyclaw.skills.builtin.GmailSkill
+import org.ethereumphone.andyclaw.skills.builtin.DriveSkill
+import org.ethereumphone.andyclaw.skills.builtin.GoogleCalendarSkill
+import org.ethereumphone.andyclaw.skills.builtin.SheetsSkill
+import org.ethereumphone.andyclaw.google.GoogleAuthManager
 import org.ethereumphone.andyclaw.safety.SafetyConfig
 import org.ethereumphone.andyclaw.safety.SafetyLayer
 import org.ethereumphone.andyclaw.skills.tier.OsCapabilities
@@ -143,6 +148,9 @@ class NodeApp : Application() {
     val extensionEngine: ExtensionEngine by lazy {
         ExtensionEngine(this)
     }
+
+    // ── Google Workspace subsystem ─────────────────────────────────────────
+    val googleAuthManager: GoogleAuthManager by lazy { GoogleAuthManager(securePrefs) }
 
     // ── Telegram subsystem ───────────────────────────────────────────────
 
@@ -246,6 +254,12 @@ class NodeApp : Application() {
                 botEnabled = { securePrefs.telegramBotEnabled.value },
                 ownerChatId = { securePrefs.telegramOwnerChatId.value },
             ))
+            // Google Workspace — Gmail, Drive, Calendar, Sheets
+            val googleTokenProvider: suspend () -> String = { googleAuthManager.getAccessToken() }
+            register(GmailSkill(googleTokenProvider))
+            register(DriveSkill(googleTokenProvider))
+            register(GoogleCalendarSkill(googleTokenProvider))
+            register(SheetsSkill(googleTokenProvider))
             // Agent Display — operate a virtual display (ethOS privileged only)
             register(AgentDisplaySkill())
             // LED Matrix — control the 3×3 LED matrix on dGEN1 devices

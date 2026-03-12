@@ -159,6 +159,21 @@ class SecurePrefs(context: Context) : KeyValueStore {
   private val _enabledSkills = MutableStateFlow(loadEnabledSkills())
   val enabledSkills: StateFlow<Set<String>> = _enabledSkills
 
+  private val _googleOauthClientId = MutableStateFlow(prefs.getString("google.oauth.clientId", "") ?: "")
+  val googleOauthClientId: StateFlow<String> = _googleOauthClientId
+
+  private val _googleOauthClientSecret = MutableStateFlow(prefs.getString("google.oauth.clientSecret", "") ?: "")
+  val googleOauthClientSecret: StateFlow<String> = _googleOauthClientSecret
+
+  private val _googleOauthRefreshToken = MutableStateFlow(prefs.getString("google.oauth.refreshToken", "") ?: "")
+  val googleOauthRefreshToken: StateFlow<String> = _googleOauthRefreshToken
+
+  private val _googleOauthAccessToken = MutableStateFlow(prefs.getString("google.oauth.accessToken", "") ?: "")
+  val googleOauthAccessToken: StateFlow<String> = _googleOauthAccessToken
+
+  private val _googleOauthExpiresAt = MutableStateFlow(prefs.getLong("google.oauth.expiresAt", 0L))
+  val googleOauthExpiresAt: StateFlow<Long> = _googleOauthExpiresAt
+
   private val _telegramBotToken = MutableStateFlow(prefs.getString("telegram.botToken", "") ?: "")
   val telegramBotToken: StateFlow<String> = _telegramBotToken
 
@@ -456,6 +471,50 @@ class SecurePrefs(context: Context) : KeyValueStore {
   }
 
   fun isSkillEnabled(skillId: String): Boolean = skillId in _enabledSkills.value
+
+  fun setGoogleOauthClientId(value: String) {
+    val trimmed = value.trim()
+    prefs.edit { putString("google.oauth.clientId", trimmed) }
+    _googleOauthClientId.value = trimmed
+  }
+
+  fun setGoogleOauthClientSecret(value: String) {
+    val trimmed = value.trim()
+    prefs.edit { putString("google.oauth.clientSecret", trimmed) }
+    _googleOauthClientSecret.value = trimmed
+  }
+
+  fun setGoogleOauthRefreshToken(value: String) {
+    val trimmed = value.trim()
+    prefs.edit { putString("google.oauth.refreshToken", trimmed) }
+    _googleOauthRefreshToken.value = trimmed
+  }
+
+  fun setGoogleOauthAccessToken(value: String) {
+    val trimmed = value.trim()
+    prefs.edit { putString("google.oauth.accessToken", trimmed) }
+    _googleOauthAccessToken.value = trimmed
+  }
+
+  fun setGoogleOauthExpiresAt(value: Long) {
+    prefs.edit { putLong("google.oauth.expiresAt", value) }
+    _googleOauthExpiresAt.value = value
+  }
+
+  fun clearGoogleOauthSetup() {
+    prefs.edit {
+      putString("google.oauth.clientId", "")
+      putString("google.oauth.clientSecret", "")
+      putString("google.oauth.refreshToken", "")
+      putString("google.oauth.accessToken", "")
+      putLong("google.oauth.expiresAt", 0L)
+    }
+    _googleOauthClientId.value = ""
+    _googleOauthClientSecret.value = ""
+    _googleOauthRefreshToken.value = ""
+    _googleOauthAccessToken.value = ""
+    _googleOauthExpiresAt.value = 0L
+  }
 
   fun setTelegramBotToken(value: String) {
     val trimmed = value.trim()

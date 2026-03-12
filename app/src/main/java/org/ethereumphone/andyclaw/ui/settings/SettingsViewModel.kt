@@ -56,6 +56,10 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
     val telegramOwnerChatId = prefs.telegramOwnerChatId
     val ledMaxBrightness = prefs.ledMaxBrightness
 
+    val googleOauthRefreshToken = prefs.googleOauthRefreshToken
+    val googleOauthClientId = prefs.googleOauthClientId
+    val googleOauthClientSecret = prefs.googleOauthClientSecret
+
     val currentTier: String get() = OsCapabilities.currentTier().name
     val isPrivileged: Boolean get() = OsCapabilities.hasPrivilegedAccess
 
@@ -255,6 +259,24 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
     fun clearTelegramSetup() {
         prefs.clearTelegramSetup()
         notifyOsTelegramUnregister()
+    }
+
+    fun setGoogleOauthClientId(value: String) {
+        prefs.setGoogleOauthClientId(value)
+    }
+
+    fun setGoogleOauthClientSecret(value: String) {
+        prefs.setGoogleOauthClientSecret(value)
+    }
+
+    fun startGoogleOAuthFlow(context: android.content.Context) {
+        viewModelScope.launch {
+            app.googleAuthManager.startOAuthFlow(context)
+        }
+    }
+
+    fun disconnectGoogle() {
+        prefs.clearGoogleOauthSetup()
     }
 
     private fun notifyOsTelegramRegister(token: String) {
