@@ -5,6 +5,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonArray
@@ -151,7 +152,34 @@ class DriveSkill(
             return@withContext SkillResult.Error("Failed to list files (HTTP ${response.code}): $responseBody")
         }
 
-        SkillResult.Success(responseBody)
+        val parsed = kotlinx.serialization.json.Json.parseToJsonElement(responseBody).jsonObject
+        val files = parsed["files"]?.jsonArray
+
+        if (files == null || files.isEmpty()) {
+            return@withContext SkillResult.Success("No files found" +
+                if (!query.isNullOrBlank()) " matching query: $query" else "")
+        }
+
+        val sb = StringBuilder()
+        sb.appendLine("Found ${files.size} file(s):")
+        sb.appendLine()
+
+        for ((index, file) in files.withIndex()) {
+            val name = file.jsonObject["name"]?.jsonPrimitive?.contentOrNull ?: "(unnamed)"
+            val id = file.jsonObject["id"]?.jsonPrimitive?.contentOrNull ?: ""
+            val mimeType = file.jsonObject["mimeType"]?.jsonPrimitive?.contentOrNull ?: ""
+            val modified = file.jsonObject["modifiedTime"]?.jsonPrimitive?.contentOrNull ?: ""
+            val size = file.jsonObject["size"]?.jsonPrimitive?.contentOrNull
+
+            sb.appendLine("${index + 1}. $name")
+            sb.appendLine("   ID: $id")
+            sb.appendLine("   Type: $mimeType")
+            if (modified.isNotBlank()) sb.appendLine("   Modified: $modified")
+            if (size != null) sb.appendLine("   Size: $size bytes")
+            sb.appendLine()
+        }
+
+        SkillResult.Success(sb.toString().trimEnd())
     }
 
     private fun validateId(id: String): String? {
@@ -217,14 +245,14 @@ class DriveSkill(
             content
         }
 
-        SkillResult.Success(buildJsonObject {
-            put("file_id", fileId)
-            put("name", fileName)
-            put("mime_type", mimeType)
-            put("content_length", content.length)
-            put("truncated", content.length > maxLength)
-            put("content", truncated)
-        }.toString())
+        val sb = StringBuilder()
+        sb.appendLine("File: $fileName")
+        sb.appendLine("Type: $mimeType")
+        sb.appendLine("Size: ${content.length} characters")
+        sb.appendLine()
+        sb.append(truncated)
+
+        SkillResult.Success(sb.toString().trimEnd())
     }
 
     private suspend fun driveUpload(params: JsonObject): SkillResult = withContext(Dispatchers.IO) {
@@ -257,10 +285,8 @@ class DriveSkill(
             return@withContext SkillResult.Error("Failed to upload file (HTTP ${response.code}): $responseBody")
         }
 
-        SkillResult.Success(buildJsonObject {
-            put("uploaded", true)
-            put("name", name)
-            put("response", responseBody)
-        }.toString())
+        val parsed = kotlinx.serialization.json.Json.parseToJsonElement(responseBody).jsonObject
+        val fileId = parsed["id"]?.jsonPrimitive?.contentOrNull ?: ""
+        SkillResult.Success("File \"$name\" uploaded to Google Drive.\nFile ID: $fileId")
     }
 }

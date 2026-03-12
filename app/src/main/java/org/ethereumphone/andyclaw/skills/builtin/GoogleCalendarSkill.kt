@@ -5,8 +5,11 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import okhttp3.MediaType.Companion.toMediaType
@@ -160,7 +163,51 @@ class GoogleCalendarSkill(
             return@withContext SkillResult.Error("Failed to list events (HTTP ${response.code}): $responseBody")
         }
 
-        SkillResult.Success(responseBody)
+        val parsed = kotlinx.serialization.json.Json { ignoreUnknownKeys = true }
+            .parseToJsonElement(responseBody).jsonObject
+        val items = parsed["items"]?.jsonArray
+
+        if (items == null || items.isEmpty()) {
+            return@withContext SkillResult.Success("No events found in the requested time range.")
+        }
+
+        val sb = StringBuilder()
+        sb.appendLine("Found ${items.size} event(s):")
+        sb.appendLine()
+
+        for ((index, item) in items.withIndex()) {
+            val obj = item.jsonObject
+            val summary = obj["summary"]?.jsonPrimitive?.contentOrNull ?: "(no title)"
+            val startObj = obj["start"]?.jsonObject
+            val startTime = startObj?.get("dateTime")?.jsonPrimitive?.contentOrNull
+                ?: startObj?.get("date")?.jsonPrimitive?.contentOrNull ?: ""
+            val endObj = obj["end"]?.jsonObject
+            val endTime = endObj?.get("dateTime")?.jsonPrimitive?.contentOrNull
+                ?: endObj?.get("date")?.jsonPrimitive?.contentOrNull ?: ""
+            val location = obj["location"]?.jsonPrimitive?.contentOrNull
+            val description = obj["description"]?.jsonPrimitive?.contentOrNull
+            val eventId = obj["id"]?.jsonPrimitive?.contentOrNull ?: ""
+
+            sb.appendLine("${index + 1}. $summary")
+            sb.appendLine("   When: $startTime — $endTime")
+            if (!location.isNullOrBlank()) sb.appendLine("   Where: $location")
+            if (!description.isNullOrBlank()) sb.appendLine("   Description: $description")
+            sb.appendLine("   Event ID: $eventId")
+
+            obj["attendees"]?.jsonArray?.let { attendees ->
+                if (attendees.isNotEmpty()) {
+                    val names = attendees.mapNotNull { a ->
+                        val email = a.jsonObject["email"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
+                        val status = a.jsonObject["responseStatus"]?.jsonPrimitive?.contentOrNull ?: ""
+                        "$email ($status)"
+                    }
+                    sb.appendLine("   Attendees: ${names.joinToString(", ")}")
+                }
+            }
+            sb.appendLine()
+        }
+
+        SkillResult.Success(sb.toString().trimEnd())
     }
 
     private suspend fun createEvent(params: JsonObject): SkillResult = withContext(Dispatchers.IO) {
@@ -205,10 +252,19 @@ class GoogleCalendarSkill(
             return@withContext SkillResult.Error("Failed to create event (HTTP ${response.code}): $responseBody")
         }
 
-        SkillResult.Success(buildJsonObject {
-            put("created", true)
-            put("summary", summary)
-            put("response", responseBody)
-        }.toString())
+        val parsed = kotlinx.serialization.json.Json { ignoreUnknownKeys = true }
+            .parseToJsonElement(responseBody).jsonObject
+        val eventId = parsed["id"]?.jsonPrimitive?.contentOrNull ?: ""
+        val link = parsed["htmlLink"]?.jsonPrimitive?.contentOrNull
+
+        val sb = StringBuilder()
+        sb.appendLine("Event created: $summary")
+        sb.appendLine("When: $start — $end")
+        if (!location.isNullOrBlank()) sb.appendLine("Where: $location")
+        if (!attendees.isNullOrBlank()) sb.appendLine("Attendees: $attendees")
+        sb.appendLine("Event ID: $eventId")
+        if (!link.isNullOrBlank()) sb.appendLine("Link: $link")
+
+        SkillResult.Success(sb.toString().trimEnd())
     }
 }

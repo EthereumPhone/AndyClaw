@@ -7,6 +7,8 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import okhttp3.MediaType.Companion.toMediaType
@@ -129,7 +131,25 @@ class SheetsSkill(
             return@withContext SkillResult.Error("Failed to read spreadsheet (HTTP ${response.code}): $responseBody")
         }
 
-        SkillResult.Success(responseBody)
+        val parsed = kotlinx.serialization.json.Json { ignoreUnknownKeys = true }
+            .parseToJsonElement(responseBody).jsonObject
+        val actualRange = parsed["range"]?.jsonPrimitive?.contentOrNull ?: range
+        val values = parsed["values"]?.jsonArray
+
+        if (values == null || values.isEmpty()) {
+            return@withContext SkillResult.Success("No data found in range $actualRange")
+        }
+
+        val sb = StringBuilder()
+        sb.appendLine("Spreadsheet data from range $actualRange (${values.size} rows):")
+        sb.appendLine()
+
+        for ((rowIdx, row) in values.withIndex()) {
+            val cells = row.jsonArray.mapNotNull { it.jsonPrimitive.contentOrNull }
+            sb.appendLine("Row ${rowIdx + 1}: ${cells.joinToString(" | ")}")
+        }
+
+        SkillResult.Success(sb.toString().trimEnd())
     }
 
     private suspend fun sheetsAppend(params: JsonObject): SkillResult = withContext(Dispatchers.IO) {
@@ -159,11 +179,17 @@ class SheetsSkill(
             return@withContext SkillResult.Error("Failed to append to spreadsheet (HTTP ${response.code}): $responseBody")
         }
 
-        SkillResult.Success(buildJsonObject {
-            put("appended", true)
-            put("spreadsheet_id", spreadsheetId)
-            put("range", range)
-            put("response", responseBody)
-        }.toString())
+        val parsed = kotlinx.serialization.json.Json { ignoreUnknownKeys = true }
+            .parseToJsonElement(responseBody).jsonObject
+        val updatedRange = parsed["updates"]?.jsonObject?.get("updatedRange")?.jsonPrimitive?.contentOrNull
+        val updatedRows = parsed["updates"]?.jsonObject?.get("updatedRows")?.jsonPrimitive?.contentOrNull
+
+        val sb = StringBuilder()
+        sb.append("Data appended to spreadsheet")
+        if (updatedRows != null) sb.append(" ($updatedRows row(s))")
+        sb.appendLine(".")
+        sb.appendLine("Range: ${updatedRange ?: range}")
+
+        SkillResult.Success(sb.toString().trimEnd())
     }
 }

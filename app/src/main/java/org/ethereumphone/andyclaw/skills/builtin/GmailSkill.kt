@@ -155,6 +155,19 @@ class GmailSkill(
     private fun sanitizeHeader(value: String): String =
         value.replace("\r", "").replace("\n", "")
 
+    /**
+     * Encode a header value using RFC 2047 if it contains non-ASCII characters.
+     * This ensures emojis and accented characters are transmitted correctly.
+     */
+    private fun rfc2047Encode(value: String): String {
+        if (value.all { it.code < 128 }) return value
+        val b64 = Base64.encodeToString(
+            value.toByteArray(Charsets.UTF_8),
+            Base64.NO_WRAP,
+        )
+        return "=?UTF-8?B?$b64?="
+    }
+
     /** Validate an API path segment (message ID, etc.) to prevent path traversal. */
     private fun validateId(id: String): String? {
         if (id.isBlank() || id.contains('/') || id.contains("..")) return null
@@ -173,14 +186,16 @@ class GmailSkill(
         val rfc2822 = buildString {
             append("To: $to\r\n")
             if (!cc.isNullOrBlank()) append("Cc: $cc\r\n")
-            append("Subject: $subject\r\n")
+            append("Subject: ${rfc2047Encode(subject)}\r\n")
+            append("MIME-Version: 1.0\r\n")
             append("Content-Type: text/plain; charset=utf-8\r\n")
+            append("Content-Transfer-Encoding: base64\r\n")
             append("\r\n")
-            append(body)
+            append(Base64.encodeToString(body.toByteArray(Charsets.UTF_8), Base64.DEFAULT))
         }
 
         val encoded = Base64.encodeToString(
-            rfc2822.toByteArray(Charsets.UTF_8),
+            rfc2822.toByteArray(Charsets.US_ASCII),
             Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING,
         )
 
@@ -199,11 +214,7 @@ class GmailSkill(
             return@withContext SkillResult.Error("Failed to send email (HTTP ${response.code}): $responseBody")
         }
 
-        SkillResult.Success(buildJsonObject {
-            put("sent", true)
-            put("to", to)
-            put("subject", subject)
-        }.toString())
+        SkillResult.Success("Email sent to $to with subject \"$subject\"")
     }
 
     private suspend fun gmailRead(params: JsonObject): SkillResult = withContext(Dispatchers.IO) {
@@ -227,57 +238,56 @@ class GmailSkill(
 
         val listJson = kotlinx.serialization.json.Json.parseToJsonElement(listBody).jsonObject
         val messages = listJson["messages"]?.jsonArray ?: run {
-            return@withContext SkillResult.Success(buildJsonObject {
-                put("query", query)
-                put("result_count", 0)
-                put("messages", JsonArray(emptyList()))
-            }.toString())
+            return@withContext SkillResult.Success("No emails found for query: $query")
         }
 
-        val results = buildJsonArray {
-            for (msg in messages) {
-                val msgId = msg.jsonObject["id"]?.jsonPrimitive?.contentOrNull ?: continue
-                val metaUrl = "$BASE_URL/messages/$msgId?format=metadata&metadataHeaders=Subject&metadataHeaders=From&metadataHeaders=Date"
-                val metaRequest = Request.Builder()
-                    .url(metaUrl)
-                    .addHeader("Authorization", "Bearer $token")
-                    .get()
-                    .build()
+        val sb = StringBuilder()
+        sb.appendLine("Found ${messages.size} email(s) for query: $query")
+        sb.appendLine()
 
-                try {
-                    val metaResponse = client.newCall(metaRequest).execute()
-                    val metaBody = metaResponse.body?.string() ?: continue
-                    if (!metaResponse.isSuccessful) continue
+        for ((index, msg) in messages.withIndex()) {
+            val msgId = msg.jsonObject["id"]?.jsonPrimitive?.contentOrNull ?: continue
+            val metaUrl = "$BASE_URL/messages/$msgId?format=metadata&metadataHeaders=Subject&metadataHeaders=From&metadataHeaders=Date"
+            val metaRequest = Request.Builder()
+                .url(metaUrl)
+                .addHeader("Authorization", "Bearer $token")
+                .get()
+                .build()
 
-                    val metaJson = kotlinx.serialization.json.Json.parseToJsonElement(metaBody).jsonObject
-                    val headers = metaJson["payload"]?.jsonObject?.get("headers")?.jsonArray
-                    val snippet = metaJson["snippet"]?.jsonPrimitive?.contentOrNull ?: ""
+            try {
+                val metaResponse = client.newCall(metaRequest).execute()
+                val metaBody = metaResponse.body?.string() ?: continue
+                if (!metaResponse.isSuccessful) continue
 
-                    add(buildJsonObject {
-                        put("id", msgId)
-                        put("threadId", metaJson["threadId"]?.jsonPrimitive?.contentOrNull ?: "")
-                        put("snippet", snippet)
-                        headers?.forEach { header ->
-                            val headerName = header.jsonObject["name"]?.jsonPrimitive?.contentOrNull ?: ""
-                            val headerValue = header.jsonObject["value"]?.jsonPrimitive?.contentOrNull ?: ""
-                            when (headerName.lowercase()) {
-                                "subject" -> put("subject", headerValue)
-                                "from" -> put("from", headerValue)
-                                "date" -> put("date", headerValue)
-                            }
-                        }
-                    })
-                } catch (e: Exception) {
-                    Log.w(TAG, "Failed to fetch metadata for message $msgId: ${e.message}")
+                val metaJson = kotlinx.serialization.json.Json.parseToJsonElement(metaBody).jsonObject
+                val headers = metaJson["payload"]?.jsonObject?.get("headers")?.jsonArray
+                val snippet = metaJson["snippet"]?.jsonPrimitive?.contentOrNull ?: ""
+
+                var subject = ""
+                var from = ""
+                var date = ""
+                headers?.forEach { header ->
+                    val headerName = header.jsonObject["name"]?.jsonPrimitive?.contentOrNull ?: ""
+                    val headerValue = header.jsonObject["value"]?.jsonPrimitive?.contentOrNull ?: ""
+                    when (headerName.lowercase()) {
+                        "subject" -> subject = headerValue
+                        "from" -> from = headerValue
+                        "date" -> date = headerValue
+                    }
                 }
+
+                sb.appendLine("--- Email ${index + 1} [ID: $msgId] ---")
+                sb.appendLine("From: $from")
+                sb.appendLine("Subject: $subject")
+                sb.appendLine("Date: $date")
+                sb.appendLine("Preview: $snippet")
+                sb.appendLine()
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to fetch metadata for message $msgId: ${e.message}")
             }
         }
 
-        SkillResult.Success(buildJsonObject {
-            put("query", query)
-            put("result_count", results.size)
-            put("messages", results)
-        }.toString())
+        SkillResult.Success(sb.toString().trimEnd())
     }
 
     private suspend fun gmailGet(params: JsonObject): SkillResult = withContext(Dispatchers.IO) {
@@ -302,25 +312,34 @@ class GmailSkill(
         val headers = msgJson["payload"]?.jsonObject?.get("headers")?.jsonArray
         val bodyText = extractBodyText(msgJson["payload"]?.jsonObject)
 
-        val result = buildJsonObject {
-            put("id", messageId)
-            put("threadId", msgJson["threadId"]?.jsonPrimitive?.contentOrNull ?: "")
-            put("snippet", msgJson["snippet"]?.jsonPrimitive?.contentOrNull ?: "")
-            headers?.forEach { header ->
-                val headerName = header.jsonObject["name"]?.jsonPrimitive?.contentOrNull ?: ""
-                val headerValue = header.jsonObject["value"]?.jsonPrimitive?.contentOrNull ?: ""
-                when (headerName.lowercase()) {
-                    "subject" -> put("subject", headerValue)
-                    "from" -> put("from", headerValue)
-                    "to" -> put("to", headerValue)
-                    "date" -> put("date", headerValue)
-                    "cc" -> put("cc", headerValue)
-                }
+        var subject = ""
+        var from = ""
+        var to = ""
+        var date = ""
+        var cc = ""
+        headers?.forEach { header ->
+            val headerName = header.jsonObject["name"]?.jsonPrimitive?.contentOrNull ?: ""
+            val headerValue = header.jsonObject["value"]?.jsonPrimitive?.contentOrNull ?: ""
+            when (headerName.lowercase()) {
+                "subject" -> subject = headerValue
+                "from" -> from = headerValue
+                "to" -> to = headerValue
+                "date" -> date = headerValue
+                "cc" -> cc = headerValue
             }
-            put("body", bodyText)
         }
 
-        SkillResult.Success(result.toString())
+        val sb = StringBuilder()
+        sb.appendLine("Message ID: $messageId")
+        sb.appendLine("From: $from")
+        sb.appendLine("To: $to")
+        if (cc.isNotBlank()) sb.appendLine("Cc: $cc")
+        sb.appendLine("Date: $date")
+        sb.appendLine("Subject: $subject")
+        sb.appendLine()
+        sb.append(bodyText)
+
+        SkillResult.Success(sb.toString().trimEnd())
     }
 
     private suspend fun gmailReply(params: JsonObject): SkillResult = withContext(Dispatchers.IO) {
@@ -370,18 +389,20 @@ class GmailSkill(
 
         val rfc2822 = buildString {
             append("To: $safeFrom\r\n")
-            append("Subject: $replySubject\r\n")
+            append("Subject: ${rfc2047Encode(replySubject)}\r\n")
             if (safeMessageId.isNotBlank()) {
                 append("In-Reply-To: $safeMessageId\r\n")
                 append("References: $safeMessageId\r\n")
             }
+            append("MIME-Version: 1.0\r\n")
             append("Content-Type: text/plain; charset=utf-8\r\n")
+            append("Content-Transfer-Encoding: base64\r\n")
             append("\r\n")
-            append(body)
+            append(Base64.encodeToString(body.toByteArray(Charsets.UTF_8), Base64.DEFAULT))
         }
 
         val encoded = Base64.encodeToString(
-            rfc2822.toByteArray(Charsets.UTF_8),
+            rfc2822.toByteArray(Charsets.US_ASCII),
             Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING,
         )
 
@@ -399,12 +420,7 @@ class GmailSkill(
             return@withContext SkillResult.Error("Failed to send reply (HTTP ${sendResponse.code}): $sendResponseBody")
         }
 
-        SkillResult.Success(buildJsonObject {
-            put("sent", true)
-            put("reply_to", origFrom)
-            put("subject", replySubject)
-            put("thread_id", threadId)
-        }.toString())
+        SkillResult.Success("Reply sent to $origFrom in thread $threadId")
     }
 
     private fun extractBodyText(payload: JsonObject?): String {
