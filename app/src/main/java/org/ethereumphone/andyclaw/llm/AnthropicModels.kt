@@ -10,6 +10,11 @@ enum class AnthropicModels(
     CLAUDE_SONNET_4_6("anthropic/claude-sonnet-4-6", 8192, LlmProvider.OPEN_ROUTER),
     MINIMAX_M25("minimax/minimax-m2.5", 8192, LlmProvider.OPEN_ROUTER),
     KIMI_K25("moonshotai/kimi-k2.5", 8192, LlmProvider.OPEN_ROUTER),
+    GEMINI_3_1_PRO("google/gemini-3.1-pro-preview", 8192, LlmProvider.OPEN_ROUTER),
+    GROK_4("x-ai/grok-4", 8192, LlmProvider.OPEN_ROUTER),
+    GLM_5("z-ai/glm-5", 8192, LlmProvider.OPEN_ROUTER),
+    DEEPSEEK_R1("deepseek/deepseek-r1", 8192, LlmProvider.OPEN_ROUTER),
+    QWEN_3_5_PLUS("qwen/qwen3.5-plus-02-15", 8192, LlmProvider.OPEN_ROUTER),
 
     // Claude setup-token models (direct Anthropic API)
     CLAUDE_OAUTH_OPUS_4_6("claude-opus-4-6", 8192, LlmProvider.CLAUDE_OAUTH),

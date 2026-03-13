@@ -23,6 +23,7 @@ import org.ethereumphone.andyclaw.ipc.ILauncherService
 import org.ethereumphone.andyclaw.llm.AnthropicModels
 import org.ethereumphone.andyclaw.llm.ContentBlock
 import org.ethereumphone.andyclaw.llm.Message
+import org.ethereumphone.andyclaw.sessions.model.MessageRole
 import org.ethereumphone.andyclaw.skills.SkillResult
 import org.ethereumphone.andyclaw.skills.tier.OsCapabilities
 import java.io.File
@@ -271,7 +272,7 @@ class LauncherBindingService : Service() {
             override fun onComplete(fullText: String) {
                 fullResponseText.append(fullText)
                 callbacks.onComplete(fullText)
-                // Update executive summary if this came from the lockscreen
+                // Update executive summary and save chat if this came from the lockscreen
                 if (fromLockscreen) {
                     scope.launch {
                         try {
@@ -280,6 +281,17 @@ class LauncherBindingService : Service() {
                             )
                         } catch (e: Exception) {
                             Log.w(TAG, "Lockscreen executive summary update failed", e)
+                        }
+                        try {
+                            val sm = app.sessionManager
+                            val session = sm.createSession(
+                                model = model.modelId,
+                                title = "Lockscreen: ${prompt.take(50)}",
+                            )
+                            sm.addMessage(session.id, MessageRole.USER, prompt)
+                            sm.addMessage(session.id, MessageRole.ASSISTANT, fullText)
+                        } catch (e: Exception) {
+                            Log.w(TAG, "Failed to save lockscreen chat session", e)
                         }
                     }
                 }
