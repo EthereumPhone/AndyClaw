@@ -151,7 +151,7 @@ fun SettingsScreen(
     val rowControlSpacing = 20.dp
 
     val providerChoices = if (viewModel.isPrivileged) {
-        listOf(LlmProvider.ETHOS_PREMIUM, LlmProvider.OPEN_ROUTER, LlmProvider.CLAUDE_OAUTH, LlmProvider.OPENAI, LlmProvider.VENICE, LlmProvider.TINFOIL)
+        listOf(LlmProvider.ETHOS_PREMIUM, LlmProvider.OPEN_ROUTER, LlmProvider.CLAUDE_OAUTH, LlmProvider.OPENAI, LlmProvider.VENICE, LlmProvider.TINFOIL, LlmProvider.LOCAL)
     } else {
         listOf(LlmProvider.OPEN_ROUTER, LlmProvider.CLAUDE_OAUTH, LlmProvider.OPENAI, LlmProvider.VENICE, LlmProvider.TINFOIL, LlmProvider.LOCAL)
     }
@@ -188,18 +188,23 @@ fun SettingsScreen(
                 style = sectionTitleStyle,
             )
             Spacer(Modifier.height(8.dp))
+            val isLocalProvider = selectedProvider == LlmProvider.LOCAL
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clickable { currentSubScreen = SettingsSubScreen.ModelSelection }
+                    .then(
+                        if (isLocalProvider) Modifier
+                        else Modifier.clickable { currentSubScreen = SettingsSubScreen.ModelSelection }
+                    )
                     .padding(vertical = 8.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text(
-                    text = AnthropicModels.fromModelId(selectedModel)?.name ?: selectedModel,
+                    text = if (isLocalProvider) "Qwen2.5-1.5B-Instruct (On-Device)"
+                        else AnthropicModels.fromModelId(selectedModel)?.name ?: selectedModel,
                     style = TextStyle(
                         fontFamily = PitagonsSans,
-                        color = dgenWhite,
+                        color = if (isLocalProvider) dgenWhite.copy(alpha = 0.5f) else dgenWhite,
                         fontWeight = FontWeight.SemiBold,
                         fontSize = body1_fontSize,
                         lineHeight = body1_fontSize,
@@ -210,7 +215,7 @@ fun SettingsScreen(
                 Icon(
                     imageVector = Icons.Default.ArrowDropDown,
                     contentDescription = null,
-                    tint = primaryColor,
+                    tint = if (isLocalProvider) primaryColor.copy(alpha = 0.3f) else primaryColor,
                 )
             }
 
