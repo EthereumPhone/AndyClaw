@@ -125,12 +125,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun newSession() {
-        viewModelScope.launch {
-            val model = app.securePrefs.selectedModel.value
-            val session = sessionManager.createSession(model = model)
-            _sessionId.value = session.id
-            _messages.value = emptyList()
-        }
+        _sessionId.value = null
+        _messages.value = emptyList()
     }
 
     fun sendMessage(text: String) {
