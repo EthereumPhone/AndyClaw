@@ -3,6 +3,10 @@ package org.ethereumphone.andyclaw.skills
 import android.content.Context
 import android.content.SharedPreferences
 import android.util.Log
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeout
 import org.ethereumphone.andyclaw.llm.AnthropicModels
 import org.ethereumphone.andyclaw.llm.ContentBlock
@@ -27,13 +31,18 @@ data class RoutingConfig(val client: LlmClient, val model: AnthropicModels)
  * 2. dGEN1 CORE on PRIVILEGED tier
  * 3. Conversation-aware: skills from previous turn's tools
  * 4. Session tracking: skills with active sessions
- * 5. LLM routing (cheap/fast model, with in-memory cache)
- * 6. Keyword matching (fallback when LLM routing unavailable)
- * 7. External skills: included in LLM catalog when available, always included as fallback
- * 8. Smart fallback (embedding -> frequency -> all skills)
+ * 5. LLM routing cache check (instant if cached)
+ *    - Cache hit: use LLM-selected skills (0ms)
+ *    - Cache miss: use keywords now, fire LLM in background to populate cache
+ * 6. External skills: routed by LLM on cache hit, always included on miss
+ * 7. Smart fallback (embedding -> frequency -> all skills)
  *
- * Optimizations:
- * - LLM routing results cached in an LRU cache (repeat queries are instant)
+ * The background LLM approach means:
+ * - First occurrence of a message type: keywords (instant, proven fallback)
+ * - All subsequent similar messages: LLM routing (superior intent understanding)
+ * - Zero added latency on the critical path (LLM runs in background)
+ *
+ * Additional optimizations:
  * - Skill catalog cached and rebuilt only when the enabled skill set changes
  * - Feedback loop: routing misses (skills used but not routed) update the cache
  * - Heavy skills annotated in catalog so the LLM is conservative about including them
@@ -52,7 +61,7 @@ class SkillRouter(
         private const val EMBEDDING_MIN_RESULTS = 3
         private const val FREQUENCY_TOP_K = 15
         private const val ROUTING_CACHE_MAX_SIZE = 50
-        private const val LLM_TIMEOUT_MS = 3000L
+        private const val LLM_TIMEOUT_MS = 10_000L
     }
 
     /** Skills always sent regardless of user message. */
@@ -349,6 +358,9 @@ class SkillRouter(
     private var lastRoutedMessageKey: String? = null
     private var lastRoutedSkillIds: Set<String>? = null
 
+    /** Background scope for fire-and-forget LLM routing calls. */
+    private val backgroundScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
     // ── Main routing ──────────────────────────────────────────────────
 
     /**
@@ -391,13 +403,18 @@ class SkillRouter(
             }
         }
 
-        // 5. LLM routing with cache (always attempted when available)
+        // 5. LLM routing with cache
+        //    Cache hit  → use cached LLM result (instant, 0ms)
+        //    Cache miss → use keywords now, fire LLM in background to populate cache
+        //    This means the first occurrence of a message type uses keywords,
+        //    and all subsequent similar messages get the superior LLM routing.
         val normalizedMessage = messageLower.trim()
         val cachedLlmResult = synchronized(routingCache) {
             routingCache[normalizedMessage]?.toSet()
         }
 
         var llmRouted = false
+        var anyKeywordMatched = false
         if (cachedLlmResult != null) {
             // Cache hit — instant, no network call
             val validCached = cachedLlmResult.filter { it in allEnabledSkillIds }
@@ -405,19 +422,10 @@ class SkillRouter(
             llmRouted = true
             Log.d(TAG, "Cache hit: '${userMessage.take(60)}...' -> ${validCached.size} skills")
         } else {
-            val llmResult = tryLlmRouting(userMessage, allEnabledSkillIds)
-            if (llmResult != null) {
-                matched.addAll(llmResult)
-                synchronized(routingCache) {
-                    routingCache[normalizedMessage] = llmResult.toMutableSet()
-                }
-                llmRouted = true
-            }
-        }
+            // Fire LLM routing in the background to populate cache for next time
+            fireBackgroundLlmRouting(userMessage, allEnabledSkillIds, normalizedMessage)
 
-        // 6. Keyword matching (fallback when LLM routing unavailable)
-        var anyKeywordMatched = false
-        if (!llmRouted) {
+            // Use keywords immediately (instant, no waiting)
             val keywordResults = computeKeywordMatches(messageLower, allEnabledSkillIds)
             if (keywordResults.isNotEmpty()) {
                 matched.addAll(keywordResults)
@@ -425,13 +433,13 @@ class SkillRouter(
             }
         }
 
-        // 7. External/dynamic skills
+        // 6. External/dynamic skills
         if (!llmRouted) {
-            // When LLM is unavailable, include all externals as safety net
+            // When LLM cache miss, include all externals as safety net
             // (can't keyword-match unknown content from user-installed skills)
             addExternalSkills(matched, allEnabledSkillIds)
         }
-        // When LLM routed successfully, external skills were already in the catalog
+        // When LLM cache hit, external skills were already in the catalog
         // and the LLM decided which ones (if any) to include.
 
         // Track for feedback loop
@@ -623,6 +631,39 @@ class SkillRouter(
         } catch (e: Exception) {
             Log.w(TAG, "Failed to parse routing response: ${e.message}")
             null
+        }
+    }
+
+    /**
+     * Fires an LLM routing call in the background. When the result arrives,
+     * it populates the routing cache so subsequent similar messages are instant.
+     * This is fire-and-forget — the current request uses keywords, not the LLM result.
+     */
+    private fun fireBackgroundLlmRouting(
+        userMessage: String,
+        allEnabledSkillIds: Set<String>,
+        normalizedMessage: String,
+    ) {
+        // Don't fire if no routing provider is configured
+        val config = try {
+            routingClientProvider?.invoke()
+        } catch (_: Exception) {
+            null
+        } ?: return
+
+        backgroundScope.launch {
+            val result = tryLlmRouting(userMessage, allEnabledSkillIds)
+            if (result != null) {
+                synchronized(routingCache) {
+                    // Merge with any existing cache entry (feedback loop may have added skills)
+                    val existing = routingCache[normalizedMessage]
+                    if (existing != null) {
+                        existing.addAll(result)
+                    } else {
+                        routingCache[normalizedMessage] = result.toMutableSet()
+                    }
+                }
+            }
         }
     }
 
