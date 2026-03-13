@@ -21,14 +21,19 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Warning
+import androidx.compose.ui.res.painterResource
+import org.ethereumphone.andyclaw.R
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import org.ethereumphone.andyclaw.ui.components.DgenSmallPrimaryButton
 import org.ethereumphone.andyclaw.ui.components.GlowStyle
@@ -111,14 +116,17 @@ fun ChatMessageItem(
         } else if (isUser) {
             SelectionContainer {
                 Text(
-                    text = "> ${message.content}",
+                    text = message.content,
                     style = MaterialTheme.typography.bodyLarge.copy(
                         fontFamily = FontFamily.Monospace,
                         fontSize = 17.sp,
                         shadow = GlowStyle.body(textColor),
                     ),
                     color = textColor,
-                    modifier = Modifier.padding(vertical = 2.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 2.dp),
+                    textAlign = androidx.compose.ui.text.style.TextAlign.End,
                 )
             }
         } else {
@@ -127,6 +135,18 @@ fun ChatMessageItem(
                     text = message.content,
                     color = primaryColor,
                     modifier = Modifier.padding(vertical = 2.dp),
+                )
+            }
+            val clipboardManager = LocalClipboardManager.current
+            IconButton(
+                onClick = { clipboardManager.setText(AnnotatedString(message.content)) },
+                modifier = Modifier.padding(top=4.dp) .size(24.dp),
+            ) {
+                Icon(
+                    painter = painterResource(id = R.drawable.content_copy),
+                    contentDescription = "Copy",
+                    tint = primaryColor,
+                    modifier = Modifier.size(24.dp),
                 )
             }
             if (message.explorerUrl != null) {
