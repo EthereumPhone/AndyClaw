@@ -26,6 +26,7 @@ import org.ethereumphone.andyclaw.llm.OpenAiNativeClient
 import org.ethereumphone.andyclaw.llm.TinfoilClient
 import org.ethereumphone.andyclaw.llm.TinfoilProxyClient
 import org.ethereumphone.andyclaw.skills.SkillRegistry
+import org.ethereumphone.andyclaw.skills.SkillRouter
 import org.ethereumphone.andyclaw.memory.MemoryManager
 import org.ethereumphone.andyclaw.memory.OpenAiEmbeddingProvider
 import org.ethereumphone.andyclaw.sessions.SessionManager
@@ -189,6 +190,20 @@ class NodeApp : Application() {
         ClawHubManager(
             managedSkillsDir = clawHubSkillsDir,
             skillRegistry = skillRegistry,
+        )
+    }
+
+    // ── Skill Router ─────────────────────────────────────────────────
+
+    val skillRouter: SkillRouter by lazy {
+        SkillRouter(
+            context = this,
+            skillRegistry = nativeSkillRegistry,
+            embeddingProvider = if (OsCapabilities.hasPrivilegedAccess || securePrefs.apiKey.value.isNotBlank()) {
+                embeddingProvider
+            } else {
+                null
+            },
         )
     }
 

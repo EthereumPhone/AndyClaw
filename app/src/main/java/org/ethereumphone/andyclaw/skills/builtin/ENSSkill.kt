@@ -30,15 +30,11 @@ class ENSSkill : AndyClawSkill {
     }
 
     override val baseManifest = SkillManifest(
-        description = "Resolve Ethereum Name Service (ENS) names. " +
-                "Converts ENS names (e.g. vitalik.eth) to addresses and addresses to ENS names.",
+        description = "Resolve ENS names to addresses and vice versa.",
         tools = listOf(
             ToolDefinition(
                 name = "resolve_ens",
-                description = "Resolve an ENS name to an Ethereum address (forward resolution) " +
-                        "or an Ethereum address to an ENS name (reverse resolution). " +
-                        "Auto-detects direction: pass a .eth name for forward, or a 0x address for reverse. " +
-                        "ENS resolution always uses Ethereum mainnet regardless of the chain_id parameter.",
+                description = "Resolve an ENS name to address or address to ENS name (auto-detects direction, always uses mainnet).",
                 inputSchema = JsonObject(
                     mapOf(
                         "type" to JsonPrimitive("object"),
@@ -47,10 +43,7 @@ class ENSSkill : AndyClawSkill {
                                 "input" to JsonObject(
                                     mapOf(
                                         "type" to JsonPrimitive("string"),
-                                        "description" to JsonPrimitive(
-                                            "An ENS name (e.g. 'vitalik.eth') for forward resolution, " +
-                                                    "or an Ethereum address (0x...) for reverse resolution"
-                                        ),
+                                        "description" to JsonPrimitive("ENS name (e.g. 'vitalik.eth') or Ethereum address (0x...)"),
                                     )
                                 ),
                             )

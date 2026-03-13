@@ -46,36 +46,27 @@ class LedSkill(
 
     override val baseManifest = SkillManifest(
         description = buildString {
-            append("Control the 3×3 LED matrix on the back of the dGEN1 device. ")
-            append("Display built-in patterns, create custom static patterns, ")
-            append("run multi-frame animations, or control individual LEDs. ")
-            append("The grid is 3 rows × 3 columns (indices 0–2). ")
-            append("Colors are hex strings like \"#FF0000\" (red), \"#00FF00\" (green), \"#000000\" (off). ")
-            append("Use vivid, full-brightness colors (e.g. \"#FF0000\" not \"#400000\") — ")
-            append("brightness is controlled by the hardware automatically based on the user's preference. ")
-            append("Only available on dGEN1 hardware running ethOS.")
+            append("Control the dGEN1 3×3 LED matrix (indices 0–2). ")
+            append("Colors are hex strings (e.g. \"#FF0000\"). ")
+            append("Use full-brightness colors — hardware auto-adjusts brightness. ")
+            append("Only available on dGEN1 running ethOS.")
         },
         tools = listOf(
             ToolDefinition(
                 name = "led_display_pattern",
-                description = buildString {
-                    append("Display a built-in LED pattern by name. ")
-                    append("Available patterns: chad, plus, minus, success, error, warning, info, arrowup, arrowdown, swap, sign. ")
-                    append("Optionally override the color (otherwise uses system accent color).")
-                },
+                description = "Display a built-in LED pattern by name, optionally overriding the color.",
                 inputSchema = buildJsonObject {
                     put("type", "object")
                     putJsonObject("properties") {
                         putJsonObject("pattern") {
                             put("type", "string")
-                            put("description", "Pattern name (e.g. 'success', 'chad', 'error', 'info')")
                             putJsonArray("enum") {
                                 for (p in LedMatrixController.BUILTIN_PATTERNS) add(JsonPrimitive(p))
                             }
                         }
                         putJsonObject("color") {
                             put("type", "string")
-                            put("description", "Optional hex color override (e.g. '#FF00FF'). Uses system accent if omitted.")
+                            put("description", "Hex color override (e.g. '#FF00FF'), uses system accent if omitted")
                         }
                     }
                     putJsonArray("required") { add(JsonPrimitive("pattern")) }
@@ -84,17 +75,12 @@ class LedSkill(
 
             ToolDefinition(
                 name = "led_flash_pattern",
-                description = buildString {
-                    append("Flash a status pattern briefly then revert to the default chad branding pattern. ")
-                    append("Available: success, error, warning, info. ")
-                    append("Good for confirming an action completed.")
-                },
+                description = "Flash a status pattern briefly then revert to default chad pattern.",
                 inputSchema = buildJsonObject {
                     put("type", "object")
                     putJsonObject("properties") {
                         putJsonObject("pattern") {
                             put("type", "string")
-                            put("description", "Status pattern to flash: success, error, warning, or info")
                             putJsonArray("enum") {
                                 add(JsonPrimitive("success"))
                                 add(JsonPrimitive("error"))
@@ -104,7 +90,7 @@ class LedSkill(
                         }
                         putJsonObject("duration_ms") {
                             put("type", "integer")
-                            put("description", "How long to show the flash in milliseconds (default 1000)")
+                            put("description", "Flash duration in ms (default 1000)")
                         }
                     }
                     putJsonArray("required") { add(JsonPrimitive("pattern")) }
@@ -113,18 +99,12 @@ class LedSkill(
 
             ToolDefinition(
                 name = "led_set_custom_pattern",
-                description = buildString {
-                    append("Set a custom static 3×3 LED pattern. ")
-                    append("Provide a 3-element array where each element is a 3-element array of hex color strings. ")
-                    append("Use '#000000' for off. Example: a diagonal line would be ")
-                    append("[[\"#FF0000\",\"#000000\",\"#000000\"],[\"#000000\",\"#FF0000\",\"#000000\"],[\"#000000\",\"#000000\",\"#FF0000\"]]")
-                },
+                description = "Set a custom static 3×3 LED pattern from a grid of hex color strings ('#000000' = off).",
                 inputSchema = buildJsonObject {
                     put("type", "object")
                     putJsonObject("properties") {
                         putJsonObject("pattern") {
                             put("type", "array")
-                            put("description", "3×3 grid of hex color strings. Outer array = rows, inner array = columns.")
                             putJsonObject("items") {
                                 put("type", "array")
                                 putJsonObject("items") {
@@ -143,19 +123,12 @@ class LedSkill(
 
             ToolDefinition(
                 name = "led_animate",
-                description = buildString {
-                    append("Run a custom animation on the 3×3 LED matrix. ")
-                    append("Provide an array of frames, where each frame is a 3×3 grid of hex color strings. ")
-                    append("Frames are played sequentially with interval_ms delay between them. ")
-                    append("Set loops to 0 for infinite looping (animation runs until the next LED command). ")
-                    append("Example: a 2-frame blink would have one frame all-red and one frame all-off.")
-                },
+                description = "Run a custom animation from an array of 3×3 hex color frames. Set loops=0 for infinite.",
                 inputSchema = buildJsonObject {
                     put("type", "object")
                     putJsonObject("properties") {
                         putJsonObject("frames") {
                             put("type", "array")
-                            put("description", "Array of frames. Each frame is a 3×3 array of hex color strings.")
                             putJsonObject("items") {
                                 put("type", "array")
                                 putJsonObject("items") {
@@ -172,11 +145,11 @@ class LedSkill(
                         }
                         putJsonObject("interval_ms") {
                             put("type", "integer")
-                            put("description", "Delay between frames in milliseconds (default 150)")
+                            put("description", "Delay between frames in ms (default 150)")
                         }
                         putJsonObject("loops") {
                             put("type", "integer")
-                            put("description", "Number of times to play the full animation. 0 = loop forever until next LED command (default 1)")
+                            put("description", "Loop count; 0 = infinite (default 1)")
                         }
                     }
                     putJsonArray("required") { add(JsonPrimitive("frames")) }
@@ -191,19 +164,18 @@ class LedSkill(
                     putJsonObject("properties") {
                         putJsonObject("row") {
                             put("type", "integer")
-                            put("description", "Row index (0 = top, 2 = bottom)")
+                            put("description", "Row index (0=top, 2=bottom)")
                             put("minimum", 0)
                             put("maximum", 2)
                         }
                         putJsonObject("col") {
                             put("type", "integer")
-                            put("description", "Column index (0 = left, 2 = right)")
+                            put("description", "Column index (0=left, 2=right)")
                             put("minimum", 0)
                             put("maximum", 2)
                         }
                         putJsonObject("color") {
                             put("type", "string")
-                            put("description", "Hex color string (e.g. '#FF0000' for red)")
                         }
                     }
                     putJsonArray("required") {
@@ -216,22 +188,16 @@ class LedSkill(
 
             ToolDefinition(
                 name = "led_set_all",
-                description = buildString {
-                    append("Set all 9 LEDs to the same color. ")
-                    append("Optionally set duration_ms to automatically clear after that many milliseconds. ")
-                    append("This returns immediately — the timer runs in the background. ")
-                    append("Use this for timed displays like 'show red for 10 seconds' (duration_ms=10000).")
-                },
+                description = "Set all 9 LEDs to one color, optionally auto-clearing after duration_ms.",
                 inputSchema = buildJsonObject {
                     put("type", "object")
                     putJsonObject("properties") {
                         putJsonObject("color") {
                             put("type", "string")
-                            put("description", "Hex color string (e.g. '#0000FF' for blue, '#000000' for off)")
                         }
                         putJsonObject("duration_ms") {
                             put("type", "integer")
-                            put("description", "Auto-clear after this many milliseconds. Omit or 0 for indefinite (stays on until next command).")
+                            put("description", "Auto-clear after this many ms (0 or omit = indefinite)")
                         }
                     }
                     putJsonArray("required") { add(JsonPrimitive("color")) }
@@ -249,7 +215,7 @@ class LedSkill(
 
             ToolDefinition(
                 name = "led_list_patterns",
-                description = "List all available built-in LED pattern names that can be used with led_display_pattern and led_flash_pattern.",
+                description = "List all available built-in LED pattern names.",
                 inputSchema = buildJsonObject {
                     put("type", "object")
                     putJsonObject("properties") {}

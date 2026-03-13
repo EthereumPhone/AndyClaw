@@ -184,7 +184,8 @@ class NodeRuntime(private val context: Context) {
         val tier = OsCapabilities.currentTier()
         val app = context as? NodeApp
         return AgentLoop(client, registry, tier, enabledSkillIds, model, aiName, userStory,
-            safetyLayer = app?.createSafetyLayer())
+            safetyLayer = app?.createSafetyLayer(),
+            skillRouter = app?.skillRouter)
     }
 
     /**

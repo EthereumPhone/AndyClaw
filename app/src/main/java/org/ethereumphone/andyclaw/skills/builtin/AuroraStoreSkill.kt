@@ -60,13 +60,11 @@ class AuroraStoreSkill(private val context: Context) : AndyClawSkill {
     override val name = "Aurora Store"
 
     override val baseManifest = SkillManifest(
-        description = "Search and install apps from the Google Play Store via Aurora Store. " +
-                "Can search for apps, get app details, check if an app is already installed, " +
-                "and download + install apps by package name.",
+        description = "Search and install apps from the Google Play Store via Aurora Store.",
         tools = listOf(
             ToolDefinition(
                 name = "search_apps",
-                description = "Search for apps on the Google Play Store. Returns a list of matching apps with their package names, display names, and descriptions.",
+                description = "Search for apps on the Google Play Store.",
                 inputSchema = JsonObject(
                     mapOf(
                         "type" to JsonPrimitive("object"),
@@ -75,7 +73,6 @@ class AuroraStoreSkill(private val context: Context) : AndyClawSkill {
                                 "query" to JsonObject(
                                     mapOf(
                                         "type" to JsonPrimitive("string"),
-                                        "description" to JsonPrimitive("The search query (app name, keyword, etc.)")
                                     )
                                 ),
                             )
@@ -86,7 +83,7 @@ class AuroraStoreSkill(private val context: Context) : AndyClawSkill {
             ),
             ToolDefinition(
                 name = "get_app_details",
-                description = "Get detailed information about an app from the Play Store by its package name.",
+                description = "Get detailed Play Store info for an app by package name.",
                 inputSchema = JsonObject(
                     mapOf(
                         "type" to JsonPrimitive("object"),
@@ -95,7 +92,7 @@ class AuroraStoreSkill(private val context: Context) : AndyClawSkill {
                                 "package_name" to JsonObject(
                                     mapOf(
                                         "type" to JsonPrimitive("string"),
-                                        "description" to JsonPrimitive("The package name of the app (e.g. com.spotify.music)")
+                                        "description" to JsonPrimitive("e.g. com.spotify.music")
                                     )
                                 ),
                             )
@@ -106,9 +103,7 @@ class AuroraStoreSkill(private val context: Context) : AndyClawSkill {
             ),
             ToolDefinition(
                 name = "install_app",
-                description = "Download and install an app from the Play Store by its package name. " +
-                        "Will first check if the app is already installed and skip if so. " +
-                        "Supports split APKs. The user may need to confirm the installation on their device.",
+                description = "Download and install an app by package name (skips if already installed, supports split APKs).",
                 inputSchema = JsonObject(
                     mapOf(
                         "type" to JsonPrimitive("object"),
@@ -117,13 +112,13 @@ class AuroraStoreSkill(private val context: Context) : AndyClawSkill {
                                 "package_name" to JsonObject(
                                     mapOf(
                                         "type" to JsonPrimitive("string"),
-                                        "description" to JsonPrimitive("The package name of the app to install (e.g. com.spotify.music)")
+                                        "description" to JsonPrimitive("e.g. com.spotify.music")
                                     )
                                 ),
                                 "force_reinstall" to JsonObject(
                                     mapOf(
                                         "type" to JsonPrimitive("boolean"),
-                                        "description" to JsonPrimitive("If true, reinstall even if the app is already installed. Defaults to false.")
+                                        "description" to JsonPrimitive("Reinstall even if installed (default: false)")
                                     )
                                 ),
                             )

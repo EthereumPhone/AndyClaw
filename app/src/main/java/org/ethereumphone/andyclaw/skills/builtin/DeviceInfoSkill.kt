@@ -25,11 +25,11 @@ class DeviceInfoSkill(private val context: Context) : AndyClawSkill {
     override val name = "Device Info"
 
     override val baseManifest = SkillManifest(
-        description = "Provides device information including battery, storage, network, model, OS, and RAM.",
+        description = "Device information: battery, storage, network, model, OS, and RAM.",
         tools = listOf(
             ToolDefinition(
                 name = "get_device_info",
-                description = "Get comprehensive device information including battery level, storage usage, network status, device model, OS version, and RAM usage.",
+                description = "Get battery, storage, network, model, OS, and RAM info.",
                 inputSchema = JsonObject(mapOf("type" to JsonPrimitive("object"), "properties" to JsonObject(emptyMap()))),
             )
         ),
