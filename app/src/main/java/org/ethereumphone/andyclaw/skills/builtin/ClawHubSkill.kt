@@ -37,23 +37,20 @@ class ClawHubSkill(
     override val name = "ClawHub"
 
     override val baseManifest = SkillManifest(
-        description = "Search, install, uninstall, and manage skills from the ClawHub registry. " +
-            "Installed skills become immediately available as agent tools and appear in the ClawHub UI.",
+        description = "Search, install, uninstall, and manage skills from ClawHub.",
         tools = listOf(
             ToolDefinition(
                 name = "clawhub_search",
-                description = "Search the ClawHub skill registry by natural-language query. " +
-                    "Returns matching skills with slugs, names, descriptions, and versions.",
+                description = "Search the ClawHub skill registry by query.",
                 inputSchema = buildJsonObject {
                     put("type", "object")
                     putJsonObject("properties") {
                         putJsonObject("query") {
                             put("type", "string")
-                            put("description", "Natural-language search query (e.g. 'calendar management', 'file organizer')")
                         }
                         putJsonObject("limit") {
                             put("type", "integer")
-                            put("description", "Maximum number of results to return (default: 20)")
+                            put("description", "Max results (default: 20)")
                         }
                     }
                     putJsonArray("required") { add(JsonPrimitive("query")) }
@@ -61,28 +58,25 @@ class ClawHubSkill(
             ),
             ToolDefinition(
                 name = "clawhub_browse",
-                description = "Browse all available skills on ClawHub with pagination. " +
-                    "Use this to discover what skills are available without a specific search query.",
+                description = "Browse all available ClawHub skills with pagination.",
                 inputSchema = buildJsonObject {
                     put("type", "object")
                     putJsonObject("properties") {
                         putJsonObject("cursor") {
                             put("type", "string")
-                            put("description", "Pagination cursor from a previous browse call (omit for first page)")
+                            put("description", "Pagination cursor from previous call (omit for first page)")
                         }
                     }
                 },
             ),
             ToolDefinition(
                 name = "clawhub_skill_info",
-                description = "Get detailed information about a specific skill on ClawHub, " +
-                    "including owner, versions, and moderation status.",
+                description = "Get detailed info about a specific ClawHub skill.",
                 inputSchema = buildJsonObject {
                     put("type", "object")
                     putJsonObject("properties") {
                         putJsonObject("slug") {
                             put("type", "string")
-                            put("description", "Skill slug (e.g. 'calendar-skill')")
                         }
                     }
                     putJsonArray("required") { add(JsonPrimitive("slug")) }
@@ -90,19 +84,16 @@ class ClawHubSkill(
             ),
             ToolDefinition(
                 name = "clawhub_install",
-                description = "Install a skill from ClawHub by its slug. The skill will be downloaded, " +
-                    "registered, and immediately available as an agent tool. " +
-                    "It will also appear in the Installed tab of the ClawHub UI.",
+                description = "Install a ClawHub skill by slug, making it immediately available.",
                 inputSchema = buildJsonObject {
                     put("type", "object")
                     putJsonObject("properties") {
                         putJsonObject("slug") {
                             put("type", "string")
-                            put("description", "Skill slug to install (e.g. 'calendar-skill')")
                         }
                         putJsonObject("version") {
                             put("type", "string")
-                            put("description", "Specific version to install (latest if omitted)")
+                            put("description", "Specific version (latest if omitted)")
                         }
                     }
                     putJsonArray("required") { add(JsonPrimitive("slug")) }
@@ -111,14 +102,12 @@ class ClawHubSkill(
             ),
             ToolDefinition(
                 name = "clawhub_uninstall",
-                description = "Uninstall a ClawHub skill by its slug. Removes the skill files, " +
-                    "unregisters it from the agent, and removes it from the Installed tab.",
+                description = "Uninstall a ClawHub skill by slug.",
                 inputSchema = buildJsonObject {
                     put("type", "object")
                     putJsonObject("properties") {
                         putJsonObject("slug") {
                             put("type", "string")
-                            put("description", "Slug of the installed skill to remove")
                         }
                     }
                     putJsonArray("required") { add(JsonPrimitive("slug")) }
@@ -133,7 +122,6 @@ class ClawHubSkill(
                     putJsonObject("properties") {
                         putJsonObject("slug") {
                             put("type", "string")
-                            put("description", "Slug of the installed skill to update")
                         }
                         putJsonObject("version") {
                             put("type", "string")
@@ -146,8 +134,7 @@ class ClawHubSkill(
             ),
             ToolDefinition(
                 name = "clawhub_list_installed",
-                description = "List all currently installed ClawHub skills with their slugs, " +
-                    "display names, versions, and install timestamps.",
+                description = "List all installed ClawHub skills.",
                 inputSchema = buildJsonObject {
                     put("type", "object")
                     putJsonObject("properties") {}

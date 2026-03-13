@@ -21,11 +21,11 @@ class ScreenSkill : AndyClawSkill {
     )
 
     override val privilegedManifest = SkillManifest(
-        description = "Read the current screen content via the Supercharger API (privileged OS only).",
+        description = "Read the current screen content via Supercharger API.",
         tools = listOf(
             ToolDefinition(
                 name = "read_screen",
-                description = "Read the current screen content including the active app, view hierarchy, and text elements. Only available on privileged OS builds with Supercharger integration.",
+                description = "Read current screen content: active app, view hierarchy, and text elements.",
                 inputSchema = JsonObject(mapOf("type" to JsonPrimitive("object"), "properties" to JsonObject(emptyMap()))),
             ),
         ),

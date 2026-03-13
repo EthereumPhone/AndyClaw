@@ -11,14 +11,24 @@ enum class AnthropicModels(
     MINIMAX_M25("minimax/minimax-m2.5", 8192, LlmProvider.OPEN_ROUTER),
     KIMI_K25("moonshotai/kimi-k2.5", 8192, LlmProvider.OPEN_ROUTER),
     GEMINI_3_1_PRO("google/gemini-3.1-pro-preview", 8192, LlmProvider.OPEN_ROUTER),
+    GEMINI_3_FLASH("google/gemini-3-flash-preview", 8192, LlmProvider.OPEN_ROUTER),
+    GEMINI_3_1_FLASH_LITE("google/gemini-3.1-flash-lite-preview", 8192, LlmProvider.OPEN_ROUTER),
     GROK_4("x-ai/grok-4", 8192, LlmProvider.OPEN_ROUTER),
+    GROK_4_20("x-ai/grok-4.20-beta", 8192, LlmProvider.OPEN_ROUTER),
     GLM_5("z-ai/glm-5", 8192, LlmProvider.OPEN_ROUTER),
+    GLM_4_7("z-ai/glm-4.7", 8192, LlmProvider.OPEN_ROUTER),
+    GLM_4_7_FLASH("z-ai/glm-4.7-flash", 8192, LlmProvider.OPEN_ROUTER),
     DEEPSEEK_R1("deepseek/deepseek-r1", 8192, LlmProvider.OPEN_ROUTER),
+    DEEPSEEK_V3_2("deepseek/deepseek-v3.2-speciale", 8192, LlmProvider.OPEN_ROUTER),
     QWEN_3_5_PLUS("qwen/qwen3.5-plus-02-15", 8192, LlmProvider.OPEN_ROUTER),
+    QWEN_3_5_FLASH("qwen/qwen3.5-flash-02-23", 8192, LlmProvider.OPEN_ROUTER),
+    MISTRAL_LARGE("mistral/mistral-large-2512", 8192, LlmProvider.OPEN_ROUTER),
 
     // Claude setup-token models (direct Anthropic API)
     CLAUDE_OAUTH_OPUS_4_6("claude-opus-4-6", 8192, LlmProvider.CLAUDE_OAUTH),
     CLAUDE_OAUTH_SONNET_4_6("claude-sonnet-4-6", 8192, LlmProvider.CLAUDE_OAUTH),
+    CLAUDE_OAUTH_HAIKU_4_5("claude-haiku-4-5-20251001", 8192, LlmProvider.CLAUDE_OAUTH),
+    CLAUDE_OAUTH_HAIKU_3_5("claude-haiku-3-5-20241022", 8192, LlmProvider.CLAUDE_OAUTH),
 
     // Tinfoil TEE models
     TINFOIL_KIMI_K25("kimi-k2-5", 8192, LlmProvider.TINFOIL),
@@ -28,8 +38,10 @@ enum class AnthropicModels(
 
     // OpenAI models — flagship/frontier
     OPENAI_GPT_5_4("gpt-5.4", 128000, LlmProvider.OPENAI),
+    OPENAI_GPT_5_4_PRO("gpt-5.4-pro", 128000, LlmProvider.OPENAI),
     OPENAI_GPT_5("gpt-5", 128000, LlmProvider.OPENAI),
     OPENAI_GPT_5_MINI("gpt-5-mini", 128000, LlmProvider.OPENAI),
+    OPENAI_GPT_5_NANO("gpt-5-nano", 32768, LlmProvider.OPENAI),
     OPENAI_GPT_4_1("gpt-4.1", 32768, LlmProvider.OPENAI),
     OPENAI_GPT_4_1_MINI("gpt-4.1-mini", 32768, LlmProvider.OPENAI),
     OPENAI_GPT_4_1_NANO("gpt-4.1-nano", 32768, LlmProvider.OPENAI),
@@ -72,6 +84,8 @@ enum class AnthropicModels(
     VENICE_GEMINI_3_PRO("gemini-3-pro-preview", 8192, LlmProvider.VENICE),
     VENICE_GEMINI_3_FLASH("gemini-3-flash-preview", 8192, LlmProvider.VENICE),
     VENICE_GROK_4_1_FAST("grok-41-fast", 8192, LlmProvider.VENICE),
+    VENICE_GROK_4_20("grok-4-20-beta", 8192, LlmProvider.VENICE),
+    VENICE_GROK_4_20_MULTI_AGENT("grok-4-20-multi-agent-beta", 8192, LlmProvider.VENICE),
     VENICE_GROK_CODE_FAST_1("grok-code-fast-1", 8192, LlmProvider.VENICE),
     VENICE_KIMI_K2_THINKING("kimi-k2-thinking", 8192, LlmProvider.VENICE),
     VENICE_KIMI_K25("kimi-k2-5", 8192, LlmProvider.VENICE),
@@ -116,6 +130,17 @@ enum class AnthropicModels(
             LlmProvider.OPENAI -> OPENAI_GPT_4_1
             LlmProvider.VENICE -> VENICE_LLAMA_3_3_70B
             LlmProvider.LOCAL -> QWEN2_5_1_5B
+        }
+
+        /** Cheap/fast model for skill routing classification. Null = skip LLM routing. */
+        fun routingModelForProvider(provider: LlmProvider): AnthropicModels? = when (provider) {
+            LlmProvider.ETHOS_PREMIUM -> QWEN_3_5_FLASH       // via OpenRouter premium gateway
+            LlmProvider.OPEN_ROUTER -> QWEN_3_5_FLASH          // $0.10/MTok
+            LlmProvider.CLAUDE_OAUTH -> CLAUDE_OAUTH_HAIKU_3_5 // $0.80/MTok
+            LlmProvider.TINFOIL -> TINFOIL_LLAMA3_3_70B         // smallest Tinfoil model
+            LlmProvider.OPENAI -> OPENAI_GPT_5_NANO            // $0.025/MTok
+            LlmProvider.VENICE -> VENICE_LLAMA_3_2_3B           // subscription, tiny & fast
+            LlmProvider.LOCAL -> null                            // skip — double local latency
         }
     }
 }

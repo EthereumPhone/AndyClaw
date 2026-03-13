@@ -46,17 +46,12 @@ class CliToolManagerSkill(
     override val name = "CLI Tool Manager"
 
     override val baseManifest = SkillManifest(
-        description = buildString {
-            appendLine("Register, configure, and run external CLI tools installed in Termux.")
-            appendLine("Use cli_tools_list to see registered tools and cli_tools_info to learn how to use them.")
-            appendLine("Supports tools with SKILL.md documentation (e.g. opensea-cli, gws) and any CLI with --help.")
-        },
+        description = "Register, configure, and run external CLI tools installed in Termux.",
         tools = listOf(
             // ── cli_tools_list ──
             ToolDefinition(
                 name = "cli_tools_list",
-                description = "List all registered CLI tools with their status: whether the binary is known, " +
-                    "and whether required environment variables are configured.",
+                description = "List all registered CLI tools with their status.",
                 inputSchema = buildJsonObject {
                     put("type", "object")
                     putJsonObject("properties") {}
@@ -65,46 +60,35 @@ class CliToolManagerSkill(
             // ── cli_tools_add ──
             ToolDefinition(
                 name = "cli_tools_add",
-                description = "Register a new CLI tool. Fetches and caches its SKILL.md documentation " +
-                    "from a git repo, npm package, or local path. The tool becomes available via " +
-                    "cli_tools_info and cli_tools_run.",
+                description = "Register a new CLI tool and fetch its SKILL.md documentation from a git repo, npm package, or local path.",
                 inputSchema = buildJsonObject {
                     put("type", "object")
                     putJsonObject("properties") {
                         putJsonObject("id") {
                             put("type", "string")
-                            put("description", "Unique identifier for this tool (e.g. 'opensea', 'gws')")
                         }
                         putJsonObject("name") {
                             put("type", "string")
-                            put("description", "Human-readable name (e.g. 'OpenSea CLI')")
                         }
                         putJsonObject("source_type") {
                             put("type", "string")
-                            put("description", "Where to fetch docs from: 'git', 'npm', or 'local'")
+                            put("description", "'git', 'npm', or 'local'")
                         }
                         putJsonObject("source_value") {
                             put("type", "string")
-                            put("description", "Git repo URL, npm package name, or local directory path")
+                            put("description", "Git repo URL, npm package name, or local path")
                         }
                         putJsonObject("binary_name") {
                             put("type", "string")
-                            put("description", "Command name in PATH (e.g. 'opensea', 'gws'). Optional.")
+                            put("description", "Command name in PATH (optional)")
                         }
                         putJsonObject("install_command") {
                             put("type", "string")
-                            put(
-                                "description",
-                                "Command to install the tool in Termux (e.g. 'npm install -g @opensea/cli'). Optional."
-                            )
+                            put("description", "Termux install command (optional)")
                         }
                         putJsonObject("env_var_keys") {
                             put("type", "string")
-                            put(
-                                "description",
-                                "Comma-separated list of environment variable names this tool needs " +
-                                    "(e.g. 'OPENSEA_API_KEY,OPENSEA_CHAIN'). Optional."
-                            )
+                            put("description", "Comma-separated env var names (optional)")
                         }
                     }
                     putJsonArray("required") {
@@ -119,13 +103,12 @@ class CliToolManagerSkill(
             // ── cli_tools_remove ──
             ToolDefinition(
                 name = "cli_tools_remove",
-                description = "Unregister a CLI tool and remove its cached documentation and configuration.",
+                description = "Unregister a CLI tool and remove its cached docs and config.",
                 inputSchema = buildJsonObject {
                     put("type", "object")
                     putJsonObject("properties") {
                         putJsonObject("id") {
                             put("type", "string")
-                            put("description", "ID of the tool to remove")
                         }
                     }
                     putJsonArray("required") { add(JsonPrimitive("id")) }
@@ -135,23 +118,16 @@ class CliToolManagerSkill(
             // ── cli_tools_info ──
             ToolDefinition(
                 name = "cli_tools_info",
-                description = "Get the SKILL.md documentation for a registered CLI tool. " +
-                    "Use this to learn how to use the tool before running commands. " +
-                    "If the tool has multiple SKILL.md files, specify which one with the 'file' parameter.",
+                description = "Get the SKILL.md documentation for a registered CLI tool.",
                 inputSchema = buildJsonObject {
                     put("type", "object")
                     putJsonObject("properties") {
                         putJsonObject("id") {
                             put("type", "string")
-                            put("description", "ID of the registered tool")
                         }
                         putJsonObject("file") {
                             put("type", "string")
-                            put(
-                                "description",
-                                "Relative path to a specific SKILL.md file (for tools with multiple). " +
-                                    "Omit to get the first/only one, or 'list' to see all available files."
-                            )
+                            put("description", "Specific SKILL.md path, or 'list' to see all available files")
                         }
                     }
                     putJsonArray("required") { add(JsonPrimitive("id")) }
@@ -160,21 +136,15 @@ class CliToolManagerSkill(
             // ── cli_tools_configure ──
             ToolDefinition(
                 name = "cli_tools_configure",
-                description = "Store API keys and environment variables for a CLI tool (encrypted). " +
-                    "These are automatically injected when running the tool via cli_tools_run.",
+                description = "Store API keys and environment variables for a CLI tool (encrypted, auto-injected on run).",
                 inputSchema = buildJsonObject {
                     put("type", "object")
                     putJsonObject("properties") {
                         putJsonObject("id") {
                             put("type", "string")
-                            put("description", "ID of the tool to configure")
                         }
                         putJsonObject("env_vars") {
                             put("type", "object")
-                            put(
-                                "description",
-                                "Key-value map of environment variables (e.g. {\"OPENSEA_API_KEY\": \"sk-...\"})"
-                            )
                         }
                     }
                     putJsonArray("required") {
@@ -187,18 +157,16 @@ class CliToolManagerSkill(
             // ── cli_tools_install ──
             ToolDefinition(
                 name = "cli_tools_install",
-                description = "Install a registered CLI tool's binary in Termux. Uses the tool's stored " +
-                    "install command or a provided override.",
+                description = "Install a registered CLI tool's binary in Termux.",
                 inputSchema = buildJsonObject {
                     put("type", "object")
                     putJsonObject("properties") {
                         putJsonObject("id") {
                             put("type", "string")
-                            put("description", "ID of the tool to install")
                         }
                         putJsonObject("command") {
                             put("type", "string")
-                            put("description", "Override install command (uses stored command if omitted)")
+                            put("description", "Override install command (optional)")
                         }
                     }
                     putJsonArray("required") { add(JsonPrimitive("id")) }
@@ -208,22 +176,19 @@ class CliToolManagerSkill(
             // ── cli_tools_run ──
             ToolDefinition(
                 name = "cli_tools_run",
-                description = "Execute a command with a registered CLI tool. The tool's configured " +
-                    "environment variables (API keys, etc.) are automatically injected.",
+                description = "Execute a command with a registered CLI tool (env vars auto-injected).",
                 inputSchema = buildJsonObject {
                     put("type", "object")
                     putJsonObject("properties") {
                         putJsonObject("id") {
                             put("type", "string")
-                            put("description", "ID of the registered tool")
                         }
                         putJsonObject("command") {
                             put("type", "string")
-                            put("description", "The full command to execute (e.g. 'opensea nfts list --owner 0x...')")
                         }
                         putJsonObject("timeout_ms") {
                             put("type", "integer")
-                            put("description", "Timeout in milliseconds (default 30000, max 300000)")
+                            put("description", "Default 30000, max 300000")
                         }
                     }
                     putJsonArray("required") {

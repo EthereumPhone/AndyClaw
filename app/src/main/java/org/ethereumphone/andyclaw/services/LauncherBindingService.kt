@@ -209,6 +209,7 @@ class LauncherBindingService : Service() {
             userStory = userStory,
             memoryManager = app.memoryManager,
             safetyLayer = app.createSafetyLayer(),
+            skillRouter = app.skillRouter,
         )
 
         // Get or create conversation history for this session

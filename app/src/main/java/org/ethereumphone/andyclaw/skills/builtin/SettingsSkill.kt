@@ -20,27 +20,27 @@ class SettingsSkill(private val context: Context) : AndyClawSkill {
     override val name = "System Settings"
 
     override val baseManifest = SkillManifest(
-        description = "Read system settings from the device.",
+        description = "Read system settings.",
         tools = listOf(
             ToolDefinition(
                 name = "get_system_setting",
-                description = "Get a system setting value by name (e.g., screen_brightness, volume_music).",
+                description = "Get a setting value by name (e.g. screen_brightness, volume_music).",
                 inputSchema = JsonObject(mapOf(
                     "type" to JsonPrimitive("object"),
                     "properties" to JsonObject(mapOf(
-                        "name" to JsonObject(mapOf("type" to JsonPrimitive("string"), "description" to JsonPrimitive("Setting name"))),
-                        "namespace" to JsonObject(mapOf("type" to JsonPrimitive("string"), "description" to JsonPrimitive("Namespace: system, secure, or global (default: system)"))),
+                        "name" to JsonObject(mapOf("type" to JsonPrimitive("string"))),
+                        "namespace" to JsonObject(mapOf("type" to JsonPrimitive("string"), "description" to JsonPrimitive("system, secure, or global (default: system)"))),
                     )),
                     "required" to JsonArray(listOf(JsonPrimitive("name"))),
                 )),
             ),
             ToolDefinition(
                 name = "list_settings",
-                description = "List available settings in a namespace.",
+                description = "List settings in a namespace.",
                 inputSchema = JsonObject(mapOf(
                     "type" to JsonPrimitive("object"),
                     "properties" to JsonObject(mapOf(
-                        "namespace" to JsonObject(mapOf("type" to JsonPrimitive("string"), "description" to JsonPrimitive("Namespace: system, secure, or global (default: system)"))),
+                        "namespace" to JsonObject(mapOf("type" to JsonPrimitive("string"), "description" to JsonPrimitive("system, secure, or global (default: system)"))),
                     )),
                 )),
             ),
@@ -48,31 +48,22 @@ class SettingsSkill(private val context: Context) : AndyClawSkill {
     )
 
     override val privilegedManifest = SkillManifest(
-        description = "Write system and secure settings (privileged OS only).",
+        description = "Write system and secure settings.",
         tools = listOf(
             ToolDefinition(
-                name = "write_system_setting",
-                description = "Write a system setting value (privileged OS only).",
+                name = "write_setting",
+                description = "Write a setting value (privileged OS only).",
                 inputSchema = JsonObject(mapOf(
                     "type" to JsonPrimitive("object"),
                     "properties" to JsonObject(mapOf(
-                        "name" to JsonObject(mapOf("type" to JsonPrimitive("string"), "description" to JsonPrimitive("Setting name"))),
-                        "value" to JsonObject(mapOf("type" to JsonPrimitive("string"), "description" to JsonPrimitive("Setting value"))),
+                        "namespace" to JsonObject(mapOf(
+                            "type" to JsonPrimitive("string"),
+                            "enum" to JsonArray(listOf(JsonPrimitive("system"), JsonPrimitive("secure"))),
+                        )),
+                        "name" to JsonObject(mapOf("type" to JsonPrimitive("string"))),
+                        "value" to JsonObject(mapOf("type" to JsonPrimitive("string"))),
                     )),
-                    "required" to JsonArray(listOf(JsonPrimitive("name"), JsonPrimitive("value"))),
-                )),
-                requiresApproval = true,
-            ),
-            ToolDefinition(
-                name = "write_secure_setting",
-                description = "Write a secure setting value (privileged OS only).",
-                inputSchema = JsonObject(mapOf(
-                    "type" to JsonPrimitive("object"),
-                    "properties" to JsonObject(mapOf(
-                        "name" to JsonObject(mapOf("type" to JsonPrimitive("string"), "description" to JsonPrimitive("Setting name"))),
-                        "value" to JsonObject(mapOf("type" to JsonPrimitive("string"), "description" to JsonPrimitive("Setting value"))),
-                    )),
-                    "required" to JsonArray(listOf(JsonPrimitive("name"), JsonPrimitive("value"))),
+                    "required" to JsonArray(listOf(JsonPrimitive("namespace"), JsonPrimitive("name"), JsonPrimitive("value"))),
                 )),
                 requiresApproval = true,
             ),
@@ -83,13 +74,13 @@ class SettingsSkill(private val context: Context) : AndyClawSkill {
         return when (tool) {
             "get_system_setting" -> getSetting(params)
             "list_settings" -> listSettings(params)
-            "write_system_setting" -> {
-                if (tier != Tier.PRIVILEGED) SkillResult.Error("write_system_setting requires privileged OS")
-                else writeSetting(params, "system")
-            }
-            "write_secure_setting" -> {
-                if (tier != Tier.PRIVILEGED) SkillResult.Error("write_secure_setting requires privileged OS")
-                else writeSetting(params, "secure")
+            "write_setting" -> {
+                if (tier != Tier.PRIVILEGED) SkillResult.Error("write_setting requires privileged OS")
+                else {
+                    val namespace = params["namespace"]?.jsonPrimitive?.contentOrNull
+                        ?: return SkillResult.Error("Missing required parameter: namespace")
+                    writeSetting(params, namespace)
+                }
             }
             else -> SkillResult.Error("Unknown tool: $tool")
         }

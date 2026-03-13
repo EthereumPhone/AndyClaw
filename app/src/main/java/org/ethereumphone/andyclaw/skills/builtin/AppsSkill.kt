@@ -26,7 +26,7 @@ class AppsSkill(private val context: Context) : AndyClawSkill {
         tools = listOf(
             ToolDefinition(
                 name = "list_installed_apps",
-                description = "List all installed apps on the device with package names and labels.",
+                description = "List all installed apps with package names and labels.",
                 inputSchema = JsonObject(mapOf("type" to JsonPrimitive("object"), "properties" to JsonObject(emptyMap()))),
             ),
             ToolDefinition(
@@ -35,18 +35,18 @@ class AppsSkill(private val context: Context) : AndyClawSkill {
                 inputSchema = JsonObject(mapOf(
                     "type" to JsonPrimitive("object"),
                     "properties" to JsonObject(mapOf(
-                        "package_name" to JsonObject(mapOf("type" to JsonPrimitive("string"), "description" to JsonPrimitive("The package name of the app to launch"))),
+                        "package_name" to JsonObject(mapOf("type" to JsonPrimitive("string"))),
                     )),
                     "required" to JsonArray(listOf(JsonPrimitive("package_name"))),
                 )),
             ),
             ToolDefinition(
                 name = "get_app_info",
-                description = "Get detailed information about an installed app.",
+                description = "Get detailed info about an installed app.",
                 inputSchema = JsonObject(mapOf(
                     "type" to JsonPrimitive("object"),
                     "properties" to JsonObject(mapOf(
-                        "package_name" to JsonObject(mapOf("type" to JsonPrimitive("string"), "description" to JsonPrimitive("The package name of the app"))),
+                        "package_name" to JsonObject(mapOf("type" to JsonPrimitive("string"))),
                     )),
                     "required" to JsonArray(listOf(JsonPrimitive("package_name"))),
                 )),
@@ -59,11 +59,11 @@ class AppsSkill(private val context: Context) : AndyClawSkill {
         tools = listOf(
             ToolDefinition(
                 name = "force_stop_app",
-                description = "Force stop an app by package name (privileged OS only).",
+                description = "Force stop an app by package name.",
                 inputSchema = JsonObject(mapOf(
                     "type" to JsonPrimitive("object"),
                     "properties" to JsonObject(mapOf(
-                        "package_name" to JsonObject(mapOf("type" to JsonPrimitive("string"), "description" to JsonPrimitive("The package name to force stop"))),
+                        "package_name" to JsonObject(mapOf("type" to JsonPrimitive("string"))),
                     )),
                     "required" to JsonArray(listOf(JsonPrimitive("package_name"))),
                 )),
@@ -71,12 +71,12 @@ class AppsSkill(private val context: Context) : AndyClawSkill {
             ),
             ToolDefinition(
                 name = "interact_with_app",
-                description = "Interact with an app's UI elements (stub - privileged OS only).",
+                description = "Interact with an app's UI elements (stub).",
                 inputSchema = JsonObject(mapOf(
                     "type" to JsonPrimitive("object"),
                     "properties" to JsonObject(mapOf(
-                        "package_name" to JsonObject(mapOf("type" to JsonPrimitive("string"), "description" to JsonPrimitive("Target app package name"))),
-                        "action" to JsonObject(mapOf("type" to JsonPrimitive("string"), "description" to JsonPrimitive("Action to perform (tap, type, scroll)"))),
+                        "package_name" to JsonObject(mapOf("type" to JsonPrimitive("string"))),
+                        "action" to JsonObject(mapOf("type" to JsonPrimitive("string"), "description" to JsonPrimitive("tap, type, or scroll"))),
                     )),
                     "required" to JsonArray(listOf(JsonPrimitive("package_name"), JsonPrimitive("action"))),
                 )),
