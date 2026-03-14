@@ -195,7 +195,6 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 userStory = app.userStoryManager.read(),
                 memoryManager = memoryManager,
                 safetyLayer = app.createSafetyLayer(),
-                skillRouter = app.skillRouter,
             )
 
             agentLoop.run(text, conversationHistory, object : AgentLoop.Callbacks {

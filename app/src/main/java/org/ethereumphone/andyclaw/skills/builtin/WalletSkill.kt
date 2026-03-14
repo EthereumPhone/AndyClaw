@@ -326,12 +326,18 @@ class WalletSkill(
     )
 
     override val privilegedManifest = SkillManifest(
-        description = "Interact with the ethOS wallet system. Two wallets: (1) user's system wallet (requires approval) " +
-                "and (2) agent sub-account (autonomous). " +
-                "Chains: Ethereum (1), Optimism (10), Polygon (137), Arbitrum (42161), Base (8453), Zora (7777777), BNB (56), Avalanche (43114). " +
-                "Prefer high-level tools: send_token/agent_send_token for ERC-20s, " +
-                "send_native_token/agent_send_native_token for native currency, agent_swap for swaps. " +
-                "All take human-readable amounts and handle conversions.",
+        description = "Interact with the ethOS wallet system. You have TWO wallets: " +
+                "(1) the user's OS system wallet — transactions require on-device approval, and " +
+                "(2) your own agent sub-account wallet — you can sign and send autonomously. " +
+                "Supported chains: Ethereum (1), Optimism (10), Polygon (137), Arbitrum (42161), " +
+                "Base (8453), Zora (7777777), BNB (56), Avalanche (43114). " +
+                "IMPORTANT: For sending crypto, prefer the high-level tools: " +
+                "send_token/agent_send_token for ERC-20s (auto-resolves USDC, USDT, WETH, DAI, etc.), " +
+                "send_native_token/agent_send_native_token for ETH/MATIC/BNB/AVAX. " +
+                "For swapping tokens from the agent wallet, use agent_swap (accepts symbols like 'USDC', 'WETH', 'ETH'). " +
+                "These take human-readable amounts (e.g., '100' for 100 USDC) and handle all conversions. " +
+                "Use read_wallet_holdings to check the user's portfolio, " +
+                "read_agent_balance to check the agent wallet's balance.",
         tools = listOf(
             // ── User wallet (WalletSDK) ─────────────────────────────
             ToolDefinition(
@@ -344,53 +350,67 @@ class WalletSkill(
             ),
             ToolDefinition(
                 name = "get_owned_tokens",
-                description = "Get all tokens owned by the user's wallet with balances and USD values.",
+                description = "Get all tokens owned by the user's wallet with balances, USD prices, " +
+                        "and total values. Returns a portfolio view of all tokens with positive " +
+                        "balances. Optionally filter by chain ID.",
                 inputSchema = JsonObject(mapOf(
                     "type" to JsonPrimitive("object"),
                     "properties" to JsonObject(mapOf(
                         "chain_id" to JsonObject(mapOf(
                             "type" to JsonPrimitive("integer"),
-                            "description" to JsonPrimitive("Optional, omit for all chains"),
+                            "description" to JsonPrimitive(
+                                "Optional chain ID to filter tokens " +
+                                        "(e.g., 1 for Ethereum, 8453 for Base). " +
+                                        "Omit to get tokens across all chains."
+                            ),
                         )),
                     )),
                 )),
             ),
             ToolDefinition(
                 name = "get_swap_quote",
-                description = "Get a DEX swap quote. Supported: Ethereum (1), Optimism (10), Polygon (137), Base (8453), Arbitrum (42161).",
+                description = "Get a DEX swap quote for exchanging tokens. Returns the expected " +
+                        "output amount, price, minimum amount after slippage, and gas costs. " +
+                        "Use get_owned_tokens first to find token contract addresses and decimals. " +
+                        "Supported swap chains: Ethereum (1), Optimism (10), Polygon (137), " +
+                        "Base (8453), Arbitrum (42161).",
                 inputSchema = JsonObject(mapOf(
                     "type" to JsonPrimitive("object"),
                     "properties" to JsonObject(mapOf(
                         "sell_token" to JsonObject(mapOf(
                             "type" to JsonPrimitive("string"),
-                            "description" to JsonPrimitive("Contract address (0x-prefixed)"),
+                            "description" to JsonPrimitive("Contract address of the token to sell (0x-prefixed)"),
                         )),
                         "buy_token" to JsonObject(mapOf(
                             "type" to JsonPrimitive("string"),
-                            "description" to JsonPrimitive("Contract address (0x-prefixed)"),
+                            "description" to JsonPrimitive("Contract address of the token to buy (0x-prefixed)"),
                         )),
                         "sell_amount" to JsonObject(mapOf(
                             "type" to JsonPrimitive("string"),
-                            "description" to JsonPrimitive("Human-readable amount (e.g. '100' for 100 USDC)"),
+                            "description" to JsonPrimitive(
+                                "Amount of sell token in human-readable form " +
+                                        "(e.g., '100' for 100 USDC, not in smallest unit)"
+                            ),
                         )),
                         "chain_id" to JsonObject(mapOf(
                             "type" to JsonPrimitive("integer"),
+                            "description" to JsonPrimitive("Chain ID where the swap will occur"),
                         )),
                         "sell_decimals" to JsonObject(mapOf(
                             "type" to JsonPrimitive("integer"),
-                            "description" to JsonPrimitive("e.g. 6 for USDC, 18 for ETH"),
+                            "description" to JsonPrimitive("Decimals of the sell token (e.g., 6 for USDC, 18 for ETH/WETH)"),
                         )),
                         "buy_decimals" to JsonObject(mapOf(
                             "type" to JsonPrimitive("integer"),
-                            "description" to JsonPrimitive("e.g. 6 for USDC, 18 for ETH"),
+                            "description" to JsonPrimitive("Decimals of the buy token (e.g., 6 for USDC, 18 for ETH/WETH)"),
                         )),
                         "sell_symbol" to JsonObject(mapOf(
                             "type" to JsonPrimitive("string"),
-                            "description" to JsonPrimitive("Optional, helps with ETH detection"),
+                            "description" to JsonPrimitive("Optional ticker symbol of sell token (e.g., 'USDC'). Helps with ETH detection."),
                         )),
                         "buy_symbol" to JsonObject(mapOf(
                             "type" to JsonPrimitive("string"),
-                            "description" to JsonPrimitive("Optional, helps with ETH detection"),
+                            "description" to JsonPrimitive("Optional ticker symbol of buy token (e.g., 'WETH'). Helps with ETH detection."),
                         )),
                     )),
                     "required" to JsonArray(listOf(
@@ -405,25 +425,38 @@ class WalletSkill(
             ),
             ToolDefinition(
                 name = "propose_transaction",
-                description = "LOW-LEVEL: Propose a raw transaction from user's wallet (requires approval). " +
-                        "Prefer send_native_token or send_token instead. Value in wei, data='0' for simple transfers.",
+                description = "LOW-LEVEL: Propose a raw blockchain transaction from the user's system wallet. " +
+                        "PREFER send_native_token for ETH/MATIC/BNB/AVAX sends, or send_token for ERC-20 transfers. " +
+                        "Only use this for advanced contract interactions where higher-level tools don't apply. " +
+                        "The user will be prompted to approve. " +
+                        "IMPORTANT: 'value' must be in wei (1 ETH = 1000000000000000000 wei). " +
+                        "For simple native token transfers set data to '0'. " +
+                        "For contract interactions provide ABI-encoded calldata as 0x-prefixed hex.",
                 inputSchema = JsonObject(mapOf(
                     "type" to JsonPrimitive("object"),
                     "properties" to JsonObject(mapOf(
                         "to" to JsonObject(mapOf(
                             "type" to JsonPrimitive("string"),
-                            "description" to JsonPrimitive("0x-prefixed, 42 chars"),
+                            "description" to JsonPrimitive("Recipient address (0x-prefixed, 42 characters)"),
                         )),
                         "value" to JsonObject(mapOf(
                             "type" to JsonPrimitive("string"),
-                            "description" to JsonPrimitive("Wei amount ('0' for contract calls)"),
+                            "description" to JsonPrimitive(
+                                "Amount of native token to send in wei " +
+                                        "(e.g., '1000000000000000000' for 1 ETH, '0' for pure contract calls). " +
+                                        "1 ETH = 10^18 wei."
+                            ),
                         )),
                         "data" to JsonObject(mapOf(
                             "type" to JsonPrimitive("string"),
-                            "description" to JsonPrimitive("'0' for simple transfers, or 0x-prefixed calldata"),
+                            "description" to JsonPrimitive(
+                                "Transaction calldata. Use '0' for simple native token transfers. " +
+                                        "For contract calls, provide 0x-prefixed hex-encoded calldata."
+                            ),
                         )),
                         "chain_id" to JsonObject(mapOf(
                             "type" to JsonPrimitive("integer"),
+                            "description" to JsonPrimitive("Chain ID for the transaction (e.g., 1 for Ethereum, 8453 for Base)"),
                         )),
                     )),
                     "required" to JsonArray(listOf(
@@ -437,28 +470,38 @@ class WalletSkill(
             ),
             ToolDefinition(
                 name = "propose_token_transfer",
-                description = "LOW-LEVEL: Propose an ERC-20 transfer from user's wallet (requires approval). Prefer send_token instead.",
+                description = "LOW-LEVEL: Propose an ERC-20 token transfer from the user's system wallet. " +
+                        "PREFER send_token instead — it auto-resolves contract addresses and decimals for common tokens (USDC, USDT, WETH, DAI, etc.). " +
+                        "Only use this if send_token can't resolve the token or you already have the contract address and decimals. " +
+                        "The user will be prompted to approve.",
                 inputSchema = JsonObject(mapOf(
                     "type" to JsonPrimitive("object"),
                     "properties" to JsonObject(mapOf(
                         "contract_address" to JsonObject(mapOf(
                             "type" to JsonPrimitive("string"),
-                            "description" to JsonPrimitive("ERC-20 contract address"),
+                            "description" to JsonPrimitive("ERC-20 token contract address (0x-prefixed)"),
                         )),
                         "to" to JsonObject(mapOf(
                             "type" to JsonPrimitive("string"),
-                            "description" to JsonPrimitive("0x-prefixed, 42 chars"),
+                            "description" to JsonPrimitive("Recipient address (0x-prefixed, 42 characters)"),
                         )),
                         "amount" to JsonObject(mapOf(
                             "type" to JsonPrimitive("string"),
-                            "description" to JsonPrimitive("Human-readable (e.g. '100' for 100 USDC)"),
+                            "description" to JsonPrimitive(
+                                "Amount to send in human-readable form " +
+                                        "(e.g., '100' to send 100 USDC, '0.5' to send 0.5 WETH)"
+                            ),
                         )),
                         "decimals" to JsonObject(mapOf(
                             "type" to JsonPrimitive("integer"),
-                            "description" to JsonPrimitive("e.g. 6 for USDC, 18 for WETH"),
+                            "description" to JsonPrimitive(
+                                "Token decimals (e.g., 6 for USDC, 18 for WETH). " +
+                                        "Available from get_owned_tokens results."
+                            ),
                         )),
                         "chain_id" to JsonObject(mapOf(
                             "type" to JsonPrimitive("integer"),
+                            "description" to JsonPrimitive("Chain ID where the token exists (e.g., 1 for Ethereum, 8453 for Base)"),
                         )),
                     )),
                     "required" to JsonArray(listOf(
@@ -474,7 +517,8 @@ class WalletSkill(
             // ── Agent wallet (SubWalletSDK) ─────────────────────────
             ToolDefinition(
                 name = "get_agent_wallet_address",
-                description = "Get the agent's sub-account wallet address (autonomous, no approval needed).",
+                description = "Get the agent's own sub-account wallet address. " +
+                        "This is the wallet the agent can send from autonomously without user approval.",
                 inputSchema = JsonObject(mapOf(
                     "type" to JsonPrimitive("object"),
                     "properties" to JsonObject(emptyMap()),
@@ -482,25 +526,37 @@ class WalletSkill(
             ),
             ToolDefinition(
                 name = "agent_send_transaction",
-                description = "LOW-LEVEL: Send a raw transaction from agent's wallet (no approval). " +
-                        "Prefer agent_send_native_token or agent_send_token. Value in wei, data='0x' for simple transfers.",
+                description = "LOW-LEVEL: Send a raw blockchain transaction from the agent's sub-account wallet. " +
+                        "PREFER agent_send_native_token for ETH/MATIC/BNB/AVAX sends, or agent_send_token for ERC-20 transfers. " +
+                        "Only use this for advanced contract interactions. Does NOT require user approval. " +
+                        "IMPORTANT: 'value' must be in wei (1 ETH = 1000000000000000000 wei). " +
+                        "For simple native token transfers set data to '0x'. " +
+                        "For contract interactions provide ABI-encoded calldata as 0x-prefixed hex.",
                 inputSchema = JsonObject(mapOf(
                     "type" to JsonPrimitive("object"),
                     "properties" to JsonObject(mapOf(
                         "to" to JsonObject(mapOf(
                             "type" to JsonPrimitive("string"),
-                            "description" to JsonPrimitive("0x-prefixed, 42 chars"),
+                            "description" to JsonPrimitive("Recipient address (0x-prefixed, 42 characters)"),
                         )),
                         "value" to JsonObject(mapOf(
                             "type" to JsonPrimitive("string"),
-                            "description" to JsonPrimitive("Wei amount ('0' for contract calls)"),
+                            "description" to JsonPrimitive(
+                                "Amount of native token to send in wei " +
+                                        "(e.g., '1000000000000000000' for 1 ETH, '0' for pure contract calls). " +
+                                        "1 ETH = 10^18 wei."
+                            ),
                         )),
                         "data" to JsonObject(mapOf(
                             "type" to JsonPrimitive("string"),
-                            "description" to JsonPrimitive("'0x' for simple transfers, or 0x-prefixed calldata"),
+                            "description" to JsonPrimitive(
+                                "Transaction calldata. Use '0x' for simple native token transfers. " +
+                                        "For contract calls, provide 0x-prefixed hex-encoded calldata."
+                            ),
                         )),
                         "chain_id" to JsonObject(mapOf(
                             "type" to JsonPrimitive("integer"),
+                            "description" to JsonPrimitive("Chain ID for the transaction (e.g., 1 for Ethereum, 8453 for Base)"),
                         )),
                     )),
                     "required" to JsonArray(listOf(
@@ -513,28 +569,37 @@ class WalletSkill(
             ),
             ToolDefinition(
                 name = "agent_transfer_token",
-                description = "LOW-LEVEL: Transfer an ERC-20 from agent's wallet (no approval). Prefer agent_send_token instead.",
+                description = "LOW-LEVEL: Transfer an ERC-20 token from the agent's sub-account wallet. " +
+                        "PREFER agent_send_token instead — it auto-resolves contract addresses and decimals for common tokens. " +
+                        "Only use this if agent_send_token can't resolve the token. Does NOT require user approval.",
                 inputSchema = JsonObject(mapOf(
                     "type" to JsonPrimitive("object"),
                     "properties" to JsonObject(mapOf(
                         "contract_address" to JsonObject(mapOf(
                             "type" to JsonPrimitive("string"),
-                            "description" to JsonPrimitive("ERC-20 contract address"),
+                            "description" to JsonPrimitive("ERC-20 token contract address (0x-prefixed)"),
                         )),
                         "to" to JsonObject(mapOf(
                             "type" to JsonPrimitive("string"),
-                            "description" to JsonPrimitive("0x-prefixed, 42 chars"),
+                            "description" to JsonPrimitive("Recipient address (0x-prefixed, 42 characters)"),
                         )),
                         "amount" to JsonObject(mapOf(
                             "type" to JsonPrimitive("string"),
-                            "description" to JsonPrimitive("Human-readable (e.g. '100' for 100 USDC)"),
+                            "description" to JsonPrimitive(
+                                "Amount to send in human-readable form " +
+                                        "(e.g., '100' to send 100 USDC, '0.5' to send 0.5 WETH)"
+                            ),
                         )),
                         "decimals" to JsonObject(mapOf(
                             "type" to JsonPrimitive("integer"),
-                            "description" to JsonPrimitive("e.g. 6 for USDC, 18 for WETH"),
+                            "description" to JsonPrimitive(
+                                "Token decimals (e.g., 6 for USDC, 18 for WETH). " +
+                                        "Available from get_owned_tokens results."
+                            ),
                         )),
                         "chain_id" to JsonObject(mapOf(
                             "type" to JsonPrimitive("integer"),
+                            "description" to JsonPrimitive("Chain ID where the token exists (e.g., 1 for Ethereum, 8453 for Base)"),
                         )),
                     )),
                     "required" to JsonArray(listOf(
@@ -549,17 +614,26 @@ class WalletSkill(
             // ── High-level helper tools ───────────────────────────────
             ToolDefinition(
                 name = "resolve_token",
-                description = "Look up a token by symbol to get its contract address and decimals (USDC, USDT, WETH, DAI, WBTC, LINK, UNI, AAVE, DEGEN).",
+                description = "Look up a token by symbol to get its contract address and decimals. " +
+                        "Supports common tokens: USDC, USDT, WETH, DAI, WBTC, LINK, UNI, AAVE, DEGEN. " +
+                        "Returns the verified contract address and decimals for the given chain. " +
+                        "If chain_id is omitted, returns all chains where the token is deployed. " +
+                        "Use this before sending tokens if you don't already know the contract address.",
                 inputSchema = JsonObject(mapOf(
                     "type" to JsonPrimitive("object"),
                     "properties" to JsonObject(mapOf(
                         "symbol" to JsonObject(mapOf(
                             "type" to JsonPrimitive("string"),
-                            "description" to JsonPrimitive("Case-insensitive ticker (e.g. 'USDC')"),
+                            "description" to JsonPrimitive(
+                                "Token ticker symbol (e.g., 'USDC', 'WETH', 'DAI'). Case-insensitive."
+                            ),
                         )),
                         "chain_id" to JsonObject(mapOf(
                             "type" to JsonPrimitive("integer"),
-                            "description" to JsonPrimitive("Optional, omit to see all chains"),
+                            "description" to JsonPrimitive(
+                                "Optional chain ID to look up the token on a specific chain. " +
+                                        "Omit to see all chains where this token is available."
+                            ),
                         )),
                     )),
                     "required" to JsonArray(listOf(
@@ -569,20 +643,30 @@ class WalletSkill(
             ),
             ToolDefinition(
                 name = "send_native_token",
-                description = "Send native token (ETH/MATIC/BNB/AVAX) from user's wallet. Human-readable amount, auto wei conversion. Requires approval.",
+                description = "Send native token (ETH, MATIC, BNB, AVAX) from the user's system wallet. " +
+                        "Takes a HUMAN-READABLE amount — e.g., '0.1' to send 0.1 ETH, '50' to send 50 MATIC. " +
+                        "Handles wei conversion automatically. User will be prompted to approve. " +
+                        "USE THIS instead of propose_transaction for native token sends.",
                 inputSchema = JsonObject(mapOf(
                     "type" to JsonPrimitive("object"),
                     "properties" to JsonObject(mapOf(
                         "to" to JsonObject(mapOf(
                             "type" to JsonPrimitive("string"),
-                            "description" to JsonPrimitive("0x-prefixed, 42 chars"),
+                            "description" to JsonPrimitive("Recipient address (0x-prefixed, 42 characters)"),
                         )),
                         "amount" to JsonObject(mapOf(
                             "type" to JsonPrimitive("string"),
-                            "description" to JsonPrimitive("Human-readable (e.g. '0.1' for 0.1 ETH)"),
+                            "description" to JsonPrimitive(
+                                "Amount in human-readable form (e.g., '0.1' for 0.1 ETH, '50' for 50 MATIC). " +
+                                        "NOT in wei — the conversion is handled automatically."
+                            ),
                         )),
                         "chain_id" to JsonObject(mapOf(
                             "type" to JsonPrimitive("integer"),
+                            "description" to JsonPrimitive(
+                                "Chain ID (e.g., 1 for Ethereum/ETH, 137 for Polygon/MATIC, " +
+                                        "8453 for Base/ETH, 56 for BNB Chain, 43114 for Avalanche/AVAX)"
+                            ),
                         )),
                     )),
                     "required" to JsonArray(listOf(
@@ -595,32 +679,54 @@ class WalletSkill(
             ),
             ToolDefinition(
                 name = "send_token",
-                description = "Send an ERC-20 from user's wallet by symbol (auto-resolves address/decimals). Human-readable amount. Requires approval.",
+                description = "Send an ERC-20 token from the user's system wallet using just the token symbol. " +
+                        "Automatically resolves the contract address and decimals for common tokens " +
+                        "(USDC, USDT, WETH, DAI, WBTC, LINK, UNI, AAVE, DEGEN). " +
+                        "Takes a HUMAN-READABLE amount — e.g., '100' to send 100 USDC, '0.5' to send 0.5 WETH. " +
+                        "User will be prompted to approve. " +
+                        "USE THIS instead of propose_token_transfer for common token sends. " +
+                        "For unknown tokens, provide contract_address and decimals as fallback.",
                 inputSchema = JsonObject(mapOf(
                     "type" to JsonPrimitive("object"),
                     "properties" to JsonObject(mapOf(
                         "symbol" to JsonObject(mapOf(
                             "type" to JsonPrimitive("string"),
-                            "description" to JsonPrimitive("Case-insensitive ticker (e.g. 'USDC'), auto-resolves address/decimals"),
+                            "description" to JsonPrimitive(
+                                "Token ticker symbol (e.g., 'USDC', 'WETH', 'DAI'). Case-insensitive. " +
+                                        "If provided, contract_address and decimals are resolved automatically."
+                            ),
                         )),
                         "to" to JsonObject(mapOf(
                             "type" to JsonPrimitive("string"),
-                            "description" to JsonPrimitive("0x-prefixed, 42 chars"),
+                            "description" to JsonPrimitive("Recipient address (0x-prefixed, 42 characters)"),
                         )),
                         "amount" to JsonObject(mapOf(
                             "type" to JsonPrimitive("string"),
-                            "description" to JsonPrimitive("Human-readable (e.g. '100' for 100 USDC)"),
+                            "description" to JsonPrimitive(
+                                "Amount in human-readable form (e.g., '100' for 100 USDC, '0.5' for 0.5 WETH). " +
+                                        "NOT in smallest unit — decimal conversion is handled automatically."
+                            ),
                         )),
                         "chain_id" to JsonObject(mapOf(
                             "type" to JsonPrimitive("integer"),
+                            "description" to JsonPrimitive(
+                                "Chain ID where the token exists (e.g., 1 for Ethereum, 8453 for Base, " +
+                                        "10 for Optimism, 137 for Polygon, 42161 for Arbitrum)"
+                            ),
                         )),
                         "contract_address" to JsonObject(mapOf(
                             "type" to JsonPrimitive("string"),
-                            "description" to JsonPrimitive("Optional, only for unknown tokens"),
+                            "description" to JsonPrimitive(
+                                "Optional: ERC-20 contract address. Only needed if the token is not in " +
+                                        "the well-known registry and can't be resolved by symbol."
+                            ),
                         )),
                         "decimals" to JsonObject(mapOf(
                             "type" to JsonPrimitive("integer"),
-                            "description" to JsonPrimitive("Optional, only with contract_address"),
+                            "description" to JsonPrimitive(
+                                "Optional: Token decimals. Only needed if providing contract_address " +
+                                        "for a token not in the well-known registry."
+                            ),
                         )),
                     )),
                     "required" to JsonArray(listOf(
@@ -633,20 +739,30 @@ class WalletSkill(
             ),
             ToolDefinition(
                 name = "agent_send_native_token",
-                description = "Send native token (ETH/MATIC/BNB/AVAX) from agent's wallet. Human-readable amount, no approval needed.",
+                description = "Send native token (ETH, MATIC, BNB, AVAX) from the agent's sub-account wallet. " +
+                        "Takes a HUMAN-READABLE amount — e.g., '0.01' for 0.01 ETH. " +
+                        "Handles wei conversion automatically. Does NOT require user approval. " +
+                        "USE THIS instead of agent_send_transaction for native token sends.",
                 inputSchema = JsonObject(mapOf(
                     "type" to JsonPrimitive("object"),
                     "properties" to JsonObject(mapOf(
                         "to" to JsonObject(mapOf(
                             "type" to JsonPrimitive("string"),
-                            "description" to JsonPrimitive("0x-prefixed, 42 chars"),
+                            "description" to JsonPrimitive("Recipient address (0x-prefixed, 42 characters)"),
                         )),
                         "amount" to JsonObject(mapOf(
                             "type" to JsonPrimitive("string"),
-                            "description" to JsonPrimitive("Human-readable (e.g. '0.01' for 0.01 ETH)"),
+                            "description" to JsonPrimitive(
+                                "Amount in human-readable form (e.g., '0.01' for 0.01 ETH). " +
+                                        "NOT in wei — the conversion is handled automatically."
+                            ),
                         )),
                         "chain_id" to JsonObject(mapOf(
                             "type" to JsonPrimitive("integer"),
+                            "description" to JsonPrimitive(
+                                "Chain ID (e.g., 1 for Ethereum/ETH, 137 for Polygon/MATIC, " +
+                                        "8453 for Base/ETH, 56 for BNB Chain, 43114 for Avalanche/AVAX)"
+                            ),
                         )),
                     )),
                     "required" to JsonArray(listOf(
@@ -658,32 +774,52 @@ class WalletSkill(
             ),
             ToolDefinition(
                 name = "agent_send_token",
-                description = "Send an ERC-20 from agent's wallet by symbol (auto-resolves address/decimals). Human-readable amount, no approval needed.",
+                description = "Send an ERC-20 token from the agent's sub-account wallet using just the token symbol. " +
+                        "Automatically resolves contract address and decimals for common tokens " +
+                        "(USDC, USDT, WETH, DAI, WBTC, LINK, UNI, AAVE, DEGEN). " +
+                        "Takes a HUMAN-READABLE amount — e.g., '5' to send 5 USDC. " +
+                        "Does NOT require user approval. " +
+                        "USE THIS instead of agent_transfer_token for common token sends.",
                 inputSchema = JsonObject(mapOf(
                     "type" to JsonPrimitive("object"),
                     "properties" to JsonObject(mapOf(
                         "symbol" to JsonObject(mapOf(
                             "type" to JsonPrimitive("string"),
-                            "description" to JsonPrimitive("Case-insensitive ticker (e.g. 'USDC'), auto-resolves address/decimals"),
+                            "description" to JsonPrimitive(
+                                "Token ticker symbol (e.g., 'USDC', 'WETH'). Case-insensitive. " +
+                                        "If provided, contract_address and decimals are resolved automatically."
+                            ),
                         )),
                         "to" to JsonObject(mapOf(
                             "type" to JsonPrimitive("string"),
-                            "description" to JsonPrimitive("0x-prefixed, 42 chars"),
+                            "description" to JsonPrimitive("Recipient address (0x-prefixed, 42 characters)"),
                         )),
                         "amount" to JsonObject(mapOf(
                             "type" to JsonPrimitive("string"),
-                            "description" to JsonPrimitive("Human-readable (e.g. '5' for 5 USDC)"),
+                            "description" to JsonPrimitive(
+                                "Amount in human-readable form (e.g., '5' for 5 USDC, '0.1' for 0.1 WETH). " +
+                                        "NOT in smallest unit — decimal conversion is handled automatically."
+                            ),
                         )),
                         "chain_id" to JsonObject(mapOf(
                             "type" to JsonPrimitive("integer"),
+                            "description" to JsonPrimitive(
+                                "Chain ID where the token exists (e.g., 1 for Ethereum, 8453 for Base)"
+                            ),
                         )),
                         "contract_address" to JsonObject(mapOf(
                             "type" to JsonPrimitive("string"),
-                            "description" to JsonPrimitive("Optional, only for unknown tokens"),
+                            "description" to JsonPrimitive(
+                                "Optional: ERC-20 contract address. Only needed for tokens not in " +
+                                        "the well-known registry."
+                            ),
                         )),
                         "decimals" to JsonObject(mapOf(
                             "type" to JsonPrimitive("integer"),
-                            "description" to JsonPrimitive("Optional, only with contract_address"),
+                            "description" to JsonPrimitive(
+                                "Optional: Token decimals. Only needed with contract_address " +
+                                        "for tokens not in the well-known registry."
+                            ),
                         )),
                     )),
                     "required" to JsonArray(listOf(
@@ -696,33 +832,65 @@ class WalletSkill(
             // ── Agent swap ────────────────────────────────────────────
             ToolDefinition(
                 name = "agent_swap",
-                description = "Swap tokens from agent's wallet via DEX (0x). Accepts symbols or 'ETH', human-readable amounts, no approval. " +
-                        "Chains: 1, 10, 137, 42161, 8453.",
+                description = "Swap tokens from the agent's sub-account wallet via DEX (0x aggregator). " +
+                        "Accepts token symbols (USDC, WETH, DAI, etc.) or 'ETH' for native currency — " +
+                        "contract addresses and decimals are resolved automatically for well-known tokens. " +
+                        "Takes a HUMAN-READABLE sell amount (e.g., '100' to swap 100 USDC). " +
+                        "Handles token approval and swap execution atomically in a single transaction. " +
+                        "Does NOT require user approval. " +
+                        "Use read_agent_balance first to check the agent has sufficient funds. " +
+                        "Supported swap chains: Ethereum (1), Optimism (10), Polygon (137), " +
+                        "Arbitrum (42161), Base (8453).",
                 inputSchema = JsonObject(mapOf(
                     "type" to JsonPrimitive("object"),
                     "properties" to JsonObject(mapOf(
                         "sell_token" to JsonObject(mapOf(
                             "type" to JsonPrimitive("string"),
-                            "description" to JsonPrimitive("Symbol ('USDC', 'ETH') or 0x-prefixed contract address"),
+                            "description" to JsonPrimitive(
+                                "Token to sell: a symbol like 'USDC', 'WETH', 'DAI', " +
+                                        "'ETH' for native currency, or a 0x-prefixed contract address. " +
+                                        "If using a contract address not in the well-known registry, " +
+                                        "also provide sell_decimals."
+                            ),
                         )),
                         "buy_token" to JsonObject(mapOf(
                             "type" to JsonPrimitive("string"),
-                            "description" to JsonPrimitive("Symbol ('USDC', 'ETH') or 0x-prefixed contract address"),
+                            "description" to JsonPrimitive(
+                                "Token to buy: a symbol like 'USDC', 'WETH', 'DAI', " +
+                                        "'ETH' for native currency, or a 0x-prefixed contract address. " +
+                                        "If using a contract address not in the well-known registry, " +
+                                        "also provide buy_decimals."
+                            ),
                         )),
                         "sell_amount" to JsonObject(mapOf(
                             "type" to JsonPrimitive("string"),
-                            "description" to JsonPrimitive("Human-readable (e.g. '100' for 100 USDC)"),
+                            "description" to JsonPrimitive(
+                                "Amount to sell in human-readable form " +
+                                        "(e.g., '100' for 100 USDC, '0.05' for 0.05 ETH). " +
+                                        "NOT in smallest unit — decimal conversion is handled automatically."
+                            ),
                         )),
                         "chain_id" to JsonObject(mapOf(
                             "type" to JsonPrimitive("integer"),
+                            "description" to JsonPrimitive(
+                                "Chain ID where the swap will occur. " +
+                                        "Supported: Ethereum (1), Optimism (10), Polygon (137), " +
+                                        "Arbitrum (42161), Base (8453)."
+                            ),
                         )),
                         "sell_decimals" to JsonObject(mapOf(
                             "type" to JsonPrimitive("integer"),
-                            "description" to JsonPrimitive("Optional, only for unknown contract addresses"),
+                            "description" to JsonPrimitive(
+                                "Optional: decimals of the sell token. Only needed when sell_token " +
+                                        "is a contract address not in the well-known registry."
+                            ),
                         )),
                         "buy_decimals" to JsonObject(mapOf(
                             "type" to JsonPrimitive("integer"),
-                            "description" to JsonPrimitive("Optional, only for unknown contract addresses"),
+                            "description" to JsonPrimitive(
+                                "Optional: decimals of the buy token. Only needed when buy_token " +
+                                        "is a contract address not in the well-known registry."
+                            ),
                         )),
                     )),
                     "required" to JsonArray(listOf(
@@ -736,29 +904,48 @@ class WalletSkill(
             // ── Balance queries ───────────────────────────────────────
             ToolDefinition(
                 name = "read_wallet_holdings",
-                description = "Get all tokens and balances in the user's wallet with USD values.",
+                description = "Get all tokens and balances in the user's wallet. " +
+                        "Returns a portfolio view: token name, symbol, contract address, decimals, " +
+                        "human-readable balance, USD price, and total value. " +
+                        "Optionally filter by chain_id. " +
+                        "Use this to check what the user owns before sending tokens.",
                 inputSchema = JsonObject(mapOf(
                     "type" to JsonPrimitive("object"),
                     "properties" to JsonObject(mapOf(
                         "chain_id" to JsonObject(mapOf(
                             "type" to JsonPrimitive("integer"),
-                            "description" to JsonPrimitive("Optional, omit for all chains"),
+                            "description" to JsonPrimitive(
+                                "Optional chain ID to filter (e.g., 1 for Ethereum, 8453 for Base). " +
+                                        "Omit to get tokens across all chains."
+                            ),
                         )),
                     )),
                 )),
             ),
             ToolDefinition(
                 name = "read_agent_balance",
-                description = "Check agent wallet balance for a token or native currency (live RPC lookup).",
+                description = "Check the agent's sub-account wallet balance for a specific token or native currency. " +
+                        "Performs a live RPC lookup. " +
+                        "For native currency (ETH/MATIC/BNB/AVAX), pass token='native'. " +
+                        "For ERC-20 tokens, pass a token symbol (e.g., 'USDC') or contract address (0x-prefixed). " +
+                        "Returns the balance in both human-readable and raw form.",
                 inputSchema = JsonObject(mapOf(
                     "type" to JsonPrimitive("object"),
                     "properties" to JsonObject(mapOf(
                         "token" to JsonObject(mapOf(
                             "type" to JsonPrimitive("string"),
-                            "description" to JsonPrimitive("'native', a symbol ('USDC'), or 0x contract address"),
+                            "description" to JsonPrimitive(
+                                "Token to check: 'native' for chain native currency, " +
+                                        "a symbol like 'USDC' or 'WETH', " +
+                                        "or a 0x-prefixed ERC-20 contract address."
+                            ),
                         )),
                         "chain_id" to JsonObject(mapOf(
                             "type" to JsonPrimitive("integer"),
+                            "description" to JsonPrimitive(
+                                "Chain ID to query (e.g., 1 for Ethereum, 8453 for Base, " +
+                                        "137 for Polygon)"
+                            ),
                         )),
                     )),
                     "required" to JsonArray(listOf(

@@ -45,7 +45,7 @@ class GmailSkill(
         .build()
 
     override val baseManifest = SkillManifest(
-        description = "Read, send, and reply to emails via Gmail.",
+        description = "Read, send, and reply to emails via Gmail. Use this to check the user's inbox, read specific emails, send new emails, or reply to existing threads.",
         tools = listOf(
             ToolDefinition(
                 name = "gmail_send",
@@ -55,17 +55,19 @@ class GmailSkill(
                     "properties" to JsonObject(mapOf(
                         "to" to JsonObject(mapOf(
                             "type" to JsonPrimitive("string"),
+                            "description" to JsonPrimitive("Recipient email address"),
                         )),
                         "subject" to JsonObject(mapOf(
                             "type" to JsonPrimitive("string"),
+                            "description" to JsonPrimitive("Email subject line"),
                         )),
                         "body" to JsonObject(mapOf(
                             "type" to JsonPrimitive("string"),
-                            "description" to JsonPrimitive("Plain text"),
+                            "description" to JsonPrimitive("Email body text (plain text)"),
                         )),
                         "cc" to JsonObject(mapOf(
                             "type" to JsonPrimitive("string"),
-                            "description" to JsonPrimitive("Comma-separated, optional"),
+                            "description" to JsonPrimitive("CC recipients (comma-separated, optional)"),
                         )),
                     )),
                     "required" to JsonArray(listOf(
@@ -78,29 +80,30 @@ class GmailSkill(
             ),
             ToolDefinition(
                 name = "gmail_read",
-                description = "Search and list emails from Gmail.",
+                description = "Search and list emails from Gmail. Returns message IDs, subjects, senders, and snippets.",
                 inputSchema = JsonObject(mapOf(
                     "type" to JsonPrimitive("object"),
                     "properties" to JsonObject(mapOf(
                         "query" to JsonObject(mapOf(
                             "type" to JsonPrimitive("string"),
-                            "description" to JsonPrimitive("Gmail search query (default: 'is:inbox')"),
+                            "description" to JsonPrimitive("Gmail search query (e.g. 'is:unread', 'from:user@example.com', 'subject:meeting'). Defaults to 'is:inbox'."),
                         )),
                         "max_results" to JsonObject(mapOf(
                             "type" to JsonPrimitive("integer"),
-                            "description" to JsonPrimitive("Default: 10, max: 20"),
+                            "description" to JsonPrimitive("Maximum number of messages to return (default: 10, max: 20)"),
                         )),
                     )),
                 )),
             ),
             ToolDefinition(
                 name = "gmail_get",
-                description = "Get the full content of a specific email.",
+                description = "Get the full content of a specific email by its message ID.",
                 inputSchema = JsonObject(mapOf(
                     "type" to JsonPrimitive("object"),
                     "properties" to JsonObject(mapOf(
                         "message_id" to JsonObject(mapOf(
                             "type" to JsonPrimitive("string"),
+                            "description" to JsonPrimitive("The Gmail message ID to retrieve"),
                         )),
                     )),
                     "required" to JsonArray(listOf(JsonPrimitive("message_id"))),
@@ -114,10 +117,11 @@ class GmailSkill(
                     "properties" to JsonObject(mapOf(
                         "message_id" to JsonObject(mapOf(
                             "type" to JsonPrimitive("string"),
+                            "description" to JsonPrimitive("The message ID to reply to"),
                         )),
                         "body" to JsonObject(mapOf(
                             "type" to JsonPrimitive("string"),
-                            "description" to JsonPrimitive("Plain text"),
+                            "description" to JsonPrimitive("Reply body text (plain text)"),
                         )),
                     )),
                     "required" to JsonArray(listOf(

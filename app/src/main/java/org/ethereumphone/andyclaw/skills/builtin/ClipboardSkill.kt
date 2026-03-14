@@ -24,17 +24,18 @@ class ClipboardSkill(private val context: Context) : AndyClawSkill {
         tools = listOf(
             ToolDefinition(
                 name = "read_clipboard",
-                description = "Read the current clipboard contents.",
+                description = "Read the current contents of the system clipboard.",
                 inputSchema = JsonObject(mapOf("type" to JsonPrimitive("object"), "properties" to JsonObject(emptyMap()))),
             ),
             ToolDefinition(
                 name = "write_clipboard",
-                description = "Write text to the clipboard.",
+                description = "Write text to the system clipboard.",
                 inputSchema = JsonObject(mapOf(
                     "type" to JsonPrimitive("object"),
                     "properties" to JsonObject(mapOf(
                         "text" to JsonObject(mapOf(
                             "type" to JsonPrimitive("string"),
+                            "description" to JsonPrimitive("The text to copy to clipboard"),
                         ))
                     )),
                     "required" to kotlinx.serialization.json.JsonArray(listOf(JsonPrimitive("text"))),

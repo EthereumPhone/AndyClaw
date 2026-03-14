@@ -39,20 +39,26 @@ class MemorySkill(
     override val name: String = "Memory"
 
     override val baseManifest = SkillManifest(
-        description = "Long-term memory that persists across conversations.",
+        description = "Long-term memory: store facts, preferences, and context that persist across conversations. " +
+            "Use memory_search before answering questions that might benefit from past context. " +
+            "Use memory_store to save important information the user shares. " +
+            "Use memory_list to see all stored memories (useful when the user asks what you remember).",
         tools = listOf(
             ToolDefinition(
                 name = "memory_search",
-                description = "Search long-term memory using hybrid keyword + semantic search.",
+                description = "Search long-term memory for relevant context. Uses hybrid keyword + semantic search. " +
+                    "Call this when the user asks about something that might have been discussed before, " +
+                    "or when you need context about user preferences, past decisions, or prior conversations.",
                 inputSchema = buildJsonObject {
                     put("type", "object")
                     putJsonObject("properties") {
                         putJsonObject("query") {
                             put("type", "string")
+                            put("description", "Natural language search query")
                         }
                         putJsonObject("max_results") {
                             put("type", "integer")
-                            put("description", "Default 6")
+                            put("description", "Maximum number of results (default: 6)")
                         }
                         putJsonObject("tags") {
                             put("type", "array")
@@ -65,38 +71,43 @@ class MemorySkill(
             ),
             ToolDefinition(
                 name = "memory_list",
-                description = "List all stored memories, newest first.",
+                description = "List all stored long-term memories, newest first. " +
+                    "Use this when the user asks what you remember, wants a summary of all memories, " +
+                    "or when you need a broad overview rather than a targeted search.",
                 inputSchema = buildJsonObject {
                     put("type", "object")
                     putJsonObject("properties") {
                         putJsonObject("limit") {
                             put("type", "integer")
-                            put("description", "Default 20")
+                            put("description", "Maximum number of memories to return (default: 20)")
                         }
                         putJsonObject("source") {
                             put("type", "string")
-                            put("description", "MANUAL, CONVERSATION, or SYSTEM (default: all)")
+                            put("description", "Filter by source: MANUAL, CONVERSATION, or SYSTEM (default: all)")
                         }
                     }
                 },
             ),
             ToolDefinition(
                 name = "memory_store",
-                description = "Store a new long-term memory.",
+                description = "Store a new long-term memory. Use this to save important facts, user preferences, " +
+                    "decisions, or any context that should persist across conversations. " +
+                    "Be concise but include enough context for future retrieval.",
                 inputSchema = buildJsonObject {
                     put("type", "object")
                     putJsonObject("properties") {
                         putJsonObject("content") {
                             put("type", "string")
+                            put("description", "The text to remember — be specific and self-contained")
                         }
                         putJsonObject("tags") {
                             put("type", "array")
                             putJsonObject("items") { put("type", "string") }
-                            put("description", "e.g. 'preference', 'contact', 'project'")
+                            put("description", "Categorisation tags (e.g. 'preference', 'contact', 'project')")
                         }
                         putJsonObject("importance") {
                             put("type", "number")
-                            put("description", "0.0-1.0, default 0.5; higher surfaces first")
+                            put("description", "Importance weight 0.0–1.0 (default: 0.5). Higher values surface first in search.")
                         }
                     }
                     putJsonArray("required") { add(JsonPrimitive("content")) }
@@ -104,12 +115,14 @@ class MemorySkill(
             ),
             ToolDefinition(
                 name = "memory_delete",
-                description = "Delete a memory by ID.",
+                description = "Delete a specific memory by its ID. Use when the user asks to forget something " +
+                    "or when a memory is outdated/incorrect.",
                 inputSchema = buildJsonObject {
                     put("type", "object")
                     putJsonObject("properties") {
                         putJsonObject("memory_id") {
                             put("type", "string")
+                            put("description", "The unique ID of the memory to delete")
                         }
                     }
                     putJsonArray("required") { add(JsonPrimitive("memory_id")) }

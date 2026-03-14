@@ -46,11 +46,14 @@ class LocationSkill(private val context: Context) : AndyClawSkill {
     }
 
     override val baseManifest = SkillManifest(
-        description = "Get location, search nearby places, open maps, and start navigation.",
+        description = "Get the device's current location, search for nearby places, " +
+                "view locations on a map, and start navigation routes via Google Maps.",
         tools = listOf(
             ToolDefinition(
                 name = "get_current_location",
-                description = "Get current GPS coordinates and reverse-geocoded address.",
+                description = "Get the device's current GPS location including coordinates " +
+                        "and a reverse-geocoded human-readable address. Use this to answer " +
+                        "'where am I?' or to get coordinates before searching nearby.",
                 inputSchema = JsonObject(
                     mapOf(
                         "type" to JsonPrimitive("object"),
@@ -63,7 +66,10 @@ class LocationSkill(private val context: Context) : AndyClawSkill {
             ),
             ToolDefinition(
                 name = "search_nearby",
-                description = "Search for nearby places via OpenStreetMap.",
+                description = "Search for places near a location. Uses OpenStreetMap data " +
+                        "to find restaurants, shops, ATMs, gas stations, pharmacies, or " +
+                        "any other type of place. Call get_current_location first to " +
+                        "obtain the device coordinates, then pass them here.",
                 inputSchema = JsonObject(
                     mapOf(
                         "type" to JsonPrimitive("object"),
@@ -72,23 +78,33 @@ class LocationSkill(private val context: Context) : AndyClawSkill {
                                 "query" to JsonObject(
                                     mapOf(
                                         "type" to JsonPrimitive("string"),
+                                        "description" to JsonPrimitive(
+                                            "What to search for (e.g. 'restaurant', 'pharmacy', " +
+                                                    "'ATM', 'gas station', 'supermarket', 'cafe')"
+                                        ),
                                     )
                                 ),
                                 "latitude" to JsonObject(
                                     mapOf(
                                         "type" to JsonPrimitive("number"),
+                                        "description" to JsonPrimitive(
+                                            "Latitude of the center point to search around"
+                                        ),
                                     )
                                 ),
                                 "longitude" to JsonObject(
                                     mapOf(
                                         "type" to JsonPrimitive("number"),
+                                        "description" to JsonPrimitive(
+                                            "Longitude of the center point to search around"
+                                        ),
                                     )
                                 ),
                                 "radius_meters" to JsonObject(
                                     mapOf(
                                         "type" to JsonPrimitive("integer"),
                                         "description" to JsonPrimitive(
-                                            "Default 1000, max 50000"
+                                            "Search radius in meters (default: 1000, max: 50000)"
                                         ),
                                     )
                                 ),
@@ -96,7 +112,7 @@ class LocationSkill(private val context: Context) : AndyClawSkill {
                                     mapOf(
                                         "type" to JsonPrimitive("integer"),
                                         "description" to JsonPrimitive(
-                                            "Default 10, max 25"
+                                            "Maximum number of results to return (default: 10, max: 25)"
                                         ),
                                     )
                                 ),
@@ -114,7 +130,9 @@ class LocationSkill(private val context: Context) : AndyClawSkill {
             ),
             ToolDefinition(
                 name = "open_in_maps",
-                description = "Open a location in Google Maps by coordinates or address.",
+                description = "Open a location in Google Maps for viewing. You can specify " +
+                        "coordinates, an address, or a place name. The map app will open " +
+                        "and display that location with a pin.",
                 inputSchema = JsonObject(
                     mapOf(
                         "type" to JsonPrimitive("object"),
@@ -123,23 +141,33 @@ class LocationSkill(private val context: Context) : AndyClawSkill {
                                 "latitude" to JsonObject(
                                     mapOf(
                                         "type" to JsonPrimitive("number"),
+                                        "description" to JsonPrimitive(
+                                            "Latitude of the location to show (use with longitude)"
+                                        ),
                                     )
                                 ),
                                 "longitude" to JsonObject(
                                     mapOf(
                                         "type" to JsonPrimitive("number"),
+                                        "description" to JsonPrimitive(
+                                            "Longitude of the location to show (use with latitude)"
+                                        ),
                                     )
                                 ),
                                 "address" to JsonObject(
                                     mapOf(
                                         "type" to JsonPrimitive("string"),
+                                        "description" to JsonPrimitive(
+                                            "Address or place name to show on the map " +
+                                                    "(alternative to lat/lon)"
+                                        ),
                                     )
                                 ),
                                 "label" to JsonObject(
                                     mapOf(
                                         "type" to JsonPrimitive("string"),
                                         "description" to JsonPrimitive(
-                                            "Label for the map pin"
+                                            "Optional label for the map pin when using coordinates"
                                         ),
                                     )
                                 ),
@@ -147,7 +175,8 @@ class LocationSkill(private val context: Context) : AndyClawSkill {
                                     mapOf(
                                         "type" to JsonPrimitive("integer"),
                                         "description" to JsonPrimitive(
-                                            "1-21, default 15 (1=world, 15=streets, 20=buildings)"
+                                            "Zoom level 1-21 (default: 15). " +
+                                                    "1=world, 10=city, 15=streets, 20=buildings"
                                         ),
                                     )
                                 ),
@@ -158,7 +187,9 @@ class LocationSkill(private val context: Context) : AndyClawSkill {
             ),
             ToolDefinition(
                 name = "start_navigation",
-                description = "Start turn-by-turn navigation in Google Maps.",
+                description = "Start turn-by-turn navigation in Google Maps to a destination. " +
+                        "You can provide coordinates or an address. Supports driving, walking, " +
+                        "bicycling, and two-wheeler transport modes.",
                 inputSchema = JsonObject(
                     mapOf(
                         "type" to JsonPrimitive("object"),
@@ -167,23 +198,34 @@ class LocationSkill(private val context: Context) : AndyClawSkill {
                                 "destination_latitude" to JsonObject(
                                     mapOf(
                                         "type" to JsonPrimitive("number"),
+                                        "description" to JsonPrimitive(
+                                            "Latitude of the destination (use with destination_longitude)"
+                                        ),
                                     )
                                 ),
                                 "destination_longitude" to JsonObject(
                                     mapOf(
                                         "type" to JsonPrimitive("number"),
+                                        "description" to JsonPrimitive(
+                                            "Longitude of the destination (use with destination_latitude)"
+                                        ),
                                     )
                                 ),
                                 "destination_address" to JsonObject(
                                     mapOf(
                                         "type" to JsonPrimitive("string"),
+                                        "description" to JsonPrimitive(
+                                            "Address or place name to navigate to " +
+                                                    "(alternative to lat/lon)"
+                                        ),
                                     )
                                 ),
                                 "mode" to JsonObject(
                                     mapOf(
                                         "type" to JsonPrimitive("string"),
                                         "description" to JsonPrimitive(
-                                            "driving (default), walking, bicycling, or two-wheeler"
+                                            "Transport mode: 'driving' (default), 'walking', " +
+                                                    "'bicycling', or 'two-wheeler'"
                                         ),
                                         "enum" to JsonArray(
                                             listOf(
@@ -199,7 +241,8 @@ class LocationSkill(private val context: Context) : AndyClawSkill {
                                     mapOf(
                                         "type" to JsonPrimitive("string"),
                                         "description" to JsonPrimitive(
-                                            "Comma-separated: tolls, highways, ferries"
+                                            "Comma-separated things to avoid: " +
+                                                    "'tolls', 'highways', 'ferries'"
                                         ),
                                     )
                                 ),

@@ -26,7 +26,7 @@ class NotificationSkill(private val context: Context) : AndyClawSkill {
         tools = listOf(
             ToolDefinition(
                 name = "list_notifications",
-                description = "List all active notifications.",
+                description = "List all active notifications. Requires notification listener access to be enabled in Settings.",
                 inputSchema = JsonObject(mapOf("type" to JsonPrimitive("object"), "properties" to JsonObject(emptyMap()))),
             ),
         ),
@@ -41,19 +41,19 @@ class NotificationSkill(private val context: Context) : AndyClawSkill {
                 inputSchema = JsonObject(mapOf(
                     "type" to JsonPrimitive("object"),
                     "properties" to JsonObject(mapOf(
-                        "key" to JsonObject(mapOf("type" to JsonPrimitive("string"))),
+                        "key" to JsonObject(mapOf("type" to JsonPrimitive("string"), "description" to JsonPrimitive("Notification key to dismiss"))),
                     )),
                     "required" to JsonArray(listOf(JsonPrimitive("key"))),
                 )),
             ),
             ToolDefinition(
                 name = "reply_to_notification",
-                description = "Reply to a notification with a direct reply action.",
+                description = "Reply to a notification that has a direct reply action.",
                 inputSchema = JsonObject(mapOf(
                     "type" to JsonPrimitive("object"),
                     "properties" to JsonObject(mapOf(
-                        "key" to JsonObject(mapOf("type" to JsonPrimitive("string"))),
-                        "reply" to JsonObject(mapOf("type" to JsonPrimitive("string"))),
+                        "key" to JsonObject(mapOf("type" to JsonPrimitive("string"), "description" to JsonPrimitive("Notification key"))),
+                        "reply" to JsonObject(mapOf("type" to JsonPrimitive("string"), "description" to JsonPrimitive("Reply text"))),
                     )),
                     "required" to JsonArray(listOf(JsonPrimitive("key"), JsonPrimitive("reply"))),
                 )),
@@ -61,7 +61,7 @@ class NotificationSkill(private val context: Context) : AndyClawSkill {
             ),
             ToolDefinition(
                 name = "auto_triage",
-                description = "Categorize and prioritize current notifications.",
+                description = "Automatically categorize and prioritize current notifications.",
                 inputSchema = JsonObject(mapOf("type" to JsonPrimitive("object"), "properties" to JsonObject(emptyMap()))),
             ),
             ToolDefinition(
@@ -70,8 +70,8 @@ class NotificationSkill(private val context: Context) : AndyClawSkill {
                 inputSchema = JsonObject(mapOf(
                     "type" to JsonPrimitive("object"),
                     "properties" to JsonObject(mapOf(
-                        "enabled" to JsonObject(mapOf("type" to JsonPrimitive("boolean"))),
-                        "priority_only" to JsonObject(mapOf("type" to JsonPrimitive("boolean"), "description" to JsonPrimitive("Allow priority notifications only (default false = total silence)"))),
+                        "enabled" to JsonObject(mapOf("type" to JsonPrimitive("boolean"), "description" to JsonPrimitive("true to enable DND, false to disable"))),
+                        "priority_only" to JsonObject(mapOf("type" to JsonPrimitive("boolean"), "description" to JsonPrimitive("If true, allow priority notifications only (default false = total silence)"))),
                     )),
                     "required" to JsonArray(listOf(JsonPrimitive("enabled"))),
                 )),

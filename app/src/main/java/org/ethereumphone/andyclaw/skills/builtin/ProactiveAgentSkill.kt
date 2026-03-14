@@ -35,8 +35,8 @@ class ProactiveAgentSkill : AndyClawSkill {
                 inputSchema = JsonObject(mapOf(
                     "type" to JsonPrimitive("object"),
                     "properties" to JsonObject(mapOf(
-                        "event" to JsonObject(mapOf("type" to JsonPrimitive("string"), "description" to JsonPrimitive("e.g. time, location, app_opened, notification"))),
-                        "action" to JsonObject(mapOf("type" to JsonPrimitive("string"))),
+                        "event" to JsonObject(mapOf("type" to JsonPrimitive("string"), "description" to JsonPrimitive("Event type (e.g., time, location, app_opened, notification)"))),
+                        "action" to JsonObject(mapOf("type" to JsonPrimitive("string"), "description" to JsonPrimitive("Action to take when triggered"))),
                     )),
                     "required" to JsonArray(listOf(JsonPrimitive("event"), JsonPrimitive("action"))),
                 )),
@@ -52,7 +52,7 @@ class ProactiveAgentSkill : AndyClawSkill {
                 inputSchema = JsonObject(mapOf(
                     "type" to JsonPrimitive("object"),
                     "properties" to JsonObject(mapOf(
-                        "trigger_id" to JsonObject(mapOf("type" to JsonPrimitive("string"))),
+                        "trigger_id" to JsonObject(mapOf("type" to JsonPrimitive("string"), "description" to JsonPrimitive("ID of the trigger to remove"))),
                     )),
                     "required" to JsonArray(listOf(JsonPrimitive("trigger_id"))),
                 )),

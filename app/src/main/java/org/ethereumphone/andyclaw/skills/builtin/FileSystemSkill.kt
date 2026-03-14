@@ -26,16 +26,17 @@ class FileSystemSkill(private val context: Context) : AndyClawSkill {
     private val workDir: File get() = context.filesDir
 
     override val baseManifest = SkillManifest(
-        description = "Read, write, and list files in the app sandbox (${context.filesDir.absolutePath}).",
+        description = "Read, write, and list files in the app's sandbox directory (${context.filesDir.absolutePath}). All paths are resolved relative to this directory. No special permissions required.",
         tools = listOf(
             ToolDefinition(
                 name = "list_directory",
-                description = "List files and directories in the app sandbox.",
+                description = "List files and directories. Paths are relative to the app sandbox. Use '.' or '' for the root sandbox directory.",
                 inputSchema = JsonObject(mapOf(
                     "type" to JsonPrimitive("object"),
                     "properties" to JsonObject(mapOf(
                         "path" to JsonObject(mapOf(
                             "type" to JsonPrimitive("string"),
+                            "description" to JsonPrimitive("Directory path relative to app sandbox (e.g. '.' or 'scripts')"),
                         )),
                     )),
                     "required" to JsonArray(listOf(JsonPrimitive("path"))),
@@ -43,16 +44,17 @@ class FileSystemSkill(private val context: Context) : AndyClawSkill {
             ),
             ToolDefinition(
                 name = "read_file",
-                description = "Read a file in the app sandbox.",
+                description = "Read the contents of a file in the app sandbox. Returns the first N bytes.",
                 inputSchema = JsonObject(mapOf(
                     "type" to JsonPrimitive("object"),
                     "properties" to JsonObject(mapOf(
                         "path" to JsonObject(mapOf(
                             "type" to JsonPrimitive("string"),
+                            "description" to JsonPrimitive("File path relative to app sandbox"),
                         )),
                         "max_bytes" to JsonObject(mapOf(
                             "type" to JsonPrimitive("integer"),
-                            "description" to JsonPrimitive("Default 100000"),
+                            "description" to JsonPrimitive("Maximum bytes to read (default 100000)"),
                         )),
                     )),
                     "required" to JsonArray(listOf(JsonPrimitive("path"))),
@@ -60,15 +62,17 @@ class FileSystemSkill(private val context: Context) : AndyClawSkill {
             ),
             ToolDefinition(
                 name = "write_file",
-                description = "Write content to a file, creating parent directories as needed.",
+                description = "Write content to a file in the app sandbox. Creates the file and parent directories if they don't exist.",
                 inputSchema = JsonObject(mapOf(
                     "type" to JsonPrimitive("object"),
                     "properties" to JsonObject(mapOf(
                         "path" to JsonObject(mapOf(
                             "type" to JsonPrimitive("string"),
+                            "description" to JsonPrimitive("File path relative to app sandbox (e.g. 'scripts/hello.sh')"),
                         )),
                         "content" to JsonObject(mapOf(
                             "type" to JsonPrimitive("string"),
+                            "description" to JsonPrimitive("The content to write"),
                         )),
                     )),
                     "required" to JsonArray(listOf(JsonPrimitive("path"), JsonPrimitive("content"))),
@@ -77,12 +81,13 @@ class FileSystemSkill(private val context: Context) : AndyClawSkill {
             ),
             ToolDefinition(
                 name = "file_info",
-                description = "Get metadata about a file or directory.",
+                description = "Get detailed information about a file or directory in the app sandbox.",
                 inputSchema = JsonObject(mapOf(
                     "type" to JsonPrimitive("object"),
                     "properties" to JsonObject(mapOf(
                         "path" to JsonObject(mapOf(
                             "type" to JsonPrimitive("string"),
+                            "description" to JsonPrimitive("File or directory path relative to app sandbox"),
                         )),
                     )),
                     "required" to JsonArray(listOf(JsonPrimitive("path"))),

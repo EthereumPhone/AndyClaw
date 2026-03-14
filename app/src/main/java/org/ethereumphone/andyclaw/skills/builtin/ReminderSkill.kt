@@ -36,24 +36,25 @@ class ReminderSkill(private val context: Context) : AndyClawSkill {
     }
 
     override val baseManifest = SkillManifest(
-        description = "Create, list, and cancel reminders that fire notifications.",
+        description = "Create, list, and cancel reminders. Reminders fire a notification at the scheduled time.",
         tools = listOf(
             ToolDefinition(
                 name = "create_reminder",
-                description = "Schedule a reminder notification at a specified time (epoch millis).",
+                description = "Schedule a reminder that fires a notification at the specified time. Use epoch milliseconds for the time. The current device time is included below so you can calculate offsets.",
                 inputSchema = JsonObject(mapOf(
                     "type" to JsonPrimitive("object"),
                     "properties" to JsonObject(mapOf(
                         "time" to JsonObject(mapOf(
                             "type" to JsonPrimitive("integer"),
-                            "description" to JsonPrimitive("Epoch milliseconds"),
+                            "description" to JsonPrimitive("When to fire the reminder, as epoch milliseconds"),
                         )),
                         "message" to JsonObject(mapOf(
                             "type" to JsonPrimitive("string"),
+                            "description" to JsonPrimitive("The reminder message shown in the notification body"),
                         )),
                         "label" to JsonObject(mapOf(
                             "type" to JsonPrimitive("string"),
-                            "description" to JsonPrimitive("Notification title (default: 'Reminder')"),
+                            "description" to JsonPrimitive("Short label for the notification title (default: 'Reminder')"),
                         )),
                     )),
                     "required" to JsonArray(listOf(
@@ -64,7 +65,7 @@ class ReminderSkill(private val context: Context) : AndyClawSkill {
             ),
             ToolDefinition(
                 name = "list_reminders",
-                description = "List all pending reminders.",
+                description = "List all pending (not yet fired) reminders.",
                 inputSchema = JsonObject(mapOf(
                     "type" to JsonPrimitive("object"),
                     "properties" to JsonObject(emptyMap()),
@@ -78,6 +79,7 @@ class ReminderSkill(private val context: Context) : AndyClawSkill {
                     "properties" to JsonObject(mapOf(
                         "reminder_id" to JsonObject(mapOf(
                             "type" to JsonPrimitive("integer"),
+                            "description" to JsonPrimitive("The ID of the reminder to cancel"),
                         )),
                     )),
                     "required" to JsonArray(listOf(JsonPrimitive("reminder_id"))),

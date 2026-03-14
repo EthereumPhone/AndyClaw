@@ -27,27 +27,27 @@ class StorageSkill(private val context: Context) : AndyClawSkill {
     )
 
     override val privilegedManifest = SkillManifest(
-        description = "Browse, read, and search files on external storage.",
+        description = "Browse, read, and search files on external storage (privileged OS only).",
         tools = listOf(
             ToolDefinition(
                 name = "list_storage_directory",
-                description = "List files and directories on external storage.",
+                description = "List files and directories at a path on external storage.",
                 inputSchema = JsonObject(mapOf(
                     "type" to JsonPrimitive("object"),
                     "properties" to JsonObject(mapOf(
-                        "path" to JsonObject(mapOf("type" to JsonPrimitive("string"), "description" to JsonPrimitive("Relative to /sdcard/ (default: root)"))),
+                        "path" to JsonObject(mapOf("type" to JsonPrimitive("string"), "description" to JsonPrimitive("Directory path relative to /sdcard/ (default: root)"))),
                     )),
                 )),
                 requiresApproval = true,
             ),
             ToolDefinition(
                 name = "read_storage_file",
-                description = "Read a text file on external storage.",
+                description = "Read the contents of a text file on external storage.",
                 inputSchema = JsonObject(mapOf(
                     "type" to JsonPrimitive("object"),
                     "properties" to JsonObject(mapOf(
-                        "path" to JsonObject(mapOf("type" to JsonPrimitive("string"), "description" to JsonPrimitive("Relative to /sdcard/"))),
-                        "max_bytes" to JsonObject(mapOf("type" to JsonPrimitive("integer"), "description" to JsonPrimitive("Default 10000"))),
+                        "path" to JsonObject(mapOf("type" to JsonPrimitive("string"), "description" to JsonPrimitive("File path relative to /sdcard/"))),
+                        "max_bytes" to JsonObject(mapOf("type" to JsonPrimitive("integer"), "description" to JsonPrimitive("Max bytes to read (default 10000)"))),
                     )),
                     "required" to JsonArray(listOf(JsonPrimitive("path"))),
                 )),
@@ -55,13 +55,13 @@ class StorageSkill(private val context: Context) : AndyClawSkill {
             ),
             ToolDefinition(
                 name = "search_files",
-                description = "Search files by name pattern on external storage.",
+                description = "Search for files matching a name pattern on external storage.",
                 inputSchema = JsonObject(mapOf(
                     "type" to JsonPrimitive("object"),
                     "properties" to JsonObject(mapOf(
-                        "query" to JsonObject(mapOf("type" to JsonPrimitive("string"))),
-                        "path" to JsonObject(mapOf("type" to JsonPrimitive("string"), "description" to JsonPrimitive("Relative to /sdcard/ (default: root)"))),
-                        "limit" to JsonObject(mapOf("type" to JsonPrimitive("integer"), "description" to JsonPrimitive("Default 50"))),
+                        "query" to JsonObject(mapOf("type" to JsonPrimitive("string"), "description" to JsonPrimitive("File name pattern to search (case-insensitive substring)"))),
+                        "path" to JsonObject(mapOf("type" to JsonPrimitive("string"), "description" to JsonPrimitive("Directory to search in, relative to /sdcard/ (default: root)"))),
+                        "limit" to JsonObject(mapOf("type" to JsonPrimitive("integer"), "description" to JsonPrimitive("Max results (default 50)"))),
                     )),
                     "required" to JsonArray(listOf(JsonPrimitive("query"))),
                 )),
@@ -69,7 +69,7 @@ class StorageSkill(private val context: Context) : AndyClawSkill {
             ),
             ToolDefinition(
                 name = "get_storage_info",
-                description = "Get storage space info.",
+                description = "Get storage space information (total, free, used).",
                 inputSchema = JsonObject(mapOf("type" to JsonPrimitive("object"), "properties" to JsonObject(emptyMap()))),
                 requiresApproval = true,
             ),

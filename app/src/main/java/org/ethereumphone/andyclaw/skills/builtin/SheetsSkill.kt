@@ -40,7 +40,7 @@ class SheetsSkill(
         .build()
 
     override val baseManifest = SkillManifest(
-        description = "Read and append data to Google Sheets spreadsheets.",
+        description = "Read and append data to Google Sheets spreadsheets. Use this to read spreadsheet data or add new rows.",
         tools = listOf(
             ToolDefinition(
                 name = "sheets_read",
@@ -50,11 +50,11 @@ class SheetsSkill(
                     "properties" to JsonObject(mapOf(
                         "spreadsheet_id" to JsonObject(mapOf(
                             "type" to JsonPrimitive("string"),
-                            "description" to JsonPrimitive("From the spreadsheet URL"),
+                            "description" to JsonPrimitive("The spreadsheet ID (from the URL)"),
                         )),
                         "range" to JsonObject(mapOf(
                             "type" to JsonPrimitive("string"),
-                            "description" to JsonPrimitive("A1 notation (e.g. 'Sheet1!A1:D10')"),
+                            "description" to JsonPrimitive("The A1 notation range to read (e.g. 'Sheet1!A1:D10', 'A1:Z100')"),
                         )),
                     )),
                     "required" to JsonArray(listOf(
@@ -71,15 +71,15 @@ class SheetsSkill(
                     "properties" to JsonObject(mapOf(
                         "spreadsheet_id" to JsonObject(mapOf(
                             "type" to JsonPrimitive("string"),
-                            "description" to JsonPrimitive("From the spreadsheet URL"),
+                            "description" to JsonPrimitive("The spreadsheet ID (from the URL)"),
                         )),
                         "range" to JsonObject(mapOf(
                             "type" to JsonPrimitive("string"),
-                            "description" to JsonPrimitive("A1 notation (e.g. 'Sheet1!A1')"),
+                            "description" to JsonPrimitive("The A1 notation range to append to (e.g. 'Sheet1!A1')"),
                         )),
                         "values" to JsonObject(mapOf(
                             "type" to JsonPrimitive("string"),
-                            "description" to JsonPrimitive("JSON array of arrays (e.g. '[[\"Name\",\"Age\"],[\"Alice\",\"30\"]]')"),
+                            "description" to JsonPrimitive("JSON array of arrays representing rows to append (e.g. '[[\"Name\",\"Age\"],[\"Alice\",\"30\"]]')"),
                         )),
                     )),
                     "required" to JsonArray(listOf(

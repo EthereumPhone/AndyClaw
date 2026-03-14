@@ -22,16 +22,17 @@ class ContactsSkill(private val context: Context) : AndyClawSkill {
     private val contactsSDK by lazy { ContactsSDK(context) }
 
     override val baseManifest = SkillManifest(
-        description = "Search and view contacts, including ETH addresses and ENS names.",
+        description = "Search and view contacts on the device, including Ethereum addresses and ENS names.",
         tools = listOf(
             ToolDefinition(
                 name = "search_contacts",
-                description = "Search contacts by name.",
+                description = "Search contacts by name. Returns matching contacts with ETH addresses and ENS names.",
                 inputSchema = JsonObject(mapOf(
                     "type" to JsonPrimitive("object"),
                     "properties" to JsonObject(mapOf(
                         "query" to JsonObject(mapOf(
                             "type" to JsonPrimitive("string"),
+                            "description" to JsonPrimitive("Search query (name)"),
                         )),
                     )),
                     "required" to JsonArray(listOf(JsonPrimitive("query"))),
@@ -40,12 +41,13 @@ class ContactsSkill(private val context: Context) : AndyClawSkill {
             ),
             ToolDefinition(
                 name = "get_contact_details",
-                description = "Get full details of a contact by ID.",
+                description = "Get full details of a contact by contact ID, including ETH address and ENS name.",
                 inputSchema = JsonObject(mapOf(
                     "type" to JsonPrimitive("object"),
                     "properties" to JsonObject(mapOf(
                         "contact_id" to JsonObject(mapOf(
                             "type" to JsonPrimitive("string"),
+                            "description" to JsonPrimitive("The contact ID"),
                         )),
                     )),
                     "required" to JsonArray(listOf(JsonPrimitive("contact_id"))),
@@ -54,7 +56,7 @@ class ContactsSkill(private val context: Context) : AndyClawSkill {
             ),
             ToolDefinition(
                 name = "get_eth_contacts",
-                description = "Get all contacts with an ETH address or ENS name.",
+                description = "Get all contacts that have an Ethereum address or ENS name.",
                 inputSchema = JsonObject(mapOf(
                     "type" to JsonPrimitive("object"),
                     "properties" to JsonObject(emptyMap()),
@@ -70,26 +72,29 @@ class ContactsSkill(private val context: Context) : AndyClawSkill {
         tools = listOf(
             ToolDefinition(
                 name = "create_contact",
-                description = "Create a new contact.",
+                description = "Create a new contact with name, phone, email, ETH address, and/or ENS name.",
                 inputSchema = JsonObject(mapOf(
                     "type" to JsonPrimitive("object"),
                     "properties" to JsonObject(mapOf(
                         "name" to JsonObject(mapOf(
                             "type" to JsonPrimitive("string"),
+                            "description" to JsonPrimitive("Contact display name"),
                         )),
                         "phone" to JsonObject(mapOf(
                             "type" to JsonPrimitive("string"),
+                            "description" to JsonPrimitive("Phone number"),
                         )),
                         "email" to JsonObject(mapOf(
                             "type" to JsonPrimitive("string"),
+                            "description" to JsonPrimitive("Email address"),
                         )),
                         "eth_address" to JsonObject(mapOf(
                             "type" to JsonPrimitive("string"),
-                            "description" to JsonPrimitive("0x-prefixed Ethereum address"),
+                            "description" to JsonPrimitive("Ethereum address (0x-prefixed)"),
                         )),
                         "ens_name" to JsonObject(mapOf(
                             "type" to JsonPrimitive("string"),
-                            "description" to JsonPrimitive("e.g. vitalik.eth"),
+                            "description" to JsonPrimitive("ENS name (e.g., vitalik.eth)"),
                         )),
                     )),
                     "required" to JsonArray(listOf(JsonPrimitive("name"))),
@@ -99,16 +104,17 @@ class ContactsSkill(private val context: Context) : AndyClawSkill {
             ),
             ToolDefinition(
                 name = "set_eth_address",
-                description = "Set or update the ETH address on a contact.",
+                description = "Set or update the ETH address on an existing contact.",
                 inputSchema = JsonObject(mapOf(
                     "type" to JsonPrimitive("object"),
                     "properties" to JsonObject(mapOf(
                         "contact_id" to JsonObject(mapOf(
                             "type" to JsonPrimitive("string"),
+                            "description" to JsonPrimitive("The contact ID"),
                         )),
                         "eth_address" to JsonObject(mapOf(
                             "type" to JsonPrimitive("string"),
-                            "description" to JsonPrimitive("0x-prefixed, 42 characters"),
+                            "description" to JsonPrimitive("Ethereum address (0x-prefixed, 42 characters)"),
                         )),
                     )),
                     "required" to JsonArray(listOf(

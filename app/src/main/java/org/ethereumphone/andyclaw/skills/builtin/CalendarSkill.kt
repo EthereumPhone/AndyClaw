@@ -23,28 +23,28 @@ class CalendarSkill(private val context: Context) : AndyClawSkill {
     override val name = "Calendar"
 
     override val baseManifest = SkillManifest(
-        description = "Read, create, and delete calendar events.",
+        description = "Read, create, and delete calendar events on the device.",
         tools = listOf(
             ToolDefinition(
                 name = "list_events",
-                description = "List calendar events within a time range.",
+                description = "List upcoming calendar events within a time range.",
                 inputSchema = JsonObject(mapOf(
                     "type" to JsonPrimitive("object"),
                     "properties" to JsonObject(mapOf(
-                        "start_time" to JsonObject(mapOf("type" to JsonPrimitive("integer"), "description" to JsonPrimitive("Epoch millis (default: now)"))),
-                        "end_time" to JsonObject(mapOf("type" to JsonPrimitive("integer"), "description" to JsonPrimitive("Epoch millis (default: 7 days from now)"))),
-                        "limit" to JsonObject(mapOf("type" to JsonPrimitive("integer"), "description" to JsonPrimitive("Default 50"))),
+                        "start_time" to JsonObject(mapOf("type" to JsonPrimitive("integer"), "description" to JsonPrimitive("Start time as epoch millis (default: now)"))),
+                        "end_time" to JsonObject(mapOf("type" to JsonPrimitive("integer"), "description" to JsonPrimitive("End time as epoch millis (default: 7 days from now)"))),
+                        "limit" to JsonObject(mapOf("type" to JsonPrimitive("integer"), "description" to JsonPrimitive("Max events to return (default 50)"))),
                     )),
                 )),
                 requiredPermissions = listOf("android.permission.READ_CALENDAR"),
             ),
             ToolDefinition(
                 name = "get_event",
-                description = "Get details of a calendar event by ID.",
+                description = "Get details of a specific calendar event by ID.",
                 inputSchema = JsonObject(mapOf(
                     "type" to JsonPrimitive("object"),
                     "properties" to JsonObject(mapOf(
-                        "event_id" to JsonObject(mapOf("type" to JsonPrimitive("string"))),
+                        "event_id" to JsonObject(mapOf("type" to JsonPrimitive("string"), "description" to JsonPrimitive("Event ID"))),
                     )),
                     "required" to JsonArray(listOf(JsonPrimitive("event_id"))),
                 )),
@@ -52,20 +52,20 @@ class CalendarSkill(private val context: Context) : AndyClawSkill {
             ),
             ToolDefinition(
                 name = "create_event",
-                description = "Create a new calendar event (prefers Google Calendar).",
+                description = "Create a new calendar event. Prefers Google Calendar if installed, otherwise uses the default calendar.",
                 inputSchema = JsonObject(mapOf(
                     "type" to JsonPrimitive("object"),
                     "properties" to JsonObject(mapOf(
-                        "title" to JsonObject(mapOf("type" to JsonPrimitive("string"))),
-                        "start_time" to JsonObject(mapOf("type" to JsonPrimitive("integer"), "description" to JsonPrimitive("Epoch millis"))),
-                        "end_time" to JsonObject(mapOf("type" to JsonPrimitive("integer"), "description" to JsonPrimitive("Epoch millis"))),
-                        "description" to JsonObject(mapOf("type" to JsonPrimitive("string"))),
-                        "location" to JsonObject(mapOf("type" to JsonPrimitive("string"))),
-                        "calendar_id" to JsonObject(mapOf("type" to JsonPrimitive("string"), "description" to JsonPrimitive("Uses default if omitted"))),
+                        "title" to JsonObject(mapOf("type" to JsonPrimitive("string"), "description" to JsonPrimitive("Event title"))),
+                        "start_time" to JsonObject(mapOf("type" to JsonPrimitive("integer"), "description" to JsonPrimitive("Start time as epoch millis"))),
+                        "end_time" to JsonObject(mapOf("type" to JsonPrimitive("integer"), "description" to JsonPrimitive("End time as epoch millis"))),
+                        "description" to JsonObject(mapOf("type" to JsonPrimitive("string"), "description" to JsonPrimitive("Event description"))),
+                        "location" to JsonObject(mapOf("type" to JsonPrimitive("string"), "description" to JsonPrimitive("Event location"))),
+                        "calendar_id" to JsonObject(mapOf("type" to JsonPrimitive("string"), "description" to JsonPrimitive("Calendar ID (uses default if omitted)"))),
                         "participants" to JsonObject(mapOf(
                             "type" to JsonPrimitive("array"),
                             "items" to JsonObject(mapOf("type" to JsonPrimitive("string"))),
-                            "description" to JsonPrimitive("Email addresses to invite"),
+                            "description" to JsonPrimitive("List of participant email addresses to invite"),
                         )),
                     )),
                     "required" to JsonArray(listOf(JsonPrimitive("title"), JsonPrimitive("start_time"), JsonPrimitive("end_time"))),
@@ -79,7 +79,7 @@ class CalendarSkill(private val context: Context) : AndyClawSkill {
                 inputSchema = JsonObject(mapOf(
                     "type" to JsonPrimitive("object"),
                     "properties" to JsonObject(mapOf(
-                        "event_id" to JsonObject(mapOf("type" to JsonPrimitive("string"))),
+                        "event_id" to JsonObject(mapOf("type" to JsonPrimitive("string"), "description" to JsonPrimitive("Event ID to delete"))),
                     )),
                     "required" to JsonArray(listOf(JsonPrimitive("event_id"))),
                 )),

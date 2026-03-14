@@ -84,7 +84,6 @@ class TelegramAgentRunner(
             userStory = userStory,
             memoryManager = app.memoryManager,
             safetyLayer = app.createSafetyLayer(),
-            skillRouter = app.skillRouter,
         )
 
         val ledController = app.ledController

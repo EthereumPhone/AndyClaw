@@ -90,16 +90,18 @@ class BankrTradingSkill(private val context: Context) : AndyClawSkill {
     private val informationalTools = listOf(
         ToolDefinition(
             name = "get_bankr_wallet",
-            description = "Look up a wallet address by Twitter or Farcaster username via Bankr.",
+            description = "Look up a wallet address by Twitter or Farcaster username via Bankr. " +
+                    "Returns EVM and Solana addresses if available.",
             inputSchema = JsonObject(mapOf(
                 "type" to JsonPrimitive("object"),
                 "properties" to JsonObject(mapOf(
                     "username" to JsonObject(mapOf(
                         "type" to JsonPrimitive("string"),
+                        "description" to JsonPrimitive("Twitter or Farcaster username to look up"),
                     )),
                     "platform" to JsonObject(mapOf(
                         "type" to JsonPrimitive("string"),
-                        "description" to JsonPrimitive("'twitter' or 'farcaster' (default: 'twitter')"),
+                        "description" to JsonPrimitive("Platform: 'twitter' or 'farcaster'. Default: 'twitter'"),
                     )),
                 )),
                 "required" to JsonArray(listOf(JsonPrimitive("username"))),
@@ -107,17 +109,23 @@ class BankrTradingSkill(private val context: Context) : AndyClawSkill {
         ),
         ToolDefinition(
             name = "get_bankr_orders",
-            description = "List Bankr orders for the user's wallet, optionally filtered by type or status.",
+            description = "List Bankr orders for the user's wallet. " +
+                    "Optionally filter by order type (limit-buy, limit-sell, stop-buy, stop-sell, dca, twap) " +
+                    "or status (open, ready, pending, completed, cancelled, paused, expired, error).",
             inputSchema = JsonObject(mapOf(
                 "type" to JsonPrimitive("object"),
                 "properties" to JsonObject(mapOf(
                     "order_type" to JsonObject(mapOf(
                         "type" to JsonPrimitive("string"),
-                        "description" to JsonPrimitive("limit-buy, limit-sell, stop-buy, stop-sell, dca, twap"),
+                        "description" to JsonPrimitive(
+                            "Filter by type: limit-buy, limit-sell, stop-buy, stop-sell, dca, twap"
+                        ),
                     )),
                     "status" to JsonObject(mapOf(
                         "type" to JsonPrimitive("string"),
-                        "description" to JsonPrimitive("open, ready, pending, completed, cancelled, paused, expired, error"),
+                        "description" to JsonPrimitive(
+                            "Filter by status: open, ready, pending, completed, cancelled, paused, expired, error"
+                        ),
                     )),
                 )),
                 "required" to JsonArray(emptyList()),
@@ -131,6 +139,7 @@ class BankrTradingSkill(private val context: Context) : AndyClawSkill {
                 "properties" to JsonObject(mapOf(
                     "order_id" to JsonObject(mapOf(
                         "type" to JsonPrimitive("string"),
+                        "description" to JsonPrimitive("The Bankr order ID"),
                     )),
                 )),
                 "required" to JsonArray(listOf(JsonPrimitive("order_id"))),
@@ -141,55 +150,81 @@ class BankrTradingSkill(private val context: Context) : AndyClawSkill {
     private val tradingTools = listOf(
         ToolDefinition(
             name = "create_bankr_order",
-            description = "Create a Bankr order (limit, stop, DCA, or TWAP) with full quote/approve/sign/submit flow. " +
-                    "IMPORTANT: Use WETH address for ETH (native ETH not supported). " +
-                    "Use lookup_token to verify addresses first.",
+            description = "Create a Bankr order (limit, stop, DCA, or TWAP). " +
+                    "Handles the full flow: creates a quote, executes approval if needed, " +
+                    "signs the order via the user's wallet, and submits it. " +
+                    "IMPORTANT: For orders involving ETH, always use the WETH address instead " +
+                    "(Base: 0x4200000000000000000000000000000000000006, " +
+                    "Ethereum: 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2). " +
+                    "Orders require ERC-20 tokens — native ETH cannot be used directly. " +
+                    "Use lookup_token to verify token addresses before creating orders.",
             inputSchema = JsonObject(mapOf(
                 "type" to JsonPrimitive("object"),
                 "properties" to JsonObject(mapOf(
                     "order_type" to JsonObject(mapOf(
                         "type" to JsonPrimitive("string"),
-                        "description" to JsonPrimitive("limit-buy, limit-sell, stop-buy, stop-sell, dca, twap"),
+                        "description" to JsonPrimitive(
+                            "Order type: limit-buy, limit-sell, stop-buy, stop-sell, dca, twap"
+                        ),
                     )),
                     "sell_token" to JsonObject(mapOf(
                         "type" to JsonPrimitive("string"),
-                        "description" to JsonPrimitive("Contract address of token to sell (use WETH for ETH)"),
+                        "description" to JsonPrimitive(
+                            "Contract address (0x...) of the token to sell. Use WETH address for ETH."
+                        ),
                     )),
                     "buy_token" to JsonObject(mapOf(
                         "type" to JsonPrimitive("string"),
-                        "description" to JsonPrimitive("Contract address of token to buy (use WETH for ETH)"),
+                        "description" to JsonPrimitive(
+                            "Contract address (0x...) of the token to buy. Use WETH address for ETH."
+                        ),
                     )),
                     "sell_amount" to JsonObject(mapOf(
                         "type" to JsonPrimitive("string"),
-                        "description" to JsonPrimitive("Human-readable amount (per-execution for DCA/TWAP)"),
+                        "description" to JsonPrimitive(
+                            "Amount of sell_token in human-readable format (e.g. '100' for 100 USDC). " +
+                                    "For DCA/TWAP this is the PER-EXECUTION amount, not total."
+                        ),
                     )),
                     "sell_decimals" to JsonObject(mapOf(
                         "type" to JsonPrimitive("integer"),
-                        "description" to JsonPrimitive("Sell token decimals (default: 18)"),
+                        "description" to JsonPrimitive(
+                            "Decimals of the sell token (e.g. 18 for WETH, 6 for USDC). Default: 18"
+                        ),
                     )),
                     "chain_id" to JsonObject(mapOf(
                         "type" to JsonPrimitive("integer"),
-                        "description" to JsonPrimitive("Default: 8453 (Base)"),
+                        "description" to JsonPrimitive("Chain ID. Default: 8453 (Base)"),
                     )),
                     "slippage_bps" to JsonObject(mapOf(
                         "type" to JsonPrimitive("integer"),
-                        "description" to JsonPrimitive("Slippage in bps, 100=1% (default: 100)"),
+                        "description" to JsonPrimitive(
+                            "Slippage tolerance in basis points (100 = 1%). Default: 100"
+                        ),
                     )),
                     "expiration_hours" to JsonObject(mapOf(
                         "type" to JsonPrimitive("integer"),
-                        "description" to JsonPrimitive("Default: 24"),
+                        "description" to JsonPrimitive("Hours until order expires. Default: 24"),
                     )),
                     "trigger_price" to JsonObject(mapOf(
                         "type" to JsonPrimitive("string"),
-                        "description" to JsonPrimitive("For limit/stop: trigger price as token ratio"),
+                        "description" to JsonPrimitive(
+                            "For limit/stop orders: trigger price as a token ratio. " +
+                                    "Buy orders: sell_token per 1 buy_token. " +
+                                    "Sell orders: buy_token per 1 sell_token."
+                        ),
                     )),
                     "interval_seconds" to JsonObject(mapOf(
                         "type" to JsonPrimitive("integer"),
-                        "description" to JsonPrimitive("DCA/TWAP interval (DCA min: 3600, TWAP min: 180)"),
+                        "description" to JsonPrimitive(
+                            "For DCA/TWAP: seconds between executions. DCA min: 3600 (1hr). TWAP min: 180 (3min)."
+                        ),
                     )),
                     "max_executions" to JsonObject(mapOf(
                         "type" to JsonPrimitive("integer"),
-                        "description" to JsonPrimitive("DCA/TWAP execution count"),
+                        "description" to JsonPrimitive(
+                            "For DCA/TWAP: number of executions (chunks)."
+                        ),
                     )),
                 )),
                 "required" to JsonArray(listOf(
@@ -203,12 +238,14 @@ class BankrTradingSkill(private val context: Context) : AndyClawSkill {
         ),
         ToolDefinition(
             name = "cancel_bankr_order",
-            description = "Cancel an active Bankr order (open/ready/pending only).",
+            description = "Cancel an active Bankr order. Only open/ready/pending orders can be cancelled. " +
+                    "The user's wallet will sign the cancellation.",
             inputSchema = JsonObject(mapOf(
                 "type" to JsonPrimitive("object"),
                 "properties" to JsonObject(mapOf(
                     "order_id" to JsonObject(mapOf(
                         "type" to JsonPrimitive("string"),
+                        "description" to JsonPrimitive("The Bankr order ID to cancel"),
                     )),
                 )),
                 "required" to JsonArray(listOf(JsonPrimitive("order_id"))),

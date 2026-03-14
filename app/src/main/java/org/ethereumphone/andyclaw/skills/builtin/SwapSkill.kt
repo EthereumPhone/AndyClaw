@@ -72,46 +72,62 @@ class SwapSkill(private val context: Context) : AndyClawSkill {
     )
 
     override val privilegedManifest = SkillManifest(
-        description = "Swap tokens via the WalletManager on ethOS (Ethereum, Optimism, Polygon, Arbitrum, Base). " +
-                "Use 0x0000000000000000000000000000000000000000 for native ETH.",
+        description = "Swap tokens via the WalletManager ContentProvider on ethOS. " +
+                "Supports Ethereum, Optimism, Polygon, Arbitrum, and Base. " +
+                "Handles approval + swap transactions as a batch. " +
+                "For native ETH, use address 0x0000000000000000000000000000000000000000.",
         tools = listOf(
             ToolDefinition(
                 name = "swap_tokens",
-                description = "Swap tokens via WalletManager (must be installed). " +
-                        "Use 0x0000...0000 for native ETH. Falls back to wallet skill swap tools if unavailable.",
+                description = "Swap tokens via the WalletManager app. Queries swap data from the " +
+                        "WalletManager ContentProvider and executes approval + swap as a batch transaction. " +
+                        "The user will be prompted to approve. " +
+                        "For native ETH use 0x0000000000000000000000000000000000000000. " +
+                        "Supported chains: Ethereum (1), Optimism (10), Polygon (137), Arbitrum (42161), Base (8453). " +
+                        "NOTE: This uses the WalletManager app which must be installed on the device. " +
+                        "If unavailable, use the existing agent_swap or get_swap_quote tools from the wallet skill instead.",
                 inputSchema = JsonObject(mapOf(
                     "type" to JsonPrimitive("object"),
                     "properties" to JsonObject(mapOf(
                         "sell_token" to JsonObject(mapOf(
                             "type" to JsonPrimitive("string"),
-                            "description" to JsonPrimitive("Contract address (use 0x000...0 for native ETH)"),
+                            "description" to JsonPrimitive(
+                                "Contract address of token to sell. Use 0x0000000000000000000000000000000000000000 for native ETH."
+                            ),
                         )),
                         "buy_token" to JsonObject(mapOf(
                             "type" to JsonPrimitive("string"),
+                            "description" to JsonPrimitive(
+                                "Contract address of token to buy."
+                            ),
                         )),
                         "sell_amount" to JsonObject(mapOf(
                             "type" to JsonPrimitive("string"),
-                            "description" to JsonPrimitive("Human-readable amount (e.g. '100' for 100 USDC)"),
+                            "description" to JsonPrimitive(
+                                "Human-readable amount to sell (e.g. '100' for 100 USDC, '0.1' for 0.1 ETH)"
+                            ),
                         )),
                         "chain_id" to JsonObject(mapOf(
                             "type" to JsonPrimitive("integer"),
-                            "description" to JsonPrimitive("1=Ethereum, 10=Optimism, 137=Polygon, 42161=Arbitrum, 8453=Base"),
+                            "description" to JsonPrimitive(
+                                "Chain ID: 1 (Ethereum), 10 (Optimism), 137 (Polygon), 42161 (Arbitrum), 8453 (Base)"
+                            ),
                         )),
                         "sell_decimals" to JsonObject(mapOf(
                             "type" to JsonPrimitive("integer"),
-                            "description" to JsonPrimitive("Default: 18"),
+                            "description" to JsonPrimitive("Decimals of sell token (e.g. 18 for ETH, 6 for USDC). Default: 18"),
                         )),
                         "buy_decimals" to JsonObject(mapOf(
                             "type" to JsonPrimitive("integer"),
-                            "description" to JsonPrimitive("Default: 18"),
+                            "description" to JsonPrimitive("Decimals of buy token. Default: 18"),
                         )),
                         "sell_symbol" to JsonObject(mapOf(
                             "type" to JsonPrimitive("string"),
-                            "description" to JsonPrimitive("Helps detect native ETH"),
+                            "description" to JsonPrimitive("Symbol of sell token (e.g. ETH, USDC). Helps with native ETH detection."),
                         )),
                         "buy_symbol" to JsonObject(mapOf(
                             "type" to JsonPrimitive("string"),
-                            "description" to JsonPrimitive("Helps detect native ETH"),
+                            "description" to JsonPrimitive("Symbol of buy token. Helps with native ETH detection."),
                         )),
                     )),
                     "required" to JsonArray(listOf(

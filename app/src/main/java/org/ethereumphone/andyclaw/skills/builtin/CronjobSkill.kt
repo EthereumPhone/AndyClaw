@@ -38,25 +38,25 @@ class CronjobSkill(private val context: Context) : AndyClawSkill {
     }
 
     override val baseManifest = SkillManifest(
-        description = "Create, list, and cancel recurring cron jobs that invoke the agent at fixed intervals.",
+        description = "Create, list, and cancel recurring cron jobs. Cron jobs run the AI agent repeatedly at a fixed interval. Use these for periodic tasks like checking battery, monitoring prices, sending daily summaries, etc.",
         tools = listOf(
             ToolDefinition(
                 name = "create_cronjob",
-                description = "Create a recurring cron job that invokes the agent at a fixed interval.",
+                description = "Create a recurring cron job that runs the AI agent at a fixed interval. The agent will be invoked each time with the reason you provide, and can use all its tools to act on it. Use this for any task that should happen periodically (e.g. 'check battery level and notify if below 20%' every 30 minutes).",
                 inputSchema = JsonObject(mapOf(
                     "type" to JsonPrimitive("object"),
                     "properties" to JsonObject(mapOf(
                         "interval_minutes" to JsonObject(mapOf(
                             "type" to JsonPrimitive("integer"),
-                            "description" to JsonPrimitive("Min 5, max 10080 (7 days)"),
+                            "description" to JsonPrimitive("How often to run, in minutes. Minimum 5, maximum 10080 (7 days)."),
                         )),
                         "reason" to JsonObject(mapOf(
                             "type" to JsonPrimitive("string"),
-                            "description" to JsonPrimitive("Prompt the agent receives on each execution"),
+                            "description" to JsonPrimitive("What the agent should do each time this cron job fires. Be specific — this is the prompt the agent receives on each execution."),
                         )),
                         "label" to JsonObject(mapOf(
                             "type" to JsonPrimitive("string"),
-                            "description" to JsonPrimitive("Default: 'Cron Job'"),
+                            "description" to JsonPrimitive("Short human-readable label for this cron job (default: 'Cron Job')"),
                         )),
                     )),
                     "required" to JsonArray(listOf(
@@ -75,12 +75,13 @@ class CronjobSkill(private val context: Context) : AndyClawSkill {
             ),
             ToolDefinition(
                 name = "cancel_cronjob",
-                description = "Cancel an active cron job by ID.",
+                description = "Cancel an active cron job by its ID. It will stop recurring.",
                 inputSchema = JsonObject(mapOf(
                     "type" to JsonPrimitive("object"),
                     "properties" to JsonObject(mapOf(
                         "cronjob_id" to JsonObject(mapOf(
                             "type" to JsonPrimitive("integer"),
+                            "description" to JsonPrimitive("The ID of the cron job to cancel"),
                         )),
                     )),
                     "required" to JsonArray(listOf(JsonPrimitive("cronjob_id"))),

@@ -32,16 +32,17 @@ class TelegramSkill(
     override val name = "Telegram"
 
     override val baseManifest = SkillManifest(
-        description = "Send messages to the user via Telegram bot for reminders, alerts, or follow-ups.",
+        description = "Send messages to the user via Telegram bot. Use this to proactively reach the user on Telegram, e.g. for reminders, alerts, or follow-ups.",
         tools = listOf(
             ToolDefinition(
                 name = "send_telegram_message",
-                description = "Send a message to the verified bot owner via Telegram.",
+                description = "Send a message to the user via Telegram bot. Always sends to the verified bot owner. Use this for proactive messages like reminders, alerts, or scheduled follow-ups.",
                 inputSchema = JsonObject(mapOf(
                     "type" to JsonPrimitive("object"),
                     "properties" to JsonObject(mapOf(
                         "text" to JsonObject(mapOf(
                             "type" to JsonPrimitive("string"),
+                            "description" to JsonPrimitive("The message text to send"),
                         )),
                     )),
                     "required" to JsonArray(listOf(JsonPrimitive("text"))),
@@ -49,7 +50,7 @@ class TelegramSkill(
             ),
             ToolDefinition(
                 name = "list_telegram_chats",
-                description = "List all known Telegram chats that have messaged this bot.",
+                description = "List all known Telegram chats that have messaged this bot. Returns chat IDs with associated usernames.",
                 inputSchema = JsonObject(mapOf(
                     "type" to JsonPrimitive("object"),
                     "properties" to JsonObject(emptyMap()),

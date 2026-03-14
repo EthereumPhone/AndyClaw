@@ -20,7 +20,6 @@ import org.ethereumphone.andyclaw.safety.SafetyLayer
 import org.ethereumphone.andyclaw.skills.NativeSkillRegistry
 import org.ethereumphone.andyclaw.skills.PromptAssembler
 import org.ethereumphone.andyclaw.skills.SkillResult
-import org.ethereumphone.andyclaw.skills.SkillRouter
 import org.ethereumphone.andyclaw.skills.Tier
 
 class AgentLoop(
@@ -33,7 +32,6 @@ class AgentLoop(
     private val userStory: String? = null,
     private val memoryManager: MemoryManager? = null,
     private val safetyLayer: SafetyLayer? = null,
-    private val skillRouter: SkillRouter? = null,
 ) {
     companion object {
         private const val TAG = "AgentLoop"
@@ -141,20 +139,7 @@ class AgentLoop(
             }
         }
 
-        // Route to minimal skill set based on user message + conversation context.
-        // The runtime tool guard (below) still uses the full enabledSkillIds so
-        // multi-turn tool calls from previously-routed skills still work.
-        val previousToolNames = conversationHistory
-            .lastOrNull { it.role == "assistant" }
-            ?.let { msg ->
-                (msg.content as? MessageContent.Blocks)?.blocks
-                    ?.filterIsInstance<ContentBlock.ToolUseBlock>()
-                    ?.map { it.name }
-                    ?.toSet()
-            } ?: emptySet()
-        val routedSkillIds = skillRouter?.routeSkills(userMessage, enabledSkillIds, tier, previousToolNames)
-            ?: enabledSkillIds
-        val skills = skillRegistry.getEnabled(routedSkillIds)
+        val skills = skillRegistry.getEnabled(enabledSkillIds)
 
         // Search memory for relevant context to inject into the system prompt.
         val memoryContext = fetchMemoryContext(userMessage)
@@ -359,7 +344,6 @@ class AgentLoop(
                     }
 
                     val result = skillRegistry.executeTool(toolUse.name, toolUse.input, tier)
-                    skillRouter?.notifyToolExecuted(toolUse.name, tier)
 
                     val toolResult = when (result) {
                         is SkillResult.Success -> {
@@ -518,7 +502,6 @@ class AgentLoop(
             // that the LLM never destroyed because of a crash or cancellation).
             try {
                 skillRegistry.cleanupAll()
-                skillRouter?.clearSessions()
             } catch (e: Exception) {
                 Log.w(TAG, "cleanupAll failed: ${e.message}", e)
             }

@@ -25,25 +25,53 @@ class TermuxSkill(
     override val name = "Termux"
 
     override val baseManifest = SkillManifest(
-        description = "Run commands in Termux's full Linux environment with package manager (pkg install python/nodejs/git/etc). " +
-            "Termux must be installed and opened once. Packages and files persist across calls.",
+        description = buildString {
+            appendLine("Run commands in the Termux terminal emulator's full Linux environment.")
+            appendLine("Unlike the basic shell skill, Termux provides a complete Linux userland with a package manager.")
+            appendLine()
+            appendLine("Requirements:")
+            appendLine("- Termux must be installed on the device (from F-Droid or GitHub releases)")
+            appendLine("- The user must grant AndyClaw the RUN_COMMAND permission in Android settings")
+            appendLine("- Termux must have been opened at least once to bootstrap its environment")
+            appendLine()
+            appendLine("Capabilities:")
+            appendLine("- Full bash shell with standard Linux utilities")
+            appendLine("- Package manager: pkg install <package> (or apt install)")
+            appendLine("- Available packages: python, nodejs, git, curl, wget, ssh, gcc, clang, rust, go, ruby, etc.")
+            appendLine("- Access to Termux home directory: ${TermuxCommandRunner.TERMUX_HOME}")
+            appendLine("- Persistent environment: installed packages and files persist across calls")
+            appendLine()
+            appendLine("Common patterns:")
+            appendLine("- Install Python: pkg install -y python")
+            appendLine("- Run Python: python3 -c 'print(\"hello\")'")
+            appendLine("- Install and use git: pkg install -y git && git clone <url>")
+            appendLine("- Install Node.js: pkg install -y nodejs")
+            appendLine("- Check installed packages: pkg list-installed")
+            appendLine("- Update packages: pkg update -y && pkg upgrade -y")
+        },
         tools = listOf(
             ToolDefinition(
                 name = "termux_run_command",
-                description = "Run a command in Termux's bash shell (use instead of run_shell_command for python, git, curl, gcc, etc).",
+                description = "Run a command in Termux's full Linux environment. Requires Termux to be installed. " +
+                    "Use this instead of run_shell_command when you need tools not available in the basic Android " +
+                    "shell (python, git, curl, gcc, etc.). Commands run as bash -c '<command>' in Termux's environment.",
                 inputSchema = JsonObject(mapOf(
                     "type" to JsonPrimitive("object"),
                     "properties" to JsonObject(mapOf(
                         "command" to JsonObject(mapOf(
                             "type" to JsonPrimitive("string"),
+                            "description" to JsonPrimitive("The command to execute in Termux's bash shell"),
                         )),
                         "timeout_ms" to JsonObject(mapOf(
                             "type" to JsonPrimitive("integer"),
-                            "description" to JsonPrimitive("Default 30000, max 300000"),
+                            "description" to JsonPrimitive(
+                                "Timeout in milliseconds (default 30000, max 300000). " +
+                                    "Use higher values for package installations."
+                            ),
                         )),
                         "workdir" to JsonObject(mapOf(
                             "type" to JsonPrimitive("string"),
-                            "description" to JsonPrimitive("Default: Termux home ~"),
+                            "description" to JsonPrimitive("Working directory (default: Termux home ~)"),
                         )),
                     )),
                     "required" to JsonArray(listOf(JsonPrimitive("command"))),
@@ -52,7 +80,8 @@ class TermuxSkill(
             ),
             ToolDefinition(
                 name = "termux_check_status",
-                description = "Check if Termux is installed and available on this device.",
+                description = "Check if Termux is installed and available on this device. " +
+                    "Use this before running commands to verify the environment is ready.",
                 inputSchema = JsonObject(mapOf(
                     "type" to JsonPrimitive("object"),
                     "properties" to JsonObject(emptyMap()),

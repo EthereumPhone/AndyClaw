@@ -34,20 +34,43 @@ class CodeExecutionSkill(private val context: Context) : AndyClawSkill {
     private val executor = Executors.newSingleThreadExecutor()
 
     override val baseManifest = SkillManifest(
-        description = "Execute Java/BeanShell code with Android API access. Pre-bound: context, packageManager, contentResolver, filesDir.",
+        description = buildString {
+            appendLine("Execute Java/BeanShell code directly on the Android device.")
+            appendLine("BeanShell is a lightweight Java interpreter running in-process with full access to the Android classpath.")
+            appendLine()
+            appendLine("Use this when you need to:")
+            appendLine("- Access Android APIs directly (ContentResolver, PackageManager, TelephonyManager, etc.)")
+            appendLine("- Perform complex data processing that would be awkward in shell commands")
+            appendLine("- Interact with system services, databases, or device hardware programmatically")
+            appendLine("- Run computations or algorithms that need a real programming language")
+            appendLine()
+            appendLine("Pre-bound variables available in every execution:")
+            appendLine("- context: android.content.Context (the application context)")
+            appendLine("- packageManager: android.content.pm.PackageManager")
+            appendLine("- contentResolver: android.content.ContentResolver")
+            appendLine("- filesDir: java.io.File (app sandbox directory)")
+            appendLine()
+            appendLine("Notes:")
+            appendLine("- Code is standard Java syntax (BeanShell supports Java 1.5+ with scripting extensions)")
+            appendLine("- Use print() or System.out.println() for output")
+            appendLine("- The last expression's value is returned as return_value")
+            appendLine("- Each execution runs in a fresh interpreter (no state persists between calls)")
+            appendLine("- Import any class on the Android classpath: import android.os.Build;")
+        },
         tools = listOf(
             ToolDefinition(
                 name = "execute_code",
-                description = "Execute Java/BeanShell code in-process with Android API access.",
+                description = "Execute Java/BeanShell code on the device. The code runs in-process with full access to the Android classpath and pre-bound variables (context, packageManager, contentResolver, filesDir). Use print()/System.out.println() for output. The last expression value is captured as return_value.",
                 inputSchema = JsonObject(mapOf(
                     "type" to JsonPrimitive("object"),
                     "properties" to JsonObject(mapOf(
                         "code" to JsonObject(mapOf(
                             "type" to JsonPrimitive("string"),
+                            "description" to JsonPrimitive("Java/BeanShell code to execute"),
                         )),
                         "timeout_ms" to JsonObject(mapOf(
                             "type" to JsonPrimitive("integer"),
-                            "description" to JsonPrimitive("Default 30000, max 120000"),
+                            "description" to JsonPrimitive("Timeout in milliseconds (default 30000, max 120000)"),
                         )),
                     )),
                     "required" to kotlinx.serialization.json.JsonArray(listOf(JsonPrimitive("code"))),

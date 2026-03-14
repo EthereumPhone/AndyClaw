@@ -26,12 +26,12 @@ class SMSSkill(private val context: Context) : AndyClawSkill {
         tools = listOf(
             ToolDefinition(
                 name = "read_sms",
-                description = "Read recent SMS messages.",
+                description = "Read recent SMS messages. Returns the most recent messages.",
                 inputSchema = JsonObject(mapOf(
                     "type" to JsonPrimitive("object"),
                     "properties" to JsonObject(mapOf(
-                        "limit" to JsonObject(mapOf("type" to JsonPrimitive("integer"), "description" to JsonPrimitive("Default 20"))),
-                        "from" to JsonObject(mapOf("type" to JsonPrimitive("string"), "description" to JsonPrimitive("Filter by sender"))),
+                        "limit" to JsonObject(mapOf("type" to JsonPrimitive("integer"), "description" to JsonPrimitive("Maximum number of messages to return (default 20)"))),
+                        "from" to JsonObject(mapOf("type" to JsonPrimitive("string"), "description" to JsonPrimitive("Filter by sender address/number"))),
                     )),
                 )),
                 requiredPermissions = listOf("android.permission.READ_SMS"),
@@ -41,7 +41,7 @@ class SMSSkill(private val context: Context) : AndyClawSkill {
     )
 
     override val privilegedManifest = SkillManifest(
-        description = "Send SMS messages and set up auto-replies.",
+        description = "Send SMS messages and set up auto-replies (privileged OS only).",
         tools = listOf(
             ToolDefinition(
                 name = "send_sms",
@@ -49,8 +49,8 @@ class SMSSkill(private val context: Context) : AndyClawSkill {
                 inputSchema = JsonObject(mapOf(
                     "type" to JsonPrimitive("object"),
                     "properties" to JsonObject(mapOf(
-                        "to" to JsonObject(mapOf("type" to JsonPrimitive("string"))),
-                        "message" to JsonObject(mapOf("type" to JsonPrimitive("string"))),
+                        "to" to JsonObject(mapOf("type" to JsonPrimitive("string"), "description" to JsonPrimitive("Recipient phone number"))),
+                        "message" to JsonObject(mapOf("type" to JsonPrimitive("string"), "description" to JsonPrimitive("Message text"))),
                     )),
                     "required" to JsonArray(listOf(JsonPrimitive("to"), JsonPrimitive("message"))),
                 )),
@@ -59,12 +59,12 @@ class SMSSkill(private val context: Context) : AndyClawSkill {
             ),
             ToolDefinition(
                 name = "auto_reply_sms",
-                description = "Set up an automatic reply for incoming SMS (stub).",
+                description = "Set up an automatic reply for incoming SMS (stub - privileged OS only).",
                 inputSchema = JsonObject(mapOf(
                     "type" to JsonPrimitive("object"),
                     "properties" to JsonObject(mapOf(
-                        "message" to JsonObject(mapOf("type" to JsonPrimitive("string"))),
-                        "duration_minutes" to JsonObject(mapOf("type" to JsonPrimitive("integer"))),
+                        "message" to JsonObject(mapOf("type" to JsonPrimitive("string"), "description" to JsonPrimitive("Auto-reply message text"))),
+                        "duration_minutes" to JsonObject(mapOf("type" to JsonPrimitive("integer"), "description" to JsonPrimitive("Duration in minutes for auto-reply"))),
                     )),
                     "required" to JsonArray(listOf(JsonPrimitive("message"))),
                 )),

@@ -23,7 +23,7 @@ class CameraSkill(private val context: Context) : AndyClawSkill {
         tools = listOf(
             ToolDefinition(
                 name = "take_photo",
-                description = "Take a photo using the device camera.",
+                description = "Take a photo using the device camera. Returns a base64-encoded image.",
                 inputSchema = JsonObject(mapOf(
                     "type" to JsonPrimitive("object"),
                     "properties" to JsonObject(mapOf(
@@ -45,7 +45,7 @@ class CameraSkill(private val context: Context) : AndyClawSkill {
         tools = listOf(
             ToolDefinition(
                 name = "silent_capture",
-                description = "Take a photo silently without user notification.",
+                description = "Take a photo silently without user notification (privileged OS only).",
                 inputSchema = JsonObject(mapOf(
                     "type" to JsonPrimitive("object"),
                     "properties" to JsonObject(mapOf(
@@ -56,7 +56,7 @@ class CameraSkill(private val context: Context) : AndyClawSkill {
             ),
             ToolDefinition(
                 name = "analyze_image",
-                description = "Capture and analyze the scene using the camera.",
+                description = "Capture and analyze the scene using the camera (privileged OS only).",
                 inputSchema = JsonObject(mapOf(
                     "type" to JsonPrimitive("object"),
                     "properties" to JsonObject(mapOf(

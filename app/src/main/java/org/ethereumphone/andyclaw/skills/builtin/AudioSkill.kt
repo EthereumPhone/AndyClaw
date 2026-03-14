@@ -25,7 +25,7 @@ class AudioSkill(private val context: Context) : AndyClawSkill {
         tools = listOf(
             ToolDefinition(
                 name = "get_audio_state",
-                description = "Get current volume levels and ringer mode.",
+                description = "Get current volume levels for all audio streams and ringer mode.",
                 inputSchema = JsonObject(mapOf("type" to JsonPrimitive("object"), "properties" to JsonObject(emptyMap()))),
             ),
         ),
@@ -42,9 +42,9 @@ class AudioSkill(private val context: Context) : AndyClawSkill {
                     "properties" to JsonObject(mapOf(
                         "stream" to JsonObject(mapOf(
                             "type" to JsonPrimitive("string"),
-                            "description" to JsonPrimitive("music, ring, notification, alarm, voice_call, or system"),
+                            "description" to JsonPrimitive("Audio stream: music, ring, notification, alarm, voice_call, system"),
                         )),
-                        "level" to JsonObject(mapOf("type" to JsonPrimitive("integer"), "description" to JsonPrimitive("0 to max for stream"))),
+                        "level" to JsonObject(mapOf("type" to JsonPrimitive("integer"), "description" to JsonPrimitive("Volume level (0 to max for stream)"))),
                     )),
                     "required" to JsonArray(listOf(JsonPrimitive("stream"), JsonPrimitive("level"))),
                 )),
@@ -58,7 +58,7 @@ class AudioSkill(private val context: Context) : AndyClawSkill {
                     "properties" to JsonObject(mapOf(
                         "mode" to JsonObject(mapOf(
                             "type" to JsonPrimitive("string"),
-                            "description" to JsonPrimitive("normal, silent, or vibrate"),
+                            "description" to JsonPrimitive("Ringer mode: normal, silent, or vibrate"),
                         )),
                     )),
                     "required" to JsonArray(listOf(JsonPrimitive("mode"))),

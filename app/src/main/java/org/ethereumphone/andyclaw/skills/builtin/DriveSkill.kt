@@ -43,7 +43,7 @@ class DriveSkill(
         .build()
 
     override val baseManifest = SkillManifest(
-        description = "List, download, and upload files in Google Drive.",
+        description = "List, download, and upload files in Google Drive. Use this to search for files, read document content, or upload new files.",
         tools = listOf(
             ToolDefinition(
                 name = "drive_list",
@@ -53,27 +53,28 @@ class DriveSkill(
                     "properties" to JsonObject(mapOf(
                         "query" to JsonObject(mapOf(
                             "type" to JsonPrimitive("string"),
-                            "description" to JsonPrimitive("Drive search query, or empty for recent files"),
+                            "description" to JsonPrimitive("Search query (e.g. \"name contains 'report'\", \"mimeType='application/pdf'\"). Leave empty to list recent files."),
                         )),
                         "max_results" to JsonObject(mapOf(
                             "type" to JsonPrimitive("integer"),
-                            "description" to JsonPrimitive("Default: 10, max: 50"),
+                            "description" to JsonPrimitive("Maximum number of files to return (default: 10, max: 50)"),
                         )),
                     )),
                 )),
             ),
             ToolDefinition(
                 name = "drive_download",
-                description = "Download or export file content from Google Drive (Google Docs/Sheets/Slides exported as plain text).",
+                description = "Download or export the content of a file from Google Drive. For Google Docs/Sheets/Slides, exports as plain text. For other files, downloads the raw content.",
                 inputSchema = JsonObject(mapOf(
                     "type" to JsonPrimitive("object"),
                     "properties" to JsonObject(mapOf(
                         "file_id" to JsonObject(mapOf(
                             "type" to JsonPrimitive("string"),
+                            "description" to JsonPrimitive("The Google Drive file ID"),
                         )),
                         "max_length" to JsonObject(mapOf(
                             "type" to JsonPrimitive("integer"),
-                            "description" to JsonPrimitive("Max chars to return (default: 10000, max: 50000)"),
+                            "description" to JsonPrimitive("Maximum characters to return (default: 10000, max: 50000)"),
                         )),
                     )),
                     "required" to JsonArray(listOf(JsonPrimitive("file_id"))),
@@ -87,13 +88,15 @@ class DriveSkill(
                     "properties" to JsonObject(mapOf(
                         "name" to JsonObject(mapOf(
                             "type" to JsonPrimitive("string"),
+                            "description" to JsonPrimitive("File name (e.g. 'report.txt')"),
                         )),
                         "content" to JsonObject(mapOf(
                             "type" to JsonPrimitive("string"),
+                            "description" to JsonPrimitive("File content as text"),
                         )),
                         "mime_type" to JsonObject(mapOf(
                             "type" to JsonPrimitive("string"),
-                            "description" to JsonPrimitive("Default: 'text/plain'"),
+                            "description" to JsonPrimitive("MIME type (default: 'text/plain')"),
                         )),
                     )),
                     "required" to JsonArray(listOf(

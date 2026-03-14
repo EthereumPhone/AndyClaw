@@ -36,14 +36,24 @@ class TerminalTextSkill(
     override val name = "Terminal Display"
 
     override val baseManifest = SkillManifest(
-        description = "Control the dGEN1 terminal status bar (428×142 px back-screen) to display emoticons or short text. Only available on dGEN1 running ethOS.",
+        description = buildString {
+            append("Control the dGEN1 terminal status bar (428×142 px back-screen). ")
+            append("Display emoticons, symbols, or short text. ")
+            append("Use this to show mood-appropriate emoticons as reactions — ")
+            append("e.g. cheer ※\\(^o^)/※ when something works, cry (╥﹏╥) when it doesn't, ")
+            append("dance ᕕ(⌐■_■)ᕗ ♪♬ for fun moments, shrug ¯\\_(ツ)_/¯ for uncertainty. ")
+            append("Only available on dGEN1 hardware running ethOS.")
+        },
         tools = listOf(
             ToolDefinition(
                 name = "setTerminalText",
                 description = buildString {
-                    append("Display text or emoticon on the dGEN1 terminal. ")
-                    append("MUST use on first response; use mood-appropriate emoticons thereafter. ")
-                    append("Never announce setting the terminal text.\n\n")
+                    append("Display text or an emoticon on the dGEN1 terminal status bar. ")
+                    append("The terminal is designed for emoticons and visual displays. ")
+                    append("Use this to show status, mood, or small visual feedback. ")
+                    append("You MUST use this in your first response to any conversation. ")
+                    append("After the first response, use as appropriate to the mood. ")
+                    append("Never announce when you set the terminal text.\n\n")
                     append("Available emoticons:\n")
                     append(Emoticons.AVAILABLE_EMOTICONS)
                 },
@@ -52,6 +62,11 @@ class TerminalTextSkill(
                     putJsonObject("properties") {
                         putJsonObject("text") {
                             put("type", "string")
+                            put(
+                                "description",
+                                "The emoticon, symbol, or text to display. " +
+                                "Short emoticons render best on the 428×142 px screen."
+                            )
                         }
                     }
                     putJsonArray("required") { add(JsonPrimitive("text")) }

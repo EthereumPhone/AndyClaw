@@ -30,7 +30,7 @@ class DevicePowerSkill(private val context: Context) : AndyClawSkill {
         tools = listOf(
             ToolDefinition(
                 name = "reboot_device",
-                description = "Reboot the device immediately.",
+                description = "Reboot the device. This is destructive - the device will restart immediately.",
                 inputSchema = JsonObject(mapOf(
                     "type" to JsonPrimitive("object"),
                     "properties" to JsonObject(mapOf(

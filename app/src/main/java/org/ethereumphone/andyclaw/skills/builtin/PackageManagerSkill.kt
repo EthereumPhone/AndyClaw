@@ -28,7 +28,7 @@ class PackageManagerSkill(private val context: Context) : AndyClawSkill {
     )
 
     override val privilegedManifest = SkillManifest(
-        description = "Uninstall apps, clear cache, and clear app data.",
+        description = "Uninstall apps, clear cache, and clear app data (privileged OS only).",
         tools = listOf(
             ToolDefinition(
                 name = "uninstall_app",
@@ -36,7 +36,7 @@ class PackageManagerSkill(private val context: Context) : AndyClawSkill {
                 inputSchema = JsonObject(mapOf(
                     "type" to JsonPrimitive("object"),
                     "properties" to JsonObject(mapOf(
-                        "package_name" to JsonObject(mapOf("type" to JsonPrimitive("string"))),
+                        "package_name" to JsonObject(mapOf("type" to JsonPrimitive("string"), "description" to JsonPrimitive("Package name of the app to uninstall"))),
                     )),
                     "required" to JsonArray(listOf(JsonPrimitive("package_name"))),
                 )),
@@ -48,7 +48,7 @@ class PackageManagerSkill(private val context: Context) : AndyClawSkill {
                 inputSchema = JsonObject(mapOf(
                     "type" to JsonPrimitive("object"),
                     "properties" to JsonObject(mapOf(
-                        "package_name" to JsonObject(mapOf("type" to JsonPrimitive("string"))),
+                        "package_name" to JsonObject(mapOf("type" to JsonPrimitive("string"), "description" to JsonPrimitive("Package name of the app"))),
                     )),
                     "required" to JsonArray(listOf(JsonPrimitive("package_name"))),
                 )),
@@ -56,11 +56,11 @@ class PackageManagerSkill(private val context: Context) : AndyClawSkill {
             ),
             ToolDefinition(
                 name = "clear_app_data",
-                description = "Clear all data for an app (destructive: removes all settings and files).",
+                description = "Clear all data for an app (WARNING: this is destructive and removes all app settings and files).",
                 inputSchema = JsonObject(mapOf(
                     "type" to JsonPrimitive("object"),
                     "properties" to JsonObject(mapOf(
-                        "package_name" to JsonObject(mapOf("type" to JsonPrimitive("string"))),
+                        "package_name" to JsonObject(mapOf("type" to JsonPrimitive("string"), "description" to JsonPrimitive("Package name of the app"))),
                     )),
                     "required" to JsonArray(listOf(JsonPrimitive("package_name"))),
                 )),

@@ -68,30 +68,37 @@ class SkillCreatorSkill(
     override val name = "Skill Creator"
 
     override val baseManifest = SkillManifest(
-        description = "Create new persistent skills at runtime. Study existing skills before creating.",
+        description = "Create new skills at runtime that persist across conversations. " +
+            "Study existing skills with skill_list_references and skill_read_source before creating. " +
+            "Created skills immediately become available as tools the agent can invoke.",
         tools = listOf(
             ToolDefinition(
                 name = "skill_create",
-                description = "Create a new SKILL.md-based skill, immediately available after creation.",
+                description = "Create a new SKILL.md-based skill. The skill follows the standard AndyClaw/OpenClaw " +
+                    "format and becomes immediately available. Study existing skills first for best results.",
                 inputSchema = buildJsonObject {
                     put("type", "object")
                     putJsonObject("properties") {
                         putJsonObject("name") {
                             put("type", "string")
+                            put("description", "Human-readable display name (e.g. 'Battery Optimizer')")
                         }
                         putJsonObject("slug") {
                             put("type", "string")
-                            put("description", "URL-safe identifier: lowercase, numbers, hyphens (e.g. 'battery-optimizer')")
+                            put("description", "URL-safe identifier: lowercase letters, numbers, hyphens only (e.g. 'battery-optimizer')")
                         }
                         putJsonObject("description") {
                             put("type", "string")
+                            put("description", "Short one-line description of what the skill does")
                         }
                         putJsonObject("instructions") {
                             put("type", "string")
-                            put("description", "Full markdown body with detailed instructions for this skill")
+                            put("description", "Full markdown body with detailed instructions the agent should follow when this skill is invoked. " +
+                                "Include step-by-step guidance, examples, edge cases, and Android-specific considerations.")
                         }
                         putJsonObject("emoji") {
                             put("type", "string")
+                            put("description", "Single emoji representing the skill (optional)")
                         }
                         putJsonObject("user_invocable") {
                             put("type", "boolean")
@@ -108,23 +115,26 @@ class SkillCreatorSkill(
             ),
             ToolDefinition(
                 name = "skill_write_file",
-                description = "Write an additional file (script, config, etc.) into an AI-created skill's directory.",
+                description = "Write an additional file into an AI-created skill's directory. " +
+                    "Use this for scripts, config files, or supporting resources alongside the SKILL.md.",
                 inputSchema = buildJsonObject {
                     put("type", "object")
                     putJsonObject("properties") {
                         putJsonObject("slug") {
                             put("type", "string")
+                            put("description", "Slug of the AI-created skill to add the file to")
                         }
                         putJsonObject("file_path") {
                             put("type", "string")
-                            put("description", "Relative path within skill directory (e.g. 'main.sh')")
+                            put("description", "Relative file path within the skill directory (e.g. 'main.sh', 'config/settings.json')")
                         }
                         putJsonObject("content") {
                             put("type", "string")
+                            put("description", "File content to write")
                         }
                         putJsonObject("executable") {
                             put("type", "boolean")
-                            put("description", "Mark as executable (default: false)")
+                            put("description", "Mark the file as executable (for shell scripts, default: false)")
                         }
                     }
                     putJsonArray("required") {
@@ -136,26 +146,31 @@ class SkillCreatorSkill(
             ),
             ToolDefinition(
                 name = "skill_list_references",
-                description = "List all available skills (builtin, ClawHub, AI-created) with descriptions.",
+                description = "List all available skills (builtin, ClawHub, AI-created) with their descriptions. " +
+                    "Use this to study the ecosystem before creating a new skill, to find skills to reference, " +
+                    "or to check for naming conflicts.",
                 inputSchema = buildJsonObject {
                     put("type", "object")
                     putJsonObject("properties") {
                         putJsonObject("type_filter") {
                             put("type", "string")
-                            put("description", "'builtin', 'clawhub', 'ai', or 'all' (default: 'all')")
+                            put("description", "Filter by source: 'builtin', 'clawhub', 'ai', or 'all' (default: 'all')")
                         }
                     }
                 },
             ),
             ToolDefinition(
                 name = "skill_read_source",
-                description = "Read the full source of a skill (SKILL.md content or builtin manifest).",
+                description = "Read the full source of a skill for reference. " +
+                    "For SKILL.md skills (ClawHub/AI): returns the complete SKILL.md content including frontmatter. " +
+                    "For builtin skills: returns the manifest with tool definitions and schemas. " +
+                    "Use this to understand how existing skills are structured before creating new ones.",
                 inputSchema = buildJsonObject {
                     put("type", "object")
                     putJsonObject("properties") {
                         putJsonObject("skill_id") {
                             put("type", "string")
-                            put("description", "Skill ID or slug (e.g. 'memory', 'clawhub:calendar-skill')")
+                            put("description", "Skill ID (e.g. 'memory', 'clawhub:calendar-skill', 'ai:my-skill') or just the slug/name")
                         }
                     }
                     putJsonArray("required") { add(JsonPrimitive("skill_id")) }
@@ -171,12 +186,13 @@ class SkillCreatorSkill(
             ),
             ToolDefinition(
                 name = "skill_delete",
-                description = "Delete an AI-created skill by slug.",
+                description = "Delete an AI-created skill by its slug. Only AI-created skills can be deleted this way.",
                 inputSchema = buildJsonObject {
                     put("type", "object")
                     putJsonObject("properties") {
                         putJsonObject("slug") {
                             put("type", "string")
+                            put("description", "Slug of the AI-created skill to delete")
                         }
                     }
                     putJsonArray("required") { add(JsonPrimitive("slug")) }

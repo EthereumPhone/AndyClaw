@@ -66,17 +66,25 @@ class MessengerSkill(private val context: Context) : AndyClawSkill {
     )
 
     override val privilegedManifest = SkillManifest(
-        description = "Send and read XMTP messages via the device's Messenger app. " +
-                "Requires XMTP Messenger to be installed.",
+        description = "Send and read XMTP messages using the device's Messenger app. The AI has its own " +
+                "XMTP identity and can send direct messages and read incoming conversations. " +
+                "Use send_message_to_user to write to the device owner, send_xmtp_message to " +
+                "message an arbitrary wallet address, list_conversations to see all conversations, " +
+                "and read_messages to read messages in a conversation. " +
+                "Requires the XMTP Messenger app to be installed on the device.",
         tools = listOf(
             ToolDefinition(
                 name = "send_message_to_user",
-                description = "Send an XMTP message to the device owner (auto-resolves wallet address).",
+                description = "Send an XMTP message to the device owner. " +
+                        "Automatically resolves the user's wallet address from the device " +
+                        "and sends the message. Use this when the user asks you to " +
+                        "send/write them a message.",
                 inputSchema = JsonObject(mapOf(
                     "type" to JsonPrimitive("object"),
                     "properties" to JsonObject(mapOf(
                         "message" to JsonObject(mapOf(
                             "type" to JsonPrimitive("string"),
+                            "description" to JsonPrimitive("The message content to send"),
                         )),
                     )),
                     "required" to JsonArray(listOf(
@@ -90,16 +98,21 @@ class MessengerSkill(private val context: Context) : AndyClawSkill {
             ),
             ToolDefinition(
                 name = "send_xmtp_message",
-                description = "Send an XMTP message to a specific wallet address from the AI's identity.",
+                description = "Send an XMTP message to a specific wallet address. " +
+                        "The message is sent from the AI's own XMTP identity. " +
+                        "Use this when you already have the recipient's wallet address.",
                 inputSchema = JsonObject(mapOf(
                     "type" to JsonPrimitive("object"),
                     "properties" to JsonObject(mapOf(
                         "recipient_address" to JsonObject(mapOf(
                             "type" to JsonPrimitive("string"),
-                            "description" to JsonPrimitive("Recipient Ethereum address (0x, 42 chars)"),
+                            "description" to JsonPrimitive(
+                                "Ethereum wallet address of the recipient (0x-prefixed, 42 characters)"
+                            ),
                         )),
                         "message" to JsonObject(mapOf(
                             "type" to JsonPrimitive("string"),
+                            "description" to JsonPrimitive("The message content to send"),
                         )),
                     )),
                     "required" to JsonArray(listOf(
@@ -114,7 +127,9 @@ class MessengerSkill(private val context: Context) : AndyClawSkill {
             ),
             ToolDefinition(
                 name = "list_conversations",
-                description = "List all XMTP conversations for the AI's identity.",
+                description = "List all XMTP conversations for the AI's identity. " +
+                        "Syncs conversations from the network first, then returns the list. " +
+                        "Use this to discover conversation IDs before reading messages.",
                 inputSchema = JsonObject(mapOf(
                     "type" to JsonPrimitive("object"),
                     "properties" to JsonObject(emptyMap()),
@@ -122,16 +137,18 @@ class MessengerSkill(private val context: Context) : AndyClawSkill {
             ),
             ToolDefinition(
                 name = "read_messages",
-                description = "Read messages from a specific XMTP conversation by ID.",
+                description = "Read messages from a specific XMTP conversation. " +
+                        "Use list_conversations first to get the conversation ID.",
                 inputSchema = JsonObject(mapOf(
                     "type" to JsonPrimitive("object"),
                     "properties" to JsonObject(mapOf(
                         "conversation_id" to JsonObject(mapOf(
                             "type" to JsonPrimitive("string"),
+                            "description" to JsonPrimitive("The conversation ID to read messages from"),
                         )),
                         "limit" to JsonObject(mapOf(
                             "type" to JsonPrimitive("integer"),
-                            "description" to JsonPrimitive("Default: 20"),
+                            "description" to JsonPrimitive("Maximum number of messages to return (default 20)"),
                         )),
                     )),
                     "required" to JsonArray(listOf(

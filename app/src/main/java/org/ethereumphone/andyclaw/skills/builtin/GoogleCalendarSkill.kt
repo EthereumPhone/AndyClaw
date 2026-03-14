@@ -41,7 +41,7 @@ class GoogleCalendarSkill(
         .build()
 
     override val baseManifest = SkillManifest(
-        description = "List and create events on Google Calendar.",
+        description = "List and create events on Google Calendar. Use this to check the user's schedule or create new calendar events.",
         tools = listOf(
             ToolDefinition(
                 name = "gcal_list_events",
@@ -51,19 +51,19 @@ class GoogleCalendarSkill(
                     "properties" to JsonObject(mapOf(
                         "calendar_id" to JsonObject(mapOf(
                             "type" to JsonPrimitive("string"),
-                            "description" to JsonPrimitive("Default: 'primary'"),
+                            "description" to JsonPrimitive("Calendar ID (default: 'primary')"),
                         )),
                         "time_min" to JsonObject(mapOf(
                             "type" to JsonPrimitive("string"),
-                            "description" to JsonPrimitive("RFC3339 format (default: now)"),
+                            "description" to JsonPrimitive("Start of time range in RFC3339 format (e.g. '2024-01-15T00:00:00Z'). Defaults to now."),
                         )),
                         "time_max" to JsonObject(mapOf(
                             "type" to JsonPrimitive("string"),
-                            "description" to JsonPrimitive("RFC3339 format (default: 7 days from now)"),
+                            "description" to JsonPrimitive("End of time range in RFC3339 format. Defaults to 7 days from now."),
                         )),
                         "max_results" to JsonObject(mapOf(
                             "type" to JsonPrimitive("integer"),
-                            "description" to JsonPrimitive("Default: 10, max: 50"),
+                            "description" to JsonPrimitive("Maximum number of events to return (default: 10, max: 50)"),
                         )),
                     )),
                 )),
@@ -76,28 +76,31 @@ class GoogleCalendarSkill(
                     "properties" to JsonObject(mapOf(
                         "summary" to JsonObject(mapOf(
                             "type" to JsonPrimitive("string"),
+                            "description" to JsonPrimitive("Event title/summary"),
                         )),
                         "start" to JsonObject(mapOf(
                             "type" to JsonPrimitive("string"),
-                            "description" to JsonPrimitive("RFC3339 format"),
+                            "description" to JsonPrimitive("Start time in RFC3339 format (e.g. '2024-01-15T10:00:00-05:00')"),
                         )),
                         "end" to JsonObject(mapOf(
                             "type" to JsonPrimitive("string"),
-                            "description" to JsonPrimitive("RFC3339 format"),
+                            "description" to JsonPrimitive("End time in RFC3339 format"),
                         )),
                         "description" to JsonObject(mapOf(
                             "type" to JsonPrimitive("string"),
+                            "description" to JsonPrimitive("Event description (optional)"),
                         )),
                         "location" to JsonObject(mapOf(
                             "type" to JsonPrimitive("string"),
+                            "description" to JsonPrimitive("Event location (optional)"),
                         )),
                         "attendees" to JsonObject(mapOf(
                             "type" to JsonPrimitive("string"),
-                            "description" to JsonPrimitive("Comma-separated emails"),
+                            "description" to JsonPrimitive("Comma-separated email addresses of attendees (optional)"),
                         )),
                         "calendar_id" to JsonObject(mapOf(
                             "type" to JsonPrimitive("string"),
-                            "description" to JsonPrimitive("Default: 'primary'"),
+                            "description" to JsonPrimitive("Calendar ID (default: 'primary')"),
                         )),
                     )),
                     "required" to JsonArray(listOf(

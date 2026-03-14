@@ -26,7 +26,6 @@ import org.ethereumphone.andyclaw.llm.OpenAiNativeClient
 import org.ethereumphone.andyclaw.llm.TinfoilClient
 import org.ethereumphone.andyclaw.llm.TinfoilProxyClient
 import org.ethereumphone.andyclaw.skills.SkillRegistry
-import org.ethereumphone.andyclaw.skills.SkillRouter
 import org.ethereumphone.andyclaw.memory.MemoryManager
 import org.ethereumphone.andyclaw.memory.OpenAiEmbeddingProvider
 import org.ethereumphone.andyclaw.sessions.SessionManager
@@ -86,7 +85,6 @@ import org.ethereumphone.andyclaw.whisper.WhisperTranscriber
 import org.ethereumhpone.messengersdk.MessengerSDK
 import org.ethereumphone.andyclaw.led.LedMatrixController
 import org.ethereumphone.andyclaw.llm.AnthropicModels
-import org.ethereumphone.andyclaw.skills.RoutingConfig
 
 class NodeApp : Application() {
 
@@ -191,25 +189,6 @@ class NodeApp : Application() {
         ClawHubManager(
             managedSkillsDir = clawHubSkillsDir,
             skillRegistry = skillRegistry,
-        )
-    }
-
-    // ── Skill Router ─────────────────────────────────────────────────
-
-    val skillRouter: SkillRouter by lazy {
-        SkillRouter(
-            context = this,
-            skillRegistry = nativeSkillRegistry,
-            embeddingProvider = if (OsCapabilities.hasPrivilegedAccess || securePrefs.apiKey.value.isNotBlank()) {
-                embeddingProvider
-            } else {
-                null
-            },
-            routingClientProvider = {
-                val provider = securePrefs.selectedProvider.value
-                val routingModel = AnthropicModels.routingModelForProvider(provider) ?: return@SkillRouter null
-                RoutingConfig(getLlmClientForProvider(routingModel.provider, routingModel.modelId), routingModel)
-            },
         )
     }
 
@@ -394,7 +373,7 @@ class NodeApp : Application() {
         return getLlmClientForProvider(securePrefs.heartbeatProvider.value, securePrefs.heartbeatModel.value)
     }
 
-    internal fun getLlmClientForProvider(provider: LlmProvider, modelId: String): LlmClient {
+    private fun getLlmClientForProvider(provider: LlmProvider, modelId: String): LlmClient {
         if (OsCapabilities.hasPrivilegedAccess) {
             return when (provider) {
                 LlmProvider.ETHOS_PREMIUM -> {

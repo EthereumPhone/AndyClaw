@@ -55,33 +55,36 @@ class AgentDisplaySkill : AndyClawSkill {
     )
 
     override val privilegedManifest = SkillManifest(
-        description = "Operate a virtual Android display. Create, launch apps, interact via taps/gestures/text/accessibility. Actions return the UI tree.",
+        description = "Operate a virtual Android display. Create it, launch apps, and interact via taps, swipes, gestures, text input, clipboard, and accessibility actions. Every action automatically returns the UI accessibility tree so you can understand the current state. Use agent_display_screenshot when you need a visual capture. Use this to perform tasks in apps on behalf of the user.",
         tools = listOf(
             // ── Display Lifecycle ───────────────────────────────────────
             tool(
                 name = "agent_display_create",
-                description = "Create the virtual display (${DISPLAY_WIDTH}x${DISPLAY_HEIGHT} @ ${DISPLAY_DPI}dpi). Must be called first.",
+                description = "Create the virtual display (${DISPLAY_WIDTH}x${DISPLAY_HEIGHT} @ ${DISPLAY_DPI}dpi). Must be called before any other agent_display tool. Returns the UI tree of the initial state.",
                 props = emptyMap(),
             ),
             tool(
                 name = "agent_display_destroy",
-                description = "Destroy the virtual display. Set promote=true to move the app to the user's main screen instead of closing it.",
-                props = mapOf(
-                    "promote" to JsonObject(mapOf("type" to JsonPrimitive("boolean"))),
-                ),
+                description = "Destroy the virtual display and release resources. The app that was running on the virtual display is closed. Use this when you are done with a task and the user does NOT need the app to remain open.",
+                props = emptyMap(),
+            ),
+            tool(
+                name = "agent_display_destroy_and_promote",
+                description = "Destroy the virtual display but move the currently running app to the user's main screen so they can continue using it. Use this when the user will want to keep interacting with the app after you are done — for example after starting navigation, playing music, opening a webpage, or setting up a video call.",
+                props = emptyMap(),
             ),
             tool(
                 name = "agent_display_get_info",
-                description = "Get display info (displayId, width, height, dpi).",
+                description = "Get display info as JSON (displayId, width, height, dpi). Useful to confirm dimensions.",
                 props = emptyMap(),
             ),
             tool(
                 name = "agent_display_resize",
-                description = "Hot-resize the display without destroying it.",
+                description = "Hot-resize the display without destroying it. Returns the UI tree after resize.",
                 props = mapOf(
-                    "width" to propNumber(),
-                    "height" to propNumber(),
-                    "dpi" to propNumber(),
+                    "width" to propNumber("New width in pixels"),
+                    "height" to propNumber("New height in pixels"),
+                    "dpi" to propNumber("New DPI"),
                 ),
                 required = listOf("width", "height", "dpi"),
             ),
@@ -89,24 +92,24 @@ class AgentDisplaySkill : AndyClawSkill {
             // ── App Management ──────────────────────────────────────────
             tool(
                 name = "agent_display_launch_app",
-                description = "Launch an app by package name.",
+                description = "Launch an app by package name on the virtual display. Returns the UI tree after the app starts.",
                 props = mapOf(
-                    "package_name" to propString("e.g. com.android.settings"),
+                    "package_name" to propString("The Android package name, e.g. com.android.settings"),
                 ),
                 required = listOf("package_name"),
             ),
             tool(
                 name = "agent_display_launch_activity",
-                description = "Launch a specific activity by component name.",
+                description = "Launch a specific activity by component name. Example: package_name='com.android.settings', activity_name='com.android.settings.Settings'. Returns the UI tree.",
                 props = mapOf(
-                    "package_name" to propString(),
+                    "package_name" to propString("The Android package name"),
                     "activity_name" to propString("Fully qualified activity class name"),
                 ),
                 required = listOf("package_name", "activity_name"),
             ),
             tool(
                 name = "agent_display_launch_intent",
-                description = "Launch an intent from a URI string.",
+                description = "Launch an arbitrary intent from a URI string. Example: 'intent:#Intent;action=android.intent.action.VIEW;data=https://example.com;end'. Returns the UI tree.",
                 props = mapOf(
                     "uri" to propString("Intent URI string"),
                 ),
@@ -114,24 +117,24 @@ class AgentDisplaySkill : AndyClawSkill {
             ),
             tool(
                 name = "agent_display_current_activity",
-                description = "Get the currently running activity as 'package/activity'.",
+                description = "Get the currently running activity on the virtual display as 'package/activity'. Returns null if nothing is running.",
                 props = emptyMap(),
             ),
 
             // ── Screenshot ──────────────────────────────────────────────
             tool(
                 name = "agent_display_screenshot",
-                description = "Capture a visual screenshot. Returns an image for visual inspection.",
+                description = "Capture a visual screenshot of the virtual display. Returns an image you can see and analyze. Use this when you need to visually inspect the screen (e.g. to read rendered content, verify layout, or see images/icons).",
                 props = emptyMap(),
             ),
             tool(
                 name = "agent_display_capture_region",
-                description = "Capture a cropped region of the display.",
+                description = "Capture a cropped region of the display as a screenshot. Useful for focusing on a specific UI element.",
                 props = mapOf(
-                    "x" to propNumber(),
-                    "y" to propNumber(),
-                    "width" to propNumber(),
-                    "height" to propNumber(),
+                    "x" to propNumber("Left edge X coordinate"),
+                    "y" to propNumber("Top edge Y coordinate"),
+                    "width" to propNumber("Region width in pixels"),
+                    "height" to propNumber("Region height in pixels"),
                 ),
                 required = listOf("x", "y", "width", "height"),
             ),
@@ -139,108 +142,120 @@ class AgentDisplaySkill : AndyClawSkill {
             // ── Touch Gestures ──────────────────────────────────────────
             tool(
                 name = "agent_display_tap",
-                description = "Tap at (x, y). Quick 50ms tap.",
+                description = "Tap at (x, y) coordinates on the virtual display. Quick 50ms tap. Returns the UI tree.",
                 props = mapOf(
-                    "x" to propNumber(),
-                    "y" to propNumber(),
+                    "x" to propNumber("X coordinate"),
+                    "y" to propNumber("Y coordinate"),
                 ),
                 required = listOf("x", "y"),
             ),
             tool(
                 name = "agent_display_long_press",
-                description = "Long press at (x, y) for context menus.",
+                description = "Long press at (x, y) for the given duration. Use ~500ms for standard long press (context menus). Returns the UI tree.",
                 props = mapOf(
-                    "x" to propNumber(),
-                    "y" to propNumber(),
-                    "duration_ms" to propNumber("Hold duration in ms (default 500)"),
+                    "x" to propNumber("X coordinate"),
+                    "y" to propNumber("Y coordinate"),
+                    "duration_ms" to propNumber("Hold duration in milliseconds (default 500)"),
                 ),
                 required = listOf("x", "y"),
             ),
             tool(
                 name = "agent_display_double_tap",
-                description = "Double tap at (x, y) for zoom or text selection.",
+                description = "Double tap at (x, y). Commonly used for zoom or text selection. Returns the UI tree.",
                 props = mapOf(
-                    "x" to propNumber(),
-                    "y" to propNumber(),
-                    "interval_ms" to propNumber("Interval between taps in ms (default 100)"),
+                    "x" to propNumber("X coordinate"),
+                    "y" to propNumber("Y coordinate"),
+                    "interval_ms" to propNumber("Interval between taps in ms (default 100, keep under 300)"),
                 ),
                 required = listOf("x", "y"),
             ),
             tool(
                 name = "agent_display_swipe",
-                description = "Swipe from (x1,y1) to (x2,y2). 500-1000ms for scroll, 100-200ms for fast scroll.",
+                description = "Swipe from (x1,y1) to (x2,y2) with smooth intermediate points (~60fps). Use duration 500-1000ms for scroll (no inertia), 100-200ms for fast scroll. Returns the UI tree.",
                 props = mapOf(
-                    "x1" to propNumber(),
-                    "y1" to propNumber(),
-                    "x2" to propNumber(),
-                    "y2" to propNumber(),
-                    "duration_ms" to propNumber("Swipe duration in ms (default 300)"),
+                    "x1" to propNumber("Start X coordinate"),
+                    "y1" to propNumber("Start Y coordinate"),
+                    "x2" to propNumber("End X coordinate"),
+                    "y2" to propNumber("End Y coordinate"),
+                    "duration_ms" to propNumber("Swipe duration in milliseconds (default 300)"),
                 ),
                 required = listOf("x1", "y1", "x2", "y2"),
             ),
             tool(
                 name = "agent_display_fling",
-                description = "Fast ~50ms swipe with momentum. Use for scrolling long lists.",
+                description = "Fast ~50ms swipe with momentum/inertia. Triggers fling/scroll momentum in list views. Use for quick scrolling through long lists. Returns the UI tree.",
                 props = mapOf(
-                    "x1" to propNumber(),
-                    "y1" to propNumber(),
-                    "x2" to propNumber(),
-                    "y2" to propNumber(),
+                    "x1" to propNumber("Start X coordinate"),
+                    "y1" to propNumber("Start Y coordinate"),
+                    "x2" to propNumber("End X coordinate"),
+                    "y2" to propNumber("End Y coordinate"),
                 ),
                 required = listOf("x1", "y1", "x2", "y2"),
             ),
             tool(
                 name = "agent_display_drag",
-                description = "Hold then drag for drag-and-drop operations.",
+                description = "Drag from start to end position. Holds at start for holdBeforeDragMs (to trigger drag mode), then moves to end. Use for drag-and-drop operations. Returns the UI tree.",
                 props = mapOf(
-                    "start_x" to propNumber(),
-                    "start_y" to propNumber(),
-                    "end_x" to propNumber(),
-                    "end_y" to propNumber(),
-                    "hold_before_drag_ms" to propNumber("Hold before drag in ms (default 500)"),
-                    "drag_duration_ms" to propNumber("Drag movement duration in ms (default 500)"),
+                    "start_x" to propNumber("Start X coordinate"),
+                    "start_y" to propNumber("Start Y coordinate"),
+                    "end_x" to propNumber("End X coordinate"),
+                    "end_y" to propNumber("End Y coordinate"),
+                    "hold_before_drag_ms" to propNumber("How long to hold before starting drag (default 500)"),
+                    "drag_duration_ms" to propNumber("Duration of the drag movement (default 500)"),
                 ),
                 required = listOf("start_x", "start_y", "end_x", "end_y"),
             ),
             tool(
                 name = "agent_display_pinch",
-                description = "Two-finger pinch. start_span > end_span = zoom out, start_span < end_span = zoom in.",
+                description = "Two-finger pinch gesture centered at (center_x, center_y). start_span > end_span = pinch in (zoom out), start_span < end_span = pinch out (zoom in). Returns the UI tree.",
                 props = mapOf(
-                    "center_x" to propNumber(),
-                    "center_y" to propNumber(),
-                    "start_span" to propNumber("Initial finger distance in px"),
-                    "end_span" to propNumber("Final finger distance in px"),
-                    "duration_ms" to propNumber("Duration in ms (default 500)"),
+                    "center_x" to propNumber("Center X coordinate"),
+                    "center_y" to propNumber("Center Y coordinate"),
+                    "start_span" to propNumber("Initial distance between fingers in pixels"),
+                    "end_span" to propNumber("Final distance between fingers in pixels"),
+                    "duration_ms" to propNumber("Gesture duration in milliseconds (default 500)"),
                 ),
                 required = listOf("center_x", "center_y", "start_span", "end_span"),
             ),
             tool(
                 name = "agent_display_gesture",
-                description = "Arbitrary touch path. Arrays must have same length (min 2). Example L-shape: x=[100,100,300], y=[100,500,500], timestamps=[0,300,500].",
+                description = "Arbitrary touch path with timed waypoints. All three arrays must have the same length (min 2). Timestamps are relative (first is base). Example L-shape: x=[100,100,300], y=[100,500,500], timestamps=[0,300,500]. Returns the UI tree.",
                 props = mapOf(
-                    "x_points" to propNumberArray(),
-                    "y_points" to propNumberArray(),
-                    "timestamps_ms" to propNumberArray("Relative timestamps in ms"),
+                    "x_points" to propNumberArray("Array of X coordinates for each waypoint"),
+                    "y_points" to propNumberArray("Array of Y coordinates for each waypoint"),
+                    "timestamps_ms" to propNumberArray("Array of relative timestamps in ms for each waypoint"),
                 ),
                 required = listOf("x_points", "y_points", "timestamps_ms"),
             ),
 
             // ── Key Input ───────────────────────────────────────────────
             tool(
-                name = "agent_display_press_button",
-                description = "Press a system navigation button.",
-                props = mapOf(
-                    "button" to propEnum("", listOf("back", "home", "enter", "recents")),
-                ),
-                required = listOf("button"),
+                name = "agent_display_press_back",
+                description = "Press the Back button on the virtual display. Returns the UI tree.",
+                props = emptyMap(),
+            ),
+            tool(
+                name = "agent_display_press_home",
+                description = "Press the Home button on the virtual display. Returns the UI tree.",
+                props = emptyMap(),
+            ),
+            tool(
+                name = "agent_display_press_enter",
+                description = "Press the Enter key. Useful for submitting text fields and confirming dialogs. Returns the UI tree.",
+                props = emptyMap(),
+            ),
+            tool(
+                name = "agent_display_press_recents",
+                description = "Press the Recents/Overview button to show recent apps. Returns the UI tree.",
+                props = emptyMap(),
             ),
             tool(
                 name = "agent_display_press_key",
-                description = "Press any key by keycode. Keycodes: 67=Backspace, 112=Delete, 61=Tab, 111=Escape, 84=Search. Meta: 1=Shift, 2=Alt, 4096=Ctrl, 65536=Meta. Ctrl+V: key_code=50, meta_state=4096.",
+                description = "Press any key by keycode, with optional modifier keys and hold duration. Common keycodes: 67=Backspace, 112=Delete, 61=Tab, 111=Escape, 84=Search. Meta flags: 0x1=Shift, 0x2=Alt, 0x1000=Ctrl, 0x10000=Meta. For Ctrl+A: key_code=29, meta_state=4096. For Ctrl+V: key_code=50, meta_state=4096. Returns the UI tree.",
                 props = mapOf(
                     "key_code" to propNumber("Android keycode integer"),
-                    "meta_state" to propNumber("Modifier bitmask (default 0)"),
-                    "hold_duration_ms" to propNumber("Hold duration in ms (default 0)"),
+                    "meta_state" to propNumber("Modifier key bitmask (optional, default 0). 1=Shift, 2=Alt, 4096=Ctrl, 65536=Meta"),
+                    "hold_duration_ms" to propNumber("Hold duration in ms (optional, default 0 for normal press)"),
                 ),
                 required = listOf("key_code"),
             ),
@@ -248,18 +263,18 @@ class AgentDisplaySkill : AndyClawSkill {
             // ── Text Input ──────────────────────────────────────────────
             tool(
                 name = "agent_display_type_text",
-                description = "Type text instantly into the focused field.",
+                description = "Type text instantly into the currently focused field. Returns the UI tree.",
                 props = mapOf(
-                    "text" to propString(),
+                    "text" to propString("The text to type"),
                 ),
                 required = listOf("text"),
             ),
             tool(
                 name = "agent_display_type_text_slow",
-                description = "Type text character-by-character. Triggers search suggestions per keystroke.",
+                description = "Type text with a delay between each character. Useful for search fields that show suggestions per keystroke, or apps that process input character-by-character. Returns the UI tree.",
                 props = mapOf(
-                    "text" to propString(),
-                    "delay_ms" to propNumber("Delay per character in ms (default 50)"),
+                    "text" to propString("The text to type"),
+                    "delay_ms" to propNumber("Delay between each character in ms (default 50)"),
                 ),
                 required = listOf("text"),
             ),
@@ -267,64 +282,71 @@ class AgentDisplaySkill : AndyClawSkill {
             // ── Clipboard ───────────────────────────────────────────────
             tool(
                 name = "agent_display_set_clipboard",
-                description = "Set clipboard text. Use with press_key Ctrl+V (key_code=50, meta_state=4096) to paste.",
+                description = "Set the system clipboard to the given text. Use with agent_display_press_key (Ctrl+V: key_code=50, meta_state=4096) to paste into fields. Useful for complex text that can't be typed directly.",
                 props = mapOf(
-                    "text" to propString(),
+                    "text" to propString("Text to put on the clipboard"),
                 ),
                 required = listOf("text"),
             ),
             tool(
                 name = "agent_display_get_clipboard",
-                description = "Get current clipboard text.",
+                description = "Get the current clipboard text. Returns the text or null if empty.",
                 props = emptyMap(),
             ),
 
             // ── Accessibility ───────────────────────────────────────────
             tool(
                 name = "agent_display_get_ui_tree",
-                description = "Get the accessibility tree as JSON. Shows UI structure, view IDs, and visible elements.",
+                description = "Get the accessibility tree (JSON) of the virtual display. Use this to understand the UI structure, find view IDs, and determine what elements are visible.",
                 props = emptyMap(),
             ),
             tool(
                 name = "agent_display_click_node",
-                description = "Click a UI node by accessibility view ID. Set long=true for long-click.",
+                description = "Click a UI node by its accessibility view ID (e.g. 'com.android.settings:id/search_bar'). Returns the UI tree.",
                 props = mapOf(
-                    "view_id" to propString("Accessibility view ID, e.g. 'com.android.settings:id/search_bar'"),
-                    "long" to JsonObject(mapOf("type" to JsonPrimitive("boolean"))),
+                    "view_id" to propString("The accessibility view ID of the node to click"),
+                ),
+                required = listOf("view_id"),
+            ),
+            tool(
+                name = "agent_display_long_click_node",
+                description = "Long-click a UI node by its accessibility view ID. Triggers context menus. Returns the UI tree.",
+                props = mapOf(
+                    "view_id" to propString("The accessibility view ID of the node to long-click"),
                 ),
                 required = listOf("view_id"),
             ),
             tool(
                 name = "agent_display_set_node_text",
-                description = "Set text on an input field by view ID.",
+                description = "Set text on a UI node by its accessibility view ID. Returns the UI tree.",
                 props = mapOf(
-                    "view_id" to propString("Accessibility view ID"),
-                    "text" to propString(),
+                    "view_id" to propString("The accessibility view ID of the text field"),
+                    "text" to propString("The text to set"),
                 ),
                 required = listOf("view_id", "text"),
             ),
             tool(
                 name = "agent_display_scroll_node",
-                description = "Scroll a node forward (down/right) or backward (up/left).",
+                description = "Scroll a scrollable node forward (down/right) or backward (up/left) by its accessibility view ID. Returns the UI tree.",
                 props = mapOf(
-                    "view_id" to propString("Accessibility view ID"),
-                    "direction" to propEnum("", listOf("forward", "backward")),
+                    "view_id" to propString("The accessibility view ID of the scrollable node"),
+                    "direction" to propEnum("Scroll direction", listOf("forward", "backward")),
                 ),
                 required = listOf("view_id", "direction"),
             ),
             tool(
                 name = "agent_display_focus_node",
-                description = "Set accessibility focus on a node.",
+                description = "Set accessibility focus on a node by its view ID. Returns the UI tree.",
                 props = mapOf(
-                    "view_id" to propString("Accessibility view ID"),
+                    "view_id" to propString("The accessibility view ID of the node to focus"),
                 ),
                 required = listOf("view_id"),
             ),
             tool(
                 name = "agent_display_get_node_info",
-                description = "Get node properties (bounds, text, contentDescription, enabled/clickable/scrollable).",
+                description = "Get detailed info about a specific accessibility node (bounds, text, contentDescription, enabled/clickable/scrollable state, etc.).",
                 props = mapOf(
-                    "view_id" to propString("Accessibility view ID"),
+                    "view_id" to propString("The accessibility view ID of the node to inspect"),
                 ),
                 required = listOf("view_id"),
             ),
@@ -356,7 +378,8 @@ class AgentDisplaySkill : AndyClawSkill {
             val result = when (tool) {
                 // Display lifecycle
                 "agent_display_create" -> doCreate()
-                "agent_display_destroy" -> doDestroy(params)
+                "agent_display_destroy" -> doDestroy()
+                "agent_display_destroy_and_promote" -> doDestroyAndPromote()
                 "agent_display_get_info" -> doGetInfo()
                 "agent_display_resize" -> doResize(params)
                 // App management
@@ -377,7 +400,10 @@ class AgentDisplaySkill : AndyClawSkill {
                 "agent_display_pinch" -> doPinch(params)
                 "agent_display_gesture" -> doGesture(params)
                 // Key input
-                "agent_display_press_button" -> doPressButton(params)
+                "agent_display_press_back" -> doPressBack()
+                "agent_display_press_home" -> doPressHome()
+                "agent_display_press_enter" -> doPressEnter()
+                "agent_display_press_recents" -> doPressRecents()
                 "agent_display_press_key" -> doPressKey(params)
                 // Text input
                 "agent_display_type_text" -> doTypeText(params)
@@ -388,6 +414,7 @@ class AgentDisplaySkill : AndyClawSkill {
                 // Accessibility
                 "agent_display_get_ui_tree" -> doGetUiTree()
                 "agent_display_click_node" -> doClickNode(params)
+                "agent_display_long_click_node" -> doLongClickNode(params)
                 "agent_display_set_node_text" -> doSetNodeText(params)
                 "agent_display_scroll_node" -> doScrollNode(params)
                 "agent_display_focus_node" -> doFocusNode(params)
@@ -505,17 +532,16 @@ class AgentDisplaySkill : AndyClawSkill {
         )
     }
 
-    private fun doDestroy(params: JsonObject): SkillResult {
-        val promote = params["promote"]?.jsonPrimitive?.contentOrNull?.toBooleanStrictOrNull() ?: false
-        if (promote) {
-            getService().destroyAgentDisplayAndPromote()
-            displayActive = false
-            return SkillResult.Success("Virtual display destroyed and the running app has been moved to the user's main screen.")
-        } else {
-            getService().destroyAgentDisplay()
-            displayActive = false
-            return SkillResult.Success("Virtual display destroyed.")
-        }
+    private fun doDestroy(): SkillResult {
+        getService().destroyAgentDisplay()
+        displayActive = false
+        return SkillResult.Success("Virtual display destroyed.")
+    }
+
+    private fun doDestroyAndPromote(): SkillResult {
+        getService().destroyAgentDisplayAndPromote()
+        displayActive = false
+        return SkillResult.Success("Virtual display destroyed and the running app has been moved to the user's main screen.")
     }
 
     private fun doGetInfo(): SkillResult {
@@ -697,17 +723,27 @@ class AgentDisplaySkill : AndyClawSkill {
 
     // -- Key input --
 
-    private suspend fun doPressButton(params: JsonObject): SkillResult {
-        val button = params["button"]?.jsonPrimitive?.contentOrNull
-            ?: return SkillResult.Error("Missing required parameter: button")
-        return actionWithUiTree(DELAY_KEY, "Pressed ${button.replaceFirstChar { it.uppercase() }}.") {
-            when (button) {
-                "back" -> getService().pressBack()
-                "home" -> getService().pressHome()
-                "enter" -> getService().pressEnter()
-                "recents" -> getService().pressRecents()
-                else -> throw IllegalArgumentException("Invalid button: $button. Use back, home, enter, or recents.")
-            }
+    private suspend fun doPressBack(): SkillResult {
+        return actionWithUiTree(DELAY_KEY, "Pressed Back.") {
+            getService().pressBack()
+        }
+    }
+
+    private suspend fun doPressHome(): SkillResult {
+        return actionWithUiTree(DELAY_KEY, "Pressed Home.") {
+            getService().pressHome()
+        }
+    }
+
+    private suspend fun doPressEnter(): SkillResult {
+        return actionWithUiTree(DELAY_KEY, "Pressed Enter.") {
+            getService().pressEnter()
+        }
+    }
+
+    private suspend fun doPressRecents(): SkillResult {
+        return actionWithUiTree(DELAY_KEY, "Pressed Recents.") {
+            getService().pressRecents()
         }
     }
 
@@ -770,15 +806,16 @@ class AgentDisplaySkill : AndyClawSkill {
     private suspend fun doClickNode(params: JsonObject): SkillResult {
         val viewId = params["view_id"]?.jsonPrimitive?.contentOrNull
             ?: return SkillResult.Error("Missing required parameter: view_id")
-        val isLong = params["long"]?.jsonPrimitive?.contentOrNull?.toBooleanStrictOrNull() ?: false
-        return if (isLong) {
-            actionWithUiTree(DELAY_NODE_CLICK, "Long-clicked node: $viewId.") {
-                getService().longClickNode(viewId)
-            }
-        } else {
-            actionWithUiTree(DELAY_NODE_CLICK, "Clicked node: $viewId.") {
-                getService().clickNode(viewId)
-            }
+        return actionWithUiTree(DELAY_NODE_CLICK, "Clicked node: $viewId.") {
+            getService().clickNode(viewId)
+        }
+    }
+
+    private suspend fun doLongClickNode(params: JsonObject): SkillResult {
+        val viewId = params["view_id"]?.jsonPrimitive?.contentOrNull
+            ?: return SkillResult.Error("Missing required parameter: view_id")
+        return actionWithUiTree(DELAY_NODE_CLICK, "Long-clicked node: $viewId.") {
+            getService().longClickNode(viewId)
         }
     }
 
@@ -840,25 +877,25 @@ class AgentDisplaySkill : AndyClawSkill {
         }),
     )
 
-    private fun propString(description: String? = null) = JsonObject(buildMap {
-        put("type", JsonPrimitive("string"))
-        if (!description.isNullOrEmpty()) put("description", JsonPrimitive(description))
-    })
+    private fun propString(description: String) = JsonObject(mapOf(
+        "type" to JsonPrimitive("string"),
+        "description" to JsonPrimitive(description),
+    ))
 
-    private fun propNumber(description: String? = null) = JsonObject(buildMap {
-        put("type", JsonPrimitive("number"))
-        if (!description.isNullOrEmpty()) put("description", JsonPrimitive(description))
-    })
+    private fun propNumber(description: String) = JsonObject(mapOf(
+        "type" to JsonPrimitive("number"),
+        "description" to JsonPrimitive(description),
+    ))
 
-    private fun propNumberArray(description: String? = null) = JsonObject(buildMap {
-        put("type", JsonPrimitive("array"))
-        put("items", JsonObject(mapOf("type" to JsonPrimitive("number"))))
-        if (!description.isNullOrEmpty()) put("description", JsonPrimitive(description))
-    })
+    private fun propNumberArray(description: String) = JsonObject(mapOf(
+        "type" to JsonPrimitive("array"),
+        "items" to JsonObject(mapOf("type" to JsonPrimitive("number"))),
+        "description" to JsonPrimitive(description),
+    ))
 
-    private fun propEnum(description: String, values: List<String>) = JsonObject(buildMap {
-        put("type", JsonPrimitive("string"))
-        if (description.isNotEmpty()) put("description", JsonPrimitive(description))
-        put("enum", JsonArray(values.map { JsonPrimitive(it) }))
-    })
+    private fun propEnum(description: String, values: List<String>) = JsonObject(mapOf(
+        "type" to JsonPrimitive("string"),
+        "description" to JsonPrimitive(description),
+        "enum" to JsonArray(values.map { JsonPrimitive(it) }),
+    ))
 }

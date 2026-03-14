@@ -69,24 +69,43 @@ class ShellSkill(
     }
 
     override val baseManifest = SkillManifest(
-        description = "Execute shell commands in the app sandbox (${context.filesDir.absolutePath}).",
+        description = buildString {
+            appendLine("Execute shell commands on the Android device.")
+            appendLine("The working directory is the app sandbox: ${context.filesDir.absolutePath}")
+            appendLine("Files created with write_file are in this directory and can be executed directly.")
+            appendLine()
+            appendLine("Common patterns:")
+            appendLine("- Run a script you wrote: sh myscript.sh")
+            appendLine("- Run Python (if installed): python3 myscript.py")
+            appendLine("- Make executable and run: chmod +x myscript.sh && ./myscript.sh")
+            appendLine("- Run inline code: echo 'Hello from Android!'")
+            appendLine("- List sandbox files: ls -la")
+            appendLine("- Check available tools: which python3 sh node dalvikvm")
+            appendLine()
+            appendLine("Android shell notes:")
+            appendLine("- Standard POSIX shell (sh) is always available")
+            appendLine("- The app runs as a normal user, not root (unless on privileged OS)")
+            appendLine("- Common tools: ls, cat, cp, mv, mkdir, rm, chmod, echo, grep, sed, awk, wc, sort, head, tail, date, uname")
+            appendLine("- Dalvik VM can run .dex files: dalvikvm -cp classes.dex ClassName")
+        },
         tools = listOf(
             ToolDefinition(
                 name = "run_shell_command",
-                description = "Run a shell command in the app sandbox directory.",
+                description = "Run a shell command in the app sandbox directory (${context.filesDir.absolutePath}). Files written with write_file are available here. Example: after writing 'hello.sh', run it with 'sh hello.sh'.",
                 inputSchema = JsonObject(mapOf(
                     "type" to JsonPrimitive("object"),
                     "properties" to JsonObject(mapOf(
                         "command" to JsonObject(mapOf(
                             "type" to JsonPrimitive("string"),
+                            "description" to JsonPrimitive("The shell command to execute (runs in app sandbox directory)"),
                         )),
                         "timeout_ms" to JsonObject(mapOf(
                             "type" to JsonPrimitive("integer"),
-                            "description" to JsonPrimitive("Default 30000, max 120000"),
+                            "description" to JsonPrimitive("Timeout in milliseconds (default 30000, max 120000)"),
                         )),
                         "as_root" to JsonObject(mapOf(
                             "type" to JsonPrimitive("boolean"),
-                            "description" to JsonPrimitive("Privileged OS only"),
+                            "description" to JsonPrimitive("Run as root (privileged OS only)"),
                         )),
                     )),
                     "required" to kotlinx.serialization.json.JsonArray(listOf(JsonPrimitive("command"))),

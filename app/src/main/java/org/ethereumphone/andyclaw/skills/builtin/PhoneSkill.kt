@@ -32,7 +32,7 @@ class PhoneSkill(private val context: Context) : AndyClawSkill {
                 inputSchema = JsonObject(mapOf(
                     "type" to JsonPrimitive("object"),
                     "properties" to JsonObject(mapOf(
-                        "limit" to JsonObject(mapOf("type" to JsonPrimitive("integer"), "description" to JsonPrimitive("Default 20"))),
+                        "limit" to JsonObject(mapOf("type" to JsonPrimitive("integer"), "description" to JsonPrimitive("Max number of entries to return (default 20)"))),
                     )),
                 )),
                 requiredPermissions = listOf("android.permission.READ_CALL_LOG"),
@@ -49,7 +49,7 @@ class PhoneSkill(private val context: Context) : AndyClawSkill {
                 inputSchema = JsonObject(mapOf(
                     "type" to JsonPrimitive("object"),
                     "properties" to JsonObject(mapOf(
-                        "number" to JsonObject(mapOf("type" to JsonPrimitive("string"))),
+                        "number" to JsonObject(mapOf("type" to JsonPrimitive("string"), "description" to JsonPrimitive("Phone number to call"))),
                     )),
                     "required" to JsonArray(listOf(JsonPrimitive("number"))),
                 )),

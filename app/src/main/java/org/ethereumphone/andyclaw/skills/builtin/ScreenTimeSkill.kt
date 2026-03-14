@@ -26,7 +26,7 @@ class ScreenTimeSkill(private val context: Context) : AndyClawSkill {
     )
 
     override val privilegedManifest = SkillManifest(
-        description = "Query app usage statistics (requires PACKAGE_USAGE_STATS).",
+        description = "Query app usage statistics (privileged OS only, requires PACKAGE_USAGE_STATS).",
         tools = listOf(
             ToolDefinition(
                 name = "get_usage_stats",
@@ -34,9 +34,9 @@ class ScreenTimeSkill(private val context: Context) : AndyClawSkill {
                 inputSchema = JsonObject(mapOf(
                     "type" to JsonPrimitive("object"),
                     "properties" to JsonObject(mapOf(
-                        "start_time" to JsonObject(mapOf("type" to JsonPrimitive("integer"), "description" to JsonPrimitive("Epoch millis (default: 24h ago)"))),
-                        "end_time" to JsonObject(mapOf("type" to JsonPrimitive("integer"), "description" to JsonPrimitive("Epoch millis (default: now)"))),
-                        "limit" to JsonObject(mapOf("type" to JsonPrimitive("integer"), "description" to JsonPrimitive("Default 20, sorted by usage"))),
+                        "start_time" to JsonObject(mapOf("type" to JsonPrimitive("integer"), "description" to JsonPrimitive("Start time as epoch millis (default: 24h ago)"))),
+                        "end_time" to JsonObject(mapOf("type" to JsonPrimitive("integer"), "description" to JsonPrimitive("End time as epoch millis (default: now)"))),
+                        "limit" to JsonObject(mapOf("type" to JsonPrimitive("integer"), "description" to JsonPrimitive("Max apps to return, sorted by usage (default 20)"))),
                     )),
                 )),
             ),
@@ -46,9 +46,9 @@ class ScreenTimeSkill(private val context: Context) : AndyClawSkill {
                 inputSchema = JsonObject(mapOf(
                     "type" to JsonPrimitive("object"),
                     "properties" to JsonObject(mapOf(
-                        "package_name" to JsonObject(mapOf("type" to JsonPrimitive("string"))),
-                        "start_time" to JsonObject(mapOf("type" to JsonPrimitive("integer"), "description" to JsonPrimitive("Epoch millis (default: 24h ago)"))),
-                        "end_time" to JsonObject(mapOf("type" to JsonPrimitive("integer"), "description" to JsonPrimitive("Epoch millis (default: now)"))),
+                        "package_name" to JsonObject(mapOf("type" to JsonPrimitive("string"), "description" to JsonPrimitive("Package name of the app"))),
+                        "start_time" to JsonObject(mapOf("type" to JsonPrimitive("integer"), "description" to JsonPrimitive("Start time as epoch millis (default: 24h ago)"))),
+                        "end_time" to JsonObject(mapOf("type" to JsonPrimitive("integer"), "description" to JsonPrimitive("End time as epoch millis (default: now)"))),
                     )),
                     "required" to JsonArray(listOf(JsonPrimitive("package_name"))),
                 )),

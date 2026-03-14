@@ -25,47 +25,39 @@ class ConnectivitySkill(private val context: Context) : AndyClawSkill {
     override val name = "Connectivity"
 
     override val baseManifest = SkillManifest(
-        description = "Read connectivity status.",
+        description = "Read device connectivity status (WiFi, Bluetooth, mobile data, airplane mode).",
         tools = listOf(
             ToolDefinition(
                 name = "get_connectivity_status",
-                description = "Get WiFi, Bluetooth, mobile data, and airplane mode state.",
+                description = "Get current connectivity status including WiFi, Bluetooth, mobile data, and airplane mode state.",
                 inputSchema = JsonObject(mapOf("type" to JsonPrimitive("object"), "properties" to JsonObject(emptyMap()))),
             ),
         ),
     )
 
     override val privilegedManifest = SkillManifest(
-        description = "Toggle radios and manage WiFi networks.",
+        description = "Toggle WiFi, Bluetooth, mobile data, airplane mode, and manage WiFi networks (privileged OS only).",
         tools = listOf(
             ToolDefinition(
-                name = "toggle_connectivity",
-                description = "Toggle a connectivity radio on or off.",
+                name = "toggle_wifi",
+                description = "Enable or disable WiFi.",
                 inputSchema = JsonObject(mapOf(
                     "type" to JsonPrimitive("object"),
                     "properties" to JsonObject(mapOf(
-                        "target" to JsonObject(mapOf(
-                            "type" to JsonPrimitive("string"),
-                            "enum" to JsonArray(listOf(
-                                JsonPrimitive("wifi"), JsonPrimitive("bluetooth"),
-                                JsonPrimitive("mobile_data"), JsonPrimitive("airplane_mode"),
-                                JsonPrimitive("hotspot"),
-                            )),
-                        )),
-                        "enabled" to JsonObject(mapOf("type" to JsonPrimitive("boolean"))),
+                        "enabled" to JsonObject(mapOf("type" to JsonPrimitive("boolean"), "description" to JsonPrimitive("true to enable, false to disable"))),
                     )),
-                    "required" to JsonArray(listOf(JsonPrimitive("target"), JsonPrimitive("enabled"))),
+                    "required" to JsonArray(listOf(JsonPrimitive("enabled"))),
                 )),
                 requiresApproval = true,
             ),
             ToolDefinition(
                 name = "connect_wifi_network",
-                description = "Connect to a WiFi network.",
+                description = "Connect to a WiFi network by SSID.",
                 inputSchema = JsonObject(mapOf(
                     "type" to JsonPrimitive("object"),
                     "properties" to JsonObject(mapOf(
-                        "ssid" to JsonObject(mapOf("type" to JsonPrimitive("string"))),
-                        "password" to JsonObject(mapOf("type" to JsonPrimitive("string"), "description" to JsonPrimitive("Omit for open networks"))),
+                        "ssid" to JsonObject(mapOf("type" to JsonPrimitive("string"), "description" to JsonPrimitive("WiFi network SSID"))),
+                        "password" to JsonObject(mapOf("type" to JsonPrimitive("string"), "description" to JsonPrimitive("WiFi password (omit for open networks)"))),
                     )),
                     "required" to JsonArray(listOf(JsonPrimitive("ssid"))),
                 )),
@@ -73,13 +65,62 @@ class ConnectivitySkill(private val context: Context) : AndyClawSkill {
             ),
             ToolDefinition(
                 name = "forget_wifi_network",
-                description = "Forget a saved WiFi network.",
+                description = "Remove a saved WiFi network.",
                 inputSchema = JsonObject(mapOf(
                     "type" to JsonPrimitive("object"),
                     "properties" to JsonObject(mapOf(
-                        "ssid" to JsonObject(mapOf("type" to JsonPrimitive("string"))),
+                        "ssid" to JsonObject(mapOf("type" to JsonPrimitive("string"), "description" to JsonPrimitive("WiFi network SSID to forget"))),
                     )),
                     "required" to JsonArray(listOf(JsonPrimitive("ssid"))),
+                )),
+                requiresApproval = true,
+            ),
+            ToolDefinition(
+                name = "toggle_bluetooth",
+                description = "Enable or disable Bluetooth.",
+                inputSchema = JsonObject(mapOf(
+                    "type" to JsonPrimitive("object"),
+                    "properties" to JsonObject(mapOf(
+                        "enabled" to JsonObject(mapOf("type" to JsonPrimitive("boolean"), "description" to JsonPrimitive("true to enable, false to disable"))),
+                    )),
+                    "required" to JsonArray(listOf(JsonPrimitive("enabled"))),
+                )),
+                requiresApproval = true,
+                requiredPermissions = listOf("android.permission.BLUETOOTH_CONNECT"),
+            ),
+            ToolDefinition(
+                name = "toggle_mobile_data",
+                description = "Enable or disable mobile data.",
+                inputSchema = JsonObject(mapOf(
+                    "type" to JsonPrimitive("object"),
+                    "properties" to JsonObject(mapOf(
+                        "enabled" to JsonObject(mapOf("type" to JsonPrimitive("boolean"), "description" to JsonPrimitive("true to enable, false to disable"))),
+                    )),
+                    "required" to JsonArray(listOf(JsonPrimitive("enabled"))),
+                )),
+                requiresApproval = true,
+            ),
+            ToolDefinition(
+                name = "toggle_airplane_mode",
+                description = "Enable or disable airplane mode.",
+                inputSchema = JsonObject(mapOf(
+                    "type" to JsonPrimitive("object"),
+                    "properties" to JsonObject(mapOf(
+                        "enabled" to JsonObject(mapOf("type" to JsonPrimitive("boolean"), "description" to JsonPrimitive("true to enable, false to disable"))),
+                    )),
+                    "required" to JsonArray(listOf(JsonPrimitive("enabled"))),
+                )),
+                requiresApproval = true,
+            ),
+            ToolDefinition(
+                name = "toggle_hotspot",
+                description = "Enable or disable WiFi hotspot (tethering).",
+                inputSchema = JsonObject(mapOf(
+                    "type" to JsonPrimitive("object"),
+                    "properties" to JsonObject(mapOf(
+                        "enabled" to JsonObject(mapOf("type" to JsonPrimitive("boolean"), "description" to JsonPrimitive("true to enable, false to disable"))),
+                    )),
+                    "required" to JsonArray(listOf(JsonPrimitive("enabled"))),
                 )),
                 requiresApproval = true,
             ),
@@ -89,23 +130,14 @@ class ConnectivitySkill(private val context: Context) : AndyClawSkill {
     override suspend fun execute(tool: String, params: JsonObject, tier: Tier): SkillResult {
         return when (tool) {
             "get_connectivity_status" -> getConnectivityStatus()
-            "toggle_connectivity" -> privileged(tier) { toggleConnectivity(params) }
+            "toggle_wifi" -> privileged(tier) { toggleWifi(params) }
             "connect_wifi_network" -> privileged(tier) { connectWifiNetwork(params) }
             "forget_wifi_network" -> privileged(tier) { forgetWifiNetwork(params) }
+            "toggle_bluetooth" -> privileged(tier) { toggleBluetooth(params) }
+            "toggle_mobile_data" -> privileged(tier) { toggleMobileData(params) }
+            "toggle_airplane_mode" -> privileged(tier) { toggleAirplaneMode(params) }
+            "toggle_hotspot" -> privileged(tier) { toggleHotspot(params) }
             else -> SkillResult.Error("Unknown tool: $tool")
-        }
-    }
-
-    private fun toggleConnectivity(params: JsonObject): SkillResult {
-        val target = params["target"]?.jsonPrimitive?.contentOrNull
-            ?: return SkillResult.Error("Missing required parameter: target")
-        return when (target) {
-            "wifi" -> toggleWifi(params)
-            "bluetooth" -> toggleBluetooth(params)
-            "mobile_data" -> toggleMobileData(params)
-            "airplane_mode" -> toggleAirplaneMode(params)
-            "hotspot" -> toggleHotspot(params)
-            else -> SkillResult.Error("Invalid target: $target. Use wifi, bluetooth, mobile_data, airplane_mode, or hotspot.")
         }
     }
 

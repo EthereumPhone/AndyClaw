@@ -42,11 +42,17 @@ class WebSearchSkill(
         .build()
 
     override val baseManifest = SkillManifest(
-        description = "Search the web and fetch webpage contents.",
+        description = "Search the web for real-time information and fetch webpage contents. " +
+                "Use this to answer questions about current events, exchange rates, weather, " +
+                "prices, news, or any information that requires up-to-date web data.",
         tools = listOf(
             ToolDefinition(
                 name = "web_search",
-                description = "Search the web via DuckDuckGo.",
+                description = "Search the web using DuckDuckGo and return a list of results " +
+                        "with titles, URLs, and snippets. Use this when you need current " +
+                        "information from the internet, such as exchange rates, news, " +
+                        "weather, prices, or any factual question that may have changed " +
+                        "since your training data.",
                 inputSchema = JsonObject(
                     mapOf(
                         "type" to JsonPrimitive("object"),
@@ -55,13 +61,16 @@ class WebSearchSkill(
                                 "query" to JsonObject(
                                     mapOf(
                                         "type" to JsonPrimitive("string"),
+                                        "description" to JsonPrimitive(
+                                            "The search query to look up on the web"
+                                        ),
                                     )
                                 ),
                                 "max_results" to JsonObject(
                                     mapOf(
                                         "type" to JsonPrimitive("integer"),
                                         "description" to JsonPrimitive(
-                                            "Default 5, max 15"
+                                            "Maximum number of results to return (default: 5, max: 15)"
                                         ),
                                     )
                                 ),
@@ -73,7 +82,10 @@ class WebSearchSkill(
             ),
             ToolDefinition(
                 name = "fetch_webpage",
-                description = "Fetch a webpage and extract its readable text content.",
+                description = "Fetch a webpage URL and extract its readable text content. " +
+                        "Use this to read the full content of a page found via web_search, " +
+                        "or to retrieve data from a known URL. Returns the extracted text " +
+                        "content (HTML tags stripped).",
                 inputSchema = JsonObject(
                     mapOf(
                         "type" to JsonPrimitive("object"),
@@ -82,13 +94,16 @@ class WebSearchSkill(
                                 "url" to JsonObject(
                                     mapOf(
                                         "type" to JsonPrimitive("string"),
+                                        "description" to JsonPrimitive(
+                                            "The full URL of the webpage to fetch"
+                                        ),
                                     )
                                 ),
                                 "max_length" to JsonObject(
                                     mapOf(
                                         "type" to JsonPrimitive("integer"),
                                         "description" to JsonPrimitive(
-                                            "Default 5000, max 20000"
+                                            "Maximum number of characters to return (default: 5000, max: 20000)"
                                         ),
                                     )
                                 ),

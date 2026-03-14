@@ -50,11 +50,15 @@ class TokenLookupSkill : AndyClawSkill {
         .build()
 
     override val baseManifest = SkillManifest(
-        description = "Look up token info, prices, and launched tokens via DexScreener and Clanker.",
+        description = "Look up token information, prices, and launched tokens. " +
+                "Search tokens by name, symbol, or contract address via DexScreener and Clanker. " +
+                "Get real-time USD prices for any ERC-20 or native token.",
         tools = listOf(
             ToolDefinition(
                 name = "lookup_token",
-                description = "Search for a token by name, symbol, or contract address (EVM chains only, DexScreener + Clanker fallback).",
+                description = "Search for a token by name, symbol, or contract address. " +
+                        "Returns trading pairs with price, liquidity, 24h volume/change, FDV, and DexScreener URL. " +
+                        "Uses DexScreener as primary source with Clanker as fallback. Only returns EVM chains (no Solana).",
                 inputSchema = JsonObject(
                     mapOf(
                         "type" to JsonPrimitive("object"),
@@ -63,13 +67,17 @@ class TokenLookupSkill : AndyClawSkill {
                                 "query" to JsonObject(
                                     mapOf(
                                         "type" to JsonPrimitive("string"),
-                                        "description" to JsonPrimitive("Token name, symbol, or contract address"),
+                                        "description" to JsonPrimitive(
+                                            "Token name, ticker symbol, or contract address (0x...)"
+                                        ),
                                     )
                                 ),
                                 "limit" to JsonObject(
                                     mapOf(
                                         "type" to JsonPrimitive("integer"),
-                                        "description" to JsonPrimitive("Max results (default: 5, max: 10)"),
+                                        "description" to JsonPrimitive(
+                                            "Maximum number of results (default: 5, max: 10)"
+                                        ),
                                     )
                                 ),
                             )
@@ -80,7 +88,10 @@ class TokenLookupSkill : AndyClawSkill {
             ),
             ToolDefinition(
                 name = "get_token_price",
-                description = "Get the current USD price of a token by contract address or native symbol (ETH, MATIC, etc.).",
+                description = "Get the current USD price of a token. " +
+                        "For ERC-20 tokens, provide the contract address. " +
+                        "For native tokens (ETH, MATIC, etc.), provide the symbol or any ETH/WETH address. " +
+                        "Handles ETH/WETH addresses interchangeably.",
                 inputSchema = JsonObject(
                     mapOf(
                         "type" to JsonPrimitive("object"),
@@ -89,13 +100,17 @@ class TokenLookupSkill : AndyClawSkill {
                                 "token" to JsonObject(
                                     mapOf(
                                         "type" to JsonPrimitive("string"),
-                                        "description" to JsonPrimitive("Contract address or native symbol (ETH, MATIC, BNB, AVAX)"),
+                                        "description" to JsonPrimitive(
+                                            "Contract address (0x...) or native token symbol (ETH, MATIC, BNB, AVAX)"
+                                        ),
                                     )
                                 ),
                                 "chain_id" to JsonObject(
                                     mapOf(
                                         "type" to JsonPrimitive("integer"),
-                                        "description" to JsonPrimitive("Default: 8453 (Base)"),
+                                        "description" to JsonPrimitive(
+                                            "Chain ID (1=Ethereum, 10=Optimism, 137=Polygon, 42161=Arbitrum, 8453=Base). Default: 8453"
+                                        ),
                                     )
                                 ),
                             )
@@ -106,7 +121,9 @@ class TokenLookupSkill : AndyClawSkill {
             ),
             ToolDefinition(
                 name = "get_launched_tokens",
-                description = "Query tokens launched via Clanker/ethOS, optionally filtered by social interface.",
+                description = "Query tokens launched via Clanker / ethOS. " +
+                        "Search by name, symbol, or filter by social interface (e.g. ethOS). " +
+                        "Returns token info with market data when available.",
                 inputSchema = JsonObject(
                     mapOf(
                         "type" to JsonPrimitive("object"),
@@ -115,18 +132,25 @@ class TokenLookupSkill : AndyClawSkill {
                                 "query" to JsonObject(
                                     mapOf(
                                         "type" to JsonPrimitive("string"),
+                                        "description" to JsonPrimitive(
+                                            "Token name or symbol to search for"
+                                        ),
                                     )
                                 ),
                                 "limit" to JsonObject(
                                     mapOf(
                                         "type" to JsonPrimitive("integer"),
-                                        "description" to JsonPrimitive("Max results (default: 5, max: 20)"),
+                                        "description" to JsonPrimitive(
+                                            "Maximum number of results (default: 5, max: 20)"
+                                        ),
                                     )
                                 ),
                                 "social_interface" to JsonObject(
                                     mapOf(
                                         "type" to JsonPrimitive("string"),
-                                        "description" to JsonPrimitive("Filter by interface (e.g. 'ethOS')"),
+                                        "description" to JsonPrimitive(
+                                            "Filter by social interface (e.g. 'ethOS'). Optional."
+                                        ),
                                     )
                                 ),
                             )

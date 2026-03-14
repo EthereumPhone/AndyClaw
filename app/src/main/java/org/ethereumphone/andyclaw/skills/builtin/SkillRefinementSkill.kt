@@ -53,11 +53,15 @@ class SkillRefinementSkill(
     override val name = "Skill Refinement"
 
     override val baseManifest = SkillManifest(
-        description = "Refine existing skills via REFINEMENT.md overlays without modifying the original SKILL.md.",
+        description = "Refine and improve existing skills (ClawHub or AI-created) without overwriting the original. " +
+            "Refinements are stored as overlays that get appended to the skill's content, " +
+            "adding Android-specific guidance, fixes, or enhancements. " +
+            "The original SKILL.md is never modified.",
         tools = listOf(
             ToolDefinition(
                 name = "refinement_list_skills",
-                description = "List all refineable skills with their refinement status.",
+                description = "List all skills that can be refined (ClawHub and AI-created SKILL.md skills). " +
+                    "Shows whether each skill already has a refinement.",
                 inputSchema = buildJsonObject {
                     put("type", "object")
                     putJsonObject("properties") {}
@@ -65,16 +69,19 @@ class SkillRefinementSkill(
             ),
             ToolDefinition(
                 name = "refinement_read",
-                description = "Read a skill's content with any existing refinement overlay applied.",
+                description = "Read a skill's full content with any existing refinement applied. " +
+                    "Shows the original SKILL.md body, plus the REFINEMENT.md overlay if one exists. " +
+                    "Use this to understand a skill before creating or updating a refinement.",
                 inputSchema = buildJsonObject {
                     put("type", "object")
                     putJsonObject("properties") {
                         putJsonObject("slug") {
                             put("type", "string")
+                            put("description", "Skill slug (directory name)")
                         }
                         putJsonObject("show_raw") {
                             put("type", "boolean")
-                            put("description", "Show SKILL.md and REFINEMENT.md separately (default: false)")
+                            put("description", "If true, show SKILL.md and REFINEMENT.md separately instead of combined (default: false)")
                         }
                     }
                     putJsonArray("required") { add(JsonPrimitive("slug")) }
@@ -82,20 +89,25 @@ class SkillRefinementSkill(
             ),
             ToolDefinition(
                 name = "refinement_create",
-                description = "Create or update a REFINEMENT.md overlay for a skill (previous version preserved in history).",
+                description = "Create or update a REFINEMENT.md overlay for a skill. " +
+                    "The refinement is appended to the original skill content when the agent reads it. " +
+                    "Use this to add Android-specific guidance, fix issues, or enhance instructions. " +
+                    "If a refinement already exists, it will be replaced (the old version is preserved " +
+                    "in a history section within the file).",
                 inputSchema = buildJsonObject {
                     put("type", "object")
                     putJsonObject("properties") {
                         putJsonObject("slug") {
                             put("type", "string")
+                            put("description", "Skill slug to refine")
                         }
                         putJsonObject("content") {
                             put("type", "string")
-                            put("description", "Markdown refinement content to overlay on the original skill")
+                            put("description", "Markdown refinement content — Android-specific instructions, fixes, or enhancements to layer on top of the original skill")
                         }
                         putJsonObject("reason") {
                             put("type", "string")
-                            put("description", "Brief explanation of why this refinement is needed")
+                            put("description", "Brief explanation of why this refinement is needed (e.g. 'Improve file path handling on Android')")
                         }
                     }
                     putJsonArray("required") {
@@ -106,12 +118,13 @@ class SkillRefinementSkill(
             ),
             ToolDefinition(
                 name = "refinement_remove",
-                description = "Remove a skill's REFINEMENT.md overlay, reverting to original content.",
+                description = "Remove the REFINEMENT.md overlay from a skill, reverting to the original SKILL.md content.",
                 inputSchema = buildJsonObject {
                     put("type", "object")
                     putJsonObject("properties") {
                         putJsonObject("slug") {
                             put("type", "string")
+                            put("description", "Skill slug to remove refinement from")
                         }
                     }
                     putJsonArray("required") { add(JsonPrimitive("slug")) }
@@ -120,7 +133,7 @@ class SkillRefinementSkill(
             ),
             ToolDefinition(
                 name = "refinement_list_all",
-                description = "List all skills with active refinements.",
+                description = "List all skills that currently have active refinements, showing the reason and date for each.",
                 inputSchema = buildJsonObject {
                     put("type", "object")
                     putJsonObject("properties") {}
