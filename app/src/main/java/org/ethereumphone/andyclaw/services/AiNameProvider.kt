@@ -14,7 +14,8 @@ import org.ethereumphone.andyclaw.NodeApp
  * the static manifest label.
  *
  * Authority: org.ethereumphone.andyclaw.ai.settings
- * Path:      /ai_name  ->  single-row cursor with column "ai_name"
+ * Path:      /ai_name   ->  single-row cursor with column "ai_name"
+ * Path:      /is_setup  ->  single-row cursor with column "is_setup" (1 or 0)
  */
 class AiNameProvider : ContentProvider() {
 
@@ -31,13 +32,22 @@ class AiNameProvider : ContentProvider() {
         selectionArgs: Array<out String>?,
         sortOrder: String?,
     ): Cursor? {
-        if (uri.lastPathSegment != "ai_name") return null
-
         val app = context?.applicationContext as? NodeApp
-        val name = app?.securePrefs?.aiName?.value ?: "AndyClaw"
 
-        return MatrixCursor(arrayOf("ai_name")).apply {
-            addRow(arrayOf(name))
+        return when (uri.lastPathSegment) {
+            "ai_name" -> {
+                val name = app?.securePrefs?.aiName?.value ?: "AndyClaw"
+                MatrixCursor(arrayOf("ai_name")).apply {
+                    addRow(arrayOf(name))
+                }
+            }
+            "is_setup" -> {
+                val setup = app?.userStoryManager?.exists() == true
+                MatrixCursor(arrayOf("is_setup")).apply {
+                    addRow(arrayOf(if (setup) 1 else 0))
+                }
+            }
+            else -> null
         }
     }
 
