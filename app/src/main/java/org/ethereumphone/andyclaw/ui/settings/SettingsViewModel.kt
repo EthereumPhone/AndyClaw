@@ -173,7 +173,8 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
     fun setYoloMode(enabled: Boolean) {
         prefs.setYoloMode(enabled)
         if (enabled) {
-            prefs.setSkillEnabled("agent_display", true)
+            val allIds = app.nativeSkillRegistry.getAll().map { it.id }.toSet()
+            prefs.setAllSkillsEnabled(allIds)
         }
     }
 

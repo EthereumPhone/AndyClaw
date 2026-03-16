@@ -117,7 +117,12 @@ fun SettingsScreen(
     val isReindexing by viewModel.isReindexing.collectAsState()
     val extensions by viewModel.extensions.collectAsState()
     val isExtensionScanning by viewModel.isExtensionScanning.collectAsState()
-    val enabledSkills by viewModel.enabledSkills.collectAsState()
+    val persistedEnabledSkills by viewModel.enabledSkills.collectAsState()
+    val enabledSkills = if (yoloMode) {
+        viewModel.registeredSkills.map { it.id }.toSet()
+    } else {
+        persistedEnabledSkills
+    }
     val paymasterBalance by viewModel.paymasterBalance.collectAsState()
     val telegramBotEnabled by viewModel.telegramBotEnabled.collectAsState()
     val telegramOwnerChatId by viewModel.telegramOwnerChatId.collectAsState()
