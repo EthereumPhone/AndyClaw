@@ -86,6 +86,15 @@ class LedMatrixController(
     private var timedClearJob: Job? = null
     private var terminalFlushJob: Job? = null
 
+    /**
+     * Set to `true` when the AI agent explicitly controls the LEDs via [LedSkill].
+     * While active, [onPromptComplete] and [onPromptError] will skip the automatic
+     * completion pattern so the agent's pattern/animation persists until the next
+     * user message or prompt start.
+     */
+    @Volatile
+    private var aiControlled = false
+
     /** Maps the user's 0–255 max RGB preference to the SDK's 0–8 hardware brightness range. */
     private fun hwBrightness(): Int {
         val maxRgb = maxRgbProvider().coerceIn(0, 255)
@@ -103,6 +112,7 @@ class LedMatrixController(
 
     fun onPromptStart() {
         if (led == null && !isDisplayAvailable) return
+        aiControlled = false
         Log.i(TAG, "onPromptStart — starting spinner, hwBrightness=${hwBrightness()}, maxRgb=${maxRgbProvider()}")
         cancelAll()
         if (led != null) {
@@ -120,6 +130,12 @@ class LedMatrixController(
 
     fun onPromptComplete(responseText: String) {
         if (led == null && !isDisplayAvailable) return
+        if (aiControlled) {
+            Log.i(TAG, "onPromptComplete — skipping completion pattern (AI-controlled)")
+            // Only flush the terminal thinking emoticon; leave LEDs untouched.
+            scope.launch { flushTerminalDisplay() }
+            return
+        }
         cancelAll()
         val intent = LedIntent.classifyResponse(responseText)
         Log.i(TAG, "onPromptComplete — intent=$intent, hwBrightness=${hwBrightness()}, maxRgb=${maxRgbProvider()}")
@@ -136,6 +152,11 @@ class LedMatrixController(
 
     fun onPromptError() {
         if (led == null && !isDisplayAvailable) return
+        if (aiControlled) {
+            Log.i(TAG, "onPromptError — skipping error pattern (AI-controlled)")
+            scope.launch { flushTerminalDisplay() }
+            return
+        }
         Log.i(TAG, "onPromptError — showing error blink, hwBrightness=${hwBrightness()}, maxRgb=${maxRgbProvider()}")
         cancelAll()
         completionJob = scope.launch {
@@ -151,6 +172,7 @@ class LedMatrixController(
 
     fun onUserMessage() {
         if (led == null) return
+        aiControlled = false
         Log.d(TAG, "onUserMessage — clearing LEDs")
         cancelAll()
         led?.clear()
@@ -185,6 +207,7 @@ class LedMatrixController(
     fun displayNamedPattern(name: String, color: String? = null): Boolean {
         val led = led ?: return false
         cancelAll()
+        aiControlled = true
         syncBrightness()
         val normalized = color?.let { normalizeColor(it) }
         Log.i(TAG, "displayNamedPattern name=$name, color=$normalized, hwBrightness=${hwBrightness()}")
@@ -195,6 +218,7 @@ class LedMatrixController(
     fun flashPattern(name: String, durationMs: Long = 1000L): Boolean {
         val led = led ?: return false
         cancelAll()
+        aiControlled = true
         syncBrightness()
         Log.i(TAG, "flashPattern name=$name, durationMs=$durationMs, hwBrightness=${hwBrightness()}")
         when (name.lowercase()) {
@@ -210,6 +234,7 @@ class LedMatrixController(
     fun setCustomPattern(pattern: Array<Array<String>>): Boolean {
         val led = led ?: return false
         cancelAll()
+        aiControlled = true
         val hw = hwBrightness()
         val normalized = Array(3) { r ->
             Array(3) { c -> normalizeColor(pattern[r][c]) }
@@ -221,6 +246,7 @@ class LedMatrixController(
 
     fun setSingleLed(row: Int, col: Int, color: String): Boolean {
         val led = led ?: return false
+        aiControlled = true
         val hw = hwBrightness()
         val normalized = normalizeColor(color)
         Log.i(TAG, "setSingleLed [$row,$col] color=$normalized, hwBrightness=$hw")
@@ -240,6 +266,7 @@ class LedMatrixController(
     fun setAllLeds(color: String, durationMs: Long = 0L): Boolean {
         val led = led ?: return false
         cancelAll()
+        aiControlled = true
         val hw = hwBrightness()
         val normalized = normalizeColor(color)
         Log.i(TAG, "setAllLeds color=$normalized, durationMs=$durationMs, hwBrightness=$hw")
@@ -261,6 +288,7 @@ class LedMatrixController(
     ): Boolean {
         if (led == null || frames.isEmpty()) return false
         cancelAll()
+        aiControlled = true
 
         val normalizedFrames = frames.map { frame ->
             Array(3) { r -> Array(3) { c -> normalizeColor(frame[r][c]) } }
