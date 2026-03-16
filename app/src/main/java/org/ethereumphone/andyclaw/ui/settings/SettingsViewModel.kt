@@ -245,7 +245,7 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
         LlmProvider.TINFOIL -> prefs.tinfoilApiKey.value.isNotBlank()
         LlmProvider.OPENAI -> prefs.openaiApiKey.value.isNotBlank()
         LlmProvider.VENICE -> prefs.veniceApiKey.value.isNotBlank()
-        LlmProvider.LOCAL -> app.modelDownloadManager.isModelDownloaded
+        LlmProvider.LOCAL -> if (isPrivileged) true else app.modelDownloadManager.isModelDownloaded
     }
 
     val isLedAvailable: Boolean get() = app.ledController.isAvailable

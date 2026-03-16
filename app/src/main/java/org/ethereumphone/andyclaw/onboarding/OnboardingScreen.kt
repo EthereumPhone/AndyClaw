@@ -197,13 +197,18 @@ fun OnboardingScreen(
                     1 -> StepGoals(goals, onNext = onNext) { viewModel.goals.value = it }
                     2 -> StepName(customName, onNext = onNext) { viewModel.customName.value = it }
                     3 -> StepValues(values, onNext = onNext) { viewModel.values.value = it }
-                    4 -> StepPermissions(
-                        skills = viewModel.registeredSkills,
-                        yoloMode = yoloMode,
-                        selectedSkills = selectedSkills,
-                        onYoloModeChange = { viewModel.setYoloMode(it) },
-                        onToggleSkill = { id, enabled -> viewModel.toggleSkill(id, enabled) },
-                    )
+                    4 -> {
+                        val smartRoutingEnabled by viewModel.smartRoutingEnabled.collectAsState()
+                        StepPermissions(
+                            skills = viewModel.registeredSkills,
+                            yoloMode = yoloMode,
+                            selectedSkills = selectedSkills,
+                            onYoloModeChange = { viewModel.setYoloMode(it) },
+                            onToggleSkill = { id, enabled -> viewModel.toggleSkill(id, enabled) },
+                            smartRoutingEnabled = smartRoutingEnabled,
+                            onSmartRoutingChange = { viewModel.setSmartRoutingEnabled(it) },
+                        )
+                    }
                 }
             }
 
@@ -618,6 +623,8 @@ private fun StepPermissions(
     selectedSkills: Set<String>,
     onYoloModeChange: (Boolean) -> Unit,
     onToggleSkill: (String, Boolean) -> Unit,
+    smartRoutingEnabled: Boolean,
+    onSmartRoutingChange: (Boolean) -> Unit,
 ) {
     val tier = OsCapabilities.currentTier()
     val primaryColor = SystemColorManager.primaryColor
@@ -643,6 +650,56 @@ private fun StepPermissions(
         SectionTitle("PERMISSIONS")
         Spacer(Modifier.height(8.dp))
         SectionDescription("Choose which capabilities your AI can use. You can change these later in Settings.")
+
+        Spacer(Modifier.height(16.dp))
+
+        // Smart Routing card
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(4.dp))
+                .background(if (smartRoutingEnabled) primaryColor.copy(alpha = 0.15f) else Color.Transparent)
+                .border(
+                    width = if (smartRoutingEnabled) 2.dp else 1.dp,
+                    color = if (smartRoutingEnabled) primaryColor else primaryColor.copy(alpha = 0.3f),
+                    shape = RoundedCornerShape(4.dp),
+                )
+                .padding(16.dp),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "SMART ROUTING",
+                        fontFamily = SpaceMono,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = label_fontSize,
+                        color = primaryColor,
+                        style = MaterialTheme.typography.labelMedium.copy(
+                            shadow = GlowStyle.subtitle(primaryColor),
+                        ),
+                    )
+                    Text(
+                        text = "Uses an LLM to intelligently select only the skills needed per query, reducing token usage by up to 76%. Recommended.",
+                        fontFamily = SpaceMono,
+                        fontSize = 14.sp,
+                        color = dgenWhite,
+                        lineHeight = 18.sp,
+                        style = MaterialTheme.typography.bodySmall.copy(
+                            shadow = GlowStyle.body(dgenWhite),
+                        ),
+                    )
+                }
+                DgenSquareSwitch(
+                    checked = smartRoutingEnabled,
+                    onCheckedChange = onSmartRoutingChange,
+                    activeColor = primaryColor,
+                )
+            }
+        }
 
         Spacer(Modifier.height(16.dp))
 

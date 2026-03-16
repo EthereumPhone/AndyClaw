@@ -177,11 +177,7 @@ class SecurePrefs(context: Context) : KeyValueStore {
   private val _routingUseSameModel = MutableStateFlow(prefs.getBoolean("routing.useSameModel", false))
   val routingUseSameModel: StateFlow<Boolean> = _routingUseSameModel
 
-  private val _routingProvider = MutableStateFlow(
-    prefs.getString("routing.provider", "")?.let { name ->
-      try { LlmProvider.valueOf(name) } catch (_: Exception) { LlmProvider.OPEN_ROUTER }
-    } ?: LlmProvider.OPEN_ROUTER
-  )
+  private val _routingProvider = MutableStateFlow(loadRoutingProvider())
   val routingProvider: StateFlow<LlmProvider> = _routingProvider
 
   private val _routingModel = MutableStateFlow(
@@ -659,6 +655,11 @@ class SecurePrefs(context: Context) : KeyValueStore {
 
   private fun loadHeartbeatProvider(): LlmProvider {
     val raw = prefs.getString("agent.heartbeatProvider", null)
+    return LlmProvider.fromName(raw ?: "") ?: loadSelectedProvider()
+  }
+
+  private fun loadRoutingProvider(): LlmProvider {
+    val raw = prefs.getString("routing.provider", null)
     return LlmProvider.fromName(raw ?: "") ?: loadSelectedProvider()
   }
 

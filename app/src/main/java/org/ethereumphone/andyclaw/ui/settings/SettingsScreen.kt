@@ -1667,7 +1667,7 @@ fun SettingsScreen(
                         isSelected = provider == heartbeatProvider,
                         primaryColor = primaryColor,
                         enabled = configured,
-                        disabledSubtitle = if (!configured) "Set up API key in AI Provider settings" else null,
+                        disabledSubtitle = if (!configured) providerDisabledMessage(provider) else null,
                         onClick = {
                             viewModel.setHeartbeatProvider(provider)
                             currentSubScreen = SettingsSubScreen.Main
@@ -1739,7 +1739,7 @@ fun SettingsScreen(
                         isSelected = provider == rpProvider,
                         primaryColor = primaryColor,
                         enabled = configured,
-                        disabledSubtitle = if (!configured) "Set up API key in AI Provider settings" else null,
+                        disabledSubtitle = if (!configured) providerDisabledMessage(provider) else null,
                         onClick = {
                             viewModel.setRoutingProvider(provider)
                             currentSubScreen = SettingsSubScreen.Main
@@ -2049,6 +2049,11 @@ private fun AgentWalletSection(
             onClick = onNavigateToTxHistory,
         )
     }
+}
+
+private fun providerDisabledMessage(provider: LlmProvider): String = when (provider) {
+    LlmProvider.LOCAL -> "Download the model in AI Provider settings"
+    else -> "Set up API key in AI Provider settings"
 }
 
 private enum class SettingsSubScreen {

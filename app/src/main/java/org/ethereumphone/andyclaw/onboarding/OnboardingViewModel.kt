@@ -64,6 +64,9 @@ class OnboardingViewModel(application: Application) : AndroidViewModel(applicati
     private val _yoloMode = MutableStateFlow(false)
     val yoloMode: StateFlow<Boolean> = _yoloMode.asStateFlow()
 
+    private val _smartRoutingEnabled = MutableStateFlow(true)
+    val smartRoutingEnabled: StateFlow<Boolean> = _smartRoutingEnabled.asStateFlow()
+
     private val _selectedSkills = MutableStateFlow<Set<String>>(emptySet())
     val selectedSkills: StateFlow<Set<String>> = _selectedSkills.asStateFlow()
 
@@ -80,6 +83,10 @@ class OnboardingViewModel(application: Application) : AndroidViewModel(applicati
 
     fun setYoloMode(enabled: Boolean) {
         _yoloMode.value = enabled
+    }
+
+    fun setSmartRoutingEnabled(enabled: Boolean) {
+        _smartRoutingEnabled.value = enabled
     }
 
     fun toggleSkill(skillId: String, enabled: Boolean) {
@@ -195,6 +202,17 @@ class OnboardingViewModel(application: Application) : AndroidViewModel(applicati
 
                 app.userStoryManager.write(story)
                 app.securePrefs.setAiName(aiName)
+
+                // Persist smart routing preference
+                app.securePrefs.setSmartRoutingEnabled(_smartRoutingEnabled.value)
+
+                // Set routing provider/model to match the selected provider
+                val selectedProvider = app.securePrefs.selectedProvider.value
+                app.securePrefs.setRoutingProvider(selectedProvider)
+                val routingModel = AnthropicModels.routingModelForProvider(selectedProvider)
+                if (routingModel != null) {
+                    app.securePrefs.setRoutingModel(routingModel.modelId)
+                }
 
                 // Persist YOLO mode and skill selections
                 val isYolo = _yoloMode.value
