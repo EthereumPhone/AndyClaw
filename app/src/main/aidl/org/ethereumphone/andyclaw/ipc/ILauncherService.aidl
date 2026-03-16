@@ -34,4 +34,26 @@ interface ILauncherService {
     // Returns messages for a session as a JSON array.
     // Each object has: role ("user"/"assistant"/"system"/"tool"), content, timestamp.
     String getSessionMessages(String sessionId);
+
+    // Returns all settings as a JSON object string.
+    String getSettings();
+
+    // Sets a single setting by key. Value is a string ("true"/"false" for bools, numbers as strings).
+    // Returns true on success.
+    boolean setSetting(String key, String value);
+
+    // Returns available AI providers as a JSON array.
+    // Each: { "name": "OPEN_ROUTER", "displayName": "OpenRouter", "isConfigured": true }
+    String getAvailableProviders();
+
+    // Returns available models for a provider as a JSON array.
+    // Each: { "modelId": "...", "name": "Claude Sonnet 4.6" }
+    String getAvailableModels(String providerName);
+
+    // Deletes a session permanently.
+    void deleteSession(String sessionId);
+
+    // Resumes a previous session — loads its message history into the in-memory
+    // conversation buffer so subsequent sendPrompt() calls continue the conversation.
+    void resumeSession(String sessionId);
 }

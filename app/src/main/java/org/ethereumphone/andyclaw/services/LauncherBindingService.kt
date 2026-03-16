@@ -24,6 +24,7 @@ import org.ethereumphone.andyclaw.agent.AgentLoop
 import org.ethereumphone.andyclaw.ipc.ILauncherCallback
 import org.ethereumphone.andyclaw.ipc.ILauncherService
 import org.ethereumphone.andyclaw.llm.AnthropicModels
+import org.ethereumphone.andyclaw.llm.LlmProvider
 import org.ethereumphone.andyclaw.llm.ContentBlock
 import org.ethereumphone.andyclaw.llm.Message
 import org.ethereumphone.andyclaw.sessions.model.MessageRole
@@ -212,6 +213,171 @@ class LauncherBindingService : Service() {
                 } catch (e: Exception) {
                     Log.e(TAG, "getSessionMessages failed", e)
                     "[]"
+                }
+            }
+        }
+
+        override fun getSettings(): String {
+            enforceCallerIsLauncher()
+            val app = application as? NodeApp ?: return "{}"
+            val prefs = app.securePrefs
+            return JSONObject().apply {
+                put("provider", prefs.selectedProvider.value.name)
+                put("model", prefs.selectedModel.value)
+                put("aiName", prefs.aiName.value)
+                put("yoloMode", prefs.yoloMode.value)
+                put("safetyEnabled", prefs.safetyEnabled.value)
+                put("notificationReplyEnabled", prefs.notificationReplyEnabled.value)
+                put("executiveSummaryEnabled", prefs.executiveSummaryEnabled.value)
+                put("heartbeatOnNotification", prefs.heartbeatOnNotificationEnabled.value)
+                put("heartbeatOnXmtpMessage", prefs.heartbeatOnXmtpMessageEnabled.value)
+                put("heartbeatIntervalMinutes", prefs.heartbeatIntervalMinutes.value)
+                put("heartbeatUseSameModel", prefs.heartbeatUseSameModel.value)
+                put("heartbeatProvider", prefs.heartbeatProvider.value.name)
+                put("heartbeatModel", prefs.heartbeatModel.value)
+                put("smartRoutingEnabled", prefs.smartRoutingEnabled.value)
+                put("routingUseSameModel", prefs.routingUseSameModel.value)
+                put("routingProvider", prefs.routingProvider.value.name)
+                put("routingModel", prefs.routingModel.value)
+                put("ledMaxBrightness", prefs.ledMaxBrightness.value)
+                put("telegramBotEnabled", prefs.telegramBotEnabled.value)
+                put("telegramBotToken", prefs.telegramBotToken.value)
+                put("telegramOwnerChatId", prefs.telegramOwnerChatId.value)
+                put("memoryAutoStore", prefs.getString("memory.autoStore") != "false")
+                put("apiKey", prefs.apiKey.value)
+                put("tinfoilApiKey", prefs.tinfoilApiKey.value)
+                put("openaiApiKey", prefs.openaiApiKey.value)
+                put("veniceApiKey", prefs.veniceApiKey.value)
+                put("isPrivileged", OsCapabilities.hasPrivilegedAccess)
+                put("currentTier", OsCapabilities.currentTier().name)
+            }.toString()
+        }
+
+        override fun setSetting(key: String, value: String): Boolean {
+            enforceCallerIsLauncher()
+            val app = application as? NodeApp ?: return false
+            val prefs = app.securePrefs
+            return try {
+                when (key) {
+                    "provider" -> {
+                        val provider = LlmProvider.fromName(value) ?: return false
+                        prefs.setSelectedProvider(provider)
+                        prefs.setSelectedModel(AnthropicModels.defaultForProvider(provider).modelId)
+                    }
+                    "model" -> prefs.setSelectedModel(value)
+                    "aiName" -> prefs.setAiName(value)
+                    "yoloMode" -> prefs.setYoloMode(value.toBooleanStrict())
+                    "safetyEnabled" -> prefs.setSafetyEnabled(value.toBooleanStrict())
+                    "notificationReplyEnabled" -> prefs.setNotificationReplyEnabled(value.toBooleanStrict())
+                    "executiveSummaryEnabled" -> prefs.setExecutiveSummaryEnabled(value.toBooleanStrict())
+                    "heartbeatOnNotification" -> prefs.setHeartbeatOnNotificationEnabled(value.toBooleanStrict())
+                    "heartbeatOnXmtpMessage" -> prefs.setHeartbeatOnXmtpMessageEnabled(value.toBooleanStrict())
+                    "heartbeatIntervalMinutes" -> prefs.setHeartbeatIntervalMinutes(value.toInt())
+                    "heartbeatUseSameModel" -> prefs.setHeartbeatUseSameModel(value.toBooleanStrict())
+                    "heartbeatProvider" -> {
+                        val p = LlmProvider.fromName(value) ?: return false
+                        prefs.setHeartbeatProvider(p)
+                    }
+                    "heartbeatModel" -> prefs.setHeartbeatModel(value)
+                    "smartRoutingEnabled" -> prefs.setSmartRoutingEnabled(value.toBooleanStrict())
+                    "routingUseSameModel" -> prefs.setRoutingUseSameModel(value.toBooleanStrict())
+                    "routingProvider" -> {
+                        val p = LlmProvider.fromName(value) ?: return false
+                        prefs.setRoutingProvider(p)
+                    }
+                    "routingModel" -> prefs.setRoutingModel(value)
+                    "ledMaxBrightness" -> prefs.setLedMaxBrightness(value.toInt())
+                    "telegramBotEnabled" -> prefs.setTelegramBotEnabled(value.toBooleanStrict())
+                    "telegramBotToken" -> prefs.setTelegramBotToken(value)
+                    "telegramOwnerChatId" -> prefs.setTelegramOwnerChatId(value.toLong())
+                    "memoryAutoStore" -> prefs.putString("memory.autoStore", value)
+                    "apiKey" -> prefs.setApiKey(value)
+                    "tinfoilApiKey" -> prefs.setTinfoilApiKey(value)
+                    "openaiApiKey" -> prefs.setOpenaiApiKey(value)
+                    "veniceApiKey" -> prefs.setVeniceApiKey(value)
+                    else -> return false
+                }
+                true
+            } catch (e: Exception) {
+                Log.w(TAG, "setSetting($key) failed", e)
+                false
+            }
+        }
+
+        override fun getAvailableProviders(): String {
+            enforceCallerIsLauncher()
+            val app = application as? NodeApp ?: return "[]"
+            val prefs = app.securePrefs
+            val arr = JSONArray()
+            for (provider in LlmProvider.entries) {
+                val isConfigured = when (provider) {
+                    LlmProvider.ETHOS_PREMIUM -> OsCapabilities.hasPrivilegedAccess
+                    LlmProvider.OPEN_ROUTER -> prefs.apiKey.value.isNotBlank()
+                    LlmProvider.TINFOIL -> prefs.tinfoilApiKey.value.isNotBlank()
+                    LlmProvider.CLAUDE_OAUTH -> prefs.claudeOauthRefreshToken.value.isNotBlank()
+                    LlmProvider.OPENAI -> prefs.openaiApiKey.value.isNotBlank()
+                    LlmProvider.VENICE -> prefs.veniceApiKey.value.isNotBlank()
+                    LlmProvider.LOCAL -> true
+                }
+                arr.put(JSONObject().apply {
+                    put("name", provider.name)
+                    put("displayName", provider.displayName)
+                    put("isConfigured", isConfigured)
+                })
+            }
+            return arr.toString()
+        }
+
+        override fun getAvailableModels(providerName: String): String {
+            enforceCallerIsLauncher()
+            val provider = LlmProvider.fromName(providerName) ?: return "[]"
+            val models = AnthropicModels.forProvider(provider)
+            val arr = JSONArray()
+            for (model in models) {
+                arr.put(JSONObject().apply {
+                    put("modelId", model.modelId)
+                    put("name", model.modelId)
+                })
+            }
+            return arr.toString()
+        }
+
+        override fun deleteSession(sessionId: String) {
+            enforceCallerIsLauncher()
+            val app = application as? NodeApp ?: return
+            runBlocking(Dispatchers.IO) {
+                try {
+                    app.sessionManager.deleteSession(sessionId)
+                } catch (e: Exception) {
+                    Log.e(TAG, "deleteSession failed", e)
+                }
+            }
+            sessionHistories.remove(sessionId)
+            dbSessionIds.remove(sessionId)
+            Log.d(TAG, "Deleted session: $sessionId")
+        }
+
+        override fun resumeSession(sessionId: String) {
+            enforceCallerIsLauncher()
+            val app = application as? NodeApp ?: return
+            runBlocking(Dispatchers.IO) {
+                try {
+                    val messages = app.sessionManager.getMessages(sessionId)
+                    val history = mutableListOf<Message>()
+                    for (m in messages) {
+                        when (m.role) {
+                            MessageRole.USER -> history.add(Message.user(m.content))
+                            MessageRole.ASSISTANT -> history.add(
+                                Message.assistant(listOf(ContentBlock.TextBlock(m.content)))
+                            )
+                            else -> {} // skip system/tool for agent loop reconstruction
+                        }
+                    }
+                    sessionHistories[sessionId] = history
+                    dbSessionIds[sessionId] = sessionId
+                    Log.d(TAG, "Resumed session: $sessionId with ${history.size} messages")
+                } catch (e: Exception) {
+                    Log.e(TAG, "resumeSession failed", e)
                 }
             }
         }
