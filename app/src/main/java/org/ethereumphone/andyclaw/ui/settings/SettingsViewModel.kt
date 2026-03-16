@@ -26,6 +26,7 @@ import android.os.Parcel
 import android.util.Log
 import org.ethereumphone.andyclaw.PaymasterSDK
 import org.ethereumphone.andyclaw.skills.AndyClawSkill
+import org.ethereumphone.andyclaw.skills.RoutingPreset
 import org.ethereumphone.andyclaw.skills.tier.OsCapabilities
 
 class SettingsViewModel(application: Application) : AndroidViewModel(application) {
@@ -37,6 +38,9 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
     val yoloMode = prefs.yoloMode
     val safetyEnabled = prefs.safetyEnabled
     val enabledSkills = prefs.enabledSkills
+    val smartRoutingEnabled = prefs.smartRoutingEnabled
+    val selectedRoutingPresetId = prefs.selectedRoutingPresetId
+    val routingPresets = prefs.routingPresets
     val notificationReplyEnabled = prefs.notificationReplyEnabled
     val executiveSummaryEnabled = prefs.executiveSummaryEnabled
     val heartbeatOnNotificationEnabled = prefs.heartbeatOnNotificationEnabled
@@ -245,6 +249,46 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
 
     fun toggleSkill(skillId: String, enabled: Boolean) {
         prefs.setSkillEnabled(skillId, enabled)
+    }
+
+    fun setSmartRoutingEnabled(enabled: Boolean) {
+        prefs.setSmartRoutingEnabled(enabled)
+    }
+
+    fun selectRoutingPreset(presetId: String) {
+        prefs.setSelectedRoutingPresetId(presetId)
+    }
+
+    fun saveRoutingPreset(preset: RoutingPreset) {
+        val current = prefs.routingPresets.value.toMutableList()
+        val index = current.indexOfFirst { it.id == preset.id }
+        if (index >= 0) {
+            current[index] = preset
+        } else {
+            current.add(preset)
+        }
+        prefs.setRoutingPresets(current)
+    }
+
+    fun deleteRoutingPreset(presetId: String) {
+        val current = prefs.routingPresets.value.toMutableList()
+        current.removeAll { it.id == presetId && !it.isStock }
+        prefs.setRoutingPresets(current)
+        // If the deleted preset was selected, fall back to default
+        if (prefs.selectedRoutingPresetId.value == presetId) {
+            prefs.setSelectedRoutingPresetId(RoutingPreset.defaultPresetId)
+        }
+    }
+
+    fun revertStockPreset(presetId: String) {
+        val defaults = RoutingPreset.defaults()
+        val defaultPreset = defaults.find { it.id == presetId } ?: return
+        val current = prefs.routingPresets.value.toMutableList()
+        val index = current.indexOfFirst { it.id == presetId }
+        if (index >= 0) {
+            current[index] = defaultPreset
+        }
+        prefs.setRoutingPresets(current)
     }
 
     fun setLedMaxBrightness(value: Int) {

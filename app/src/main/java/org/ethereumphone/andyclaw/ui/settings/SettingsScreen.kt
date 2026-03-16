@@ -163,6 +163,8 @@ fun SettingsScreen(
             SettingsSubScreen.ProviderSelection -> "Select Provider"
             SettingsSubScreen.HeartbeatModelSelection -> "Heartbeat Model"
             SettingsSubScreen.HeartbeatProviderSelection -> "Heartbeat Provider"
+            SettingsSubScreen.RoutingPresetSelection -> "Select Preset"
+            SettingsSubScreen.RoutingPresetEditor -> "Edit Preset"
         },
         primaryColor = primaryColor,
         onNavigateBack = {
@@ -1474,6 +1476,24 @@ fun SettingsScreen(
             GlowingDivider(primaryColor)
             Spacer(Modifier.height(16.dp))
 
+            // Smart Routing
+            val smartRoutingEnabled by viewModel.smartRoutingEnabled.collectAsState()
+            val selectedRoutingPresetId by viewModel.selectedRoutingPresetId.collectAsState()
+            val routingPresets by viewModel.routingPresets.collectAsState()
+            val selectedPresetName = routingPresets
+                .firstOrNull { it.id == selectedRoutingPresetId }?.name ?: "Unknown"
+            SmartRoutingSection(
+                enabled = smartRoutingEnabled,
+                onEnabledChange = { viewModel.setSmartRoutingEnabled(it) },
+                selectedPresetName = selectedPresetName,
+                onNavigateToPresetSelection = { currentSubScreen = SettingsSubScreen.RoutingPresetSelection },
+                onNavigateToPresetEditor = { currentSubScreen = SettingsSubScreen.RoutingPresetEditor },
+            )
+
+            Spacer(Modifier.height(24.dp))
+            GlowingDivider(primaryColor)
+            Spacer(Modifier.height(16.dp))
+
             // Skills
             SkillManagementSection(
                 skills = viewModel.registeredSkills,
@@ -1641,6 +1661,53 @@ fun SettingsScreen(
                         },
                     )
                 }
+            }
+        }
+
+        SettingsSubScreen.RoutingPresetSelection -> {
+            val rpPresets by viewModel.routingPresets.collectAsState()
+            val rpSelectedId by viewModel.selectedRoutingPresetId.collectAsState()
+            RoutingPresetSelectionScreen(
+                presets = rpPresets,
+                selectedPresetId = rpSelectedId,
+                onSelectPreset = { id ->
+                    viewModel.selectRoutingPreset(id)
+                    currentSubScreen = SettingsSubScreen.Main
+                },
+                onDeletePreset = { viewModel.deleteRoutingPreset(it) },
+                onRevertPreset = { viewModel.revertStockPreset(it) },
+                onCreateNewPreset = {
+                    val current = rpPresets.firstOrNull { it.id == rpSelectedId }
+                    if (current != null) {
+                        val customCount = rpPresets.count { !it.isStock } + 1
+                        val newPreset = current.copy(
+                            id = java.util.UUID.randomUUID().toString(),
+                            name = "Custom $customCount",
+                            isStock = false,
+                        )
+                        viewModel.saveRoutingPreset(newPreset)
+                        viewModel.selectRoutingPreset(newPreset.id)
+                        currentSubScreen = SettingsSubScreen.RoutingPresetEditor
+                    }
+                },
+                primaryColor = primaryColor,
+            )
+        }
+
+        SettingsSubScreen.RoutingPresetEditor -> {
+            val rpPresets by viewModel.routingPresets.collectAsState()
+            val rpSelectedId by viewModel.selectedRoutingPresetId.collectAsState()
+            val editPreset = rpPresets.firstOrNull { it.id == rpSelectedId }
+            if (editPreset != null) {
+                RoutingPresetEditorScreen(
+                    preset = editPreset,
+                    allSkills = viewModel.registeredSkills,
+                    onSave = { viewModel.saveRoutingPreset(it) },
+                    onDone = { currentSubScreen = SettingsSubScreen.Main },
+                    primaryColor = primaryColor,
+                )
+            } else {
+                currentSubScreen = SettingsSubScreen.Main
             }
         }
         }
@@ -1929,4 +1996,6 @@ private enum class SettingsSubScreen {
     ProviderSelection,
     HeartbeatModelSelection,
     HeartbeatProviderSelection,
+    RoutingPresetSelection,
+    RoutingPresetEditor,
 }

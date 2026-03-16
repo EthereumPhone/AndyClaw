@@ -87,6 +87,7 @@ import org.ethereumhpone.messengersdk.MessengerSDK
 import org.ethereumphone.andyclaw.led.LedMatrixController
 import org.ethereumphone.andyclaw.llm.AnthropicModels
 import org.ethereumphone.andyclaw.skills.RoutingConfig
+import org.ethereumphone.andyclaw.skills.RoutingPreset
 
 class NodeApp : Application() {
 
@@ -209,6 +210,12 @@ class NodeApp : Application() {
                 val provider = securePrefs.selectedProvider.value
                 val routingModel = AnthropicModels.routingModelForProvider(provider) ?: return@SkillRouter null
                 RoutingConfig(getLlmClientForProvider(provider, routingModel.modelId), routingModel)
+            },
+            presetProvider = {
+                val presetId = securePrefs.selectedRoutingPresetId.value
+                securePrefs.routingPresets.value.find { it.id == presetId }
+                    ?: RoutingPreset.defaults().find { it.id == presetId }
+                    ?: RoutingPreset.defaults().first { it.id == RoutingPreset.defaultPresetId }
             },
         )
     }

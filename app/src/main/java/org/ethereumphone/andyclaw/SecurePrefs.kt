@@ -15,7 +15,9 @@ import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonPrimitive
 import org.ethereumphone.andyclaw.gateway.KeyValueStore
 import org.ethereumphone.andyclaw.llm.LlmProvider
+import org.ethereumphone.andyclaw.skills.RoutingPreset
 import org.ethereumphone.andyclaw.skills.tier.OsCapabilities
+import kotlinx.serialization.encodeToString
 import java.util.UUID
 
 class SecurePrefs(context: Context) : KeyValueStore {
@@ -161,6 +163,15 @@ class SecurePrefs(context: Context) : KeyValueStore {
 
   private val _enabledSkills = MutableStateFlow(loadEnabledSkills())
   val enabledSkills: StateFlow<Set<String>> = _enabledSkills
+
+  private val _smartRoutingEnabled = MutableStateFlow(prefs.getBoolean("routing.enabled", true))
+  val smartRoutingEnabled: StateFlow<Boolean> = _smartRoutingEnabled
+
+  private val _selectedRoutingPresetId = MutableStateFlow(prefs.getString("routing.presetId", "stock_minimal") ?: "stock_minimal")
+  val selectedRoutingPresetId: StateFlow<String> = _selectedRoutingPresetId
+
+  private val _routingPresets = MutableStateFlow(loadRoutingPresets())
+  val routingPresets: StateFlow<List<RoutingPreset>> = _routingPresets
 
   private val _googleOauthClientId = MutableStateFlow(prefs.getString("google.oauth.clientId", "") ?: "")
   val googleOauthClientId: StateFlow<String> = _googleOauthClientId
@@ -486,6 +497,23 @@ class SecurePrefs(context: Context) : KeyValueStore {
 
   fun isSkillEnabled(skillId: String): Boolean = skillId in _enabledSkills.value
 
+  fun setSmartRoutingEnabled(enabled: Boolean) {
+    prefs.edit { putBoolean("routing.enabled", enabled) }
+    _smartRoutingEnabled.value = enabled
+  }
+
+  fun setSelectedRoutingPresetId(id: String) {
+    val trimmed = id.trim()
+    prefs.edit { putString("routing.presetId", trimmed) }
+    _selectedRoutingPresetId.value = trimmed
+  }
+
+  fun setRoutingPresets(presets: List<RoutingPreset>) {
+    val encoded = json.encodeToString(presets)
+    prefs.edit { putString("routing.presets", encoded) }
+    _routingPresets.value = presets
+  }
+
   fun setGoogleOauthClientId(value: String) {
     val trimmed = value.trim()
     prefs.edit { putString("google.oauth.clientId", trimmed) }
@@ -561,6 +589,16 @@ class SecurePrefs(context: Context) : KeyValueStore {
     _telegramBotToken.value = ""
     _telegramOwnerChatId.value = 0L
     _telegramBotEnabled.value = false
+  }
+
+  private fun loadRoutingPresets(): List<RoutingPreset> {
+    val raw = prefs.getString("routing.presets", null)?.trim()
+    if (raw.isNullOrEmpty()) return RoutingPreset.defaults()
+    return try {
+      json.decodeFromString<List<RoutingPreset>>(raw)
+    } catch (_: Throwable) {
+      RoutingPreset.defaults()
+    }
   }
 
   private fun loadEnabledSkills(): Set<String> {

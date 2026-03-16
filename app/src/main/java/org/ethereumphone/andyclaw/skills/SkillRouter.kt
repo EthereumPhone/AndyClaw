@@ -66,6 +66,7 @@ class SkillRouter(
     private val skillRegistry: NativeSkillRegistry? = null,
     private val embeddingProvider: EmbeddingProvider? = null,
     private val routingClientProvider: (() -> RoutingConfig?)? = null,
+    private val presetProvider: (() -> RoutingPreset)? = null,
 ) {
     companion object {
         private const val TAG = "SkillRouter"
@@ -76,18 +77,21 @@ class SkillRouter(
         private const val FREQUENCY_TOP_K = 15
         private const val ROUTING_CACHE_MAX_SIZE = 50
         private const val CACHE_SIMILARITY_THRESHOLD = 0.85f
+        private val DEFAULT_CORE_SKILL_IDS = setOf("code_execution", "memory")
+        private val DEFAULT_DGEN1_CORE_SKILL_IDS = setOf("terminal_text")
     }
 
-    /** Minimal skills always sent regardless of user message. */
-    private val CORE_SKILL_IDS = setOf(
-        "code_execution",
-        "memory",
-    )
+    /** Skills always sent regardless of user message — from the active preset. */
+    private val CORE_SKILL_IDS: Set<String>
+        get() = presetProvider?.invoke()?.coreSkillIds ?: DEFAULT_CORE_SKILL_IDS
 
-    /** Minimal skills always sent on dGEN1 (PRIVILEGED tier). */
-    private val DGEN1_CORE_SKILL_IDS = setOf(
-        "terminal_text",
-    )
+    /** Skills always sent on dGEN1 (PRIVILEGED tier) — from the active preset. */
+    private val DGEN1_CORE_SKILL_IDS: Set<String>
+        get() = presetProvider?.invoke()?.coreDgen1SkillIds ?: DEFAULT_DGEN1_CORE_SKILL_IDS
+
+    /** Per-skill tools that should always be included — from the active preset. */
+    private val ALWAYS_INCLUDE_TOOLS: Map<String, Set<String>>
+        get() = presetProvider?.invoke()?.alwaysIncludeTools ?: emptyMap()
 
     /**
      * Large/expensive skills — annotated as [heavy] in the LLM catalog so the
@@ -447,6 +451,13 @@ class SkillRouter(
             }
         }
 
+        // 4b. Always-include tools: add their skills
+        for ((skillId, _) in ALWAYS_INCLUDE_TOOLS) {
+            if (skillId in allEnabledSkillIds) {
+                matched.add(skillId)
+            }
+        }
+
         // 5. LLM routing (synchronous): exact cache -> fuzzy cache -> LLM call
         val normalizedMessage = messageLower.trim()
         val cachedResult = synchronized(routingCache) {
@@ -539,6 +550,14 @@ class SkillRouter(
                         skill.privilegedManifest?.tools?.forEach { allTools.add(it.name) }
                     }
                 }
+            // Add always-include tools from the active preset
+            for ((skillId, toolNames) in ALWAYS_INCLUDE_TOOLS) {
+                if (skillId in allEnabledSkillIds) {
+                    allTools.addAll(toolNames)
+                    // Also ensure the skill is in the routed set
+                    matched.add(skillId)
+                }
+            }
             allTools
         } else null
 
