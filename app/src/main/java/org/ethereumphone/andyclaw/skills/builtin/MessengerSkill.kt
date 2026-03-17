@@ -252,22 +252,33 @@ class MessengerSkill(private val context: Context) : AndyClawSkill {
                 return
             }
 
-            val aiName = (context.applicationContext as? NodeApp)
-                ?.userStoryManager?.getAiName() ?: "AndyClaw"
-
-            Log.i(TAG, "Adding contact: name='$aiName', ethAddress='$identityAddress'")
-
-            val contactId = withContext(Dispatchers.IO) {
-                contactsSDK.addContact(
-                    displayName = aiName,
-                    ethAddress = identityAddress,
-                )
+            // Check if a contact with this ETH address already exists to avoid duplicates
+            val alreadyExists = withContext(Dispatchers.IO) {
+                contactsSDK.getContacts().any {
+                    it.ethAddress.equals(identityAddress, ignoreCase = true)
+                }
             }
 
-            if (contactId != null) {
-                Log.i(TAG, "Created contact '$aiName' (id=$contactId) with XMTP address $identityAddress")
+            if (alreadyExists) {
+                Log.i(TAG, "Contact with ethAddress=$identityAddress already exists, skipping creation")
             } else {
-                Log.w(TAG, "addContact returned null — contact creation failed")
+                val aiName = (context.applicationContext as? NodeApp)
+                    ?.userStoryManager?.getAiName() ?: "AndyClaw"
+
+                Log.i(TAG, "Adding contact: name='$aiName', ethAddress='$identityAddress'")
+
+                val contactId = withContext(Dispatchers.IO) {
+                    contactsSDK.addContact(
+                        displayName = aiName,
+                        ethAddress = identityAddress,
+                    )
+                }
+
+                if (contactId != null) {
+                    Log.i(TAG, "Created contact '$aiName' (id=$contactId) with XMTP address $identityAddress")
+                } else {
+                    Log.w(TAG, "addContact returned null — contact creation failed")
+                }
             }
         } catch (e: Exception) {
             Log.w(TAG, "Could not create AI contact: ${e.message}", e)
