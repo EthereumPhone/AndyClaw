@@ -21,4 +21,13 @@ oneway interface ILauncherCallback {
 
     // Called when audio transcription is complete.
     void onTranscription(String text);
+
+    // Called when the agent creates a virtual display.
+    void onDisplayCreated();
+
+    // Called with a JPEG-encoded frame from the agent's virtual display.
+    void onDisplayFrame(in byte[] jpegData);
+
+    // Called when the agent destroys its virtual display.
+    void onDisplayDestroyed();
 }

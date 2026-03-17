@@ -4,6 +4,7 @@ import android.app.Service
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Binder
+import android.os.IAgentDisplayService
 import android.os.IBinder
 import android.os.ParcelFileDescriptor
 import android.os.RemoteCallbackList
@@ -13,7 +14,10 @@ import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.JsonObject
@@ -83,6 +87,9 @@ class LauncherBindingService : Service() {
             Log.e(TAG, "Uncaught coroutine error", throwable)
         }
     )
+
+    /** Active display capture job for streaming frames to the launcher. */
+    private var displayCaptureJob: Job? = null
 
     /** Per-session conversation histories for multi-turn support. */
     private val sessionHistories = mutableMapOf<String, MutableList<Message>>()
@@ -395,6 +402,55 @@ class LauncherBindingService : Service() {
     }
 
     /**
+     * Starts capturing frames from the agent virtual display and streaming them
+     * to the launcher via [ILauncherCallback.onDisplayFrame].
+     */
+    private fun startDisplayCapture(callback: ILauncherCallback) {
+        if (displayCaptureJob?.isActive == true) return
+        try {
+            callback.onDisplayCreated()
+        } catch (_: RemoteException) {}
+
+        displayCaptureJob = scope.launch {
+            val svc = try {
+                val smClass = Class.forName("android.os.ServiceManager")
+                val getService = smClass.getMethod("getService", String::class.java)
+                val binder = getService.invoke(null, "agentdisplay") as? IBinder
+                binder?.let { IAgentDisplayService.Stub.asInterface(it) }
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to get AgentDisplayService", e)
+                null
+            } ?: return@launch
+
+            while (isActive) {
+                try {
+                    val frame = svc.captureFrame()
+                    if (frame != null) {
+                        callback.onDisplayFrame(frame)
+                    }
+                } catch (e: RemoteException) {
+                    Log.w(TAG, "Client disconnected during display capture")
+                    break
+                } catch (e: Exception) {
+                    Log.e(TAG, "Display capture failed", e)
+                }
+                delay(1000)
+            }
+        }
+    }
+
+    /**
+     * Stops the display capture loop and notifies the launcher.
+     */
+    private fun stopDisplayCapture(callback: ILauncherCallback) {
+        displayCaptureJob?.cancel()
+        displayCaptureJob = null
+        try {
+            callback.onDisplayDestroyed()
+        } catch (_: RemoteException) {}
+    }
+
+    /**
      * Runs the full agent loop for a prompt, streaming tokens back to the launcher.
      */
     private suspend fun runAgentLoop(
@@ -464,6 +520,13 @@ class LauncherBindingService : Service() {
                 } catch (e: Exception) {
                     Log.w(TAG, "Failed to format/send tool result", e)
                 }
+
+                // Agent display preview lifecycle
+                if (toolName == "agent_display_create" && result !is SkillResult.Error) {
+                    startDisplayCapture(callback)
+                } else if (toolName == "agent_display_destroy" || toolName == "agent_display_destroy_and_promote") {
+                    stopDisplayCapture(callback)
+                }
             }
 
             override suspend fun onApprovalNeeded(
@@ -488,12 +551,20 @@ class LauncherBindingService : Service() {
             }
 
             override fun onComplete(fullText: String) {
+                // Stop display capture if still running
+                if (displayCaptureJob?.isActive == true) {
+                    stopDisplayCapture(callback)
+                }
                 try {
                     callback.onComplete(fullText)
                 } catch (_: RemoteException) {}
             }
 
             override fun onError(error: Throwable) {
+                // Stop display capture if still running
+                if (displayCaptureJob?.isActive == true) {
+                    stopDisplayCapture(callback)
+                }
                 try {
                     callback.onError(error.message ?: "Unknown error")
                 } catch (_: RemoteException) {}
