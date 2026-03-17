@@ -91,6 +91,9 @@ class LauncherBindingService : Service() {
     /** Active display capture job for streaming frames to the launcher. */
     private var displayCaptureJob: Job? = null
 
+    /** Active prompt jobs keyed by launcher sessionId, so we can cancel inference. */
+    private val activePromptJobs = mutableMapOf<String, Job>()
+
     /** Per-session conversation histories for multi-turn support. */
     private val sessionHistories = mutableMapOf<String, MutableList<Message>>()
 
@@ -113,16 +116,24 @@ class LauncherBindingService : Service() {
 
         override fun sendPrompt(prompt: String, sessionId: String, callback: ILauncherCallback) {
             enforceCallerIsLauncher()
-            scope.launch {
+            val job = scope.launch {
                 try {
                     runAgentLoop(prompt, sessionId, callback)
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    Log.i(TAG, "Inference cancelled for session $sessionId")
+                    try {
+                        callback.onError("Cancelled")
+                    } catch (_: RemoteException) {}
                 } catch (e: Exception) {
                     Log.e(TAG, "sendPrompt failed", e)
                     try {
                         callback.onError(e.message ?: "Unknown error")
                     } catch (_: RemoteException) {}
+                } finally {
+                    activePromptJobs.remove(sessionId)
                 }
             }
+            activePromptJobs[sessionId] = job
         }
 
         override fun transcribeAudio(audioFd: ParcelFileDescriptor, callback: ILauncherCallback) {
@@ -166,16 +177,24 @@ class LauncherBindingService : Service() {
             callback: ILauncherCallback,
         ) {
             enforceCallerIsLauncher()
-            scope.launch {
+            val job = scope.launch {
                 try {
                     runAgentLoop(prompt, sessionId, callback, fromLockscreen = true)
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    Log.i(TAG, "Lockscreen inference cancelled for session $sessionId")
+                    try {
+                        callback.onError("Cancelled")
+                    } catch (_: RemoteException) {}
                 } catch (e: Exception) {
                     Log.e(TAG, "sendLockscreenPrompt failed", e)
                     try {
                         callback.onError(e.message ?: "Unknown error")
                     } catch (_: RemoteException) {}
+                } finally {
+                    activePromptJobs.remove(sessionId)
                 }
             }
+            activePromptJobs[sessionId] = job
         }
 
         override fun getRecentSessions(limit: Int): String {
@@ -387,6 +406,20 @@ class LauncherBindingService : Service() {
                     Log.e(TAG, "resumeSession failed", e)
                 }
             }
+        }
+
+        override fun stopInference(sessionId: String) {
+            enforceCallerIsLauncher()
+            val job = activePromptJobs.remove(sessionId)
+            if (job != null && job.isActive) {
+                Log.i(TAG, "Stopping inference for session: $sessionId")
+                job.cancel()
+            } else {
+                Log.d(TAG, "No active inference to stop for session: $sessionId")
+            }
+            // Also stop display capture if running
+            displayCaptureJob?.cancel()
+            displayCaptureJob = null
         }
     }
 

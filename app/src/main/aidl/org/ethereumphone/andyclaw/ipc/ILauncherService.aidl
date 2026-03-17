@@ -56,4 +56,9 @@ interface ILauncherService {
     // Resumes a previous session — loads its message history into the in-memory
     // conversation buffer so subsequent sendPrompt() calls continue the conversation.
     void resumeSession(String sessionId);
+
+    // Cancels any in-flight inference for the given session.
+    // The coroutine running the agent loop is cancelled, which stops LLM streaming
+    // and tool execution. The callback receives onError("Cancelled") before cleanup.
+    void stopInference(String sessionId);
 }
