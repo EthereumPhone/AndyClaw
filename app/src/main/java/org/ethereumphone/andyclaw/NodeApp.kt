@@ -517,11 +517,35 @@ class NodeApp : Application() {
             }
         }
 
+        // One-time: migrate ethOS Premium default model from Kimi K2.5 to Claude Sonnet 4.6
+        migrateEthosPremiumDefaultModel()
+
         // One-time: enable executive summary on OS level after OTA install
         ensureExecutiveSummaryOsFlag()
 
         // One-time backfill of agent tx history from existing session messages
         backfillAgentTxHistory()
+    }
+
+    /**
+     * One-time migration for ethOS Premium devices: if the user's selected model
+     * is still the old default (kimi-k2-5), switch it to Claude Sonnet 4.6.
+     */
+    private fun migrateEthosPremiumDefaultModel() {
+        val key = "ethos_premium_model_migration_v1"
+        if (securePrefs.getString(key) == "true") return
+        try {
+            if (OsCapabilities.hasPrivilegedAccess &&
+                securePrefs.selectedModel.value == "kimi-k2-5"
+            ) {
+                securePrefs.setSelectedModel(AnthropicModels.CLAUDE_SONNET_4_6.modelId)
+                Log.i(TAG, "Migrated ethOS Premium default model to Claude Sonnet 4.6")
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to migrate ethOS Premium default model", e)
+        } finally {
+            securePrefs.putString(key, "true")
+        }
     }
 
     /**
