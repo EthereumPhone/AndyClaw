@@ -760,6 +760,45 @@ class LauncherBindingService : Service() {
             if (index >= 0) current[index] = defaultPreset
             app.securePrefs.setRoutingPresets(current)
         }
+
+        // ── Agent Transactions ────────────────────────────────────────
+
+        override fun getAgentTransactions(): String {
+            enforceCallerIsLauncher()
+            val app = application as? NodeApp ?: return "[]"
+            return runBlocking(Dispatchers.IO) {
+                try {
+                    val txs = app.agentTxRepository.getAll()
+                    JSONArray().apply {
+                        for (tx in txs) {
+                            put(JSONObject().apply {
+                                put("id", tx.id)
+                                put("userOpHash", tx.userOpHash)
+                                put("chainId", tx.chainId)
+                                put("to", tx.to)
+                                put("amount", tx.amount)
+                                put("token", tx.token)
+                                put("toolName", tx.toolName)
+                                put("timestamp", tx.timestamp)
+                            })
+                        }
+                    }.toString()
+                } catch (e: Exception) {
+                    Log.w(TAG, "getAgentTransactions failed", e)
+                    "[]"
+                }
+            }
+        }
+
+        override fun clearAgentTransactions() {
+            enforceCallerIsLauncher()
+            val app = application as? NodeApp ?: return
+            scope.launch {
+                try {
+                    app.agentTxRepository.clearAll()
+                } catch (_: Exception) {}
+            }
+        }
     }
 
     private fun notifyOsTelegramRegister(token: String) {

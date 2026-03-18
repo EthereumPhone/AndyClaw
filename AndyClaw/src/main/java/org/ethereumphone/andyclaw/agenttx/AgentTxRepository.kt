@@ -12,6 +12,8 @@ class AgentTxRepository(context: Context) {
 
     fun observeAll(): Flow<List<AgentTxEntity>> = dao.observeAll()
 
+    suspend fun getAll(): List<AgentTxEntity> = dao.getAll()
+
     suspend fun save(
         userOpHash: String,
         chainId: Int,

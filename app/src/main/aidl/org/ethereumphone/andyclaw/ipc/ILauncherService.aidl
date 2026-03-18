@@ -127,4 +127,10 @@ interface ILauncherService {
     void deleteRoutingPreset(String presetId);
     // Reverts a stock routing preset to its default configuration.
     void revertStockPreset(String presetId);
+
+    // ── Agent Transactions ────────────────────────────────────────────
+    // Returns agent wallet transactions as a JSON array, ordered by timestamp desc.
+    String getAgentTransactions();
+    // Clears all agent wallet transactions.
+    void clearAgentTransactions();
 }
