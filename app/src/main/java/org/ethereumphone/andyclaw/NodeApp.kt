@@ -423,7 +423,7 @@ class NodeApp : Application() {
                 LlmProvider.TINFOIL -> tinfoilClient
                 LlmProvider.OPENAI -> openAiNativeClient
                 LlmProvider.VENICE -> veniceClient
-                LlmProvider.LOCAL -> tinfoilProxyClient
+                LlmProvider.LOCAL -> localLlmClient
             }
         }
         return when (provider) {
