@@ -32,12 +32,17 @@ import org.ethereumphone.andyclaw.llm.LlmProvider
 import org.ethereumphone.andyclaw.llm.ContentBlock
 import org.ethereumphone.andyclaw.llm.Message
 import org.ethereumphone.andyclaw.sessions.model.MessageRole
+import org.ethereumphone.andyclaw.skills.RoutingPreset
 import org.ethereumphone.andyclaw.skills.SkillResult
 import org.ethereumphone.andyclaw.skills.tier.OsCapabilities
+import org.ethereumphone.andyclaw.PaymasterSDK
 import org.ethereumphone.andyclaw.ui.chat.ToolResultFormatter
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
+import java.util.concurrent.atomic.AtomicBoolean
+import android.os.Parcel
+import kotlinx.coroutines.flow.first
 
 /**
  * Bound service that the ethOS Launcher binds to for dGENT tab functionality.
@@ -99,6 +104,9 @@ class LauncherBindingService : Service() {
 
     /** Maps launcher sessionId → Room database sessionId for persistence. */
     private val dbSessionIds = mutableMapOf<String, String>()
+
+    /** Tracks whether a memory reindex is in progress. */
+    private val isReindexingFlag = AtomicBoolean(false)
 
     private val binder = object : ILauncherService.Stub() {
 
@@ -274,6 +282,15 @@ class LauncherBindingService : Service() {
                 put("tinfoilApiKey", prefs.tinfoilApiKey.value)
                 put("openaiApiKey", prefs.openaiApiKey.value)
                 put("veniceApiKey", prefs.veniceApiKey.value)
+                put("claudeOauthRefreshToken", prefs.claudeOauthRefreshToken.value)
+                put("selectedRoutingPresetId", prefs.selectedRoutingPresetId.value)
+                put("isLocalModelDownloaded", app.modelDownloadManager.isModelDownloaded)
+                put("isDownloading", app.modelDownloadManager.isDownloading.value)
+                put("downloadProgress", (app.modelDownloadManager.downloadProgress.value * 100).toInt())
+                put("downloadError", app.modelDownloadManager.downloadError.value ?: "")
+                put("googleOauthRefreshToken", prefs.googleOauthRefreshToken.value)
+                put("googleOauthClientId", prefs.googleOauthClientId.value)
+                put("googleOauthClientSecret", prefs.googleOauthClientSecret.value)
                 put("isPrivileged", OsCapabilities.hasPrivilegedAccess)
                 put("currentTier", OsCapabilities.currentTier().name)
             }.toString()
@@ -321,6 +338,14 @@ class LauncherBindingService : Service() {
                     "tinfoilApiKey" -> prefs.setTinfoilApiKey(value)
                     "openaiApiKey" -> prefs.setOpenaiApiKey(value)
                     "veniceApiKey" -> prefs.setVeniceApiKey(value)
+                    "claudeOauthRefreshToken" -> {
+                        prefs.setClaudeOauthRefreshToken(value)
+                        prefs.setClaudeOauthAccessToken("")
+                        prefs.setClaudeOauthExpiresAt(0L)
+                    }
+                    "selectedRoutingPresetId" -> prefs.setSelectedRoutingPresetId(value)
+                    "googleOauthClientId" -> prefs.setGoogleOauthClientId(value)
+                    "googleOauthClientSecret" -> prefs.setGoogleOauthClientSecret(value)
                     else -> return false
                 }
                 true
@@ -420,6 +445,355 @@ class LauncherBindingService : Service() {
             // Also stop display capture if running
             displayCaptureJob?.cancel()
             displayCaptureJob = null
+        }
+
+        // ── Telegram ──────────────────────────────────────────────────────
+
+        override fun completeTelegramSetup(token: String, ownerChatId: Long): Boolean {
+            enforceCallerIsLauncher()
+            val app = application as? NodeApp ?: return false
+            return try {
+                app.securePrefs.setTelegramBotToken(token)
+                app.securePrefs.setTelegramOwnerChatId(ownerChatId)
+                app.securePrefs.setTelegramBotEnabled(true)
+                notifyOsTelegramRegister(token)
+                true
+            } catch (e: Exception) {
+                Log.w(TAG, "completeTelegramSetup failed", e)
+                false
+            }
+        }
+
+        override fun clearTelegramSetup() {
+            enforceCallerIsLauncher()
+            val app = application as? NodeApp ?: return
+            app.securePrefs.clearTelegramSetup()
+            notifyOsTelegramUnregister()
+        }
+
+        // ── Memory ────────────────────────────────────────────────────────
+
+        override fun getMemoryCount(): Int {
+            enforceCallerIsLauncher()
+            val app = application as? NodeApp ?: return 0
+            return runBlocking(Dispatchers.IO) {
+                try {
+                    app.memoryManager.observeCount().first()
+                } catch (_: Exception) { 0 }
+            }
+        }
+
+        override fun reindexMemory() {
+            enforceCallerIsLauncher()
+            val app = application as? NodeApp ?: return
+            scope.launch {
+                isReindexingFlag.set(true)
+                try {
+                    app.memoryManager.reindex(force = true)
+                } catch (_: Exception) {
+                } finally {
+                    isReindexingFlag.set(false)
+                }
+            }
+        }
+
+        override fun clearAllMemories() {
+            enforceCallerIsLauncher()
+            val app = application as? NodeApp ?: return
+            scope.launch {
+                try {
+                    app.memoryManager.deleteAll()
+                } catch (_: Exception) {}
+            }
+        }
+
+        override fun isReindexing(): Boolean {
+            enforceCallerIsLauncher()
+            return isReindexingFlag.get()
+        }
+
+        // ── Extensions ────────────────────────────────────────────────────
+
+        override fun getExtensions(): String {
+            enforceCallerIsLauncher()
+            val app = application as? NodeApp ?: return "[]"
+            val exts = app.extensionEngine.registry.getAll()
+            return JSONArray().apply {
+                for (ext in exts) {
+                    put(JSONObject().apply {
+                        put("name", ext.name)
+                        put("type", ext.type.name)
+                        put("functionCount", ext.functions.size)
+                        put("version", ext.version)
+                        put("trusted", ext.trusted)
+                    })
+                }
+            }.toString()
+        }
+
+        override fun rescanExtensions() {
+            enforceCallerIsLauncher()
+            val app = application as? NodeApp ?: return
+            scope.launch {
+                try {
+                    app.extensionEngine.discoverAndRegister()
+                } catch (_: Exception) {}
+            }
+        }
+
+        // ── Skills ────────────────────────────────────────────────────────
+
+        override fun getRegisteredSkills(): String {
+            enforceCallerIsLauncher()
+            val app = application as? NodeApp ?: return "[]"
+            val skills = app.nativeSkillRegistry.getAll()
+            return JSONArray().apply {
+                for (skill in skills) {
+                    put(JSONObject().apply {
+                        put("id", skill.id)
+                        put("name", skill.name)
+                        put("description", skill.baseManifest.description)
+                        put("toolCount", skill.baseManifest.tools.size +
+                            (skill.privilegedManifest?.tools?.size ?: 0))
+                        put("requiresPrivileged", skill.privilegedManifest != null &&
+                            skill.baseManifest.tools.isEmpty())
+                        val toolsArray = JSONArray()
+                        for (tool in skill.baseManifest.tools) {
+                            toolsArray.put(JSONObject().apply {
+                                put("name", tool.name)
+                                put("description", tool.description)
+                            })
+                        }
+                        skill.privilegedManifest?.tools?.forEach { tool ->
+                            toolsArray.put(JSONObject().apply {
+                                put("name", tool.name)
+                                put("description", tool.description)
+                            })
+                        }
+                        put("tools", toolsArray)
+                    })
+                }
+            }.toString()
+        }
+
+        override fun getEnabledSkills(): String {
+            enforceCallerIsLauncher()
+            val app = application as? NodeApp ?: return "[]"
+            return JSONArray().apply {
+                for (id in app.securePrefs.enabledSkills.value) put(id)
+            }.toString()
+        }
+
+        override fun toggleSkill(skillId: String, enabled: Boolean) {
+            enforceCallerIsLauncher()
+            val app = application as? NodeApp ?: return
+            app.securePrefs.setSkillEnabled(skillId, enabled)
+        }
+
+        // ── Routing Presets ───────────────────────────────────────────────
+
+        override fun getRoutingPresets(): String {
+            enforceCallerIsLauncher()
+            val app = application as? NodeApp ?: return "[]"
+            val presets = app.securePrefs.routingPresets.value
+            return JSONArray().apply {
+                for (preset in presets) {
+                    put(JSONObject().apply {
+                        put("id", preset.id)
+                        put("name", preset.name)
+                        put("isStock", preset.isStock)
+                    })
+                }
+            }.toString()
+        }
+
+        override fun selectRoutingPreset(presetId: String) {
+            enforceCallerIsLauncher()
+            val app = application as? NodeApp ?: return
+            app.securePrefs.setSelectedRoutingPresetId(presetId)
+        }
+
+        // ── Paymaster ─────────────────────────────────────────────────────
+
+        override fun getPaymasterBalance(): String? {
+            enforceCallerIsLauncher()
+            return runBlocking(Dispatchers.IO) {
+                try {
+                    val sdk = PaymasterSDK(this@LauncherBindingService)
+                    if (sdk.initialize()) {
+                        val balance = sdk.getCurrentBalance()
+                        sdk.cleanup()
+                        balance
+                    } else null
+                } catch (_: Exception) { null }
+            }
+        }
+
+        // ── Agent Wallet ──────────────────────────────────────────────────
+
+        override fun getAgentWalletAddress(): String? {
+            enforceCallerIsLauncher()
+            return runBlocking(Dispatchers.IO) {
+                try {
+                    val sdk = org.ethereumphone.subwalletsdk.SubWalletSDK(
+                        context = this@LauncherBindingService,
+                        web3jInstance = org.web3j.protocol.Web3j.build(
+                            org.web3j.protocol.http.HttpService(
+                                "https://eth-mainnet.g.alchemy.com/v2/${org.ethereumphone.andyclaw.BuildConfig.ALCHEMY_API}"
+                            )
+                        ),
+                        bundlerRPCUrl = "https://api.pimlico.io/v2/1/rpc?apikey=${org.ethereumphone.andyclaw.BuildConfig.BUNDLER_API}",
+                    )
+                    sdk.getAddress()
+                } catch (_: Exception) { null }
+            }
+        }
+
+        // ── Google OAuth ──────────────────────────────────────────────────
+
+        override fun startGoogleOAuthFlow() {
+            enforceCallerIsLauncher()
+            val app = application as? NodeApp ?: return
+            scope.launch {
+                app.googleAuthManager.startOAuthFlow(this@LauncherBindingService)
+            }
+        }
+
+        override fun disconnectGoogle() {
+            enforceCallerIsLauncher()
+            val app = application as? NodeApp ?: return
+            app.securePrefs.clearGoogleOauthSetup()
+        }
+
+        // ── Local Model ───────────────────────────────────────────────────
+
+        override fun downloadLocalModel() {
+            enforceCallerIsLauncher()
+            val app = application as? NodeApp ?: return
+            scope.launch { app.modelDownloadManager.download() }
+        }
+
+        override fun deleteLocalModel() {
+            enforceCallerIsLauncher()
+            val app = application as? NodeApp ?: return
+            app.modelDownloadManager.deleteModel()
+            if (app.llamaCpp.isModelLoaded) {
+                app.llamaCpp.unload()
+            }
+        }
+
+        // ── Routing Presets (extended) ─────────────────────────────────────
+
+        override fun getRoutingPresetsDetailed(): String {
+            enforceCallerIsLauncher()
+            val app = application as? NodeApp ?: return "[]"
+            val presets = app.securePrefs.routingPresets.value
+            return JSONArray().apply {
+                for (preset in presets) {
+                    put(JSONObject().apply {
+                        put("id", preset.id)
+                        put("name", preset.name)
+                        put("isStock", preset.isStock)
+                        put("coreSkillIds", JSONArray(preset.coreSkillIds.toList()))
+                        put("coreDgen1SkillIds", JSONArray(preset.coreDgen1SkillIds.toList()))
+                        val toolsObj = JSONObject()
+                        for ((skillId, tools) in preset.alwaysIncludeTools) {
+                            toolsObj.put(skillId, JSONArray(tools.toList()))
+                        }
+                        put("alwaysIncludeTools", toolsObj)
+                    })
+                }
+            }.toString()
+        }
+
+        override fun saveRoutingPreset(presetJson: String) {
+            enforceCallerIsLauncher()
+            val app = application as? NodeApp ?: return
+            try {
+                val obj = JSONObject(presetJson)
+                val preset = RoutingPreset(
+                    id = obj.getString("id"),
+                    name = obj.getString("name"),
+                    isStock = obj.getBoolean("isStock"),
+                    coreSkillIds = obj.getJSONArray("coreSkillIds").let { arr ->
+                        (0 until arr.length()).map { arr.getString(it) }.toSet()
+                    },
+                    coreDgen1SkillIds = obj.getJSONArray("coreDgen1SkillIds").let { arr ->
+                        (0 until arr.length()).map { arr.getString(it) }.toSet()
+                    },
+                    alwaysIncludeTools = obj.optJSONObject("alwaysIncludeTools")?.let { toolsObj ->
+                        val map = mutableMapOf<String, Set<String>>()
+                        for (key in toolsObj.keys()) {
+                            val arr = toolsObj.getJSONArray(key)
+                            map[key] = (0 until arr.length()).map { arr.getString(it) }.toSet()
+                        }
+                        map
+                    } ?: emptyMap(),
+                )
+                val current = app.securePrefs.routingPresets.value.toMutableList()
+                val index = current.indexOfFirst { it.id == preset.id }
+                if (index >= 0) current[index] = preset else current.add(preset)
+                app.securePrefs.setRoutingPresets(current)
+            } catch (e: Exception) {
+                Log.w(TAG, "saveRoutingPreset failed", e)
+            }
+        }
+
+        override fun deleteRoutingPreset(presetId: String) {
+            enforceCallerIsLauncher()
+            val app = application as? NodeApp ?: return
+            val current = app.securePrefs.routingPresets.value.toMutableList()
+            current.removeAll { it.id == presetId && !it.isStock }
+            app.securePrefs.setRoutingPresets(current)
+            if (app.securePrefs.selectedRoutingPresetId.value == presetId) {
+                app.securePrefs.setSelectedRoutingPresetId(RoutingPreset.defaultPresetId)
+            }
+        }
+
+        override fun revertStockPreset(presetId: String) {
+            enforceCallerIsLauncher()
+            val app = application as? NodeApp ?: return
+            val defaults = RoutingPreset.defaults()
+            val defaultPreset = defaults.find { it.id == presetId } ?: return
+            val current = app.securePrefs.routingPresets.value.toMutableList()
+            val index = current.indexOfFirst { it.id == presetId }
+            if (index >= 0) current[index] = defaultPreset
+            app.securePrefs.setRoutingPresets(current)
+        }
+    }
+
+    private fun notifyOsTelegramRegister(token: String) {
+        try {
+            val smClass = Class.forName("android.os.ServiceManager")
+            val getService = smClass.getMethod("getService", String::class.java)
+            val binder = getService.invoke(null, "andyclawheartbeat") as? IBinder ?: return
+            val data = Parcel.obtain()
+            try {
+                data.writeInterfaceToken("com.android.server.IAndyClawHeartbeat")
+                data.writeString(token)
+                binder.transact(IBinder.FIRST_CALL_TRANSACTION + 0, data, null, IBinder.FLAG_ONEWAY)
+            } finally {
+                data.recycle()
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to notify OS of Telegram register", e)
+        }
+    }
+
+    private fun notifyOsTelegramUnregister() {
+        try {
+            val smClass = Class.forName("android.os.ServiceManager")
+            val getService = smClass.getMethod("getService", String::class.java)
+            val binder = getService.invoke(null, "andyclawheartbeat") as? IBinder ?: return
+            val data = Parcel.obtain()
+            try {
+                data.writeInterfaceToken("com.android.server.IAndyClawHeartbeat")
+                binder.transact(IBinder.FIRST_CALL_TRANSACTION + 1, data, null, IBinder.FLAG_ONEWAY)
+            } finally {
+                data.recycle()
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to notify OS of Telegram unregister", e)
         }
     }
 

@@ -69,19 +69,6 @@ class AppsSkill(private val context: Context) : AndyClawSkill {
                 )),
                 requiresApproval = true,
             ),
-            ToolDefinition(
-                name = "interact_with_app",
-                description = "Interact with an app's UI elements (stub - privileged OS only).",
-                inputSchema = JsonObject(mapOf(
-                    "type" to JsonPrimitive("object"),
-                    "properties" to JsonObject(mapOf(
-                        "package_name" to JsonObject(mapOf("type" to JsonPrimitive("string"), "description" to JsonPrimitive("Target app package name"))),
-                        "action" to JsonObject(mapOf("type" to JsonPrimitive("string"), "description" to JsonPrimitive("Action to perform (tap, type, scroll)"))),
-                    )),
-                    "required" to JsonArray(listOf(JsonPrimitive("package_name"), JsonPrimitive("action"))),
-                )),
-                requiresApproval = true,
-            ),
         ),
     )
 
@@ -93,10 +80,6 @@ class AppsSkill(private val context: Context) : AndyClawSkill {
             "force_stop_app" -> {
                 if (tier != Tier.PRIVILEGED) SkillResult.Error("force_stop_app requires privileged OS")
                 else forceStopApp(params)
-            }
-            "interact_with_app" -> {
-                if (tier != Tier.PRIVILEGED) SkillResult.Error("interact_with_app requires privileged OS")
-                else SkillResult.Error("interact_with_app is not yet implemented")
             }
             else -> SkillResult.Error("Unknown tool: $tool")
         }
