@@ -498,18 +498,16 @@ class SmartRouterTest {
     }
 
     @Test
-    fun `fallback returns enabled set when small`() {
+    fun `fallback returns full enabled set when small`() {
         val subset = setOf("device_info", "apps", "sms")
         val result = route("what is the meaning of life?", enabled = subset)
-        // Small enabled set: reduced fallback pads to min(8, 3) = 3 = full enabled set
         assertEquals(subset, result)
     }
 
     @Test
-    fun `fallback for gibberish returns reduced set`() {
+    fun `fallback for gibberish returns all skills`() {
         val result = route("asdfghjkl qwerty")
-        assertTrue("CORE should be present", CORE_IDS.all { it in result })
-        assertTrue("Should be reduced, not all", result.size < ALL_SKILL_IDS.size)
+        assertEquals("Full fallback should return all enabled skills", ALL_SKILL_IDS, result)
     }
 
     @Test
@@ -704,24 +702,21 @@ class SmartRouterTest {
     // ── Edge cases ──────────────────────────────────────────────────────
 
     @Test
-    fun `empty message triggers reduced fallback`() {
+    fun `empty message triggers full fallback`() {
         val result = route("")
-        assertTrue("CORE should be present", CORE_IDS.all { it in result })
-        assertTrue("Should be reduced, not all", result.size < ALL_SKILL_IDS.size)
+        assertEquals("Full fallback should return all skills", ALL_SKILL_IDS, result)
     }
 
     @Test
-    fun `whitespace-only message triggers reduced fallback`() {
+    fun `whitespace-only message triggers full fallback`() {
         val result = route("   ")
-        assertTrue("CORE should be present", CORE_IDS.all { it in result })
-        assertTrue("Should be reduced, not all", result.size < ALL_SKILL_IDS.size)
+        assertEquals("Full fallback should return all skills", ALL_SKILL_IDS, result)
     }
 
     @Test
-    fun `emoji-only message triggers reduced fallback`() {
+    fun `emoji-only message triggers full fallback`() {
         val result = route("\uD83D\uDE00\uD83D\uDE0E")
-        assertTrue("CORE should be present", CORE_IDS.all { it in result })
-        assertTrue("Should be reduced, not all", result.size < ALL_SKILL_IDS.size)
+        assertEquals("Full fallback should return all skills", ALL_SKILL_IDS, result)
     }
 
     @Test
@@ -733,9 +728,10 @@ class SmartRouterTest {
 
     @Test
     fun `keyword embedded in a word does NOT match (word-boundary)`() {
-        val result = route("check wifiBroadcast status")
-        // "wifi" is not a standalone word in "wifiBroadcast" -> no match
-        assertFalse("connectivity should NOT match substring", "connectivity" in result)
+        // "call" matches phone, but "wifi" embedded in "wifiBroadcast" should NOT match connectivity
+        val result = route("call about wifiBroadcast issues")
+        assertTrue("phone should match via 'call'", "phone" in result)
+        assertFalse("connectivity should NOT match substring in wifiBroadcast", "connectivity" in result)
     }
 
     @Test
@@ -767,7 +763,9 @@ class SmartRouterTest {
 
     @Test
     fun `the string quartet should NOT route to phone via ring`() {
-        val result = route("the string quartet played beautifully")
+        // "music" matches audio, but "ring" in "string" should NOT match phone
+        val result = route("the string quartet played music beautifully")
+        assertTrue("audio should match via 'music'", "audio" in result)
         assertFalse("phone should NOT match 'ring' in 'string'", "phone" in result)
     }
 
@@ -1023,10 +1021,9 @@ class SmartRouterTest {
 
     @Test
     fun `frequency fallback not triggered with no usage data`() {
-        // With no usage data, frequency fallback returns null, so reduced fallback triggers
+        // With no usage data, frequency fallback returns null, so full fallback triggers
         val result = route("some random gibberish xyz")
-        assertTrue("CORE should be present", CORE_IDS.all { it in result })
-        assertTrue("Should be reduced, not all", result.size < ALL_SKILL_IDS.size)
+        assertEquals("Full fallback should return all skills", ALL_SKILL_IDS, result)
     }
 
     // ── Skill dependency expansion ──────────────────────────────────────

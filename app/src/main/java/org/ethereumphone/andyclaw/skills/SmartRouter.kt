@@ -844,13 +844,12 @@ class SmartRouter(
                 return RoutingResult(frequencyResult, null)
             }
 
-            // Reduced fallback instead of returning all skills
+            // Last resort: send everything — better to spend extra tokens than give a bad answer
             metrics.fullFallbacks++
-            val reduced = reducedFallback(allEnabledSkillIds, matched, tier)
             metrics.totalRoutingTimeMs += System.currentTimeMillis() - startTime
             persistMetrics()
-            Log.d(TAG, "Reduced fallback: '${userMessage.take(60)}...' -> ${reduced.size} skills (was ${allEnabledSkillIds.size})")
-            return RoutingResult(reduced, null)
+            Log.d(TAG, "Full fallback: '${userMessage.take(60)}...' -> all ${allEnabledSkillIds.size} skills")
+            return RoutingResult(allEnabledSkillIds, null)
         }
 
         // Build the allowedTools set based on routing mode.
@@ -952,50 +951,6 @@ class SmartRouter(
                 allTools
             }
         }
-    }
-
-    /**
-     * Reduced fallback: returns a smaller set instead of all enabled skills.
-     * Includes CORE, dGEN1 CORE (if privileged), top-10 frequent, sessions, externals.
-     * Safety floor: pads to at least 8 skills from the enabled set.
-     */
-    private fun reducedFallback(
-        allEnabledSkillIds: Set<String>,
-        coreMatched: Set<String>,
-        tier: Tier,
-    ): Set<String> {
-        val result = coreMatched.toMutableSet()
-
-        if (tier == Tier.PRIVILEGED) {
-            result.addAll(DGEN1_CORE_SKILL_IDS.filter { it in allEnabledSkillIds })
-        }
-
-        // Top-10 most frequently used skills
-        val topSkills = usageCounts
-            .filter { it.key in allEnabledSkillIds && it.value > 0 }
-            .entries.sortedByDescending { it.value }
-            .take(10)
-            .map { it.key }
-        result.addAll(topSkills)
-
-        // Active session skills
-        for (skillId in activeSessions) {
-            if (skillId in allEnabledSkillIds) result.add(skillId)
-        }
-
-        // External skills
-        addExternalSkills(result, allEnabledSkillIds)
-
-        // Safety floor: pad to at least 8 skills from enabled set
-        val minSize = minOf(8, allEnabledSkillIds.size)
-        if (result.size < minSize) {
-            val padding = allEnabledSkillIds.sorted()
-                .filter { it !in result }
-                .take(minSize - result.size)
-            result.addAll(padding)
-        }
-
-        return result
     }
 
     // ── Keyword matching ──────────────────────────────────────────────
