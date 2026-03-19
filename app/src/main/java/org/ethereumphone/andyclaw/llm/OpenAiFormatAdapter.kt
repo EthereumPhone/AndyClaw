@@ -64,6 +64,14 @@ object OpenAiFormatAdapter {
             request.verbosity?.let {
                 put("verbosity", it.value)
             }
+            request.temperature?.let {
+                put("temperature", it)
+            }
+            request.reasoning?.let { cfg ->
+                put("reasoning", buildJsonObject {
+                    put("effort", cfg.effort)
+                })
+            }
         }.toString()
     }
 

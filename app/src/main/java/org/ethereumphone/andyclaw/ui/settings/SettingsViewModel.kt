@@ -132,11 +132,15 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
      * Shared logic for building a filtered/sorted [DisplayModel] list for any provider.
      * Used by main model selection, heartbeat, routing, and model routing tier screens.
      */
-    private fun getDisplayModelsForProvider(provider: LlmProvider, searchQuery: String): List<DisplayModel> {
+    private fun getDisplayModelsForProvider(
+        provider: LlmProvider,
+        searchQuery: String,
+        includeEnumFallbacks: Boolean = false,
+    ): List<DisplayModel> {
         val query = searchQuery.trim().lowercase()
 
         val models = if (provider == LlmProvider.OPEN_ROUTER || provider == LlmProvider.ETHOS_PREMIUM) {
-            buildOpenRouterDisplayModels(provider)
+            buildOpenRouterDisplayModels(provider, includeEnumFallbacks)
         } else {
             AnthropicModels.forProvider(provider).map { model ->
                 DisplayModel(
@@ -159,7 +163,10 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
         }
     }
 
-    private fun buildOpenRouterDisplayModels(provider: LlmProvider): List<DisplayModel> {
+    private fun buildOpenRouterDisplayModels(
+        provider: LlmProvider,
+        includeEnumFallbacks: Boolean = false,
+    ): List<DisplayModel> {
         val registry = app.openRouterModelRegistry
         val registryModels = registry.getAllModels()
 
@@ -221,8 +228,11 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
             ))
         }
 
-        // 3. Static enum models not in registry (Tinfoil models for ethOS Premium)
-        if (provider == LlmProvider.ETHOS_PREMIUM) {
+        // 3. Static enum models not in registry. Always included for ethOS
+        //    Premium (Tinfoil models). For other providers only included when
+        //    explicitly requested (e.g. routing model selector needs lightweight
+        //    models that lack tool support and get filtered by the registry).
+        if (includeEnumFallbacks || provider == LlmProvider.ETHOS_PREMIUM) {
             for (model in AnthropicModels.forProvider(provider)) {
                 if (model.modelId !in seen) {
                     seen.add(model.modelId)
@@ -629,7 +639,7 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
     fun getRoutingDisplayModels(): List<DisplayModel> {
         val provider = prefs.routingProvider.value
         val effective = if (isPrivileged && provider == LlmProvider.LOCAL) LlmProvider.ETHOS_PREMIUM else provider
-        return getDisplayModelsForProvider(effective, _routingModelSearchQuery.value)
+        return getDisplayModelsForProvider(effective, _routingModelSearchQuery.value, includeEnumFallbacks = true)
     }
 
     fun setLedMaxBrightness(value: Int) {

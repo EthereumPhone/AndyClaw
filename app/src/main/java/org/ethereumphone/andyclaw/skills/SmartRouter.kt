@@ -15,6 +15,7 @@ import org.ethereumphone.andyclaw.llm.ContentBlock
 import org.ethereumphone.andyclaw.llm.LlmClient
 import org.ethereumphone.andyclaw.llm.Message
 import org.ethereumphone.andyclaw.llm.MessagesRequest
+import org.ethereumphone.andyclaw.llm.ReasoningConfig
 import org.ethereumphone.andyclaw.memory.embedding.EmbeddingProvider
 import java.io.File
 import kotlin.math.sqrt
@@ -1425,6 +1426,8 @@ class SmartRouter(
             maxTokens = 150,
             system = systemPrompt,
             messages = listOf(Message.user(userMessage)),
+            temperature = 0f,
+            reasoning = ReasoningConfig(effort = "none"),
         )
     }
 

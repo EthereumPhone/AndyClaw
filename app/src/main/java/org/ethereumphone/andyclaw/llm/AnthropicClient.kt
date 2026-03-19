@@ -225,6 +225,14 @@ class AnthropicClient(
             request.verbosity?.let {
                 put("verbosity", kotlinx.serialization.json.JsonPrimitive(it.value))
             }
+            request.temperature?.let {
+                put("temperature", kotlinx.serialization.json.JsonPrimitive(it))
+            }
+            request.reasoning?.let { cfg ->
+                put("reasoning", kotlinx.serialization.json.buildJsonObject {
+                    put("effort", kotlinx.serialization.json.JsonPrimitive(cfg.effort))
+                })
+            }
             put("stream", kotlinx.serialization.json.JsonPrimitive(request.stream))
         }.toString()
     }

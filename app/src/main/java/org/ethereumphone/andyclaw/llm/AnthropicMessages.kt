@@ -28,6 +28,20 @@ data class MessagesRequest(
     /** OpenRouter: controls response verbosity (low/medium/high). */
     @kotlinx.serialization.Transient
     val verbosity: Verbosity? = null,
+    /** Sampling temperature (0.0–2.0). Lower = more deterministic. */
+    @kotlinx.serialization.Transient
+    val temperature: Float? = null,
+    /** OpenRouter: reasoning/thinking control. null = provider default. */
+    @kotlinx.serialization.Transient
+    val reasoning: ReasoningConfig? = null,
+)
+
+/**
+ * Controls reasoning/thinking token generation on OpenRouter.
+ * Setting [effort] to "none" disables thinking entirely.
+ */
+data class ReasoningConfig(
+    val effort: String = "none",
 )
 
 @Serializable
