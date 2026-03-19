@@ -3,6 +3,10 @@ package org.ethereumphone.andyclaw.skills
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.*
 import org.junit.Test
+import org.ethereumphone.andyclaw.llm.AnthropicModels
+import org.ethereumphone.andyclaw.llm.LlmProvider
+import org.ethereumphone.andyclaw.llm.ModelTier
+import org.ethereumphone.andyclaw.llm.OpenRouterModelRegistry
 import org.ethereumphone.andyclaw.skills.RoutingMode
 
 class SmartRouterTest {
@@ -1192,5 +1196,171 @@ class SmartRouterTest {
         r.resetMetrics()
         val m = r.getMetrics()
         assertEquals(0, m.conversationalShortCircuits)
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // Model Routing Tests
+    // ═══════════════════════════════════════════════════════════════════
+
+    /** Create a router with model routing enabled and the given config. */
+    private fun modelRouter(
+        enabled: Boolean = true,
+        provider: LlmProvider = LlmProvider.CLAUDE_OAUTH,
+        defaultModelId: String = "claude-sonnet-4-6",
+        tierOverrides: Map<ModelTier, String> = emptyMap(),
+        registry: OpenRouterModelRegistry? = null,
+    ) = SmartRouter(
+        modelRoutingConfigProvider = {
+            ModelRoutingConfig(
+                enabled = enabled,
+                registry = registry,
+                providerProvider = { provider },
+                defaultModelIdProvider = { defaultModelId },
+                tierModelOverrideProvider = { tier -> tierOverrides[tier] ?: "" },
+            )
+        },
+    ).also { it.clearRoutingCache() }
+
+    /** Route and return the full RoutingResult (not just skill IDs). */
+    private fun routeResult(
+        msg: String,
+        enabled: Set<String> = ALL_SKILL_IDS,
+        tier: Tier = Tier.OPEN,
+        router: SmartRouter,
+    ): RoutingResult = runBlocking {
+        router.routeSkillsWithLlm(msg, enabled, tier)
+    }
+
+    @Test
+    fun `conversational messages get LIGHT model tier`() {
+        val r = modelRouter()
+        val result = routeResult("hello!", router = r)
+        assertEquals(ModelTier.LIGHT, result.modelTier)
+    }
+
+    @Test
+    fun `model routing disabled returns null overrides`() {
+        val r = modelRouter(enabled = false)
+        val result = routeResult("hello!", router = r)
+        // modelTier is set (from conversational classification) but overrides are null
+        assertNull("modelIdOverride should be null when disabled", result.modelIdOverride)
+        assertNull("maxTokensOverride should be null when disabled", result.maxTokensOverride)
+    }
+
+    @Test
+    fun `conversational LIGHT resolves to static Haiku for Claude OAuth`() {
+        val r = modelRouter(
+            provider = LlmProvider.CLAUDE_OAUTH,
+            defaultModelId = "claude-sonnet-4-6",
+        )
+        val result = routeResult("hey there", router = r)
+        assertEquals(ModelTier.LIGHT, result.modelTier)
+        // Should resolve to Haiku (LIGHT tier for Claude OAuth)
+        assertEquals("claude-3-5-haiku-latest", result.modelIdOverride)
+        assertNotNull(result.maxTokensOverride)
+    }
+
+    @Test
+    fun `user tier override takes priority over auto-selection`() {
+        val r = modelRouter(
+            provider = LlmProvider.CLAUDE_OAUTH,
+            tierOverrides = mapOf(ModelTier.LIGHT to "claude-opus-4-6"),
+        )
+        val result = routeResult("hi", router = r)
+        assertEquals("claude-opus-4-6", result.modelIdOverride)
+    }
+
+    @Test
+    fun `no override when default model already matches tier`() {
+        // Default is Sonnet, STANDARD maps to Sonnet — no override needed
+        val r = modelRouter(
+            provider = LlmProvider.CLAUDE_OAUTH,
+            defaultModelId = "claude-sonnet-4-6",
+        )
+        // Keyword-only routing won't produce a modelTier (no LLM),
+        // but conversational messages do get LIGHT.
+        // For STANDARD tier we'd need LLM routing. Let's test the LIGHT case
+        // where the default is already Haiku.
+        val r2 = modelRouter(
+            provider = LlmProvider.CLAUDE_OAUTH,
+            defaultModelId = "claude-3-5-haiku-latest",
+        )
+        val result = routeResult("hey", router = r2)
+        // Default is already Haiku, LIGHT maps to Haiku — no override needed
+        assertNull("Should not override when model already matches tier", result.modelIdOverride)
+    }
+
+    @Test
+    fun `OpenRouter provider uses registry for model selection`() {
+        val reg = OpenRouterModelRegistry()
+        reg.loadModels(listOf(
+            OpenRouterModelRegistry.ParsedModel(
+                id = "qwen/qwen3.5-flash-02-23",
+                name = "Qwen Flash",
+                promptPricePerToken = 0.000000065,
+                completionPricePerToken = 0.00000026,
+                contextLength = 1000000,
+                maxCompletionTokens = 65000,
+                supportsTools = true,
+                tier = ModelTier.LIGHT,
+            ),
+        ))
+
+        val r = modelRouter(
+            provider = LlmProvider.OPEN_ROUTER,
+            defaultModelId = "anthropic/claude-sonnet-4-6",
+            registry = reg,
+        )
+        val result = routeResult("hello", router = r)
+        // Conversational → LIGHT → registry should pick Qwen Flash
+        assertEquals("qwen/qwen3.5-flash-02-23", result.modelIdOverride)
+    }
+
+    @Test
+    fun `OpenRouter with empty registry returns null override`() {
+        val reg = OpenRouterModelRegistry()
+        // Mark as "recently refreshed" with empty list so refreshIfNeeded() won't call the real API
+        reg.loadModels(emptyList())
+        val r = modelRouter(
+            provider = LlmProvider.OPEN_ROUTER,
+            defaultModelId = "anthropic/claude-sonnet-4-6",
+            registry = reg,
+        )
+        val result = routeResult("hi", router = r)
+        assertNull("Empty registry should not produce override", result.modelIdOverride)
+    }
+
+    @Test
+    fun `OpenAI provider uses static tier mapping`() {
+        val r = modelRouter(
+            provider = LlmProvider.OPENAI,
+            defaultModelId = "gpt-4.1",
+        )
+        val result = routeResult("hey", router = r)
+        // LIGHT for OpenAI should be GPT-4.1-nano
+        assertEquals(ModelTier.LIGHT, result.modelTier)
+        assertEquals("gpt-4.1-nano", result.modelIdOverride)
+    }
+
+    @Test
+    fun `model routing result includes maxTokensOverride`() {
+        val r = modelRouter(
+            provider = LlmProvider.CLAUDE_OAUTH,
+            defaultModelId = "claude-sonnet-4-6",
+        )
+        val result = routeResult("hi", router = r)
+        assertNotNull(result.maxTokensOverride)
+        assertTrue("maxTokens should be positive", result.maxTokensOverride!! > 0)
+    }
+
+    @Test
+    fun `RoutingResult fields propagate through routing`() {
+        val r = modelRouter()
+        val result = routeResult("hey", router = r)
+        // Should have all the standard routing fields plus model routing
+        assertNotNull(result.skillIds)
+        assertNotNull(result.modelTier)
+        // budget is set for conversational (LOW)
+        assertEquals(RoutingBudget.LOW, result.budget)
     }
 }

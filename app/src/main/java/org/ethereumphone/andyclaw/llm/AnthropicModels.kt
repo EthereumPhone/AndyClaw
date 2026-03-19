@@ -130,5 +130,39 @@ enum class AnthropicModels(
             LlmProvider.VENICE -> VENICE_LLAMA_3_3_70B
             LlmProvider.LOCAL -> QWEN2_5_1_5B
         }
+
+        /**
+         * Model for a given difficulty tier and provider.
+         *
+         * For [LlmProvider.OPEN_ROUTER] and [LlmProvider.ETHOS_PREMIUM], returns
+         * null — those providers use [OpenRouterModelRegistry] for dynamic selection.
+         * For other providers with fixed model sets, returns a static mapping.
+         */
+        fun forTier(tier: ModelTier, provider: LlmProvider): AnthropicModels? = when (provider) {
+            // Dynamic providers — handled by OpenRouterModelRegistry
+            LlmProvider.OPEN_ROUTER, LlmProvider.ETHOS_PREMIUM -> null
+
+            LlmProvider.CLAUDE_OAUTH -> when (tier) {
+                ModelTier.LIGHT -> CLAUDE_OAUTH_HAIKU_3_5
+                ModelTier.STANDARD -> CLAUDE_OAUTH_SONNET_4_6
+                ModelTier.POWERFUL -> CLAUDE_OAUTH_OPUS_4_6
+            }
+            LlmProvider.TINFOIL -> when (tier) {
+                ModelTier.LIGHT -> TINFOIL_LLAMA3_3_70B
+                ModelTier.STANDARD -> TINFOIL_KIMI_K25
+                ModelTier.POWERFUL -> TINFOIL_DEEPSEEK_R1
+            }
+            LlmProvider.OPENAI -> when (tier) {
+                ModelTier.LIGHT -> OPENAI_GPT_4_1_NANO
+                ModelTier.STANDARD -> OPENAI_GPT_4_1
+                ModelTier.POWERFUL -> OPENAI_GPT_5
+            }
+            LlmProvider.VENICE -> when (tier) {
+                ModelTier.LIGHT -> VENICE_QWEN3_5_35B
+                ModelTier.STANDARD -> VENICE_CLAUDE_SONNET_4_6
+                ModelTier.POWERFUL -> VENICE_CLAUDE_OPUS_4_6
+            }
+            LlmProvider.LOCAL -> QWEN2_5_1_5B // Only one local model
+        }
     }
 }

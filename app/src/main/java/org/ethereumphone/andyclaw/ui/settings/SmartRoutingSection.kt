@@ -64,6 +64,15 @@ fun SmartRoutingSection(
     routingProviderName: String,
     onNavigateToRoutingProvider: () -> Unit,
     onNavigateToRoutingModel: () -> Unit,
+    // Model routing (difficulty-based model selection)
+    modelRoutingEnabled: Boolean = false,
+    onModelRoutingEnabledChange: (Boolean) -> Unit = {},
+    modelRoutingLightName: String = "Auto",
+    modelRoutingStandardName: String = "Auto",
+    modelRoutingPowerfulName: String = "Auto",
+    onNavigateToModelRoutingLight: () -> Unit = {},
+    onNavigateToModelRoutingStandard: () -> Unit = {},
+    onNavigateToModelRoutingPowerful: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val primaryColor = SystemColorManager.primaryColor
@@ -286,6 +295,119 @@ fun SmartRoutingSection(
                     ),
                     color = primaryColor,
                 )
+            }
+        }
+
+        Spacer(Modifier.height(16.dp))
+        HorizontalDivider(color = primaryColor.copy(alpha = 0.15f))
+        Spacer(Modifier.height(12.dp))
+
+        // ── Model routing (difficulty-based model selection) ─────────
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "MODEL ROUTING",
+                    style = contentTitleStyle,
+                    color = primaryColor,
+                )
+                Text(
+                    text = "Automatically switch to cheaper models for simple tasks and more powerful models for complex ones.",
+                    style = contentBodyStyle,
+                    color = dgenWhite,
+                )
+            }
+            Spacer(Modifier.width(rowControlSpacing))
+            DgenSquareSwitch(
+                checked = modelRoutingEnabled,
+                onCheckedChange = onModelRoutingEnabledChange,
+                activeColor = primaryColor,
+            )
+        }
+
+        if (modelRoutingEnabled) {
+            Spacer(Modifier.height(4.dp))
+            Text(
+                text = "Select a preferred model for each difficulty tier, or leave on Auto to let the router decide based on pricing and capability.",
+                style = contentBodyStyle.copy(fontSize = 13.sp),
+                color = dgenWhite.copy(alpha = 0.5f),
+            )
+            Spacer(Modifier.height(8.dp))
+
+            // Light tier
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable(onClick = onNavigateToModelRoutingLight)
+                    .padding(vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "EASY TASKS",
+                        style = contentTitleStyle,
+                        color = primaryColor,
+                    )
+                    Text(
+                        text = modelRoutingLightName,
+                        style = contentBodyStyle,
+                        color = dgenWhite,
+                    )
+                }
+                Spacer(Modifier.width(rowControlSpacing))
+                Text(text = ">", style = TextStyle(fontFamily = SpaceMono, fontSize = 20.sp, fontWeight = FontWeight.Bold), color = primaryColor)
+            }
+
+            // Standard tier
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable(onClick = onNavigateToModelRoutingStandard)
+                    .padding(vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "MEDIUM TASKS",
+                        style = contentTitleStyle,
+                        color = primaryColor,
+                    )
+                    Text(
+                        text = modelRoutingStandardName,
+                        style = contentBodyStyle,
+                        color = dgenWhite,
+                    )
+                }
+                Spacer(Modifier.width(rowControlSpacing))
+                Text(text = ">", style = TextStyle(fontFamily = SpaceMono, fontSize = 20.sp, fontWeight = FontWeight.Bold), color = primaryColor)
+            }
+
+            // Powerful tier
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable(onClick = onNavigateToModelRoutingPowerful)
+                    .padding(vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "HARD TASKS",
+                        style = contentTitleStyle,
+                        color = primaryColor,
+                    )
+                    Text(
+                        text = modelRoutingPowerfulName,
+                        style = contentBodyStyle,
+                        color = dgenWhite,
+                    )
+                }
+                Spacer(Modifier.width(rowControlSpacing))
+                Text(text = ">", style = TextStyle(fontFamily = SpaceMono, fontSize = 20.sp, fontWeight = FontWeight.Bold), color = primaryColor)
             }
         }
     }

@@ -89,11 +89,17 @@ enum class MessageIntent {
  * [allowedTools] is the set of tool names to include when assembling the request,
  * or null to include all tools from routed skills.
  * [budget] is a hint for how much output the query likely needs (null = unknown).
+ * [modelTier] is the classified difficulty tier (null = unknown / fallback path).
+ * [modelIdOverride] is the resolved model ID to use instead of the user's default (null = use default).
+ * [maxTokensOverride] is the resolved max tokens for the overridden model (null = use default).
  */
 data class RoutingResult(
     val skillIds: Set<String>,
     val allowedTools: Set<String>?,
     val budget: RoutingBudget? = null,
+    val modelTier: org.ethereumphone.andyclaw.llm.ModelTier? = null,
+    val modelIdOverride: String? = null,
+    val maxTokensOverride: Int? = null,
 )
 
 /** Routing performance metrics, persisted across sessions. */
@@ -143,6 +149,25 @@ data class RoutingMetrics(
  * - Auto-generated keywords from skill descriptions
  * - Routing metrics for observability
  */
+/**
+ * Configuration for difficulty-based model routing.
+ * When [enabled] is true, the router classifies task difficulty and resolves
+ * the appropriate model from the registry or static mappings.
+ *
+ * @param enabled Whether model routing is active.
+ * @param registry OpenRouter model registry for dynamic model selection (nullable for non-OpenRouter providers).
+ * @param providerProvider Returns the user's current LLM provider.
+ * @param defaultModelIdProvider Returns the user's currently selected model ID.
+ * @param tierModelOverrideProvider Returns the user's per-tier model override (empty string = auto).
+ */
+data class ModelRoutingConfig(
+    val enabled: Boolean,
+    val registry: org.ethereumphone.andyclaw.llm.OpenRouterModelRegistry? = null,
+    val providerProvider: (() -> org.ethereumphone.andyclaw.llm.LlmProvider)? = null,
+    val defaultModelIdProvider: (() -> String)? = null,
+    val tierModelOverrideProvider: ((org.ethereumphone.andyclaw.llm.ModelTier) -> String)? = null,
+)
+
 class SmartRouter(
     context: Context? = null,
     private val skillRegistry: NativeSkillRegistry? = null,
@@ -150,6 +175,7 @@ class SmartRouter(
     private val routingClientProvider: (() -> RoutingConfig?)? = null,
     private val presetProvider: (() -> RoutingPreset)? = null,
     private val routingModeProvider: (() -> RoutingMode)? = null,
+    private val modelRoutingConfigProvider: (() -> ModelRoutingConfig)? = null,
     private val filesDir: File? = null,
 ) {
     companion object {
@@ -534,6 +560,7 @@ class SmartRouter(
         val skills: Set<String>,
         val tools: Set<String>,
         val budget: String? = null,
+        val difficulty: String? = null,
         val createdAt: Long = System.currentTimeMillis(),
         val correctionCount: Int = 0,
     )
@@ -543,6 +570,7 @@ class SmartRouter(
         val skills: MutableSet<String> = mutableSetOf(),
         val tools: MutableSet<String> = mutableSetOf(),
         val budget: RoutingBudget? = null,
+        val modelTier: org.ethereumphone.andyclaw.llm.ModelTier? = null,
         val createdAt: Long = System.currentTimeMillis(),
         var correctionCount: Int = 0,
     ) {
@@ -551,6 +579,7 @@ class SmartRouter(
             skills = skills.toSet(),
             tools = tools.toSet(),
             budget = budget?.name?.lowercase(),
+            difficulty = modelTier?.name?.lowercase(),
             createdAt = createdAt,
             correctionCount = correctionCount,
         )
@@ -561,6 +590,7 @@ class SmartRouter(
         skills = skills.toMutableSet(),
         tools = tools.toMutableSet(),
         budget = RoutingBudget.fromString(budget),
+        modelTier = org.ethereumphone.andyclaw.llm.ModelTier.fromString(difficulty),
         createdAt = createdAt,
         correctionCount = correctionCount,
     )
@@ -670,10 +700,12 @@ class SmartRouter(
             for (skillId in activeSessions) {
                 if (skillId in allEnabledSkillIds) coreOnly.add(skillId)
             }
+            val (convModelId, convMaxTokens) = resolveModelForTier(org.ethereumphone.andyclaw.llm.ModelTier.LIGHT)
             metrics.totalRoutingTimeMs += System.currentTimeMillis() - startTime
             persistMetrics()
-            Log.d(TAG, "Conversational short-circuit: '${userMessage.take(60)}...' -> ${coreOnly.size} skills")
-            return RoutingResult(coreOnly, null, RoutingBudget.LOW)
+            Log.d(TAG, "Conversational short-circuit: '${userMessage.take(60)}...' -> ${coreOnly.size} skills" +
+                (convModelId?.let { ", modelOverride=$it" } ?: ""))
+            return RoutingResult(coreOnly, null, RoutingBudget.LOW, org.ethereumphone.andyclaw.llm.ModelTier.LIGHT, convModelId, convMaxTokens)
         }
 
         val matched = mutableSetOf<String>()
@@ -731,11 +763,12 @@ class SmartRouter(
                     null
                 } else {
                     CachedRouting(
-                        entry.skills.toMutableSet(),
-                        entry.tools.toMutableSet(),
-                        entry.budget,
-                        entry.createdAt,
-                        entry.correctionCount,
+                        skills = entry.skills.toMutableSet(),
+                        tools = entry.tools.toMutableSet(),
+                        budget = entry.budget,
+                        modelTier = entry.modelTier,
+                        createdAt = entry.createdAt,
+                        correctionCount = entry.correctionCount,
                     )
                 }
             }
@@ -745,6 +778,7 @@ class SmartRouter(
         var anyKeywordMatched = false
         var llmTools: Set<String>? = null // specific tools from LLM, null = no tool-level filtering
         var routedBudget: RoutingBudget? = null // budget hint from LLM or cache
+        var routedModelTier: org.ethereumphone.andyclaw.llm.ModelTier? = null // difficulty-based model tier from LLM or cache
         var excludedSkills: Set<String> = emptySet()
 
         if (cachedResult != null) {
@@ -753,9 +787,10 @@ class SmartRouter(
             matched.addAll(validSkills)
             llmTools = cachedResult.tools.takeIf { it.isNotEmpty() }
             routedBudget = cachedResult.budget
+            routedModelTier = cachedResult.modelTier
             llmRouted = true
             metrics.cacheHits++
-            Log.d(TAG, "Cache hit (exact): '${userMessage.take(60)}...' -> ${validSkills.size} skills, ${cachedResult.tools.size} tools, budget=${cachedResult.budget}")
+            Log.d(TAG, "Cache hit (exact): '${userMessage.take(60)}...' -> ${validSkills.size} skills, ${cachedResult.tools.size} tools, budget=${cachedResult.budget}, tier=${cachedResult.modelTier}")
         } else {
             // Try fuzzy cache match via embeddings
             val fuzzyResult = findSimilarCacheEntry(normalizedMessage)
@@ -764,9 +799,10 @@ class SmartRouter(
                 matched.addAll(validSkills)
                 llmTools = fuzzyResult.tools.takeIf { it.isNotEmpty() }
                 routedBudget = fuzzyResult.budget
+                routedModelTier = fuzzyResult.modelTier
                 llmRouted = true
                 metrics.fuzzyCacheHits++
-                Log.d(TAG, "Cache hit (fuzzy): '${userMessage.take(60)}...' -> ${validSkills.size} skills, ${fuzzyResult.tools.size} tools, budget=${fuzzyResult.budget}")
+                Log.d(TAG, "Cache hit (fuzzy): '${userMessage.take(60)}...' -> ${validSkills.size} skills, ${fuzzyResult.tools.size} tools, budget=${fuzzyResult.budget}, tier=${fuzzyResult.modelTier}")
             } else {
                 metrics.cacheMisses++
                 // Synchronous LLM call — wait for the result
@@ -775,6 +811,7 @@ class SmartRouter(
                     matched.addAll(llmResult.skills)
                     llmTools = llmResult.tools.takeIf { it.isNotEmpty() }
                     routedBudget = llmResult.budget
+                    routedModelTier = llmResult.modelTier
                     excludedSkills = llmResult.excluded
                     llmRouted = true
                     // Populate cache
@@ -782,8 +819,9 @@ class SmartRouter(
                         llmResult.skills.toMutableSet(),
                         llmResult.tools.toMutableSet(),
                         llmResult.budget,
+                        llmResult.modelTier,
                     ))
-                    Log.d(TAG, "LLM sync routed: '${userMessage.take(60)}...' -> ${llmResult.skills.size} skills, ${llmResult.tools.size} tools, budget=${llmResult.budget}")
+                    Log.d(TAG, "LLM sync routed: '${userMessage.take(60)}...' -> ${llmResult.skills.size} skills, ${llmResult.tools.size} tools, budget=${llmResult.budget}, tier=${llmResult.modelTier}")
                 } else {
                     // LLM unavailable/failed — fall back to keywords (no tool-level filtering)
                     metrics.keywordFallbacks++
@@ -792,7 +830,7 @@ class SmartRouter(
                         matched.addAll(keywordResults)
                         anyKeywordMatched = true
                     }
-                    Log.d(TAG, "LLM unavailable, keyword fallback: '${userMessage.take(60)}...'")
+                    Log.d(TAG, "LLM unavailable, keyword fallback: '${userMessage.take(60)}...' (no modelTier — LLM routing failed)")
                 }
             }
         }
@@ -838,7 +876,7 @@ class SmartRouter(
                 metrics.embeddingFallbacks++
                 metrics.totalRoutingTimeMs += System.currentTimeMillis() - startTime
                 persistMetrics()
-                Log.d(TAG, "Embedding fallback: '${userMessage.take(60)}...' -> ${embeddingResult.size} skills")
+                Log.d(TAG, "Embedding fallback: '${userMessage.take(60)}...' -> ${embeddingResult.size} skills (no modelTier — fallback path)")
                 return RoutingResult(embeddingResult, null)
             }
 
@@ -847,7 +885,7 @@ class SmartRouter(
                 metrics.frequencyFallbacks++
                 metrics.totalRoutingTimeMs += System.currentTimeMillis() - startTime
                 persistMetrics()
-                Log.d(TAG, "Frequency fallback: '${userMessage.take(60)}...' -> ${frequencyResult.size} skills")
+                Log.d(TAG, "Frequency fallback: '${userMessage.take(60)}...' -> ${frequencyResult.size} skills (no modelTier — fallback path)")
                 return RoutingResult(frequencyResult, null)
             }
 
@@ -855,20 +893,107 @@ class SmartRouter(
             metrics.fullFallbacks++
             metrics.totalRoutingTimeMs += System.currentTimeMillis() - startTime
             persistMetrics()
-            Log.d(TAG, "Full fallback: '${userMessage.take(60)}...' -> all ${allEnabledSkillIds.size} skills")
+            Log.d(TAG, "Full fallback: '${userMessage.take(60)}...' -> all ${allEnabledSkillIds.size} skills (no modelTier — fallback path)")
             return RoutingResult(allEnabledSkillIds, null)
         }
 
         // Build the allowedTools set based on routing mode.
         val allowedTools = buildAllowedTools(mode, llmTools, matched, alwaysFullToolSkillIds, allEnabledSkillIds, tier)
 
+        // ── Model routing: resolve model for the classified difficulty tier ──
+        val (resolvedModelId, resolvedMaxTokens) = resolveModelForTier(routedModelTier)
+
         metrics.totalRoutingTimeMs += System.currentTimeMillis() - startTime
         persistMetrics()
         Log.d(TAG, "Routed '${userMessage.take(60)}...' -> ${matched.size} skills" +
             (allowedTools?.let { ", ${it.size} tools" } ?: ", all tools") +
-            ", budget=$routedBudget" +
+            ", budget=$routedBudget, modelTier=$routedModelTier" +
+            (resolvedModelId?.let { ", modelOverride=$it" } ?: "") +
             ": ${matched.joinToString()}")
-        return RoutingResult(matched, allowedTools, routedBudget)
+        return RoutingResult(matched, allowedTools, routedBudget, routedModelTier, resolvedModelId, resolvedMaxTokens)
+    }
+
+    // ── Model routing resolution ─────────────────────────────────────
+
+    /**
+     * Resolves a concrete model ID + maxTokens for the given difficulty [tier].
+     * Returns (null, null) when model routing is disabled, the tier is null,
+     * or the user's default model already matches the requested tier.
+     *
+     * Resolution order:
+     * 1. User per-tier override from settings (highest priority)
+     * 2. OpenRouter dynamic selection via [OpenRouterModelRegistry] (for OpenRouter/ethOS providers)
+     * 3. Static tier mapping via [AnthropicModels.forTier] (for other providers)
+     */
+    private suspend fun resolveModelForTier(
+        tier: org.ethereumphone.andyclaw.llm.ModelTier?,
+    ): Pair<String?, Int?> {
+        if (tier == null) return null to null
+
+        val config = modelRoutingConfigProvider?.invoke()
+        if (config == null || !config.enabled) {
+            Log.d(TAG, "ModelRouting | disabled or no config, skipping model resolution")
+            return null to null
+        }
+
+        val provider = config.providerProvider?.invoke()
+        val defaultModelId = config.defaultModelIdProvider?.invoke() ?: ""
+
+        // 1. Check user per-tier override
+        val userOverride = config.tierModelOverrideProvider?.invoke(tier) ?: ""
+        if (userOverride.isNotBlank()) {
+            val overrideModel = AnthropicModels.fromModelId(userOverride)
+            val maxTokens = overrideModel?.maxTokens ?: 8192
+            Log.i(TAG, "ModelRouting | tier=$tier -> user override: $userOverride " +
+                "(${overrideModel?.name ?: "unknown"}, maxTokens=$maxTokens)")
+            return userOverride to maxTokens
+        }
+
+        // 2. For OpenRouter / ethOS Premium: use dynamic model registry
+        if (provider == org.ethereumphone.andyclaw.llm.LlmProvider.OPEN_ROUTER ||
+            provider == org.ethereumphone.andyclaw.llm.LlmProvider.ETHOS_PREMIUM
+        ) {
+            val registry = config.registry
+            if (registry == null) {
+                Log.d(TAG, "ModelRouting | tier=$tier but no registry available, using default")
+                return null to null
+            }
+
+            // Ensure the registry has models loaded (fetches from API if cache is stale/empty)
+            try {
+                registry.refreshIfNeeded()
+            } catch (e: Exception) {
+                Log.w(TAG, "ModelRouting | registry refresh failed: ${e.message}")
+            }
+
+            val recommended = registry.getBestModelForTier(tier, defaultModelId)
+            if (recommended != null && recommended.modelId != defaultModelId) {
+                val defaultModel = AnthropicModels.fromModelId(defaultModelId)
+                val maxTokens = recommended.maxCompletionTokens.coerceAtMost(defaultModel?.maxTokens ?: 8192)
+                Log.i(TAG, "ModelRouting | tier=$tier -> ${recommended.modelId} " +
+                    "(${recommended.displayName}, \$${String.format("%.2f", recommended.promptPricePerM)}/M prompt, maxTokens=$maxTokens)")
+                return recommended.modelId to maxTokens
+            }
+            if (recommended == null) {
+                Log.w(TAG, "ModelRouting | tier=$tier but registry has no models for this tier, using default")
+            } else {
+                Log.d(TAG, "ModelRouting | tier=$tier, default $defaultModelId already optimal for tier")
+            }
+            return null to null
+        }
+
+        // 3. For other providers: use static tier mappings
+        if (provider != null) {
+            val tieredModel = AnthropicModels.forTier(tier, provider)
+            val defaultModel = AnthropicModels.fromModelId(defaultModelId)
+            if (tieredModel != null && tieredModel != defaultModel) {
+                Log.i(TAG, "ModelRouting | tier=$tier, provider=$provider -> ${tieredModel.modelId} (${tieredModel.name})")
+                return tieredModel.modelId to tieredModel.maxTokens
+            }
+            Log.d(TAG, "ModelRouting | tier=$tier, provider=$provider, default $defaultModelId already matches tier")
+        }
+
+        return null to null
     }
 
     /**
@@ -1239,42 +1364,51 @@ class SmartRouter(
         val systemPrompt = buildString {
             // Format constraint FIRST — anchors output for small models
             append("Respond with ONLY a JSON object. No other text, no markdown.\n")
-            append("Format: {\"skills\":[...],\"tools\":[...],\"budget\":\"low|medium|high\"}\n\n")
+            append("Format: {\"skills\":[...],\"tools\":[...],\"budget\":\"low|medium|high\",\"difficulty\":\"easy|medium|hard\"}\n\n")
             // Role and field definitions
             append("You route user messages to phone assistant skills.\n")
             append("- \"skills\": skill IDs needed (empty array if none needed)\n")
             append("- \"tools\": specific tool names from those skills\n")
-            append("- \"budget\": \"low\" (brief/tool-only), \"medium\" (summaries, multi-step), \"high\" (long/creative)\n\n")
+            append("- \"budget\": \"low\" (brief/tool-only), \"medium\" (summaries, multi-step), \"high\" (long/creative)\n")
+            append("- \"difficulty\": how capable the LLM needs to be:\n")
+            append("  \"easy\" = simple commands, factual Q&A, device operations, greetings\n")
+            append("  \"medium\" = multi-step tasks, summaries, moderate reasoning, tool chaining\n")
+            append("  \"hard\" = complex reasoning, code generation, creative writing, deep analysis, debugging\n\n")
             // Rules — concise, no hedging
             append("Rules:\n")
             append("- Empty skills for greetings, chat, and general knowledge.\n")
             append("- Only include skills when clearly needed — keyword overlap is not enough.\n")
             append("- For similar tools (e.g. get_user_wallet_address vs get_agent_wallet_address), include ALL variants.\n")
-            append("- [heavy] skills are expensive — only when clearly relevant.\n\n")
+            append("- [heavy] skills are expensive — only when clearly relevant.\n")
+            append("- difficulty is about REASONING capability, not output length. A long but simple list is \"easy\"; a short but tricky logic puzzle is \"hard\".\n\n")
             // Examples — positive, negative/trap, and multi-intent
             append("Examples:\n")
             // Single skill, simple command
-            append("\"send a text to mom\" -> {\"skills\":[\"sms\",\"contacts\"],\"tools\":[\"send_sms\",\"get_contacts\"],\"budget\":\"low\"}\n")
+            append("\"send a text to mom\" -> {\"skills\":[\"sms\",\"contacts\"],\"tools\":[\"send_sms\",\"get_contacts\"],\"budget\":\"low\",\"difficulty\":\"easy\"}\n")
             // No skills needed (general knowledge)
-            append("\"tell me a joke about wifi\" -> {\"skills\":[],\"tools\":[],\"budget\":\"low\"}\n")
+            append("\"tell me a joke about wifi\" -> {\"skills\":[],\"tools\":[],\"budget\":\"low\",\"difficulty\":\"easy\"}\n")
             // Negative/trap: "powerful" ≠ device_power
-            append("\"how powerful is my phone\" -> {\"skills\":[\"device_info\"],\"tools\":[\"get_device_info\"],\"budget\":\"low\"}\n")
+            append("\"how powerful is my phone\" -> {\"skills\":[\"device_info\"],\"tools\":[\"get_device_info\"],\"budget\":\"low\",\"difficulty\":\"easy\"}\n")
             // Negative/trap: "connection" in abstract context ≠ connectivity
-            append("\"what's the connection between AI and art\" -> {\"skills\":[],\"tools\":[],\"budget\":\"medium\"}\n")
+            append("\"what's the connection between AI and art\" -> {\"skills\":[],\"tools\":[],\"budget\":\"medium\",\"difficulty\":\"medium\"}\n")
             // Multi-intent: 3 skills
-            append("\"text mom I'm late and set a timer for 30 min\" -> {\"skills\":[\"sms\",\"contacts\",\"reminders\"],\"tools\":[\"send_sms\",\"get_contacts\",\"create_reminder\"],\"budget\":\"low\"}\n")
+            append("\"text mom I'm late and set a timer for 30 min\" -> {\"skills\":[\"sms\",\"contacts\",\"reminders\"],\"tools\":[\"send_sms\",\"get_contacts\",\"create_reminder\"],\"budget\":\"low\",\"difficulty\":\"easy\"}\n")
             // Web search with summarization
-            append("\"search for the latest AI news and summarize\" -> {\"skills\":[\"web_search\"],\"tools\":[\"web_search\"],\"budget\":\"medium\"}\n")
+            append("\"search for the latest AI news and summarize\" -> {\"skills\":[\"web_search\"],\"tools\":[\"web_search\"],\"budget\":\"medium\",\"difficulty\":\"medium\"}\n")
             // Heavy skill trigger
-            append("\"open youtube and play a video\" -> {\"skills\":[\"agent_display\"],\"tools\":[\"agent_display_create\",\"agent_display_interact\"],\"budget\":\"medium\"}\n")
+            append("\"open youtube and play a video\" -> {\"skills\":[\"agent_display\"],\"tools\":[\"agent_display_create\",\"agent_display_interact\"],\"budget\":\"medium\",\"difficulty\":\"easy\"}\n")
             // Trap: "search contacts" = contacts, NOT web_search
-            append("\"search my contacts for John\" -> {\"skills\":[\"contacts\"],\"tools\":[\"search_contacts\"],\"budget\":\"low\"}\n\n")
+            append("\"search my contacts for John\" -> {\"skills\":[\"contacts\"],\"tools\":[\"search_contacts\"],\"budget\":\"low\",\"difficulty\":\"easy\"}\n")
+            // Hard task: code generation
+            append("\"write a Python script to scrape stock prices\" -> {\"skills\":[\"web_search\"],\"tools\":[\"web_search\",\"fetch_webpage\"],\"budget\":\"high\",\"difficulty\":\"hard\"}\n")
+            // Hard task: analysis
+            append("\"analyze the pros and cons of switching to Kotlin Multiplatform\" -> {\"skills\":[],\"tools\":[],\"budget\":\"high\",\"difficulty\":\"hard\"}\n\n")
             // Catalog
             append("Available skills:\n$catalog")
         }
         return MessagesRequest(
             model = model.modelId,
-            maxTokens = 128,
+            maxTokens = 150,
             system = systemPrompt,
             messages = listOf(Message.user(userMessage)),
         )
@@ -1286,6 +1420,7 @@ class SmartRouter(
         val tools: Set<String>,
         val budget: RoutingBudget?,
         val excluded: Set<String> = emptySet(),
+        val modelTier: org.ethereumphone.andyclaw.llm.ModelTier? = null,
     )
 
     /**
@@ -1312,6 +1447,7 @@ class SmartRouter(
                 val toolsMatch = Regex("\"tools\"\\s*:\\s*\\[([^\\]]*)\\]").find(cleaned)
                 val budgetMatch = Regex("\"budget\"\\s*:\\s*\"([^\"]+)\"").find(cleaned)
                 val excludeMatch = Regex("\"exclude\"\\s*:\\s*\\[([^\\]]*)\\]").find(cleaned)
+                val difficultyMatch = Regex("\"difficulty\"\\s*:\\s*\"([^\"]+)\"").find(cleaned)
 
                 val skillIds = skillsMatch?.groupValues?.get(1)?.let { arr ->
                     Regex("\"([^\"]+)\"").findAll(arr)
@@ -1334,7 +1470,11 @@ class SmartRouter(
                         .toSet()
                 } ?: emptySet()
 
-                return ParsedRouting(skillIds, toolNames, budget, excluded)
+                val modelTier = org.ethereumphone.andyclaw.llm.ModelTier.fromString(
+                    difficultyMatch?.groupValues?.get(1)
+                )
+
+                return ParsedRouting(skillIds, toolNames, budget, excluded, modelTier)
             }
 
             // Fall back to array format (legacy / backward compat)
@@ -1399,7 +1539,7 @@ class SmartRouter(
             Log.d(TAG, "LLM raw response: ${text.take(300)}")
             val parsed = parseRoutingResponse(text, allEnabledSkillIds)
             if (parsed != null) {
-                Log.d(TAG, "LLM routed '${userMessage.take(60)}...' -> ${parsed.skills.size} skills, ${parsed.tools.size} tools, budget=${parsed.budget}: ${parsed.skills.joinToString()}")
+                Log.d(TAG, "LLM routed '${userMessage.take(60)}...' -> ${parsed.skills.size} skills, ${parsed.tools.size} tools, budget=${parsed.budget}, tier=${parsed.modelTier}: ${parsed.skills.joinToString()}")
             } else {
                 Log.w(TAG, "LLM routing parse failed for '${userMessage.take(60)}...', raw: ${text.take(200)}")
                 metrics.llmRoutingFailures++
@@ -1561,11 +1701,12 @@ class SmartRouter(
                         null
                     } else {
                         CachedRouting(
-                            entry.skills.toMutableSet(),
-                            entry.tools.toMutableSet(),
-                            entry.budget,
-                            entry.createdAt,
-                            entry.correctionCount,
+                            skills = entry.skills.toMutableSet(),
+                            tools = entry.tools.toMutableSet(),
+                            budget = entry.budget,
+                            modelTier = entry.modelTier,
+                            createdAt = entry.createdAt,
+                            correctionCount = entry.correctionCount,
                         )
                     }
                 }

@@ -161,6 +161,8 @@ class AgentLoop(
         val routedSkillIds = routingResult?.skillIds ?: enabledSkillIds
         val allowedTools = routingResult?.allowedTools
         val routerBudget = routingResult?.budget
+        val modelIdOverride = routingResult?.modelIdOverride
+        val maxTokensOverride = routingResult?.maxTokensOverride
         val skills = skillRegistry.getEnabled(routedSkillIds)
         Log.d(TAG, "TokenStats | routed ${routedSkillIds.size}/${enabledSkillIds.size} skills" +
             (allowedTools?.let { ", ${it.size} tools filtered" } ?: ", no tool filtering"))
@@ -213,8 +215,17 @@ class AgentLoop(
         var totalCharsTruncated = 0
         var truncationCount = 0
 
+        // Resolve effective model ID and max tokens (model routing may override)
+        val effectiveModelId = modelIdOverride ?: model.modelId
+        val baseMaxTokens = maxTokensOverride ?: model.maxTokens
+        if (modelIdOverride != null) {
+            Log.i(TAG, "ModelRouting | override active: $modelIdOverride (default was ${model.modelId}), maxTokens=$baseMaxTokens (default was ${model.maxTokens})")
+        }
+
         try {
-            Log.i(TAG, "=== AgentLoop.run starting === model=${model.modelId}, toolsJson=${toolsJson.size}, historySize=${conversationHistory.size}")
+            Log.i(TAG, "=== AgentLoop.run starting === model=$effectiveModelId" +
+                (if (modelIdOverride != null) " [ROUTED from ${model.modelId}]" else "") +
+                ", maxTokens=$baseMaxTokens, toolsJson=${toolsJson.size}, historySize=${conversationHistory.size}")
             if (budget != null) {
                 val p = budget.preset
                 val active = listOfNotNull(
@@ -238,12 +249,12 @@ class AgentLoop(
                 pruneOldImages(messages)
 
                 val effectiveMaxTokens = budget?.effectiveMaxTokens(
-                    modelDefault = model.maxTokens,
+                    modelDefault = baseMaxTokens,
                     iteration = iterations,
                     routerBudget = routerBudget,
-                ) ?: model.maxTokens
-                if (effectiveMaxTokens < model.maxTokens) {
-                    totalTokensSavedByMaxTokens += model.maxTokens - effectiveMaxTokens
+                ) ?: baseMaxTokens
+                if (effectiveMaxTokens < baseMaxTokens) {
+                    totalTokensSavedByMaxTokens += baseMaxTokens - effectiveMaxTokens
                 }
 
                 // Map budget concisePrompt to verbosity parameter
@@ -252,7 +263,7 @@ class AgentLoop(
                 } else null
 
                 val request = MessagesRequest(
-                    model = model.modelId,
+                    model = effectiveModelId,
                     maxTokens = effectiveMaxTokens,
                     system = systemPrompt,
                     messages = messages,

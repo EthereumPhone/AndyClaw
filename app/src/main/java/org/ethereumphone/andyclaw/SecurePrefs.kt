@@ -201,6 +201,24 @@ class SecurePrefs(context: Context) : KeyValueStore {
   )
   val routingModel: StateFlow<String> = _routingModel
 
+  // ── Model routing (difficulty-based model selection, part of smart router) ──
+
+  /** When true, the smart router also switches models based on task difficulty. */
+  private val _modelRoutingEnabled = MutableStateFlow(prefs.getBoolean("routing.modelRouting.enabled", false))
+  val modelRoutingEnabled: StateFlow<Boolean> = _modelRoutingEnabled
+
+  /** User-preferred model ID for LIGHT (easy) tasks. Empty = auto-select. */
+  private val _modelRoutingLight = MutableStateFlow(prefs.getString("routing.modelRouting.light", "") ?: "")
+  val modelRoutingLight: StateFlow<String> = _modelRoutingLight
+
+  /** User-preferred model ID for STANDARD (medium) tasks. Empty = auto-select. */
+  private val _modelRoutingStandard = MutableStateFlow(prefs.getString("routing.modelRouting.standard", "") ?: "")
+  val modelRoutingStandard: StateFlow<String> = _modelRoutingStandard
+
+  /** User-preferred model ID for POWERFUL (hard) tasks. Empty = auto-select. */
+  private val _modelRoutingPowerful = MutableStateFlow(prefs.getString("routing.modelRouting.powerful", "") ?: "")
+  val modelRoutingPowerful: StateFlow<String> = _modelRoutingPowerful
+
   private val _googleOauthClientId = MutableStateFlow(prefs.getString("google.oauth.clientId", "") ?: "")
   val googleOauthClientId: StateFlow<String> = _googleOauthClientId
 
@@ -577,6 +595,31 @@ class SecurePrefs(context: Context) : KeyValueStore {
   fun setRoutingModel(modelId: String) {
     prefs.edit { putString("routing.model", modelId) }
     _routingModel.value = modelId
+  }
+
+  // ── Model routing setters ─────────────────────────────────────────
+
+  fun setModelRoutingEnabled(enabled: Boolean) {
+    prefs.edit { putBoolean("routing.modelRouting.enabled", enabled) }
+    _modelRoutingEnabled.value = enabled
+  }
+
+  fun setModelRoutingLight(modelId: String) {
+    val trimmed = modelId.trim()
+    prefs.edit { putString("routing.modelRouting.light", trimmed) }
+    _modelRoutingLight.value = trimmed
+  }
+
+  fun setModelRoutingStandard(modelId: String) {
+    val trimmed = modelId.trim()
+    prefs.edit { putString("routing.modelRouting.standard", trimmed) }
+    _modelRoutingStandard.value = trimmed
+  }
+
+  fun setModelRoutingPowerful(modelId: String) {
+    val trimmed = modelId.trim()
+    prefs.edit { putString("routing.modelRouting.powerful", trimmed) }
+    _modelRoutingPowerful.value = trimmed
   }
 
   fun setGoogleOauthClientId(value: String) {

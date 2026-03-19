@@ -85,6 +85,8 @@ import org.ethereumphone.andyclaw.whisper.WhisperTranscriber
 import org.ethereumhpone.messengersdk.MessengerSDK
 import org.ethereumphone.andyclaw.led.LedMatrixController
 import org.ethereumphone.andyclaw.llm.AnthropicModels
+import org.ethereumphone.andyclaw.llm.OpenRouterModelRegistry
+import org.ethereumphone.andyclaw.skills.ModelRoutingConfig
 import org.ethereumphone.andyclaw.skills.RoutingConfig
 import org.ethereumphone.andyclaw.skills.RoutingPreset
 import org.ethereumphone.andyclaw.skills.SmartRouter
@@ -210,6 +212,12 @@ class NodeApp : Application() {
         )
     }
 
+    // ── Model routing (OpenRouter dynamic model selection) ──────────
+
+    val openRouterModelRegistry: OpenRouterModelRegistry by lazy {
+        OpenRouterModelRegistry(context = this)
+    }
+
     // ── Skill Router ─────────────────────────────────────────────────
 
     val smartRouter: SmartRouter by lazy {
@@ -242,6 +250,21 @@ class NodeApp : Application() {
                     ?: RoutingPreset.defaults().first { it.id == RoutingPreset.defaultPresetId }
             },
             routingModeProvider = { securePrefs.routingMode.value },
+            modelRoutingConfigProvider = {
+                ModelRoutingConfig(
+                    enabled = securePrefs.modelRoutingEnabled.value,
+                    registry = openRouterModelRegistry,
+                    providerProvider = { securePrefs.selectedProvider.value },
+                    defaultModelIdProvider = { securePrefs.selectedModel.value },
+                    tierModelOverrideProvider = { tier ->
+                        when (tier) {
+                            org.ethereumphone.andyclaw.llm.ModelTier.LIGHT -> securePrefs.modelRoutingLight.value
+                            org.ethereumphone.andyclaw.llm.ModelTier.STANDARD -> securePrefs.modelRoutingStandard.value
+                            org.ethereumphone.andyclaw.llm.ModelTier.POWERFUL -> securePrefs.modelRoutingPowerful.value
+                        }
+                    },
+                )
+            },
             filesDir = filesDir,
         )
     }
@@ -531,6 +554,17 @@ class NodeApp : Application() {
                 Log.i(TAG, "Discovered ${adapters.size} extension(s)")
             } catch (e: Exception) {
                 Log.w(TAG, "Extension discovery failed: ${e.message}", e)
+            }
+        }
+
+        // Pre-fetch OpenRouter model list for model routing (background, non-blocking)
+        if (securePrefs.modelRoutingEnabled.value) {
+            appScope.launch {
+                try {
+                    openRouterModelRegistry.refreshIfNeeded()
+                } catch (e: Exception) {
+                    Log.w(TAG, "OpenRouter model registry pre-fetch failed: ${e.message}")
+                }
             }
         }
 
