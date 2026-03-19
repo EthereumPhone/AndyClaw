@@ -1104,6 +1104,35 @@ class SmartRouter(
      *
      * The catalog is cached and rebuilt when the enabled skill set or tier changes.
      */
+    /**
+     * Semantic category groupings for the skill catalog. Skills are grouped by
+     * domain so the routing LLM can narrow by category before selecting skills,
+     * improving accuracy on large label spaces (40+ skills).
+     */
+    private val SKILL_CATEGORIES: List<Pair<String, List<String>>> = listOf(
+        "DEVICE" to listOf("connectivity", "audio", "screen", "camera", "device_power", "device_info", "settings"),
+        "COMMS" to listOf("sms", "phone", "gmail", "telegram", "messenger", "contacts", "notifications"),
+        "CRYPTO" to listOf("wallet", "swap", "token_lookup", "ens", "bankr_trading"),
+        "PRODUCTIVITY" to listOf("calendar", "google_calendar", "reminders", "cronjobs", "sheets", "drive"),
+        "APPS" to listOf("apps", "aurora_store", "package_manager", "agent_display"),
+        "FILES" to listOf("storage", "filesystem", "clipboard"),
+        "META" to listOf("skill-creator", "skill-refinement", "clawhub", "cli-tool-manager"),
+        "OTHER" to listOf("web_search", "location", "shell", "termux", "screen_time", "proactive_agent"),
+    )
+
+    /** Tool names that are self-explanatory and don't need descriptions in the catalog. */
+    private val SELF_EXPLANATORY_TOOLS = setOf(
+        "send_sms", "read_sms", "get_contacts", "search_contacts", "get_contact_details",
+        "take_photo", "get_device_info", "get_current_location", "list_events", "create_event",
+        "delete_event", "web_search", "fetch_webpage", "list_installed_apps", "launch_app",
+        "get_audio_state", "set_volume", "read_screen", "read_clipboard", "write_clipboard",
+        "read_file", "write_file", "list_directory", "create_reminder", "list_reminders",
+        "cancel_reminder", "make_call", "get_call_log", "uninstall_app", "list_notifications",
+        "get_connectivity_status", "lock_screen", "reboot_device",
+        "list_telegram_chats", "send_telegram_message",
+        "run_shell_command", "take_screenshot",
+    )
+
     private fun buildSkillCatalog(allEnabledSkillIds: Set<String>, tier: Tier): String {
         // Return cached catalog if the skill set and tier haven't changed
         if (cachedCatalogKey == allEnabledSkillIds && cachedCatalogTier == tier) {
@@ -1112,13 +1141,24 @@ class SmartRouter(
 
         val registry = skillRegistry ?: return ""
         val excludeIds = CORE_SKILL_IDS + DGEN1_CORE_SKILL_IDS
-        val lines = registry.getAll()
+        val skillMap = registry.getAll()
             .filter { it.id in allEnabledSkillIds && it.id !in excludeIds }
-            .map { skill ->
+            .associateBy { it.id }
+
+        val sb = StringBuilder()
+        // Emit categorized skills
+        val categorized = mutableSetOf<String>()
+        for ((category, skillIds) in SKILL_CATEGORIES) {
+            val present = skillIds.filter { it in skillMap }
+            if (present.isEmpty()) continue
+            sb.append("[$category]\n")
+            for (skillId in present) {
+                val skill = skillMap[skillId] ?: continue
+                categorized.add(skillId)
                 val desc = if (tier == Tier.PRIVILEGED && skill.privilegedManifest != null) {
-                    skill.privilegedManifest!!.description.take(200).trim()
+                    skill.privilegedManifest!!.description.take(120).trim()
                 } else {
-                    skill.baseManifest.description.take(200).trim()
+                    skill.baseManifest.description.take(120).trim()
                 }
                 val heavyTag = if (skill.id in HEAVY_SKILL_IDS) " [heavy]" else ""
                 val tools = skill.baseManifest.tools +
@@ -1128,13 +1168,43 @@ class SmartRouter(
                         emptyList()
                     }
                 val toolDescs = tools.joinToString(", ") { tool ->
-                    val toolDesc = tool.description.take(80).trim()
+                    if (tool.name in SELF_EXPLANATORY_TOOLS) {
+                        tool.name
+                    } else {
+                        val toolDesc = tool.description.take(40).trim()
+                        if (toolDesc.isNotEmpty()) "${tool.name} ($toolDesc)" else tool.name
+                    }
+                }
+                sb.append("- $skillId: $desc$heavyTag\n  tools: $toolDescs\n")
+            }
+        }
+        // Emit any uncategorized skills (e.g. external/dynamic skills)
+        for ((skillId, skill) in skillMap) {
+            if (skillId in categorized) continue
+            val desc = if (tier == Tier.PRIVILEGED && skill.privilegedManifest != null) {
+                skill.privilegedManifest!!.description.take(120).trim()
+            } else {
+                skill.baseManifest.description.take(120).trim()
+            }
+            val heavyTag = if (skill.id in HEAVY_SKILL_IDS) " [heavy]" else ""
+            val tools = skill.baseManifest.tools +
+                if (tier == Tier.PRIVILEGED) {
+                    skill.privilegedManifest?.tools ?: emptyList()
+                } else {
+                    emptyList()
+                }
+            val toolDescs = tools.joinToString(", ") { tool ->
+                if (tool.name in SELF_EXPLANATORY_TOOLS) {
+                    tool.name
+                } else {
+                    val toolDesc = tool.description.take(40).trim()
                     if (toolDesc.isNotEmpty()) "${tool.name} ($toolDesc)" else tool.name
                 }
-                "- ${skill.id}: $desc$heavyTag\n  tools: $toolDescs"
             }
-        val result = lines.joinToString("\n")
+            sb.append("- $skillId: $desc$heavyTag\n  tools: $toolDescs\n")
+        }
 
+        val result = sb.toString().trimEnd()
         cachedCatalog = result
         cachedCatalogKey = allEnabledSkillIds.toSet()
         cachedCatalogTier = tier
@@ -1143,8 +1213,12 @@ class SmartRouter(
 
     /**
      * Constructs a [MessagesRequest] for the routing LLM call.
-     * Asks for skill IDs, specific tool names, budget, and optional exclusions.
-     * Includes examples and negative instructions for accuracy.
+     * Prompt is structured for small/fast models (3B-8B):
+     * - Format constraint first (anchors output for small models)
+     * - Categorized skill catalog (reduces cognitive load vs flat lists)
+     * - Positive + negative examples (contrastive learning for accuracy)
+     * - No exclude field (handled server-side, saves output tokens)
+     * - No dependency hints (expanded server-side, saves input tokens)
      */
     private fun buildRoutingRequest(
         userMessage: String,
@@ -1152,30 +1226,39 @@ class SmartRouter(
         model: AnthropicModels,
     ): MessagesRequest {
         val systemPrompt = buildString {
-            append("You are a skill router for a phone assistant. ")
-            append("Given a user message, return a JSON object with:\n")
-            append("- \"skills\": array of skill IDs needed to handle the request\n")
-            append("- \"tools\": array of specific tool names needed from those skills\n")
-            append("- \"budget\": \"low\", \"medium\", or \"high\" — how long the response should be\n")
-            append("  low = tool calls with brief confirmation, simple commands\n")
-            append("  medium = moderate answers, summaries, multi-step tasks\n")
-            append("  high = long explanations, creative writing, detailed analysis\n")
-            append("- \"exclude\": (optional) array of categories to exclude: \"crypto\", \"messaging\", \"media\", \"hardware\", \"files\"\n\n")
+            // Format constraint FIRST — anchors output for small models
+            append("Respond with ONLY a JSON object. No other text, no markdown.\n")
+            append("Format: {\"skills\":[...],\"tools\":[...],\"budget\":\"low|medium|high\"}\n\n")
+            // Role and field definitions
+            append("You route user messages to phone assistant skills.\n")
+            append("- \"skills\": skill IDs needed (empty array if none needed)\n")
+            append("- \"tools\": specific tool names from those skills\n")
+            append("- \"budget\": \"low\" (brief/tool-only), \"medium\" (summaries, multi-step), \"high\" (long/creative)\n\n")
+            // Rules — concise, no hedging
+            append("Rules:\n")
+            append("- Empty skills for greetings, chat, and general knowledge.\n")
+            append("- Only include skills when clearly needed — keyword overlap is not enough.\n")
+            append("- For similar tools (e.g. get_user_wallet_address vs get_agent_wallet_address), include ALL variants.\n")
+            append("- [heavy] skills are expensive — only when clearly relevant.\n\n")
+            // Examples — positive, negative/trap, and multi-intent
             append("Examples:\n")
-            append("User: \"send a text to mom\" -> {\"skills\":[\"sms\",\"contacts\"],\"tools\":[\"send_sms\",\"get_contacts\"],\"budget\":\"low\"}\n")
-            append("User: \"what's 2+2\" -> {\"skills\":[],\"tools\":[],\"budget\":\"low\"}\n")
-            append("User: \"search for the latest AI news and summarize it\" -> {\"skills\":[\"web_search\"],\"tools\":[\"web_search\"],\"budget\":\"medium\"}\n")
-            append("User: \"open the youtube app and start a video\" -> {\"skills\":[\"agent_display\"],\"tools\":[\"agent_display_create\",\"agent_display_interact\"],\"budget\":\"medium\",\"exclude\":[\"crypto\"]}\n\n")
-            append("Return {\"skills\":[],\"tools\":[],\"budget\":\"low\"} if no skills beyond the defaults are needed.\n")
-            append("Return empty skills for greetings and conversational messages.\n")
-            append("Do not include skills just because they exist — only when clearly needed.\n")
-            append("When a skill has similar tools (e.g. get_user_wallet_address vs get_agent_wallet_address), include ALL variants — the main AI will pick the right one.\n")
-            append("Skills marked [heavy] are expensive — only include them when clearly relevant.\n")
-            append("Skill dependencies (auto-expanded, but include them for accuracy):\n")
-            append("sms/phone/gmail/telegram/messenger need contacts, ")
-            append("swap/bankr_trading need wallet+token_lookup, ens needs wallet, ")
-            append("google_calendar needs calendar, filesystem and storage need each other, ")
-            append("skill-refinement needs skill-creator, agent_display needs apps.\n")
+            // Single skill, simple command
+            append("\"send a text to mom\" -> {\"skills\":[\"sms\",\"contacts\"],\"tools\":[\"send_sms\",\"get_contacts\"],\"budget\":\"low\"}\n")
+            // No skills needed (general knowledge)
+            append("\"tell me a joke about wifi\" -> {\"skills\":[],\"tools\":[],\"budget\":\"low\"}\n")
+            // Negative/trap: "powerful" ≠ device_power
+            append("\"how powerful is my phone\" -> {\"skills\":[\"device_info\"],\"tools\":[\"get_device_info\"],\"budget\":\"low\"}\n")
+            // Negative/trap: "connection" in abstract context ≠ connectivity
+            append("\"what's the connection between AI and art\" -> {\"skills\":[],\"tools\":[],\"budget\":\"medium\"}\n")
+            // Multi-intent: 3 skills
+            append("\"text mom I'm late and set a timer for 30 min\" -> {\"skills\":[\"sms\",\"contacts\",\"reminders\"],\"tools\":[\"send_sms\",\"get_contacts\",\"create_reminder\"],\"budget\":\"low\"}\n")
+            // Web search with summarization
+            append("\"search for the latest AI news and summarize\" -> {\"skills\":[\"web_search\"],\"tools\":[\"web_search\"],\"budget\":\"medium\"}\n")
+            // Heavy skill trigger
+            append("\"open youtube and play a video\" -> {\"skills\":[\"agent_display\"],\"tools\":[\"agent_display_create\",\"agent_display_interact\"],\"budget\":\"medium\"}\n")
+            // Trap: "search contacts" = contacts, NOT web_search
+            append("\"search my contacts for John\" -> {\"skills\":[\"contacts\"],\"tools\":[\"search_contacts\"],\"budget\":\"low\"}\n\n")
+            // Catalog
             append("Available skills:\n$catalog")
         }
         return MessagesRequest(
@@ -1195,7 +1278,8 @@ class SmartRouter(
     )
 
     /**
-     * Parses the routing LLM response into skill IDs, tool names, budget hint, and exclusions.
+     * Parses the routing LLM response into skill IDs, tool names, and budget hint.
+     * Also parses optional exclusions for backward compatibility (no longer prompted).
      * Supports both the new object format and the legacy array format.
      * Returns null on any parse failure.
      */
