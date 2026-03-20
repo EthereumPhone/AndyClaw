@@ -26,10 +26,12 @@ import java.net.InetAddress
 import java.net.URLEncoder
 import java.util.concurrent.TimeUnit
 import java.util.regex.Pattern
+import org.ethereumphone.andyclaw.led.LedMatrixController
 
 class WebSearchSkill(
     private val context: Context,
     private val isSafetyEnabled: () -> Boolean = { false },
+    private val ledController: LedMatrixController? = null,
 ) : AndyClawSkill {
     override val id = "web_search"
     override val name = "Web Search"
@@ -119,7 +121,30 @@ class WebSearchSkill(
 
     override val privilegedManifest: SkillManifest? = null
 
+    companion object {
+        private val SEARCH_EMOTICONS = listOf(
+            "(☞ﾟ∀ﾟ)☞",
+            "〈ᇂ_ᇂ |||〉",
+            "(ಡ_ಡ)☞",
+        )
+        private val FETCH_EMOTICONS = listOf(
+            "(☞ﾟ∀ﾟ)☞",
+            "(ಡ_ಡ)☞",
+            "〈ᇂ_ᇂ |||〉",
+        )
+    }
+
     override suspend fun execute(tool: String, params: JsonObject, tier: Tier): SkillResult {
+        // Show a searching/fetching emoticon on the terminal while working
+        val emoticon = when (tool) {
+            "web_search" -> SEARCH_EMOTICONS.random()
+            "fetch_webpage" -> FETCH_EMOTICONS.random()
+            else -> null
+        }
+        if (emoticon != null) {
+            ledController?.setTerminalText(emoticon)
+        }
+
         return when (tool) {
             "web_search" -> webSearch(params)
             "fetch_webpage" -> fetchWebpage(params)

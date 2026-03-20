@@ -48,13 +48,18 @@ class TerminalTextSkill(
             ToolDefinition(
                 name = "setTerminalText",
                 description = buildString {
-                    append("Display text or an emoticon on the dGEN1 terminal status bar. ")
-                    append("The terminal is designed for emoticons and visual displays. ")
-                    append("Use this to show status, mood, or small visual feedback. ")
+                    append("Display an ASCII emoticon on the dGEN1 terminal status bar. ")
+                    append("Pass a keyword and it will be auto-resolved to the matching ASCII emoticon. ")
+                    append("Use this to show mood, emotion, or action-appropriate ASCII art.\n\n")
                     append("You MUST use this in your first response to any conversation. ")
                     append("After the first response, use as appropriate to the mood. ")
                     append("Never announce when you set the terminal text.\n\n")
-                    append("Available emoticons:\n")
+                    append("Choose keywords that match the context of your response:\n")
+                    append("- Emotions: happy, sad, angry, love, excited, confused, cool, surprised, shy, nervous, chill, proud\n")
+                    append("- Actions: searching, internet, sending, thinking, coding, music, dance, magic, greeting, celebrate\n")
+                    append("- Reactions: success, done, fail, error, oops, wow, lol, shrug, facepalm, nice, bruh, oof, great\n")
+                    append("- Vibes: zen, lazy, sleep, gaming, flexing, evil, nerd, zombie, party\n\n")
+                    append("Full emoticon list (keyword → emoticon):\n")
                     append(Emoticons.AVAILABLE_EMOTICONS)
                 },
                 inputSchema = buildJsonObject {
