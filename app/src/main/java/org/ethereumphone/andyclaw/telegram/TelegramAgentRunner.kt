@@ -82,6 +82,7 @@ class TelegramAgentRunner(
             model = model,
             aiName = aiName,
             userStory = userStory,
+            soulContent = app.soulManager.read(),
             memoryManager = app.memoryManager,
             safetyLayer = app.createSafetyLayer(),
             smartRouter = if (app.securePrefs.smartRoutingEnabled.value) app.smartRouter else null,

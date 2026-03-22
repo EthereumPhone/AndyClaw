@@ -41,6 +41,7 @@ object PromptAssembler {
         tier: Tier,
         aiName: String? = null,
         userStory: String? = null,
+        soulContent: String? = null,
         safetyEnabled: Boolean = false,
         sessionNonce: String? = null,
         concisePrompt: Boolean = false,
@@ -73,6 +74,17 @@ object PromptAssembler {
             sb.appendLine("- You do NOT have root access, hardware-wallet integration, or ethOS-specific features")
         }
         sb.appendLine()
+
+        // Soul / personality
+        if (!soulContent.isNullOrBlank()) {
+            sb.appendLine("## Personality & Soul")
+            sb.appendLine("The following defines your personality, tone, and character traits. Follow these in all interactions:")
+            sb.appendLine()
+            sb.appendLine(soulContent)
+            sb.appendLine()
+            sb.appendLine("If the user asks you to change how you behave, speak, or your personality — use the `update_soul` tool to persist the change.")
+            sb.appendLine()
+        }
 
         // User story section
         if (!userStory.isNullOrBlank()) {
@@ -197,6 +209,16 @@ object PromptAssembler {
             sb.appendLine("If a tool fails, returns an error, or if a needed tool does not exist, you can use `execute_code` as a fallback.")
             sb.appendLine("Write Java/BeanShell code that calls Android APIs directly (e.g. AlarmManager, NotificationManager, ContentResolver, TelephonyManager, etc.).")
             sb.appendLine("This gives you full access to the Android platform — treat it as your escape hatch for anything the built-in tools cannot do.")
+            sb.appendLine()
+        }
+
+        // Custom tool creation hint
+        val hasCustomToolCreator = skills.any { it.id == "custom-tool-creator" }
+        if (hasCustomToolCreator) {
+            sb.appendLine("## Custom Tools")
+            sb.appendLine("If you find yourself repeatedly writing similar code with `execute_code`, create a reusable custom tool with `create_custom_tool`.")
+            sb.appendLine("Custom tools persist across conversations and become regular tools you can call by name.")
+            sb.appendLine("Always provide realistic test_params so the code is validated before saving.")
             sb.appendLine()
         }
 

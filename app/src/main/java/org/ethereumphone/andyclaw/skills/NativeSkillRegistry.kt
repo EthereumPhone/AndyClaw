@@ -31,7 +31,8 @@ class NativeSkillRegistry {
     fun register(skill: AndyClawSkill) {
         val isExternal = skill.id.startsWith("clawhub:") ||
                 skill.id.startsWith("ai:") ||
-                skill.id.startsWith("ext:")
+                skill.id.startsWith("ext:") ||
+                skill.id.startsWith("custom:")
 
         val allToolNames = skill.baseManifest.tools.map { it.name } +
                 (skill.privilegedManifest?.tools?.map { it.name } ?: emptyList())

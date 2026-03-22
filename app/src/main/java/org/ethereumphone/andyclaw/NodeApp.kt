@@ -47,6 +47,8 @@ import org.ethereumphone.andyclaw.skills.builtin.ShellSkill
 import org.ethereumphone.andyclaw.skills.builtin.AudioSkill
 import org.ethereumphone.andyclaw.skills.builtin.CalendarSkill
 import org.ethereumphone.andyclaw.skills.builtin.CodeExecutionSkill
+import org.ethereumphone.andyclaw.skills.builtin.CustomToolCreatorSkill
+import org.ethereumphone.andyclaw.skills.builtin.SoulSkill
 import org.ethereumphone.andyclaw.skills.builtin.ConnectivitySkill
 import org.ethereumphone.andyclaw.skills.builtin.DevicePowerSkill
 import org.ethereumphone.andyclaw.skills.builtin.PackageManagerSkill
@@ -104,6 +106,7 @@ class NodeApp : Application() {
     val runtime: NodeRuntime by lazy { NodeRuntime(this) }
     val securePrefs: SecurePrefs by lazy { SecurePrefs(this) }
     val userStoryManager: UserStoryManager by lazy { UserStoryManager(this) }
+    val soulManager: org.ethereumphone.andyclaw.soul.SoulManager by lazy { org.ethereumphone.andyclaw.soul.SoulManager(this) }
     val sessionManager: SessionManager by lazy { SessionManager(this) }
     val agentTxRepository: AgentTxRepository by lazy { AgentTxRepository(this) }
     val heartbeatLogStore: HeartbeatLogStore by lazy { HeartbeatLogStore(filesDir) }
@@ -200,6 +203,19 @@ class NodeApp : Application() {
     /** Directory where AI-created skills are stored. */
     val aiSkillsDir by lazy {
         java.io.File(filesDir, "ai-skills").also { it.mkdirs() }
+    }
+
+    /** Directory where LLM-created executable custom tools are stored. */
+    val customToolsDir by lazy {
+        java.io.File(filesDir, "custom-tools").also { it.mkdirs() }
+    }
+
+    val customToolStore by lazy {
+        org.ethereumphone.andyclaw.skills.customtools.CustomToolStore(customToolsDir)
+    }
+
+    val customToolExecutor by lazy {
+        org.ethereumphone.andyclaw.skills.customtools.CustomToolExecutor(this)
     }
 
     /** Skill registry for SKILL.md-based skills (ClawHub + local). */
@@ -314,6 +330,16 @@ class NodeApp : Application() {
             register(AudioSkill(this@NodeApp))
             register(DevicePowerSkill(this@NodeApp))
             register(CodeExecutionSkill(this@NodeApp))
+            // Soul — AI can read and update its own personality
+            register(SoulSkill(soulManager))
+            // Custom Tool Creator — AI can create reusable executable tools at runtime
+            register(CustomToolCreatorSkill(
+                context = this@NodeApp,
+                customToolStore = customToolStore,
+                customToolExecutor = customToolExecutor,
+                nativeSkillRegistry = this,
+                onToolsChanged = { syncCustomTools() },
+            ))
             // Reminders — schedule notifications at specific times
             register(ReminderSkill(this@NodeApp))
             // Cron Jobs — recurring scheduled agent executions via OS
@@ -575,6 +601,9 @@ class NodeApp : Application() {
         // Load any previously created AI skills on startup
         syncAiSkills()
 
+        // Load any previously created custom executable tools on startup
+        syncCustomTools()
+
         // Pre-load the Whisper model into RAM so voice transcription is instant.
         // The Q5_1 model (~60 MB on disk, ~388 MB in RAM) stays resident for the process lifetime.
         whisperTranscriber.warmUp(appScope)
@@ -772,5 +801,30 @@ class NodeApp : Application() {
         }
 
         Log.i(TAG, "Synced ${adapters.size} AI-created skill(s)")
+    }
+
+    /**
+     * Sync LLM-created custom executable tools into [NativeSkillRegistry].
+     *
+     * Removes stale `custom:` adapters, then registers fresh ones for every
+     * tool JSON found in [customToolsDir].
+     *
+     * Called on startup and after every create/delete via the
+     * [CustomToolCreatorSkill.onToolsChanged] callback.
+     */
+    private fun syncCustomTools() {
+        val stale = nativeSkillRegistry.getAll().filter { it.id.startsWith("custom:") }
+        for (skill in stale) {
+            nativeSkillRegistry.unregister(skill.id)
+        }
+
+        val tools = customToolStore.loadAll()
+        for (tool in tools) {
+            nativeSkillRegistry.register(
+                org.ethereumphone.andyclaw.skills.customtools.CustomToolAdapter(tool, customToolExecutor)
+            )
+        }
+
+        Log.i(TAG, "Synced ${tools.size} custom tool(s)")
     }
 }

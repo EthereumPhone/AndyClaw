@@ -65,6 +65,7 @@ class HeartbeatAgentRunner(
             model = model,
             aiName = aiName,
             userStory = userStory,
+            soulContent = app.soulManager.read(),
             safetyLayer = app.createSafetyLayer(),
             smartRouter = if (app.securePrefs.smartRoutingEnabled.value) app.smartRouter else null,
             budgetConfig = app.createBudgetConfig(),

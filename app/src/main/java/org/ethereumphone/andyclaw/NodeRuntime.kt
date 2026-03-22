@@ -177,6 +177,7 @@ class NodeRuntime(private val context: Context) {
         model: AnthropicModels = AnthropicModels.MINIMAX_M25,
         aiName: String? = null,
         userStory: String? = null,
+        soulContent: String? = null,
         enabledSkillIds: Set<String> = emptySet(),
     ): AgentLoop? {
         val client = llmClient ?: return null
@@ -184,6 +185,7 @@ class NodeRuntime(private val context: Context) {
         val tier = OsCapabilities.currentTier()
         val app = context as? NodeApp
         return AgentLoop(client, registry, tier, enabledSkillIds, model, aiName, userStory,
+            soulContent = soulContent,
             safetyLayer = app?.createSafetyLayer())
     }
 

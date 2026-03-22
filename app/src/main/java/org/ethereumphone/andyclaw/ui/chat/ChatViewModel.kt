@@ -193,6 +193,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 model = model,
                 aiName = app.userStoryManager.getAiName(),
                 userStory = app.userStoryManager.read(),
+                soulContent = app.soulManager.read(),
                 memoryManager = memoryManager,
                 safetyLayer = app.createSafetyLayer(),
                 smartRouter = if (app.securePrefs.smartRoutingEnabled.value) app.smartRouter else null,

@@ -34,6 +34,7 @@ class AgentLoop(
     private val model: AnthropicModels = AnthropicModels.MINIMAX_M25,
     private val aiName: String? = null,
     private val userStory: String? = null,
+    private val soulContent: String? = null,
     private val memoryManager: MemoryManager? = null,
     private val safetyLayer: SafetyLayer? = null,
     private val smartRouter: SmartRouter? = null,
@@ -174,6 +175,7 @@ class AgentLoop(
         val systemPrompt = buildString {
             append(PromptAssembler.assembleSystemPrompt(
                 skills, tier, aiName, userStory,
+                soulContent = soulContent,
                 safetyEnabled = safety?.config?.enabled == true,
                 sessionNonce = safety?.sessionNonce,
                 concisePrompt = budget?.preset?.concisePrompt == true,
