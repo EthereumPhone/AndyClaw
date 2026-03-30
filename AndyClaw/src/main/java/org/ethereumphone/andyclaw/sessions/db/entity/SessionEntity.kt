@@ -34,4 +34,8 @@ data class SessionEntity(
     val outputTokens: Int = 0,
     val totalTokens: Int = 0,
     val isAborted: Boolean = false,
+    /** Prompt token count from the last API call (context window usage). */
+    val lastContextUsed: Int = 0,
+    /** Model's total context window size in tokens. */
+    val contextLimit: Int = 0,
 )

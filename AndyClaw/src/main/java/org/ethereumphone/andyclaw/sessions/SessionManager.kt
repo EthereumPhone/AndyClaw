@@ -126,6 +126,14 @@ class SessionManager(
         repository.addTokenUsage(sessionId, inputDelta, outputDelta, totalDelta)
     }
 
+    suspend fun updateContextWindow(
+        sessionId: String,
+        lastContextUsed: Int,
+        contextLimit: Int,
+    ) {
+        repository.updateContextWindow(sessionId, lastContextUsed, contextLimit)
+    }
+
     // ── Sessions: Delete / Reset ─────────────────────────────────────
 
     /**

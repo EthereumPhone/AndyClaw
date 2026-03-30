@@ -109,6 +109,22 @@ interface SessionDao {
         updatedAt: Long,
     )
 
+    @Query(
+        """
+        UPDATE sessions SET
+            lastContextUsed = :lastContextUsed,
+            contextLimit = :contextLimit,
+            updatedAt = :updatedAt
+        WHERE id = :sessionId
+        """
+    )
+    suspend fun updateContextWindow(
+        sessionId: String,
+        lastContextUsed: Int,
+        contextLimit: Int,
+        updatedAt: Long,
+    )
+
     // ── Session reset (new sessionId-like reset: wipe messages, keep shell) ──
 
     @Query(

@@ -159,7 +159,7 @@ class HeartbeatAgentRunner(
                 return false
             }
 
-            override fun onComplete(fullText: String) {
+            override fun onComplete(fullText: String, tokenUsage: TokenUsageSnapshot?) {
                 Log.i(TAG, "=== HEARTBEAT RUN COMPLETE ===")
                 Log.i(TAG, "LLM full response: ${fullText.take(1000)}")
                 ledController.onPromptComplete(fullText)

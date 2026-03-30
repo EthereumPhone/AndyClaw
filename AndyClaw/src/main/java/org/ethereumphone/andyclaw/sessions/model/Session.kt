@@ -34,4 +34,8 @@ data class Session(
     val totalTokens: Int = 0,
     /** Whether the last run was user-aborted. */
     val isAborted: Boolean = false,
+    /** Prompt token count from the last API call (context window usage). */
+    val lastContextUsed: Int = 0,
+    /** Model's total context window size in tokens. */
+    val contextLimit: Int = 0,
 )

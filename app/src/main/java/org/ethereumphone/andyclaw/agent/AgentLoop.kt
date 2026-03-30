@@ -34,6 +34,20 @@ import org.ethereumphone.andyclaw.skills.SmartRouter
 import org.ethereumphone.andyclaw.skills.Tier
 import org.ethereumphone.andyclaw.skills.ToolSearchService
 
+/**
+ * Token usage snapshot returned at the end of an agent loop run.
+ * [lastInputTokens] is the prompt token count from the final API call —
+ * it represents the current conversation size inside the context window.
+ * [totalInputTokens] / [totalOutputTokens] are cumulative across all iterations.
+ */
+data class TokenUsageSnapshot(
+    val lastInputTokens: Int,
+    val totalInputTokens: Int,
+    val totalOutputTokens: Int,
+    val cacheReadTokens: Int,
+    val cacheWriteTokens: Int,
+)
+
 class AgentLoop(
     private val client: LlmClient,
     private val skillRegistry: NativeSkillRegistry,
@@ -235,7 +249,7 @@ class AgentLoop(
          * arrives as the next user message in a new turn.
          */
         fun onAskUserDisplayed(request: AskUserRequest) {}
-        fun onComplete(fullText: String)
+        fun onComplete(fullText: String, tokenUsage: TokenUsageSnapshot? = null)
         fun onError(error: Throwable)
     }
 
@@ -386,6 +400,7 @@ class AgentLoop(
         var totalOutputTokens = 0
         var totalCacheReadTokens = 0
         var totalCacheWriteTokens = 0
+        var lastInputTokens = 0
         var totalTokensSavedByMaxTokens = 0
         var totalCharsTruncated = 0
         var truncationCount = 0
@@ -469,6 +484,8 @@ class AgentLoop(
                             totalOutputTokens += u.outputTokens
                             totalCacheReadTokens += u.cacheReadTokens
                             totalCacheWriteTokens += u.cacheWriteTokens
+                            // Full prompt size = non-cached + cached tokens
+                            lastInputTokens = u.inputTokens + u.cacheReadTokens + u.cacheWriteTokens
                             val cacheInfo = if (u.cacheReadTokens > 0 || u.cacheWriteTokens > 0) {
                                 " cache_read=${u.cacheReadTokens} cache_write=${u.cacheWriteTokens}"
                             } else ""
@@ -508,7 +525,13 @@ class AgentLoop(
                 if (toolUseBlocks.isEmpty()) {
                     Log.i(TAG, "No tool calls in response, agent loop complete after $iterations iteration(s). Total text: ${fullText.length} chars")
                     logRunSummary(iterations, totalInputTokens, totalOutputTokens, totalCacheReadTokens, totalCacheWriteTokens, totalTokensSavedByMaxTokens, totalCharsTruncated, truncationCount, budget)
-                    callbacks.onComplete(fullText.toString())
+                    callbacks.onComplete(fullText.toString(), TokenUsageSnapshot(
+                        lastInputTokens = lastInputTokens,
+                        totalInputTokens = totalInputTokens,
+                        totalOutputTokens = totalOutputTokens,
+                        cacheReadTokens = totalCacheReadTokens,
+                        cacheWriteTokens = totalCacheWriteTokens,
+                    ))
                     return
                 }
                 Log.i(TAG, "LLM requested ${toolUseBlocks.size} tool call(s): ${toolUseBlocks.joinToString { it.name }}")
@@ -643,7 +666,13 @@ class AgentLoop(
 
             // Max iterations reached
             logRunSummary(iterations, totalInputTokens, totalOutputTokens, totalCacheReadTokens, totalCacheWriteTokens, totalTokensSavedByMaxTokens, totalCharsTruncated, truncationCount, budget)
-            callbacks.onComplete(fullText.toString())
+            callbacks.onComplete(fullText.toString(), TokenUsageSnapshot(
+                lastInputTokens = lastInputTokens,
+                totalInputTokens = totalInputTokens,
+                totalOutputTokens = totalOutputTokens,
+                cacheReadTokens = totalCacheReadTokens,
+                cacheWriteTokens = totalCacheWriteTokens,
+            ))
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
