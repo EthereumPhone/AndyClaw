@@ -101,6 +101,9 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private val _askUserRequest = MutableStateFlow<org.ethereumphone.andyclaw.agent.AskUserRequest?>(null)
     val askUserRequest: StateFlow<org.ethereumphone.andyclaw.agent.AskUserRequest?> = _askUserRequest.asStateFlow()
 
+    /** Pending ask_user request stored during the turn, shown after onComplete. */
+    private var pendingAskUserRequest: org.ethereumphone.andyclaw.agent.AskUserRequest? = null
+
     private val _agentDisplayBitmap = MutableStateFlow<Bitmap?>(null)
     val agentDisplayBitmap: StateFlow<Bitmap?> = _agentDisplayBitmap.asStateFlow()
 
@@ -285,8 +288,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 }
 
                 override fun onAskUserDisplayed(request: org.ethereumphone.andyclaw.agent.AskUserRequest) {
-                    // Store the request — the overlay will show after the turn completes
-                    _askUserRequest.value = request
+                    // Store pending — overlay shown after turn completes (onComplete)
+                    pendingAskUserRequest = request
                 }
 
                 override suspend fun onApprovalNeeded(
@@ -345,9 +348,16 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
                     // Auto-store conversation turn in memory for future context
                     autoStoreConversationTurn(text, fullText)
+
+                    // Show ask_user overlay now that the turn is fully complete
+                    pendingAskUserRequest?.let {
+                        _askUserRequest.value = it
+                        pendingAskUserRequest = null
+                    }
                 }
 
                 override fun onError(error: Throwable) {
+                    pendingAskUserRequest = null
                     // Flush any text that was streamed before the error
                     flushStreamingText(sid)
                     Log.e("ChatViewModel", "LLM request failed: ${error.javaClass.simpleName}: ${error.message}", error)
