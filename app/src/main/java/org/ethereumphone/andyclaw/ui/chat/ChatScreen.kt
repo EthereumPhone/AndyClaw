@@ -10,8 +10,10 @@ import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -60,6 +62,7 @@ import org.ethereumphone.andyclaw.ui.components.GlowStyle
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
@@ -466,11 +469,10 @@ private fun AskUserOverlay(
     val questions = request?.questions ?: emptyList()
     var currentIndex by remember { mutableStateOf(0) }
 
-    // Per-question state: selections for multi/ranked, custom text for single/multi
-    val selections = remember { mutableStateListOf<MutableList<String>>() }
+    // Per-question state — immutable inner lists; replace element to trigger recomposition
+    val selections = remember { mutableStateListOf<List<String>>() }
     val customTexts = remember { mutableStateListOf<String>() }
-    // For ranked choice: the ordering
-    val rankedOrders = remember { mutableStateListOf<MutableList<String>>() }
+    val rankedOrders = remember { mutableStateListOf<List<String>>() }
 
     // Reset state when new request arrives
     LaunchedEffect(request) {
@@ -479,22 +481,28 @@ private fun AskUserOverlay(
         customTexts.clear()
         rankedOrders.clear()
         questions.forEach { q ->
-            selections.add(mutableListOf())
+            selections.add(emptyList())
             customTexts.add("")
-            rankedOrders.add(q.options.toMutableList())
+            rankedOrders.add(q.options.toList())
         }
     }
 
     val q = questions.getOrNull(currentIndex)
+    val curSelections = selections.getOrNull(currentIndex) ?: emptyList()
+    val curCustom = customTexts.getOrNull(currentIndex) ?: ""
+    val curRanked = rankedOrders.getOrNull(currentIndex) ?: emptyList()
+
     val hasAnswer = when (q?.type) {
-        org.ethereumphone.andyclaw.agent.QuestionType.SINGLE_SELECT ->
-            selections.getOrNull(currentIndex)?.isNotEmpty() == true || customTexts.getOrNull(currentIndex)?.isNotBlank() == true
-        org.ethereumphone.andyclaw.agent.QuestionType.MULTI_SELECT ->
-            selections.getOrNull(currentIndex)?.isNotEmpty() == true || customTexts.getOrNull(currentIndex)?.isNotBlank() == true
-        org.ethereumphone.andyclaw.agent.QuestionType.RANKED_CHOICE -> true // always has an order
+        org.ethereumphone.andyclaw.agent.QuestionType.SINGLE_SELECT -> curSelections.isNotEmpty() || curCustom.isNotBlank()
+        org.ethereumphone.andyclaw.agent.QuestionType.MULTI_SELECT -> curSelections.isNotEmpty() || curCustom.isNotBlank()
+        org.ethereumphone.andyclaw.agent.QuestionType.RANKED_CHOICE -> true
         null -> false
     }
     val isLastQuestion = currentIndex == questions.size - 1
+
+    fun updateSelections(index: Int, value: List<String>) { if (index in selections.indices) selections[index] = value }
+    fun updateCustom(index: Int, value: String) { if (index in customTexts.indices) customTexts[index] = value }
+    fun updateRanked(index: Int, value: List<String>) { if (index in rankedOrders.indices) rankedOrders[index] = value }
 
     fun buildResponse(): org.ethereumphone.andyclaw.agent.AskUserResponse {
         val answers = questions.mapIndexed { i, question ->
@@ -506,14 +514,15 @@ private fun AskUserOverlay(
                     org.ethereumphone.andyclaw.agent.QuestionAnswer(question.question, answer)
                 }
                 org.ethereumphone.andyclaw.agent.QuestionType.MULTI_SELECT -> {
-                    val sels = selections.getOrNull(i)?.toList() ?: emptyList()
+                    val sels = selections.getOrNull(i) ?: emptyList()
                     val custom = customTexts.getOrNull(i) ?: ""
                     val all = if (custom.isNotBlank()) sels + custom else sels
                     org.ethereumphone.andyclaw.agent.QuestionAnswer(question.question, all.joinToString(", "), all)
                 }
                 org.ethereumphone.andyclaw.agent.QuestionType.RANKED_CHOICE -> {
-                    val order = rankedOrders.getOrNull(i)?.toList() ?: emptyList()
-                    org.ethereumphone.andyclaw.agent.QuestionAnswer(question.question, order.joinToString(", "), order)
+                    val order = rankedOrders.getOrNull(i) ?: emptyList()
+                    val filtered = order.filter { it.isNotBlank() }
+                    org.ethereumphone.andyclaw.agent.QuestionAnswer(question.question, filtered.joinToString(", "), filtered)
                 }
             }
         }
@@ -576,57 +585,39 @@ private fun AskUserOverlay(
                 org.ethereumphone.andyclaw.agent.QuestionType.SINGLE_SELECT -> {
                     SingleSelectBody(
                         options = q.options,
-                        selectedOption = selections.getOrNull(currentIndex)?.firstOrNull(),
-                        customText = customTexts.getOrNull(currentIndex) ?: "",
+                        selectedOption = curSelections.firstOrNull(),
+                        customText = curCustom,
                         accentColor = accentColor,
                         onSelectOption = { opt ->
-                            selections.getOrNull(currentIndex)?.apply { clear(); add(opt) }
-                            // Clear custom text when an option is selected
-                            if (currentIndex < customTexts.size) customTexts[currentIndex] = ""
+                            updateSelections(currentIndex, listOf(opt))
+                            updateCustom(currentIndex, "")
                         },
                         onCustomTextChanged = { text ->
-                            if (currentIndex < customTexts.size) customTexts[currentIndex] = text
-                            // Clear option selection when typing custom
-                            if (text.isNotEmpty()) selections.getOrNull(currentIndex)?.clear()
+                            updateCustom(currentIndex, text)
+                            if (text.isNotEmpty()) updateSelections(currentIndex, emptyList())
                         },
                     )
                 }
                 org.ethereumphone.andyclaw.agent.QuestionType.MULTI_SELECT -> {
                     MultiSelectBody(
                         options = q.options,
-                        selectedOptions = selections.getOrNull(currentIndex) ?: mutableListOf(),
-                        customText = customTexts.getOrNull(currentIndex) ?: "",
+                        selectedOptions = curSelections,
+                        customText = curCustom,
                         accentColor = accentColor,
                         onToggleOption = { opt ->
-                            selections.getOrNull(currentIndex)?.let { sel ->
-                                if (opt in sel) sel.remove(opt) else sel.add(opt)
-                            }
+                            val cur = curSelections
+                            updateSelections(currentIndex, if (opt in cur) cur - opt else cur + opt)
                         },
                         onCustomTextChanged = { text ->
-                            if (currentIndex < customTexts.size) customTexts[currentIndex] = text
+                            updateCustom(currentIndex, text)
                         },
                     )
                 }
                 org.ethereumphone.andyclaw.agent.QuestionType.RANKED_CHOICE -> {
                     RankedChoiceBody(
-                        order = rankedOrders.getOrNull(currentIndex) ?: mutableListOf(),
+                        order = curRanked,
                         accentColor = accentColor,
-                        onMoveUp = { idx ->
-                            rankedOrders.getOrNull(currentIndex)?.let { list ->
-                                if (idx > 0) {
-                                    val item = list.removeAt(idx)
-                                    list.add(idx - 1, item)
-                                }
-                            }
-                        },
-                        onMoveDown = { idx ->
-                            rankedOrders.getOrNull(currentIndex)?.let { list ->
-                                if (idx < list.size - 1) {
-                                    val item = list.removeAt(idx)
-                                    list.add(idx + 1, item)
-                                }
-                            }
-                        },
+                        onReorder = { newList -> updateRanked(currentIndex, newList) },
                     )
                 }
             }
@@ -751,7 +742,7 @@ private fun SingleSelectBody(
 @Composable
 private fun MultiSelectBody(
     options: List<String>,
-    selectedOptions: MutableList<String>,
+    selectedOptions: List<String>,
     customText: String,
     accentColor: androidx.compose.ui.graphics.Color,
     onToggleOption: (String) -> Unit,
@@ -803,57 +794,85 @@ private fun MultiSelectBody(
     }
 }
 
-// ── Ranked Choice: reorder items with up/down arrows ─────────────────
+// ── Ranked Choice: drag-to-reorder + custom entry at bottom ──────────
 
 @Composable
 private fun RankedChoiceBody(
-    order: MutableList<String>,
+    order: List<String>,
     accentColor: androidx.compose.ui.graphics.Color,
-    onMoveUp: (Int) -> Unit,
-    onMoveDown: (Int) -> Unit,
+    onReorder: (List<String>) -> Unit,
 ) {
-    LazyColumn(modifier = Modifier.fillMaxWidth().heightIn(max = 200.dp)) {
-        items(order.size, key = { order[it] }) { idx ->
-            val item = order[idx]
-            Row(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                // Rank number
-                Text(
-                    text = "${idx + 1}.",
-                    style = TextStyle(fontFamily = FontFamily.Monospace, fontSize = 14.sp, color = accentColor, shadow = GlowStyle.body(accentColor)),
-                    modifier = Modifier.width(28.dp),
-                )
-                // Item name
-                Text(
-                    text = item,
-                    style = TextStyle(fontFamily = FontFamily.Monospace, fontSize = 14.sp, color = accentColor.copy(alpha = 0.8f)),
-                    modifier = Modifier.weight(1f),
-                )
-                // Up arrow
-                Text(
-                    text = "▲",
-                    style = TextStyle(
-                        fontSize = 16.sp,
-                        color = if (idx > 0) accentColor else accentColor.copy(alpha = 0.2f),
-                    ),
+    var dragIndex by remember { mutableStateOf(-1) }
+    var dragOffsetY by remember { mutableStateOf(0f) }
+    val itemHeightPx = remember { mutableStateOf(0f) }
+    val haptic = LocalHapticFeedback.current
+
+    Column(modifier = Modifier.fillMaxWidth().heightIn(max = 240.dp)) {
+        order.forEachIndexed { idx, item ->
+                val isDragged = idx == dragIndex
+                val offsetY = if (isDragged) dragOffsetY else 0f
+
+                Row(
                     modifier = Modifier
-                        .clickable(indication = null, interactionSource = remember { MutableInteractionSource() }, enabled = idx > 0) { onMoveUp(idx) }
-                        .padding(horizontal = 8.dp),
-                )
-                // Down arrow
-                Text(
-                    text = "▼",
-                    style = TextStyle(
-                        fontSize = 16.sp,
-                        color = if (idx < order.size - 1) accentColor else accentColor.copy(alpha = 0.2f),
-                    ),
-                    modifier = Modifier
-                        .clickable(indication = null, interactionSource = remember { MutableInteractionSource() }, enabled = idx < order.size - 1) { onMoveDown(idx) }
-                        .padding(horizontal = 8.dp),
-                )
+                        .fillMaxWidth()
+                        .offset(y = with(androidx.compose.ui.platform.LocalDensity.current) { offsetY.toDp() })
+                        .then(if (isDragged) Modifier.background(accentColor.copy(alpha = 0.15f)) else Modifier)
+                        // Use Unit as key so the gesture detector survives reorders
+                        .pointerInput(Unit) {
+                            detectDragGesturesAfterLongPress(
+                                onDragStart = {
+                                    dragIndex = idx
+                                    dragOffsetY = 0f
+                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                },
+                                onDrag = { change, dragAmount ->
+                                    change.consume()
+                                    dragOffsetY += dragAmount.y
+                                    val rowH = itemHeightPx.value
+                                    if (rowH > 0f) {
+                                        val targetIdx = (dragIndex + (dragOffsetY / rowH).toInt()).coerceIn(0, order.size - 1)
+                                        if (targetIdx != dragIndex) {
+                                            val newList = order.toMutableList()
+                                            val moved = newList.removeAt(dragIndex)
+                                            newList.add(targetIdx, moved)
+                                            onReorder(newList)
+                                            dragOffsetY -= (targetIdx - dragIndex) * rowH
+                                            dragIndex = targetIdx
+                                        }
+                                    }
+                                },
+                                onDragEnd = { dragIndex = -1; dragOffsetY = 0f },
+                                onDragCancel = { dragIndex = -1; dragOffsetY = 0f },
+                            )
+                        }
+                        .onGloballyPositioned { coords ->
+                            if (itemHeightPx.value == 0f) {
+                                itemHeightPx.value = coords.size.height.toFloat()
+                            }
+                        }
+                        .padding(horizontal = 16.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = "${idx + 1}.",
+                        style = TextStyle(fontFamily = FontFamily.Monospace, fontSize = 14.sp, color = accentColor, shadow = GlowStyle.body(accentColor)),
+                        modifier = Modifier.width(28.dp),
+                    )
+                    Text(
+                        text = item,
+                        style = TextStyle(
+                            fontFamily = FontFamily.Monospace, fontSize = 14.sp,
+                            color = if (isDragged) accentColor else accentColor.copy(alpha = 0.8f),
+                            shadow = if (isDragged) GlowStyle.body(accentColor) else null,
+                        ),
+                        modifier = Modifier.weight(1f),
+                    )
+                    Text(
+                        text = "≡",
+                        style = TextStyle(fontSize = 18.sp, color = accentColor.copy(alpha = 0.4f)),
+                        modifier = Modifier.padding(horizontal = 8.dp),
+                    )
+                }
             }
-        }
     }
 }
