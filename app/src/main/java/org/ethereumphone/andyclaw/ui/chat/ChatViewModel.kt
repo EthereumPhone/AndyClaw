@@ -17,6 +17,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import org.ethereumphone.andyclaw.NodeApp
 import org.ethereumphone.andyclaw.agent.AgentLoop
+import org.ethereumphone.andyclaw.agent.TokenUsageSnapshot
 import org.ethereumphone.andyclaw.llm.AnthropicModels
 import org.ethereumphone.andyclaw.llm.ContentBlock
 import org.ethereumphone.andyclaw.llm.Message
@@ -55,6 +56,19 @@ data class ChatUiMessage(
     val isStreaming: Boolean = false,
     val isSecurityBlock: Boolean = false,
 )
+
+/**
+ * Snapshot of how much of the model's context window is currently in use.
+ * [usedTokens] is the prompt size from the last API call (conversation + system + tools).
+ * [maxTokens] is the model's total context window.
+ */
+data class ContextWindowState(
+    val usedTokens: Int = 0,
+    val maxTokens: Int = 0,
+) {
+    val percentage: Float get() = if (maxTokens > 0) usedTokens.toFloat() / maxTokens else 0f
+    val isAvailable: Boolean get() = maxTokens > 0 && usedTokens > 0
+}
 
 class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
@@ -104,6 +118,9 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     /** Pending ask_user request stored during the turn, shown after onComplete. */
     private var pendingAskUserRequest: org.ethereumphone.andyclaw.agent.AskUserRequest? = null
 
+    private val _contextWindow = MutableStateFlow(ContextWindowState())
+    val contextWindow: StateFlow<ContextWindowState> = _contextWindow.asStateFlow()
+
     private val _agentDisplayBitmap = MutableStateFlow<Bitmap?>(null)
     val agentDisplayBitmap: StateFlow<Bitmap?> = _agentDisplayBitmap.asStateFlow()
 
@@ -142,12 +159,24 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     ui
                 }
             }
+
+            // Restore context window state from persisted session data
+            val session = sessionManager.getSession(sessionId)
+            if (session != null && session.lastContextUsed > 0) {
+                _contextWindow.value = ContextWindowState(
+                    usedTokens = session.lastContextUsed,
+                    maxTokens = session.contextLimit,
+                )
+            } else {
+                _contextWindow.value = ContextWindowState()
+            }
         }
     }
 
     fun newSession() {
         _sessionId.value = null
         _messages.value = emptyList()
+        _contextWindow.value = ContextWindowState()
     }
 
     fun sendMessage(text: String) {
@@ -338,13 +367,29 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     }
                 }
 
-                override fun onComplete(fullText: String) {
+                override fun onComplete(fullText: String, tokenUsage: TokenUsageSnapshot?) {
                     // Flush any remaining streamed text as a final bubble
                     flushStreamingText(sid)
                     _isStreaming.value = false
                     _currentToolExecution.value = null
                     stopDisplayCapture()
                     ledController.onPromptComplete(fullText)
+
+                    // Update context window usage
+                    if (tokenUsage != null) {
+                        updateContextWindow(tokenUsage, modelId)
+                        // Persist token usage + context window state to session DB
+                        viewModelScope.launch {
+                            sessionManager.addTokenUsage(
+                                sid,
+                                tokenUsage.totalInputTokens,
+                                tokenUsage.totalOutputTokens,
+                                tokenUsage.totalInputTokens + tokenUsage.totalOutputTokens,
+                            )
+                            val ctx = _contextWindow.value
+                            sessionManager.updateContextWindow(sid, ctx.usedTokens, ctx.maxTokens)
+                        }
+                    }
 
                     // Auto-store conversation turn in memory for future context
                     autoStoreConversationTurn(text, fullText)
@@ -508,6 +553,31 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
      * Skips very short messages (< 20 chars) which are unlikely to contain
      * memorable facts. Respects the user's auto-store preference from Settings.
      */
+    /**
+     * Resolve the model's context window and update [_contextWindow] with the
+     * latest token usage from the API response.
+     */
+    private fun updateContextWindow(tokenUsage: TokenUsageSnapshot, modelId: String) {
+        // lastInputTokens already includes non-cached + cached tokens = true full prompt size.
+        // Don't add totalOutputTokens — output becomes part of next turn's input automatically.
+        val used = tokenUsage.lastInputTokens
+
+        // Try OpenRouter registry first (dynamic, most accurate)
+        val registryModel = app.openRouterModelRegistry.getModelById(modelId)
+        val contextLimit = if (registryModel != null && registryModel.contextLength > 0) {
+            registryModel.contextLength
+        } else {
+            // Fall back to static enum value
+            AnthropicModels.fromModelId(modelId)?.contextWindow ?: 0
+        }
+
+        _contextWindow.value = ContextWindowState(
+            usedTokens = used,
+            maxTokens = contextLimit,
+        )
+        Log.d("ChatViewModel", "ContextWindow | used=$used/$contextLimit (${String.format("%.1f", if (contextLimit > 0) used * 100f / contextLimit else 0f)}%) inputTokens=${tokenUsage.lastInputTokens} (cache_read=${tokenUsage.cacheReadTokens} cache_write=${tokenUsage.cacheWriteTokens})")
+    }
+
     private fun autoStoreConversationTurn(userText: String, @Suppress("UNUSED_PARAMETER") assistantText: String) {
         val autoStoreEnabled = app.securePrefs.getString("memory.autoStore") != "false"
         if (!autoStoreEnabled) return

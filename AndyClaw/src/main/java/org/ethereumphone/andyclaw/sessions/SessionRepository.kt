@@ -146,6 +146,17 @@ class SessionRepository(
         dao.addTokenUsage(sessionId, inputDelta, outputDelta, totalDelta, System.currentTimeMillis())
     }
 
+    /**
+     * Persist the latest context window usage for a session.
+     */
+    suspend fun updateContextWindow(
+        sessionId: String,
+        lastContextUsed: Int,
+        contextLimit: Int,
+    ) = withContext(Dispatchers.IO) {
+        dao.updateContextWindow(sessionId, lastContextUsed, contextLimit, System.currentTimeMillis())
+    }
+
     // ── Sessions: Delete / Reset ─────────────────────────────────────
 
     /**
@@ -245,6 +256,8 @@ class SessionRepository(
         outputTokens = outputTokens,
         totalTokens = totalTokens,
         isAborted = isAborted,
+        lastContextUsed = lastContextUsed,
+        contextLimit = contextLimit,
     )
 
     private fun SessionMessageEntity.toDomain() = SessionMessage(

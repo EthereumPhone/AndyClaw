@@ -4,6 +4,8 @@ import android.content.Context
 import androidx.room.Database
 import androidx.room.Room
 import androidx.room.RoomDatabase
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
 import org.ethereumphone.andyclaw.sessions.db.entity.SessionEntity
 import org.ethereumphone.andyclaw.sessions.db.entity.SessionMessageEntity
 
@@ -17,7 +19,7 @@ import org.ethereumphone.andyclaw.sessions.db.entity.SessionMessageEntity
  */
 @Database(
     entities = [SessionEntity::class, SessionMessageEntity::class],
-    version = 1,
+    version = 2,
     exportSchema = true,
 )
 abstract class SessionDatabase : RoomDatabase() {
@@ -26,6 +28,14 @@ abstract class SessionDatabase : RoomDatabase() {
 
     companion object {
         private const val DB_NAME = "andyclaw_sessions.db"
+
+        /** v1 → v2: add context window tracking columns to sessions. */
+        private val MIGRATION_1_2 = object : Migration(1, 2) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE sessions ADD COLUMN lastContextUsed INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE sessions ADD COLUMN contextLimit INTEGER NOT NULL DEFAULT 0")
+            }
+        }
 
         @Volatile
         private var INSTANCE: SessionDatabase? = null
@@ -37,6 +47,7 @@ abstract class SessionDatabase : RoomDatabase() {
                     SessionDatabase::class.java,
                     DB_NAME,
                 )
+                    .addMigrations(MIGRATION_1_2)
                     .build()
                     .also { INSTANCE = it }
             }

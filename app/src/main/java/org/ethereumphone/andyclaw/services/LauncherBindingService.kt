@@ -1076,7 +1076,7 @@ class LauncherBindingService : Service() {
                 return allGranted
             }
 
-            override fun onComplete(fullText: String) {
+            override fun onComplete(fullText: String, tokenUsage: org.ethereumphone.andyclaw.agent.TokenUsageSnapshot?) {
                 // Stop display capture if still running
                 if (displayCaptureJob?.isActive == true) {
                     stopDisplayCapture(callback)
@@ -1110,9 +1110,9 @@ class LauncherBindingService : Service() {
 
         val fullResponseText = StringBuilder()
         val wrappedCallbacks = object : AgentLoop.Callbacks by callbacks {
-            override fun onComplete(fullText: String) {
+            override fun onComplete(fullText: String, tokenUsage: org.ethereumphone.andyclaw.agent.TokenUsageSnapshot?) {
                 fullResponseText.append(fullText)
-                callbacks.onComplete(fullText)
+                callbacks.onComplete(fullText, tokenUsage)
                 if (fromLockscreen) {
                     scope.launch {
                         try {

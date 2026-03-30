@@ -4,8 +4,10 @@ enum class AnthropicModels(
     val modelId: String,
     val maxTokens: Int,
     val provider: LlmProvider,
+    /** Total context window size in tokens (input + output). 0 = unknown. */
+    val contextWindow: Int = 0,
 ) {
-    // OpenRouter models
+    // OpenRouter models — contextWindow resolved dynamically via OpenRouterModelRegistry
     CLAUDE_OPUS_4_6("anthropic/claude-opus-4-6", 8192, LlmProvider.OPEN_ROUTER),
     CLAUDE_SONNET_4_6("anthropic/claude-sonnet-4-6", 8192, LlmProvider.OPEN_ROUTER),
     MINIMAX_M25("minimax/minimax-m2.5", 8192, LlmProvider.OPEN_ROUTER),
@@ -19,27 +21,27 @@ enum class AnthropicModels(
     GEMMA_3_4B_IT("google/gemma-3-4b-it", 8192, LlmProvider.OPEN_ROUTER),
 
     // Claude setup-token models (direct Anthropic API)
-    CLAUDE_OAUTH_OPUS_4_6("claude-opus-4-6", 8192, LlmProvider.CLAUDE_OAUTH),
-    CLAUDE_OAUTH_SONNET_4_6("claude-sonnet-4-6", 8192, LlmProvider.CLAUDE_OAUTH),
-    CLAUDE_OAUTH_HAIKU_3_5("claude-3-5-haiku-latest", 8192, LlmProvider.CLAUDE_OAUTH),
+    CLAUDE_OAUTH_OPUS_4_6("claude-opus-4-6", 8192, LlmProvider.CLAUDE_OAUTH, contextWindow = 1_000_000),
+    CLAUDE_OAUTH_SONNET_4_6("claude-sonnet-4-6", 8192, LlmProvider.CLAUDE_OAUTH, contextWindow = 1_000_000),
+    CLAUDE_OAUTH_HAIKU_3_5("claude-3-5-haiku-latest", 8192, LlmProvider.CLAUDE_OAUTH, contextWindow = 200_000),
 
     // Tinfoil TEE models
-    TINFOIL_KIMI_K25("kimi-k2-5", 8192, LlmProvider.TINFOIL),
-    TINFOIL_LLAMA3_3_70B("llama3-3-70b", 8192, LlmProvider.TINFOIL),
-    TINFOIL_DEEPSEEK_R1("deepseek-r1-0528", 8192, LlmProvider.TINFOIL),
-    TINFOIL_GPT_OSS_120B("gpt-oss-120b", 8192, LlmProvider.TINFOIL),
+    TINFOIL_KIMI_K25("kimi-k2-5", 8192, LlmProvider.TINFOIL, contextWindow = 262_144),
+    TINFOIL_LLAMA3_3_70B("llama3-3-70b", 8192, LlmProvider.TINFOIL, contextWindow = 131_072),
+    TINFOIL_DEEPSEEK_R1("deepseek-r1-0528", 8192, LlmProvider.TINFOIL, contextWindow = 131_072),
+    TINFOIL_GPT_OSS_120B("gpt-oss-120b", 8192, LlmProvider.TINFOIL, contextWindow = 131_072),
 
     // OpenAI models — flagship/frontier
-    OPENAI_GPT_5_4("gpt-5.4", 128000, LlmProvider.OPENAI),
-    OPENAI_GPT_5("gpt-5", 128000, LlmProvider.OPENAI),
-    OPENAI_GPT_5_MINI("gpt-5-mini", 128000, LlmProvider.OPENAI),
-    OPENAI_GPT_4_1("gpt-4.1", 32768, LlmProvider.OPENAI),
-    OPENAI_GPT_4_1_MINI("gpt-4.1-mini", 32768, LlmProvider.OPENAI),
-    OPENAI_GPT_4_1_NANO("gpt-4.1-nano", 32768, LlmProvider.OPENAI),
-    OPENAI_GPT_4O("gpt-4o", 16384, LlmProvider.OPENAI),
-    OPENAI_GPT_4O_MINI("gpt-4o-mini", 16384, LlmProvider.OPENAI),
-    OPENAI_O3("o3", 100000, LlmProvider.OPENAI),
-    OPENAI_O4_MINI("o4-mini", 100000, LlmProvider.OPENAI),
+    OPENAI_GPT_5_4("gpt-5.4", 128000, LlmProvider.OPENAI, contextWindow = 1_050_000),
+    OPENAI_GPT_5("gpt-5", 128000, LlmProvider.OPENAI, contextWindow = 128_000),
+    OPENAI_GPT_5_MINI("gpt-5-mini", 128000, LlmProvider.OPENAI, contextWindow = 128_000),
+    OPENAI_GPT_4_1("gpt-4.1", 32768, LlmProvider.OPENAI, contextWindow = 1_000_000),
+    OPENAI_GPT_4_1_MINI("gpt-4.1-mini", 32768, LlmProvider.OPENAI, contextWindow = 1_000_000),
+    OPENAI_GPT_4_1_NANO("gpt-4.1-nano", 32768, LlmProvider.OPENAI, contextWindow = 1_000_000),
+    OPENAI_GPT_4O("gpt-4o", 16384, LlmProvider.OPENAI, contextWindow = 128_000),
+    OPENAI_GPT_4O_MINI("gpt-4o-mini", 16384, LlmProvider.OPENAI, contextWindow = 128_000),
+    OPENAI_O3("o3", 100000, LlmProvider.OPENAI, contextWindow = 200_000),
+    OPENAI_O4_MINI("o4-mini", 100000, LlmProvider.OPENAI, contextWindow = 200_000),
 
     // Venice AI models
     VENICE_CLAUDE_OPUS_4_6("claude-opus-4-6", 8192, LlmProvider.VENICE),
@@ -88,7 +90,7 @@ enum class AnthropicModels(
     VENICE_UNCENSORED_RP("venice-uncensored-role-play", 8192, LlmProvider.VENICE),
 
     // Local models
-    QWEN2_5_1_5B("qwen2.5-1.5b-instruct", 4096, LlmProvider.LOCAL);
+    QWEN2_5_1_5B("qwen2.5-1.5b-instruct", 4096, LlmProvider.LOCAL, contextWindow = 131_072);
 
     companion object {
         private val legacyModelAliases = mapOf(

@@ -100,6 +100,7 @@ fun ChatScreen(
     val approvalRequest by viewModel.approvalRequest.collectAsState()
     val askUserRequest by viewModel.askUserRequest.collectAsState()
     val displayBitmap by viewModel.agentDisplayBitmap.collectAsState()
+    val contextWindow by viewModel.contextWindow.collectAsState()
     val navigationEvent by viewModel.navigationEvent.collectAsState()
     val context = LocalContext.current
     val app = context.applicationContext as NodeApp
@@ -226,6 +227,14 @@ fun ChatScreen(
                         modifier = Modifier.size(32.dp)
                     )
                 }
+            }
+
+            // Context window usage indicator
+            if (contextWindow.isAvailable) {
+                ContextWindowIndicator(
+                    state = contextWindow,
+                    accentColor = primaryColor,
+                )
             }
 
             // Messages area
@@ -875,4 +884,77 @@ private fun RankedChoiceBody(
                 }
             }
     }
+}
+
+/**
+ * Thin bar showing context window usage. Appears below the top bar once
+ * token data is available. Changes color as the window fills up:
+ * accent → yellow → red.
+ */
+@Composable
+private fun ContextWindowIndicator(
+    state: ContextWindowState,
+    accentColor: androidx.compose.ui.graphics.Color,
+    modifier: Modifier = Modifier,
+) {
+    val pct = state.percentage.coerceIn(0f, 1f)
+    val barColor = when {
+        pct >= 0.9f -> androidx.compose.ui.graphics.Color(0xFFFF4444)
+        pct >= 0.7f -> androidx.compose.ui.graphics.Color(0xFFFFBB33)
+        else -> accentColor
+    }
+
+    val usedLabel = formatTokenCount(state.usedTokens)
+    val maxLabel = formatTokenCount(state.maxTokens)
+
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = "$usedLabel / $maxLabel",
+                style = TextStyle(
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 10.sp,
+                    color = barColor.copy(alpha = 0.7f),
+                ),
+            )
+            Text(
+                text = "${(pct * 100).toInt()}%",
+                style = TextStyle(
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 10.sp,
+                    color = barColor.copy(alpha = 0.7f),
+                ),
+            )
+        }
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(3.dp)
+                .clip(RoundedCornerShape(1.5.dp))
+                .background(barColor.copy(alpha = 0.15f)),
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth(pct)
+                    .height(3.dp)
+                    .clip(RoundedCornerShape(1.5.dp))
+                    .background(barColor),
+            )
+        }
+        Spacer(Modifier.height(4.dp))
+    }
+}
+
+private fun formatTokenCount(tokens: Int): String = when {
+    tokens >= 1_000_000 -> "${String.format("%.1f", tokens / 1_000_000f)}M"
+    tokens >= 1_000 -> "${String.format("%.1f", tokens / 1_000f)}K"
+    else -> tokens.toString()
 }

@@ -43,6 +43,7 @@ enum class ModelTier {
 data class RecommendedModel(
     val modelId: String,
     val displayName: String,
+    val contextLength: Int,
     val maxCompletionTokens: Int,
     val promptPricePerM: Double,
     val completionPricePerM: Double,
@@ -510,6 +511,7 @@ class OpenRouterModelRegistry(
     private fun ParsedModel.toRecommended() = RecommendedModel(
         modelId = id,
         displayName = name,
+        contextLength = contextLength,
         maxCompletionTokens = maxCompletionTokens,
         promptPricePerM = promptPricePerM,
         completionPricePerM = completionPricePerM,

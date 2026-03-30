@@ -24,6 +24,8 @@ class LocalLlmClient(
 
     companion object {
         private const val TAG = "LocalLlmClient"
+        /** Approximate characters per token for Qwen's BPE tokenizer. */
+        private const val CHARS_PER_TOKEN = 3.5
     }
 
     override val maxToolCount: Int = 5
@@ -57,7 +59,7 @@ class LocalLlmClient(
 
         val raw = llamaCpp.generate(prompt)
         val answer = stripThinking(raw)
-        buildResponse(answer, request.model)
+        buildResponse(answer, request.model, promptChars = prompt.length)
     }
 
     override suspend fun streamMessage(request: MessagesRequest, callback: StreamingCallback) = withContext(Dispatchers.IO) {
@@ -67,7 +69,8 @@ class LocalLlmClient(
         }
 
         val prompt = formatChatML(request)
-        Log.d(TAG, "streamMessage: model=${request.model}, prompt=${prompt.length} chars")
+        val promptChars = prompt.length
+        Log.d(TAG, "streamMessage: model=${request.model}, prompt=$promptChars chars")
 
         val fullText = StringBuilder()
 
@@ -79,7 +82,7 @@ class LocalLlmClient(
 
             override fun onComplete() {
                 val answer = stripThinking(fullText.toString())
-                callback.onComplete(buildResponse(answer, request.model))
+                callback.onComplete(buildResponse(answer, request.model, promptChars, fullText.length))
             }
 
             override fun onError(message: String) {
@@ -141,8 +144,15 @@ class LocalLlmClient(
         }
     }
 
-    /** Build a [MessagesResponse] from plain text content. */
-    private fun buildResponse(text: String, model: String): MessagesResponse {
+    /** Build a [MessagesResponse] from plain text content, with estimated token usage. */
+    private fun buildResponse(
+        text: String,
+        model: String,
+        promptChars: Int = 0,
+        outputChars: Int = text.length,
+    ): MessagesResponse {
+        val estimatedInput = (promptChars / CHARS_PER_TOKEN).toInt()
+        val estimatedOutput = (outputChars / CHARS_PER_TOKEN).toInt()
         return MessagesResponse(
             id = "local-${System.currentTimeMillis()}",
             type = "message",
@@ -150,6 +160,10 @@ class LocalLlmClient(
             content = listOf(ContentBlock.TextBlock(text = text)),
             model = model,
             stopReason = "end_turn",
+            usage = Usage(
+                inputTokens = estimatedInput,
+                outputTokens = estimatedOutput,
+            ),
         )
     }
 }

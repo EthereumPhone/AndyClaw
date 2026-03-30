@@ -236,7 +236,7 @@ class TelegramAgentRunner(
                 return false
             }
 
-            override fun onComplete(fullText: String) {
+            override fun onComplete(fullText: String, tokenUsage: org.ethereumphone.andyclaw.agent.TokenUsageSnapshot?) {
                 Log.i(TAG, "=== TELEGRAM RUN COMPLETE (chat=$chatId) ===")
                 ledController.onPromptComplete(fullText)
 
