@@ -107,7 +107,6 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private var agentDisplayJob: Job? = null
     private var currentJob: Job? = null
     private var approvalContinuation: kotlinx.coroutines.CancellableContinuation<Boolean>? = null
-    private var askUserContinuation: kotlinx.coroutines.CancellableContinuation<org.ethereumphone.andyclaw.agent.AskUserResponse?>? = null
     private val pendingExplorerUrls = mutableListOf<String>()
 
     private val httpClient = OkHttpClient()
@@ -285,11 +284,9 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     _messages.value = _messages.value + securityMsg
                 }
 
-                override suspend fun onAskUser(request: org.ethereumphone.andyclaw.agent.AskUserRequest): org.ethereumphone.andyclaw.agent.AskUserResponse? {
-                    return kotlinx.coroutines.suspendCancellableCoroutine { cont ->
-                        askUserContinuation = cont
-                        _askUserRequest.value = request
-                    }
+                override fun onAskUserDisplayed(request: org.ethereumphone.andyclaw.agent.AskUserRequest) {
+                    // Store the request — the overlay will show after the turn completes
+                    _askUserRequest.value = request
                 }
 
                 override suspend fun onApprovalNeeded(
@@ -391,13 +388,18 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     /**
      * Called from the UI when the user submits answers to ask_user questions.
+     * Formats the Q&A and sends it as a new user message (new turn).
      * Pass null if the user skips/dismisses.
      */
     fun respondToAskUser(response: org.ethereumphone.andyclaw.agent.AskUserResponse?) {
-        @Suppress("DEPRECATION")
-        askUserContinuation?.resume(response, null)
-        askUserContinuation = null
+        val request = _askUserRequest.value
         _askUserRequest.value = null
+        if (response != null && request != null) {
+            val chatText = org.ethereumphone.andyclaw.agent.formatAskUserForChat(request, response)
+            sendMessage(chatText)
+        } else {
+            sendMessage("[User dismissed — do not proceed, wait for next instruction]")
+        }
     }
 
     fun cancel() {

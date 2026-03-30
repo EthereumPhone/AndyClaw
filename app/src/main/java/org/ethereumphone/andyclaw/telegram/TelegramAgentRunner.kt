@@ -14,8 +14,6 @@ import kotlinx.serialization.json.jsonPrimitive
 import org.ethereumphone.andyclaw.NodeApp
 import org.ethereumphone.andyclaw.agent.AgentLoop
 import org.ethereumphone.andyclaw.agent.AskUserRequest
-import org.ethereumphone.andyclaw.agent.AskUserResponse
-import org.ethereumphone.andyclaw.agent.QuestionAnswer
 import org.ethereumphone.andyclaw.extensions.clawhub.DownloadAssessResult
 import org.ethereumphone.andyclaw.extensions.clawhub.ThreatAssessment
 import org.ethereumphone.andyclaw.llm.AnthropicModels
@@ -53,28 +51,12 @@ class TelegramAgentRunner(
 
     private val pendingApprovals = ConcurrentHashMap<String, CompletableDeferred<Boolean>>()
 
-    /** Pending ask_user question waiting for the user's next message. */
-    @Volatile
-    private var pendingAskUser: CompletableDeferred<String>? = null
-
     /**
      * Called by [TelegramBotService] when a callback query button press arrives.
      * Resolves the suspended [onApprovalNeeded] coroutine.
      */
     fun resolveApproval(requestId: String, approved: Boolean) {
         pendingApprovals.remove(requestId)?.complete(approved)
-    }
-
-    /**
-     * Called by [TelegramBotService] when a new message arrives while an
-     * ask_user question is pending. If there's a pending question, the message
-     * is consumed as the answer (returns true). Otherwise returns false so the
-     * service treats it as a new prompt.
-     */
-    fun tryResolveAskUser(answer: String): Boolean {
-        val pending = pendingAskUser ?: return false
-        pending.complete(answer)
-        return true
     }
 
     suspend fun run(chatId: Long, userMessage: String): String {
@@ -149,8 +131,8 @@ class TelegramAgentRunner(
                 }
             }
 
-            override suspend fun onAskUser(request: AskUserRequest): AskUserResponse? {
-                // Flatten questions into a text message for Telegram
+            override fun onAskUserDisplayed(request: AskUserRequest) {
+                // Send questions as a Telegram message — user's reply comes as a new message
                 val text = buildString {
                     appendLine("❓ Clarification needed:")
                     for ((i, q) in request.questions.withIndex()) {
@@ -164,23 +146,7 @@ class TelegramAgentRunner(
                     append("Reply with your answer:")
                 }
                 Log.i(TAG, "ask_user (telegram chat=$chatId): ${request.questions.size} question(s)")
-                botClient.sendMessage(chatId, text)
-                val deferred = CompletableDeferred<String>()
-                pendingAskUser = deferred
-                val reply = withTimeoutOrNull(ASK_USER_TIMEOUT_MS) {
-                    deferred.await()
-                }
-                pendingAskUser = null
-                if (reply == null) {
-                    botClient.sendMessage(chatId, "No response received — proceeding with best judgment.")
-                    return null
-                }
-                // Single text reply → map to first question's answer
-                return AskUserResponse(
-                    answers = request.questions.map { q ->
-                        QuestionAnswer(question = q.question, answer = reply)
-                    }
-                )
+                memoryScope.launch { botClient.sendMessage(chatId, text) }
             }
 
             override suspend fun onApprovalNeeded(

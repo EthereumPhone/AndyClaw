@@ -1051,9 +1051,8 @@ class LauncherBindingService : Service() {
                 }
             }
 
-            override suspend fun onAskUser(request: org.ethereumphone.andyclaw.agent.AskUserRequest): org.ethereumphone.andyclaw.agent.AskUserResponse? {
-                Log.i(TAG, "ask_user (launcher, skipping): ${request.questions.size} question(s)")
-                return null
+            override fun onAskUserDisplayed(request: org.ethereumphone.andyclaw.agent.AskUserRequest) {
+                Log.i(TAG, "ask_user (launcher): ${request.questions.size} question(s)")
             }
 
             override suspend fun onApprovalNeeded(

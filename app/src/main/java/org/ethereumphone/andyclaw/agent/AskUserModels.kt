@@ -60,31 +60,41 @@ data class AskUserResponse(
 
 /** Parse the ask_user tool input JSON into an [AskUserRequest]. */
 fun parseAskUserInput(input: JsonObject): AskUserRequest {
-    val questionsArray = input["questions"]?.jsonArray
-    if (questionsArray != null) {
-        val questions = questionsArray.map { element ->
+    val questionsElement = input["questions"]
+    // Handle proper array of question objects
+    if (questionsElement is JsonArray) {
+        val questions = questionsElement.map { element ->
             val obj = element.jsonObject
+            val optionsElement = obj["options"]
+            val options = if (optionsElement is JsonArray) {
+                optionsElement.map { it.jsonPrimitive.content }
+            } else emptyList()
             AskUserQuestion(
                 question = obj["question"]?.jsonPrimitive?.contentOrNull ?: "",
                 type = QuestionType.fromString(obj["type"]?.jsonPrimitive?.contentOrNull),
-                options = obj["options"]?.jsonArray?.map { it.jsonPrimitive.content } ?: emptyList(),
+                options = options,
             )
         }
         return AskUserRequest(questions)
     }
-    // Fallback: single question (backward compat with old schema)
-    val question = input["question"]?.jsonPrimitive?.contentOrNull ?: "Can you clarify?"
+    // Fallback: "questions" is a string, or "question" field (backward compat)
+    val question = questionsElement?.jsonPrimitive?.contentOrNull
+        ?: input["question"]?.jsonPrimitive?.contentOrNull
+        ?: "Can you clarify?"
     return AskUserRequest(listOf(AskUserQuestion(question)))
 }
 
 // ── JSON Serialization ───────────────────────────────────────────────
 
 /** Serialize an [AskUserResponse] to a human-readable + LLM-parseable string. */
-fun formatAskUserResponse(response: AskUserResponse): String {
+fun formatAskUserResponse(response: AskUserResponse, request: AskUserRequest? = null): String {
     if (response.answers.size == 1) {
         val a = response.answers[0]
-        return if (a.selections.isNotEmpty()) {
-            "User answered: ${a.selections.joinToString(", ")}"
+        val qType = request?.questions?.firstOrNull()?.type
+        return if (qType == QuestionType.RANKED_CHOICE && a.selections.isNotEmpty()) {
+            "User ranked (1st = most preferred): ${a.selections.mapIndexed { i, s -> "${i + 1}. $s" }.joinToString(", ")}"
+        } else if (a.selections.isNotEmpty()) {
+            "User selected: ${a.selections.joinToString(", ")}"
         } else {
             "User answered: ${a.answer}"
         }
@@ -92,11 +102,37 @@ fun formatAskUserResponse(response: AskUserResponse): String {
     return buildString {
         appendLine("User answered ${response.answers.size} questions:")
         for ((i, a) in response.answers.withIndex()) {
-            if (a.selections.isNotEmpty()) {
+            val qType = request?.questions?.getOrNull(i)?.type
+            if (qType == QuestionType.RANKED_CHOICE && a.selections.isNotEmpty()) {
+                appendLine("${i + 1}. ${a.question} → Ranked: ${a.selections.mapIndexed { j, s -> "${j + 1}. $s" }.joinToString(", ")}")
+            } else if (a.selections.isNotEmpty()) {
                 appendLine("${i + 1}. ${a.question} → ${a.selections.joinToString(", ")}")
             } else {
                 appendLine("${i + 1}. ${a.question} → ${a.answer}")
             }
         }
     }.trimEnd()
+}
+
+/** Format the Q&A for display in chat history (user-facing). */
+fun formatAskUserForChat(request: AskUserRequest, response: AskUserResponse): String {
+    return buildString {
+        for ((i, a) in response.answers.withIndex()) {
+            val q = request.questions.getOrNull(i)
+            if (i > 0) appendLine()
+            appendLine("Q: ${a.question}")
+            when (q?.type) {
+                QuestionType.RANKED_CHOICE -> {
+                    append("A: ")
+                    append(a.selections.mapIndexed { j, s -> "${j + 1}. $s" }.joinToString(", "))
+                }
+                QuestionType.MULTI_SELECT -> {
+                    append("A: ${a.selections.joinToString(", ")}")
+                }
+                else -> {
+                    append("A: ${a.answer}")
+                }
+            }
+        }
+    }
 }
