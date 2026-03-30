@@ -325,6 +325,167 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
     private val _isExtensionScanning = MutableStateFlow(false)
     val isExtensionScanning: StateFlow<Boolean> = _isExtensionScanning.asStateFlow()
 
+    // ── Backup / Restore ──────────────────────────────────────────────
+
+    private val _isExporting = MutableStateFlow(false)
+    val isExporting: StateFlow<Boolean> = _isExporting.asStateFlow()
+
+    private val _isImporting = MutableStateFlow(false)
+    val isImporting: StateFlow<Boolean> = _isImporting.asStateFlow()
+
+    private val _pendingImportInfo = MutableStateFlow<org.ethereumphone.andyclaw.backup.BackupInfo?>(null)
+    val pendingImportInfo: StateFlow<org.ethereumphone.andyclaw.backup.BackupInfo?> = _pendingImportInfo.asStateFlow()
+
+    /** Show password dialog for export. */
+    private val _showExportPasswordDialog = MutableStateFlow(false)
+    val showExportPasswordDialog: StateFlow<Boolean> = _showExportPasswordDialog.asStateFlow()
+
+    /** Show password dialog for import (encrypted backup). */
+    private val _showImportPasswordDialog = MutableStateFlow(false)
+    val showImportPasswordDialog: StateFlow<Boolean> = _showImportPasswordDialog.asStateFlow()
+
+    /** Error message from a failed import (e.g. wrong password). */
+    private val _backupError = MutableStateFlow<String?>(null)
+    val backupError: StateFlow<String?> = _backupError.asStateFlow()
+
+    private var pendingImportUri: android.net.Uri? = null
+    private var pendingImportPassword: String? = null
+
+    private val backupManager by lazy { org.ethereumphone.andyclaw.backup.BackupManager(app) }
+
+    /** Step 1 of export: show password dialog. */
+    fun requestExport() {
+        _showExportPasswordDialog.value = true
+    }
+
+    /** Step 2 of export: user entered a password (may be empty). */
+    fun createBackup(context: android.content.Context, password: String) {
+        _showExportPasswordDialog.value = false
+        viewModelScope.launch {
+            _isExporting.value = true
+            try {
+                val timestamp = System.currentTimeMillis()
+                val aiName = prefs.aiName.value.replace(" ", "_")
+                val fileName = "${aiName}_backup_$timestamp${org.ethereumphone.andyclaw.backup.BackupManager.FILE_EXTENSION}"
+
+                // Save to Downloads so the user always has a copy
+                val downloadsDir = android.os.Environment.getExternalStoragePublicDirectory(
+                    android.os.Environment.DIRECTORY_DOWNLOADS,
+                )
+                downloadsDir.mkdirs()
+                val file = java.io.File(downloadsDir, fileName)
+                file.outputStream().use {
+                    backupManager.createBackup(it, password.takeIf { p -> p.isNotEmpty() })
+                }
+
+                android.widget.Toast.makeText(
+                    context,
+                    "Backup saved to Downloads/$fileName",
+                    android.widget.Toast.LENGTH_LONG,
+                ).show()
+            } catch (e: Exception) {
+                Log.e("SettingsViewModel", "Backup export failed", e)
+            } finally {
+                _isExporting.value = false
+            }
+        }
+    }
+
+    fun dismissExportPasswordDialog() {
+        _showExportPasswordDialog.value = false
+    }
+
+    /** Step 1 of import: user picked a file. Check if encrypted. */
+    fun onImportFilePicked(uri: android.net.Uri, context: android.content.Context) {
+        pendingImportUri = uri
+        viewModelScope.launch {
+            try {
+                val encrypted = context.contentResolver.openInputStream(uri)?.use { stream ->
+                    backupManager.isEncrypted(stream)
+                } ?: false
+
+                if (encrypted) {
+                    // Need password first
+                    _showImportPasswordDialog.value = true
+                } else {
+                    // Read manifest directly (no password)
+                    proceedWithImportManifest(context, null)
+                }
+            } catch (e: Exception) {
+                Log.e("SettingsViewModel", "Failed to check backup file", e)
+            }
+        }
+    }
+
+    /** Step 2 of import (encrypted only): user entered the password. */
+    fun onImportPasswordEntered(context: android.content.Context, password: String) {
+        _showImportPasswordDialog.value = false
+        _backupError.value = null
+        pendingImportPassword = password
+        viewModelScope.launch {
+            proceedWithImportManifest(context, password)
+        }
+    }
+
+    fun dismissImportPasswordDialog() {
+        _showImportPasswordDialog.value = false
+        pendingImportUri = null
+    }
+
+    private suspend fun proceedWithImportManifest(context: android.content.Context, password: String?) {
+        val uri = pendingImportUri ?: return
+        try {
+            val info = context.contentResolver.openInputStream(uri)?.use { stream ->
+                backupManager.readManifest(stream, password)
+            }
+            if (info != null) {
+                pendingImportPassword = password
+                _pendingImportInfo.value = info
+            } else {
+                _backupError.value = "Could not read backup file"
+            }
+        } catch (e: javax.crypto.AEADBadTagException) {
+            _backupError.value = "Wrong password"
+            // Re-show password dialog
+            _showImportPasswordDialog.value = true
+        } catch (e: Exception) {
+            Log.e("SettingsViewModel", "Failed to read backup manifest", e)
+            _backupError.value = "Failed to read backup: ${e.message}"
+        }
+    }
+
+    /** Step 3 of import: user confirmed restore. */
+    fun confirmImport(context: android.content.Context) {
+        val uri = pendingImportUri ?: return
+        val password = pendingImportPassword
+        _pendingImportInfo.value = null
+        pendingImportUri = null
+        pendingImportPassword = null
+
+        viewModelScope.launch {
+            _isImporting.value = true
+            try {
+                context.contentResolver.openInputStream(uri)?.use { stream ->
+                    backupManager.restoreBackup(stream, password)
+                }
+            } catch (e: Exception) {
+                Log.e("SettingsViewModel", "Backup import failed", e)
+            } finally {
+                _isImporting.value = false
+            }
+        }
+    }
+
+    fun dismissImportDialog() {
+        _pendingImportInfo.value = null
+        pendingImportUri = null
+        pendingImportPassword = null
+    }
+
+    fun dismissBackupError() {
+        _backupError.value = null
+    }
+
     // ── Skill inspection ─────────────────────────────────────────────────
 
     private val _inspectedSkill = MutableStateFlow<InspectedSkillInfo?>(null)

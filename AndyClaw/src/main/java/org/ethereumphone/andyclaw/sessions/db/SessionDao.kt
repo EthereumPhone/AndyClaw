@@ -202,4 +202,18 @@ interface SessionDao {
         deleteMessages(sessionId)
         resetSession(sessionId, updatedAt)
     }
+
+    // ── Backup / Restore ────────────────────────────────────────────
+
+    @Query("SELECT * FROM session_messages ORDER BY sessionId, orderIndex ASC")
+    suspend fun getAllMessages(): List<SessionMessageEntity>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertSessions(sessions: List<SessionEntity>)
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertMessages(messages: List<SessionMessageEntity>)
+
+    @Query("DELETE FROM sessions")
+    suspend fun deleteAllSessions()
 }
