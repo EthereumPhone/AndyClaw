@@ -230,12 +230,11 @@ class AgentLoop(
         ): Boolean
         suspend fun onPermissionsNeeded(permissions: List<String>): Boolean
         /**
-         * Called when the agent needs user clarification mid-loop.
-         * Returns the user's response, or null if unavailable (headless/background).
-         * When null is returned, the agent receives a fallback message telling it
-         * to proceed with its best judgment.
+         * Called when the agent displays questions to the user via ask_user.
+         * The tool returns immediately (the turn ends), and the user's answer
+         * arrives as the next user message in a new turn.
          */
-        suspend fun onAskUser(request: AskUserRequest): AskUserResponse?
+        fun onAskUserDisplayed(request: AskUserRequest) {}
         fun onComplete(fullText: String)
         fun onError(error: Throwable)
     }
@@ -601,23 +600,23 @@ class AgentLoop(
                 // Add search results first (they were already executed)
                 allToolResults.addAll(searchResults)
 
-                // Handle ask_user calls (blocks on user input, execute before other tools)
+                // Handle ask_user calls — returns immediately, user answers in next turn
                 for (call in askUserCalls) {
                     val request = parseAskUserInput(call.input)
                     Log.i(TAG, "ask_user: ${request.questions.size} question(s): ${request.questions.joinToString { "'${it.question.take(50)}'" }}")
                     callbacks.onToolExecution(ASK_USER_TOOL_NAME)
-                    val response = callbacks.onAskUser(request)
-                    val resultText = if (response != null) {
-                        formatAskUserResponse(response)
-                    } else {
-                        "User is not available (background/headless mode). Proceed with your best judgment or skip this action."
+                    callbacks.onAskUserDisplayed(request)
+                    val summary = request.questions.joinToString("; ") { q ->
+                        if (q.options.isNotEmpty()) "${q.question} [${q.options.joinToString(", ")}]"
+                        else q.question
                     }
                     allToolResults.add(ContentBlock.ToolResult(
                         toolUseId = call.id,
-                        content = resultText,
+                        content = "Questions displayed to user: $summary. " +
+                            "Your turn is complete. The user's answer will arrive as their next message.",
                         isError = false,
                     ))
-                    Log.i(TAG, "ask_user response: ${resultText.take(200)}")
+                    Log.i(TAG, "ask_user displayed: $summary")
                 }
 
                 coroutineScope {

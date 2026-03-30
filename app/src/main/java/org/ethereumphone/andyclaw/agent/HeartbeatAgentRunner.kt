@@ -113,9 +113,10 @@ class HeartbeatAgentRunner(
                 ))
             }
 
-            override suspend fun onAskUser(request: AskUserRequest): AskUserResponse? {
-                Log.i(TAG, "ask_user (headless, skipping): ${request.questions.size} question(s)")
-                return null
+            override fun onAskUserDisplayed(request: AskUserRequest) {
+                // Headless — questions displayed but no user to answer.
+                // The tool result already tells the LLM to proceed with best judgment.
+                Log.i(TAG, "ask_user (headless): ${request.questions.size} question(s) — no user to answer")
             }
 
             override suspend fun onApprovalNeeded(
