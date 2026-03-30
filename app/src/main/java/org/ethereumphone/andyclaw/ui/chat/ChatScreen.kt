@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
@@ -94,7 +95,7 @@ fun ChatScreen(
     val error by viewModel.error.collectAsState()
     val insufficientBalance by viewModel.insufficientBalance.collectAsState()
     val approvalRequest by viewModel.approvalRequest.collectAsState()
-    val askUserQuestion by viewModel.askUserQuestion.collectAsState()
+    val askUserRequest by viewModel.askUserRequest.collectAsState()
     val displayBitmap by viewModel.agentDisplayBitmap.collectAsState()
     val navigationEvent by viewModel.navigationEvent.collectAsState()
     val context = LocalContext.current
@@ -166,8 +167,8 @@ fun ChatScreen(
         if (approvalRequest != null) keyboardController?.hide()
     }
 
-    LaunchedEffect(askUserQuestion) {
-        if (askUserQuestion != null) keyboardController?.hide()
+    LaunchedEffect(askUserRequest) {
+        if (askUserRequest != null) keyboardController?.hide()
     }
 
     LaunchedEffect(insufficientBalance) {
@@ -296,7 +297,7 @@ fun ChatScreen(
                 }
             }
 
-            val overlayActive = showSlashOverlay || askUserQuestion != null
+            val overlayActive = showSlashOverlay || askUserRequest != null
             val inputBarBackground = if (overlayActive) {
                 primaryColor.copy(alpha = 0.15f).compositeOver(androidx.compose.ui.graphics.Color.Black.copy(alpha = 0.92f))
             } else {
@@ -421,10 +422,10 @@ fun ChatScreen(
             contentAlignment = Alignment.BottomCenter,
         ) {
             AskUserOverlay(
-                visible = askUserQuestion != null,
-                question = askUserQuestion ?: "",
+                visible = askUserRequest != null,
+                request = askUserRequest,
                 accentColor = primaryColor,
-                onAnswer = { answer -> viewModel.respondToAskUser(answer) },
+                onSubmit = { response -> viewModel.respondToAskUser(response) },
                 onSkip = { viewModel.respondToAskUser(null) },
             )
         }
@@ -455,17 +456,69 @@ fun ChatScreen(
 @Composable
 private fun AskUserOverlay(
     visible: Boolean,
-    question: String,
+    request: org.ethereumphone.andyclaw.agent.AskUserRequest?,
     accentColor: androidx.compose.ui.graphics.Color,
-    onAnswer: (String) -> Unit,
+    onSubmit: (org.ethereumphone.andyclaw.agent.AskUserResponse) -> Unit,
     onSkip: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val haptic = LocalHapticFeedback.current
-    var text by remember { mutableStateOf("") }
+    val questions = request?.questions ?: emptyList()
+    var currentIndex by remember { mutableStateOf(0) }
 
-    // Reset text when a new question appears
-    LaunchedEffect(question) { text = "" }
+    // Per-question state: selections for multi/ranked, custom text for single/multi
+    val selections = remember { mutableStateListOf<MutableList<String>>() }
+    val customTexts = remember { mutableStateListOf<String>() }
+    // For ranked choice: the ordering
+    val rankedOrders = remember { mutableStateListOf<MutableList<String>>() }
+
+    // Reset state when new request arrives
+    LaunchedEffect(request) {
+        currentIndex = 0
+        selections.clear()
+        customTexts.clear()
+        rankedOrders.clear()
+        questions.forEach { q ->
+            selections.add(mutableListOf())
+            customTexts.add("")
+            rankedOrders.add(q.options.toMutableList())
+        }
+    }
+
+    val q = questions.getOrNull(currentIndex)
+    val hasAnswer = when (q?.type) {
+        org.ethereumphone.andyclaw.agent.QuestionType.SINGLE_SELECT ->
+            selections.getOrNull(currentIndex)?.isNotEmpty() == true || customTexts.getOrNull(currentIndex)?.isNotBlank() == true
+        org.ethereumphone.andyclaw.agent.QuestionType.MULTI_SELECT ->
+            selections.getOrNull(currentIndex)?.isNotEmpty() == true || customTexts.getOrNull(currentIndex)?.isNotBlank() == true
+        org.ethereumphone.andyclaw.agent.QuestionType.RANKED_CHOICE -> true // always has an order
+        null -> false
+    }
+    val isLastQuestion = currentIndex == questions.size - 1
+
+    fun buildResponse(): org.ethereumphone.andyclaw.agent.AskUserResponse {
+        val answers = questions.mapIndexed { i, question ->
+            when (question.type) {
+                org.ethereumphone.andyclaw.agent.QuestionType.SINGLE_SELECT -> {
+                    val sel = selections.getOrNull(i)?.firstOrNull()
+                    val custom = customTexts.getOrNull(i) ?: ""
+                    val answer = sel ?: custom
+                    org.ethereumphone.andyclaw.agent.QuestionAnswer(question.question, answer)
+                }
+                org.ethereumphone.andyclaw.agent.QuestionType.MULTI_SELECT -> {
+                    val sels = selections.getOrNull(i)?.toList() ?: emptyList()
+                    val custom = customTexts.getOrNull(i) ?: ""
+                    val all = if (custom.isNotBlank()) sels + custom else sels
+                    org.ethereumphone.andyclaw.agent.QuestionAnswer(question.question, all.joinToString(", "), all)
+                }
+                org.ethereumphone.andyclaw.agent.QuestionType.RANKED_CHOICE -> {
+                    val order = rankedOrders.getOrNull(i)?.toList() ?: emptyList()
+                    org.ethereumphone.andyclaw.agent.QuestionAnswer(question.question, order.joinToString(", "), order)
+                }
+            }
+        }
+        return org.ethereumphone.andyclaw.agent.AskUserResponse(answers)
+    }
 
     AnimatedVisibility(
         visible = visible,
@@ -477,11 +530,18 @@ private fun AskUserOverlay(
             modifier = Modifier
                 .fillMaxWidth()
                 .background(accentColor.copy(alpha = 0.15f).compositeOver(androidx.compose.ui.graphics.Color.Black.copy(alpha = 0.92f)))
-                .padding(vertical = 8.dp),
+                .padding(top = 8.dp),
         ) {
-            // Header
+            if (q == null) return@Column
+
+            // Header with question counter
+            val headerText = if (questions.size > 1) {
+                "QUESTION ${currentIndex + 1} / ${questions.size}"
+            } else {
+                "CLARIFICATION NEEDED"
+            }
             Text(
-                text = "CLARIFICATION NEEDED",
+                text = headerText,
                 style = TextStyle(
                     fontFamily = FontFamily.Monospace,
                     fontWeight = FontWeight.Normal,
@@ -490,17 +550,15 @@ private fun AskUserOverlay(
                     color = accentColor.copy(alpha = 0.6f),
                     shadow = GlowStyle.body(accentColor),
                 ),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 4.dp),
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
                 textAlign = TextAlign.Center,
             )
 
-            Spacer(modifier = Modifier.height(8.dp))
+            Spacer(modifier = Modifier.height(6.dp))
 
             // Question text
             Text(
-                text = question,
+                text = q.question,
                 style = TextStyle(
                     fontFamily = FontFamily.Monospace,
                     fontWeight = FontWeight.Normal,
@@ -508,87 +566,292 @@ private fun AskUserOverlay(
                     color = accentColor,
                     shadow = GlowStyle.body(accentColor),
                 ),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp),
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
             )
 
-            Spacer(modifier = Modifier.height(12.dp))
+            Spacer(modifier = Modifier.height(10.dp))
 
-            // Text input
-            androidx.compose.material3.OutlinedTextField(
-                value = text,
-                onValueChange = { text = it },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp),
-                placeholder = {
-                    Text(
-                        "Type your answer...",
-                        style = TextStyle(
-                            fontFamily = FontFamily.Monospace,
-                            fontSize = 14.sp,
-                            color = accentColor.copy(alpha = 0.3f),
-                        ),
+            // Question body based on type
+            when (q.type) {
+                org.ethereumphone.andyclaw.agent.QuestionType.SINGLE_SELECT -> {
+                    SingleSelectBody(
+                        options = q.options,
+                        selectedOption = selections.getOrNull(currentIndex)?.firstOrNull(),
+                        customText = customTexts.getOrNull(currentIndex) ?: "",
+                        accentColor = accentColor,
+                        onSelectOption = { opt ->
+                            selections.getOrNull(currentIndex)?.apply { clear(); add(opt) }
+                            // Clear custom text when an option is selected
+                            if (currentIndex < customTexts.size) customTexts[currentIndex] = ""
+                        },
+                        onCustomTextChanged = { text ->
+                            if (currentIndex < customTexts.size) customTexts[currentIndex] = text
+                            // Clear option selection when typing custom
+                            if (text.isNotEmpty()) selections.getOrNull(currentIndex)?.clear()
+                        },
                     )
-                },
-                colors = androidx.compose.material3.OutlinedTextFieldDefaults.colors(
-                    focusedBorderColor = accentColor.copy(alpha = 0.5f),
-                    unfocusedBorderColor = accentColor.copy(alpha = 0.2f),
-                    focusedTextColor = androidx.compose.ui.graphics.Color.White,
-                    unfocusedTextColor = androidx.compose.ui.graphics.Color.White,
-                    cursorColor = accentColor,
-                ),
-                textStyle = TextStyle(
-                    fontFamily = FontFamily.Monospace,
-                    fontSize = 14.sp,
-                ),
-                singleLine = true,
-            )
+                }
+                org.ethereumphone.andyclaw.agent.QuestionType.MULTI_SELECT -> {
+                    MultiSelectBody(
+                        options = q.options,
+                        selectedOptions = selections.getOrNull(currentIndex) ?: mutableListOf(),
+                        customText = customTexts.getOrNull(currentIndex) ?: "",
+                        accentColor = accentColor,
+                        onToggleOption = { opt ->
+                            selections.getOrNull(currentIndex)?.let { sel ->
+                                if (opt in sel) sel.remove(opt) else sel.add(opt)
+                            }
+                        },
+                        onCustomTextChanged = { text ->
+                            if (currentIndex < customTexts.size) customTexts[currentIndex] = text
+                        },
+                    )
+                }
+                org.ethereumphone.andyclaw.agent.QuestionType.RANKED_CHOICE -> {
+                    RankedChoiceBody(
+                        order = rankedOrders.getOrNull(currentIndex) ?: mutableListOf(),
+                        accentColor = accentColor,
+                        onMoveUp = { idx ->
+                            rankedOrders.getOrNull(currentIndex)?.let { list ->
+                                if (idx > 0) {
+                                    val item = list.removeAt(idx)
+                                    list.add(idx - 1, item)
+                                }
+                            }
+                        },
+                        onMoveDown = { idx ->
+                            rankedOrders.getOrNull(currentIndex)?.let { list ->
+                                if (idx < list.size - 1) {
+                                    val item = list.removeAt(idx)
+                                    list.add(idx + 1, item)
+                                }
+                            }
+                        },
+                    )
+                }
+            }
 
-            Spacer(modifier = Modifier.height(12.dp))
+            Spacer(modifier = Modifier.height(10.dp))
 
-            // Action row
+            // Navigation / action row
             Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 24.dp),
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 8.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
             ) {
+                // Left: SKIP or PREV
+                if (currentIndex > 0) {
+                    Text(
+                        text = "[PREV]",
+                        style = TextStyle(fontFamily = FontFamily.Monospace, fontSize = 13.sp, color = accentColor.copy(alpha = 0.5f), shadow = GlowStyle.body(accentColor)),
+                        modifier = Modifier.clickable(indication = null, interactionSource = remember { MutableInteractionSource() }) {
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            currentIndex--
+                        },
+                    )
+                } else {
+                    Text(
+                        text = "[SKIP]",
+                        style = TextStyle(fontFamily = FontFamily.Monospace, fontSize = 13.sp, color = accentColor.copy(alpha = 0.5f), shadow = GlowStyle.body(accentColor)),
+                        modifier = Modifier.clickable(indication = null, interactionSource = remember { MutableInteractionSource() }) {
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            onSkip()
+                        },
+                    )
+                }
+
+                // Right: NEXT or SEND
+                if (isLastQuestion) {
+                    val canSubmit = hasAnswer
+                    Text(
+                        text = if (canSubmit) "[SEND]" else "[SKIP]",
+                        style = TextStyle(
+                            fontFamily = FontFamily.Monospace, fontSize = 13.sp,
+                            color = if (canSubmit) accentColor else accentColor.copy(alpha = 0.5f),
+                            shadow = GlowStyle.body(accentColor),
+                        ),
+                        modifier = Modifier.clickable(indication = null, interactionSource = remember { MutableInteractionSource() }) {
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            if (canSubmit) onSubmit(buildResponse()) else onSkip()
+                        },
+                    )
+                } else {
+                    Text(
+                        text = "[NEXT]",
+                        style = TextStyle(fontFamily = FontFamily.Monospace, fontSize = 13.sp, color = accentColor, shadow = GlowStyle.body(accentColor)),
+                        modifier = Modifier.clickable(indication = null, interactionSource = remember { MutableInteractionSource() }) {
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            currentIndex++
+                        },
+                    )
+                }
+            }
+        }
+    }
+}
+
+// ── Single Select: tap an option or type custom at bottom ────────────
+
+@Composable
+private fun SingleSelectBody(
+    options: List<String>,
+    selectedOption: String?,
+    customText: String,
+    accentColor: androidx.compose.ui.graphics.Color,
+    onSelectOption: (String) -> Unit,
+    onCustomTextChanged: (String) -> Unit,
+) {
+    Column(modifier = Modifier.fillMaxWidth().heightIn(max = 200.dp)) {
+        LazyColumn(modifier = Modifier.fillMaxWidth().weight(1f, fill = false)) {
+            items(options, key = { it }) { option ->
+                val isSelected = option == selectedOption
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable(indication = null, interactionSource = remember { MutableInteractionSource() }) { onSelectOption(option) }
+                        .padding(horizontal = 16.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = if (isSelected) "●" else "○",
+                        style = TextStyle(fontFamily = FontFamily.Monospace, fontSize = 14.sp, color = accentColor),
+                        modifier = Modifier.width(24.dp),
+                    )
+                    Text(
+                        text = option,
+                        style = TextStyle(
+                            fontFamily = FontFamily.Monospace, fontSize = 14.sp,
+                            color = if (isSelected) accentColor else accentColor.copy(alpha = 0.7f),
+                            shadow = if (isSelected) GlowStyle.body(accentColor) else null,
+                        ),
+                    )
+                }
+            }
+        }
+        // Custom text input at bottom (acts as keyboard option)
+        androidx.compose.material3.OutlinedTextField(
+            value = customText,
+            onValueChange = onCustomTextChanged,
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+            placeholder = {
+                Text("Or type a custom answer...", style = TextStyle(fontFamily = FontFamily.Monospace, fontSize = 13.sp, color = accentColor.copy(alpha = 0.3f)))
+            },
+            colors = androidx.compose.material3.OutlinedTextFieldDefaults.colors(
+                focusedBorderColor = accentColor.copy(alpha = 0.5f), unfocusedBorderColor = accentColor.copy(alpha = 0.2f),
+                focusedTextColor = androidx.compose.ui.graphics.Color.White, unfocusedTextColor = androidx.compose.ui.graphics.Color.White,
+                cursorColor = accentColor,
+            ),
+            textStyle = TextStyle(fontFamily = FontFamily.Monospace, fontSize = 13.sp),
+            singleLine = true,
+        )
+    }
+}
+
+// ── Multi Select: checkboxes + editable custom entry at bottom ───────
+
+@Composable
+private fun MultiSelectBody(
+    options: List<String>,
+    selectedOptions: MutableList<String>,
+    customText: String,
+    accentColor: androidx.compose.ui.graphics.Color,
+    onToggleOption: (String) -> Unit,
+    onCustomTextChanged: (String) -> Unit,
+) {
+    Column(modifier = Modifier.fillMaxWidth().heightIn(max = 200.dp)) {
+        LazyColumn(modifier = Modifier.fillMaxWidth().weight(1f, fill = false)) {
+            items(options, key = { it }) { option ->
+                val isSelected = option in selectedOptions
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable(indication = null, interactionSource = remember { MutableInteractionSource() }) { onToggleOption(option) }
+                        .padding(horizontal = 16.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = if (isSelected) "☑" else "☐",
+                        style = TextStyle(fontFamily = FontFamily.Monospace, fontSize = 14.sp, color = accentColor),
+                        modifier = Modifier.width(24.dp),
+                    )
+                    Text(
+                        text = option,
+                        style = TextStyle(
+                            fontFamily = FontFamily.Monospace, fontSize = 14.sp,
+                            color = if (isSelected) accentColor else accentColor.copy(alpha = 0.7f),
+                            shadow = if (isSelected) GlowStyle.body(accentColor) else null,
+                        ),
+                    )
+                }
+            }
+        }
+        // Editable custom entry at bottom
+        androidx.compose.material3.OutlinedTextField(
+            value = customText,
+            onValueChange = onCustomTextChanged,
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+            placeholder = {
+                Text("Add custom entry...", style = TextStyle(fontFamily = FontFamily.Monospace, fontSize = 13.sp, color = accentColor.copy(alpha = 0.3f)))
+            },
+            colors = androidx.compose.material3.OutlinedTextFieldDefaults.colors(
+                focusedBorderColor = accentColor.copy(alpha = 0.5f), unfocusedBorderColor = accentColor.copy(alpha = 0.2f),
+                focusedTextColor = androidx.compose.ui.graphics.Color.White, unfocusedTextColor = androidx.compose.ui.graphics.Color.White,
+                cursorColor = accentColor,
+            ),
+            textStyle = TextStyle(fontFamily = FontFamily.Monospace, fontSize = 13.sp),
+            singleLine = true,
+        )
+    }
+}
+
+// ── Ranked Choice: reorder items with up/down arrows ─────────────────
+
+@Composable
+private fun RankedChoiceBody(
+    order: MutableList<String>,
+    accentColor: androidx.compose.ui.graphics.Color,
+    onMoveUp: (Int) -> Unit,
+    onMoveDown: (Int) -> Unit,
+) {
+    LazyColumn(modifier = Modifier.fillMaxWidth().heightIn(max = 200.dp)) {
+        items(order.size, key = { order[it] }) { idx ->
+            val item = order[idx]
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                // Rank number
                 Text(
-                    text = "[SKIP]",
-                    style = TextStyle(
-                        fontFamily = FontFamily.Monospace,
-                        fontWeight = FontWeight.Normal,
-                        fontSize = 13.sp,
-                        color = accentColor.copy(alpha = 0.5f),
-                        shadow = GlowStyle.body(accentColor),
-                    ),
-                    modifier = Modifier.clickable(
-                        indication = null,
-                        interactionSource = remember { MutableInteractionSource() },
-                    ) {
-                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                        onSkip()
-                    },
+                    text = "${idx + 1}.",
+                    style = TextStyle(fontFamily = FontFamily.Monospace, fontSize = 14.sp, color = accentColor, shadow = GlowStyle.body(accentColor)),
+                    modifier = Modifier.width(28.dp),
                 )
+                // Item name
                 Text(
-                    text = "[SEND]",
+                    text = item,
+                    style = TextStyle(fontFamily = FontFamily.Monospace, fontSize = 14.sp, color = accentColor.copy(alpha = 0.8f)),
+                    modifier = Modifier.weight(1f),
+                )
+                // Up arrow
+                Text(
+                    text = "▲",
                     style = TextStyle(
-                        fontFamily = FontFamily.Monospace,
-                        fontWeight = FontWeight.Normal,
-                        fontSize = 13.sp,
-                        color = if (text.isNotBlank()) accentColor else accentColor.copy(alpha = 0.3f),
-                        shadow = if (text.isNotBlank()) GlowStyle.body(accentColor) else null,
+                        fontSize = 16.sp,
+                        color = if (idx > 0) accentColor else accentColor.copy(alpha = 0.2f),
                     ),
-                    modifier = Modifier.clickable(
-                        indication = null,
-                        interactionSource = remember { MutableInteractionSource() },
-                        enabled = text.isNotBlank(),
-                    ) {
-                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                        onAnswer(text)
-                    },
+                    modifier = Modifier
+                        .clickable(indication = null, interactionSource = remember { MutableInteractionSource() }, enabled = idx > 0) { onMoveUp(idx) }
+                        .padding(horizontal = 8.dp),
+                )
+                // Down arrow
+                Text(
+                    text = "▼",
+                    style = TextStyle(
+                        fontSize = 16.sp,
+                        color = if (idx < order.size - 1) accentColor else accentColor.copy(alpha = 0.2f),
+                    ),
+                    modifier = Modifier
+                        .clickable(indication = null, interactionSource = remember { MutableInteractionSource() }, enabled = idx < order.size - 1) { onMoveDown(idx) }
+                        .padding(horizontal = 8.dp),
                 )
             }
         }

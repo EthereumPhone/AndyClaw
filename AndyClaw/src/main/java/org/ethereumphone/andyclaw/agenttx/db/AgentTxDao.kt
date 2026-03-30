@@ -21,4 +21,7 @@ interface AgentTxDao {
 
     @Query("DELETE FROM agent_transactions")
     suspend fun deleteAll()
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertAll(txs: List<AgentTxEntity>)
 }

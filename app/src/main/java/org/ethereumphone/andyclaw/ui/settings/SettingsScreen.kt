@@ -68,6 +68,8 @@ import org.ethereumphone.andyclaw.ui.components.DgenSmallPrimaryButton
 import org.ethereumphone.andyclaw.ui.components.DgenSquareSwitch
 import org.ethereumphone.andyclaw.llm.LlmProvider
 import android.content.Intent
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.LaunchedEffect
 import com.example.dgenlibrary.SystemColorManager
 import com.example.dgenlibrary.ui.theme.body1_fontSize
@@ -135,6 +137,9 @@ fun SettingsScreen(
     val googleClientId by viewModel.googleOauthClientId.collectAsState()
     val googleClientSecret by viewModel.googleOauthClientSecret.collectAsState()
     val inspectedSkill by viewModel.inspectedSkill.collectAsState()
+    val isExporting by viewModel.isExporting.collectAsState()
+    val isImporting by viewModel.isImporting.collectAsState()
+    val pendingImportInfo by viewModel.pendingImportInfo.collectAsState()
     var showTelegramOnboarding by remember { mutableStateOf(false) }
     var currentSubScreen by remember { mutableStateOf(initialSubScreen) }
     var lastBrightnessValue by remember { mutableStateOf(ledMaxBrightness) }
@@ -148,6 +153,12 @@ fun SettingsScreen(
 
     val context = LocalContext.current
     val view = LocalView.current
+
+    val importLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument(),
+    ) { uri ->
+        uri?.let { viewModel.onImportFilePicked(it, context) }
+    }
 
     LaunchedEffect(Unit) {
         SystemColorManager.refresh(context)
@@ -1481,6 +1492,32 @@ fun SettingsScreen(
                 extensions = extensions,
                 isScanning = isExtensionScanning,
                 onRescan = { viewModel.rescanExtensions() },
+            )
+
+            Spacer(Modifier.height(24.dp))
+            GlowingDivider(primaryColor)
+            Spacer(Modifier.height(16.dp))
+
+            // Backup & Restore
+            val showExportPasswordDialog by viewModel.showExportPasswordDialog.collectAsState()
+            val showImportPasswordDialog by viewModel.showImportPasswordDialog.collectAsState()
+            val backupError by viewModel.backupError.collectAsState()
+            BackupSettingsSection(
+                isExporting = isExporting,
+                isImporting = isImporting,
+                backupInfo = pendingImportInfo,
+                showExportPasswordDialog = showExportPasswordDialog,
+                showImportPasswordDialog = showImportPasswordDialog,
+                backupError = backupError,
+                onExport = { viewModel.requestExport() },
+                onExportWithPassword = { password -> viewModel.createBackup(context, password) },
+                onDismissExportPassword = { viewModel.dismissExportPasswordDialog() },
+                onImport = { importLauncher.launch(arrayOf("*/*")) },
+                onImportPasswordEntered = { password -> viewModel.onImportPasswordEntered(context, password) },
+                onDismissImportPassword = { viewModel.dismissImportPasswordDialog() },
+                onConfirmImport = { viewModel.confirmImport(context) },
+                onDismissImportDialog = { viewModel.dismissImportDialog() },
+                onDismissError = { viewModel.dismissBackupError() },
             )
 
             Spacer(Modifier.height(24.dp))

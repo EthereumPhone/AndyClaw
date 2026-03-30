@@ -98,8 +98,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private val _approvalRequest = MutableStateFlow<ApprovalRequest?>(null)
     val approvalRequest: StateFlow<ApprovalRequest?> = _approvalRequest.asStateFlow()
 
-    private val _askUserQuestion = MutableStateFlow<String?>(null)
-    val askUserQuestion: StateFlow<String?> = _askUserQuestion.asStateFlow()
+    private val _askUserRequest = MutableStateFlow<org.ethereumphone.andyclaw.agent.AskUserRequest?>(null)
+    val askUserRequest: StateFlow<org.ethereumphone.andyclaw.agent.AskUserRequest?> = _askUserRequest.asStateFlow()
 
     private val _agentDisplayBitmap = MutableStateFlow<Bitmap?>(null)
     val agentDisplayBitmap: StateFlow<Bitmap?> = _agentDisplayBitmap.asStateFlow()
@@ -107,7 +107,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private var agentDisplayJob: Job? = null
     private var currentJob: Job? = null
     private var approvalContinuation: kotlinx.coroutines.CancellableContinuation<Boolean>? = null
-    private var askUserContinuation: kotlinx.coroutines.CancellableContinuation<String?>? = null
+    private var askUserContinuation: kotlinx.coroutines.CancellableContinuation<org.ethereumphone.andyclaw.agent.AskUserResponse?>? = null
     private val pendingExplorerUrls = mutableListOf<String>()
 
     private val httpClient = OkHttpClient()
@@ -285,10 +285,10 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     _messages.value = _messages.value + securityMsg
                 }
 
-                override suspend fun onAskUser(question: String): String? {
+                override suspend fun onAskUser(request: org.ethereumphone.andyclaw.agent.AskUserRequest): org.ethereumphone.andyclaw.agent.AskUserResponse? {
                     return kotlinx.coroutines.suspendCancellableCoroutine { cont ->
                         askUserContinuation = cont
-                        _askUserQuestion.value = question
+                        _askUserRequest.value = request
                     }
                 }
 
@@ -390,14 +390,14 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     /**
-     * Called from the UI when the user answers an ask_user question.
-     * Pass null if the user dismisses the question without answering.
+     * Called from the UI when the user submits answers to ask_user questions.
+     * Pass null if the user skips/dismisses.
      */
-    fun respondToAskUser(answer: String?) {
+    fun respondToAskUser(response: org.ethereumphone.andyclaw.agent.AskUserResponse?) {
         @Suppress("DEPRECATION")
-        askUserContinuation?.resume(answer, null)
+        askUserContinuation?.resume(response, null)
         askUserContinuation = null
-        _askUserQuestion.value = null
+        _askUserRequest.value = null
     }
 
     fun cancel() {

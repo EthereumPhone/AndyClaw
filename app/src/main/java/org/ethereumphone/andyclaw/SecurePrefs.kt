@@ -802,6 +802,113 @@ class SecurePrefs(context: Context) : KeyValueStore {
     return resolved
   }
 
+  /**
+   * Export all preference values as a typed map for backup.
+   * Returns pairs of (key, TypedValue) where type is preserved.
+   */
+  fun exportAllValues(): Map<String, Any?> {
+    return prefs.all.toMap()
+  }
+
+  /**
+   * Import preference values from a backup, replacing current values.
+   * Skips the instanceId so the device keeps its unique identity.
+   */
+  fun importAllValues(values: Map<String, Any?>) {
+    prefs.edit {
+      // Clear everything except instanceId
+      val currentInstanceId = prefs.getString("node.instanceId", null)
+      clear()
+      if (currentInstanceId != null) {
+        putString("node.instanceId", currentInstanceId)
+      }
+
+      for ((key, value) in values) {
+        if (key == "node.instanceId") continue // preserve device identity
+        when (value) {
+          is String -> putString(key, value)
+          is Boolean -> putBoolean(key, value)
+          is Int -> putInt(key, value)
+          is Long -> putLong(key, value)
+          is Float -> putFloat(key, value)
+          is Set<*> -> {
+            @Suppress("UNCHECKED_CAST")
+            putStringSet(key, value as Set<String>)
+          }
+        }
+      }
+    }
+    // Reload all in-memory StateFlows
+    reloadAllFlows()
+  }
+
+  /** Refresh all MutableStateFlow fields from the current SharedPreferences values. */
+  private fun reloadAllFlows() {
+    _displayName.value = prefs.getString(displayNameKey, "Android Node") ?: "Android Node"
+    _cameraEnabled.value = prefs.getBoolean("camera.enabled", true)
+    _locationMode.value = LocationMode.fromRawValue(prefs.getString("location.enabledMode", "off"))
+    _locationPreciseEnabled.value = prefs.getBoolean("location.preciseEnabled", true)
+    _preventSleep.value = prefs.getBoolean("screen.preventSleep", true)
+    _manualEnabled.value = prefs.getBoolean("gateway.manual.enabled", false)
+    _manualHost.value = prefs.getString("gateway.manual.host", "") ?: ""
+    _manualPort.value = prefs.getInt("gateway.manual.port", 18789)
+    _manualTls.value = prefs.getBoolean("gateway.manual.tls", true)
+    _lastDiscoveredStableId.value = prefs.getString("gateway.lastDiscoveredStableID", "") ?: ""
+    _canvasDebugStatusEnabled.value = prefs.getBoolean("canvas.debugStatusEnabled", false)
+    _wakeWords.value = loadWakeWords()
+    _voiceWakeMode.value = loadVoiceWakeMode()
+    _talkEnabled.value = prefs.getBoolean("talk.enabled", false)
+    _yoloMode.value = prefs.getBoolean("agent.yoloMode", false)
+    _safetyEnabled.value = prefs.getBoolean("agent.safetyEnabled", false)
+    _notificationReplyEnabled.value = prefs.getBoolean("agent.notificationReplyEnabled", false)
+    _executiveSummaryEnabled.value = prefs.getBoolean("agent.executiveSummaryEnabled", false)
+    _heartbeatOnNotificationEnabled.value = prefs.getBoolean("agent.heartbeatOnNotification", false)
+    _heartbeatOnXmtpMessageEnabled.value = prefs.getBoolean("agent.heartbeatOnXmtpMessage", false)
+    _heartbeatIntervalMinutes.value = prefs.getInt("agent.heartbeatIntervalMinutes", 30)
+    _heartbeatUseSameModel.value = prefs.getBoolean("agent.heartbeatUseSameModel", true)
+    _heartbeatProvider.value = loadHeartbeatProvider()
+    _heartbeatModel.value = prefs.getString("agent.heartbeatModel", null) ?: ""
+    _walletAddress.value = prefs.getString("auth.walletAddress", "") ?: ""
+    _walletSignature.value = prefs.getString("auth.walletSignature", "") ?: ""
+    _apiKey.value = prefs.getString("anthropic.apiKey", "") ?: ""
+    _selectedProvider.value = loadSelectedProvider()
+    _tinfoilApiKey.value = prefs.getString("tinfoil.apiKey", "") ?: ""
+    _claudeOauthRefreshToken.value = prefs.getString("claude.oauth.refreshToken", "") ?: ""
+    _claudeOauthAccessToken.value = prefs.getString("claude.oauth.accessToken", "") ?: ""
+    _claudeOauthExpiresAt.value = prefs.getLong("claude.oauth.expiresAt", 0L)
+    _openaiApiKey.value = prefs.getString("openai.apiKey", "") ?: ""
+    _veniceApiKey.value = prefs.getString("venice.apiKey", "") ?: ""
+    _selectedModel.value = prefs.getString("anthropic.model", "kimi-k2-5") ?: "kimi-k2-5"
+    _aiName.value = prefs.getString("ai.name", "AndyClaw") ?: "AndyClaw"
+    _enabledSkills.value = loadEnabledSkills()
+    _budgetModeEnabled.value = prefs.getBoolean("budget.enabled", true)
+    _selectedBudgetPresetId.value = prefs.getString("budget.presetId", BudgetPreset.defaultPresetId) ?: BudgetPreset.defaultPresetId
+    _budgetPresets.value = loadBudgetPresets()
+    _smartRoutingEnabled.value = prefs.getBoolean("routing.enabled", false)
+    _toolSearchEnabled.value = prefs.getBoolean("routing.toolSearchEnabled", true)
+    _selectedRoutingPresetId.value = prefs.getString("routing.presetId", "stock_minimal") ?: "stock_minimal"
+    _routingPresets.value = loadRoutingPresets()
+    _routingMode.value = org.ethereumphone.andyclaw.skills.RoutingMode.fromString(prefs.getString("routing.mode", "moderate"))
+    _routingUseSameModel.value = prefs.getBoolean("routing.useSameModel", false)
+    _routingProvider.value = loadRoutingProvider()
+    _routingModel.value = prefs.getString("routing.model", "")?.takeIf { it.isNotEmpty() }
+      ?: (AnthropicModels.routingModelForProvider(_routingProvider.value)?.modelId ?: "")
+    _modelRoutingEnabled.value = prefs.getBoolean("routing.modelRouting.enabled", false)
+    _modelRoutingLight.value = prefs.getString("routing.modelRouting.light", "") ?: ""
+    _modelRoutingStandard.value = prefs.getString("routing.modelRouting.standard", "") ?: ""
+    _modelRoutingPowerful.value = prefs.getString("routing.modelRouting.powerful", "") ?: ""
+    _googleOauthClientId.value = prefs.getString("google.oauth.clientId", "") ?: ""
+    _googleOauthClientSecret.value = prefs.getString("google.oauth.clientSecret", "") ?: ""
+    _googleOauthRefreshToken.value = prefs.getString("google.oauth.refreshToken", "") ?: ""
+    _googleOauthAccessToken.value = prefs.getString("google.oauth.accessToken", "") ?: ""
+    _googleOauthExpiresAt.value = prefs.getLong("google.oauth.expiresAt", 0L)
+    _telegramBotToken.value = prefs.getString("telegram.botToken", "") ?: ""
+    _telegramBotEnabled.value = prefs.getBoolean("telegram.botEnabled", false)
+    _telegramOwnerChatId.value = prefs.getLong("telegram.ownerChatId", 0L)
+    _syncProviderToAll.value = prefs.getBoolean("sync.providerToAll", false)
+    _ledMaxBrightness.value = prefs.getInt("led.maxBrightness", 255)
+  }
+
   private fun loadWakeWords(): List<String> {
     val raw = prefs.getString("voiceWake.triggerWords", null)?.trim()
     if (raw.isNullOrEmpty()) return defaultWakeWords

@@ -1051,10 +1051,8 @@ class LauncherBindingService : Service() {
                 }
             }
 
-            override suspend fun onAskUser(question: String): String? {
-                // No interactive UI available from launcher binding — return null
-                // so the agent gets a fallback message.
-                Log.i(TAG, "ask_user (launcher, skipping): $question")
+            override suspend fun onAskUser(request: org.ethereumphone.andyclaw.agent.AskUserRequest): org.ethereumphone.andyclaw.agent.AskUserResponse? {
+                Log.i(TAG, "ask_user (launcher, skipping): ${request.questions.size} question(s)")
                 return null
             }
 

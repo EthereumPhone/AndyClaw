@@ -13,6 +13,9 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import org.ethereumphone.andyclaw.NodeApp
 import org.ethereumphone.andyclaw.agent.AgentLoop
+import org.ethereumphone.andyclaw.agent.AskUserRequest
+import org.ethereumphone.andyclaw.agent.AskUserResponse
+import org.ethereumphone.andyclaw.agent.QuestionAnswer
 import org.ethereumphone.andyclaw.extensions.clawhub.DownloadAssessResult
 import org.ethereumphone.andyclaw.extensions.clawhub.ThreatAssessment
 import org.ethereumphone.andyclaw.llm.AnthropicModels
@@ -146,21 +149,38 @@ class TelegramAgentRunner(
                 }
             }
 
-            override suspend fun onAskUser(question: String): String? {
-                // Send the question to the Telegram chat and wait for the next message
-                Log.i(TAG, "ask_user (telegram chat=$chatId): $question")
-                botClient.sendMessage(chatId, "❓ $question")
-                // Wait for the user's reply via the pending question mechanism
+            override suspend fun onAskUser(request: AskUserRequest): AskUserResponse? {
+                // Flatten questions into a text message for Telegram
+                val text = buildString {
+                    appendLine("❓ Clarification needed:")
+                    for ((i, q) in request.questions.withIndex()) {
+                        if (request.questions.size > 1) append("${i + 1}. ")
+                        append(q.question)
+                        if (q.options.isNotEmpty()) {
+                            append(" [${q.options.joinToString(" / ")}]")
+                        }
+                        appendLine()
+                    }
+                    append("Reply with your answer:")
+                }
+                Log.i(TAG, "ask_user (telegram chat=$chatId): ${request.questions.size} question(s)")
+                botClient.sendMessage(chatId, text)
                 val deferred = CompletableDeferred<String>()
                 pendingAskUser = deferred
-                return withTimeoutOrNull(ASK_USER_TIMEOUT_MS) {
+                val reply = withTimeoutOrNull(ASK_USER_TIMEOUT_MS) {
                     deferred.await()
-                }.also {
-                    pendingAskUser = null
-                    if (it == null) {
-                        botClient.sendMessage(chatId, "No response received — proceeding with best judgment.")
-                    }
                 }
+                pendingAskUser = null
+                if (reply == null) {
+                    botClient.sendMessage(chatId, "No response received — proceeding with best judgment.")
+                    return null
+                }
+                // Single text reply → map to first question's answer
+                return AskUserResponse(
+                    answers = request.questions.map { q ->
+                        QuestionAnswer(question = q.question, answer = reply)
+                    }
+                )
             }
 
             override suspend fun onApprovalNeeded(

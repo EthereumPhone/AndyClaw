@@ -113,10 +113,8 @@ class HeartbeatAgentRunner(
                 ))
             }
 
-            override suspend fun onAskUser(question: String): String? {
-                // Headless — no user available. Return null so the agent gets
-                // a fallback message telling it to use its best judgment.
-                Log.i(TAG, "ask_user (headless, skipping): $question")
+            override suspend fun onAskUser(request: AskUserRequest): AskUserResponse? {
+                Log.i(TAG, "ask_user (headless, skipping): ${request.questions.size} question(s)")
                 return null
             }
 

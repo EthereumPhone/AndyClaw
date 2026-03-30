@@ -244,4 +244,24 @@ interface MemoryDao {
 
     @Query("DELETE FROM memory_meta WHERE `key` = :key")
     suspend fun deleteMeta(key: String)
+
+    // ── Backup / Restore ───────────────────────────────────────────
+
+    @Query("SELECT * FROM memory_entries")
+    suspend fun getAllEntries(): List<MemoryEntryEntity>
+
+    @Query("SELECT * FROM memory_entry_tags")
+    suspend fun getAllEntryTagCrossRefs(): List<MemoryEntryTagCrossRef>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertEntries(entries: List<MemoryEntryEntity>)
+
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    suspend fun insertTags(tags: List<MemoryTagEntity>)
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertEntryTagCrossRefs(crossRefs: List<MemoryEntryTagCrossRef>)
+
+    @Query("DELETE FROM memory_entries")
+    suspend fun deleteAllEntries()
 }

@@ -117,34 +117,53 @@ class AgentLoop(
         fun buildAskUserToolJson(): JsonObject = buildJsonObject {
             put("name", ASK_USER_TOOL_NAME)
             put("description", buildString {
-                append("Ask the user a clarifying question when you cannot proceed without their answer. ")
-                append("Pauses execution until the user responds, then resumes so you can act on the answer ")
-                append("in the same turn.\n\n")
+                append("Ask the user one or more clarifying questions when you cannot proceed without their answer. ")
+                append("Supports single-select (pick one), multi-select (pick many), and ranked-choice (order by preference). ")
+                append("Pauses execution until the user responds, then resumes so you can act on the answers.\n\n")
                 append("This is for BLOCKING ambiguity only — situations where you literally cannot complete ")
                 append("the task without more information. If the task is already done or you can make a ")
                 append("reasonable choice yourself, just respond with text normally.\n\n")
                 append("USE when:\n")
-                append("- A tool returned ambiguous results you cannot resolve (e.g. search_contacts returned ")
-                append("multiple matches and you don't know which one the user meant)\n")
-                append("- You're about to perform an irreversible action and a critical detail is missing ")
-                append("(e.g. 'send ETH to Alice' but there are two Alices)\n")
+                append("- A tool returned ambiguous results you cannot resolve (e.g. multiple contact matches)\n")
+                append("- You're about to perform an irreversible action and a critical detail is missing\n")
                 append("- You need information the user hasn't provided and cannot be looked up with tools\n\n")
                 append("NEVER use when:\n")
                 append("- The task is already complete ('Anything else?' — just say it in text)\n")
                 append("- You can resolve the ambiguity yourself (e.g. only one contact matches)\n")
                 append("- The question is optional or nice-to-have, not required to finish the task\n")
-                append("- You want confirmation after the work is done — just report the result\n")
                 append("- You're running as a background agent (heartbeat) — the tool will return a fallback\n")
             })
             putJsonObject("input_schema") {
                 put("type", "object")
                 putJsonObject("properties") {
-                    putJsonObject("question") {
-                        put("type", "string")
-                        put("description", "The question to ask the user. Be specific and concise. If there are a few options, list them.")
+                    putJsonObject("questions") {
+                        put("type", "array")
+                        put("description", "One or more questions to ask. The user sees all questions and can navigate between them before submitting.")
+                        putJsonObject("items") {
+                            put("type", "object")
+                            putJsonObject("properties") {
+                                putJsonObject("question") {
+                                    put("type", "string")
+                                    put("description", "The question text.")
+                                }
+                                putJsonObject("type") {
+                                    put("type", "string")
+                                    put("enum", "single_select, multi_select, ranked_choice")
+                                    put("description", "single_select: pick one option or type custom. multi_select: pick multiple + optional custom entry. ranked_choice: reorder options by preference.")
+                                }
+                                putJsonObject("options") {
+                                    put("type", "array")
+                                    putJsonObject("items") { put("type", "string") }
+                                    put("description", "Available options. For single_select, the user can also type a custom answer. For multi_select, the user can also add a custom entry.")
+                                }
+                            }
+                            putJsonArray("required") {
+                                add(kotlinx.serialization.json.JsonPrimitive("question"))
+                            }
+                        }
                     }
                 }
-                putJsonArray("required") { add(kotlinx.serialization.json.JsonPrimitive("question")) }
+                putJsonArray("required") { add(kotlinx.serialization.json.JsonPrimitive("questions")) }
             }
         }
 
@@ -212,11 +231,11 @@ class AgentLoop(
         suspend fun onPermissionsNeeded(permissions: List<String>): Boolean
         /**
          * Called when the agent needs user clarification mid-loop.
-         * Returns the user's answer, or null if unavailable (headless/background).
+         * Returns the user's response, or null if unavailable (headless/background).
          * When null is returned, the agent receives a fallback message telling it
          * to proceed with its best judgment.
          */
-        suspend fun onAskUser(question: String): String?
+        suspend fun onAskUser(request: AskUserRequest): AskUserResponse?
         fun onComplete(fullText: String)
         fun onError(error: Throwable)
     }
@@ -539,12 +558,15 @@ class AgentLoop(
 
                 // Handle ask_user calls (blocks on user input, execute before other tools)
                 for (call in askUserCalls) {
-                    val question = call.input["question"]?.jsonPrimitive?.contentOrNull ?: "Can you clarify?"
-                    Log.i(TAG, "ask_user: '$question'")
+                    val request = parseAskUserInput(call.input)
+                    Log.i(TAG, "ask_user: ${request.questions.size} question(s): ${request.questions.joinToString { "'${it.question.take(50)}'" }}")
                     callbacks.onToolExecution(ASK_USER_TOOL_NAME)
-                    val answer = callbacks.onAskUser(question)
-                    val resultText = answer
-                        ?: "User is not available (background/headless mode). Proceed with your best judgment or skip this action."
+                    val response = callbacks.onAskUser(request)
+                    val resultText = if (response != null) {
+                        formatAskUserResponse(response)
+                    } else {
+                        "User is not available (background/headless mode). Proceed with your best judgment or skip this action."
+                    }
                     allToolResults.add(ContentBlock.ToolResult(
                         toolUseId = call.id,
                         content = resultText,
