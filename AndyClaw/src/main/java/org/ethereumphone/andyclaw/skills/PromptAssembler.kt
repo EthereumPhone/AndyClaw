@@ -251,6 +251,23 @@ object PromptAssembler {
         return sb.toString()
     }
 
+    /**
+     * Minimal system prompt for local models (target: <100 tokens).
+     * Local 1.5B models can't handle complex instructions — keep it tight.
+     * Tool schemas are injected separately into the ChatML prompt by [LocalLlmClient].
+     */
+    fun assembleLocalSystemPrompt(aiName: String? = null): String {
+        val name = aiName?.takeIf { it.isNotBlank() } ?: "Andy"
+        return buildString {
+            appendLine("You are $name, a helpful AI assistant on this phone.")
+            appendLine("Rules:")
+            appendLine("- If the user asks you to DO something (check time, send message, search, etc.), use a tool.")
+            appendLine("- If the user asks a knowledge question (facts, math, definitions), answer directly WITHOUT tools.")
+            appendLine("- execute_code can run any Java code on the phone. Use it for anything the other tools can't do.")
+            appendLine("- Be concise.")
+        }
+    }
+
     fun assembleToolsJsonArray(
         skills: List<AndyClawSkill>,
         tier: Tier,
