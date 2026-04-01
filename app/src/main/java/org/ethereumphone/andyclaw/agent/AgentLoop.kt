@@ -48,6 +48,7 @@ class AgentLoop(
     private val smartRouter: SmartRouter? = null,
     private val toolSearchService: ToolSearchService? = null,
     private val budgetConfig: BudgetConfig? = null,
+    private val responseLanguage: String? = null,
 ) {
     companion object {
         private const val TAG = "AgentLoop"
@@ -304,6 +305,7 @@ class AgentLoop(
                 concisePrompt = budget?.preset?.concisePrompt == true,
                 parallelToolCalls = budget?.preset?.parallelToolCalls == true,
                 noPreambleToolCalls = budget?.preset?.noPreambleToolCalls == true,
+                responseLanguage = responseLanguage,
             ))
             // Add meta-tool descriptions and catalog summary when using ToolSearch
             if (useToolSearch) {
@@ -703,6 +705,7 @@ class AgentLoop(
                 concisePrompt = true,
                 parallelToolCalls = true,
                 noPreambleToolCalls = true,
+                responseLanguage = responseLanguage,
             ))
             if (subagentToolSearch != null) {
                 appendLine()

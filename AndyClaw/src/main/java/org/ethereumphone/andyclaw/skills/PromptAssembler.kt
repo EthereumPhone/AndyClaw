@@ -47,6 +47,7 @@ object PromptAssembler {
         concisePrompt: Boolean = false,
         parallelToolCalls: Boolean = false,
         noPreambleToolCalls: Boolean = false,
+        responseLanguage: String? = null,
     ): String {
         val name = aiName?.takeIf { it.isNotBlank() } ?: "AndyClaw"
         val sb = StringBuilder()
@@ -134,6 +135,22 @@ object PromptAssembler {
             sb.appendLine("## Tool Call Format")
             sb.appendLine("When calling tools, do not add explanatory text before the tool call. Just make the tool call directly. You can summarize results after the tool completes.")
             sb.appendLine()
+        }
+
+        // Response language
+        if (!responseLanguage.isNullOrBlank()) {
+            val locale = java.util.Locale.forLanguageTag(responseLanguage)
+            val langCode = locale.language
+            if (langCode != "en") {
+                val english = locale.getDisplayLanguage(java.util.Locale.ENGLISH)
+                val native_ = locale.getDisplayLanguage(locale)
+                val displayName = if (english == native_) english else "$english ($native_)"
+                sb.appendLine("## Response Language")
+                sb.appendLine("The user's device language is: $displayName.")
+                sb.appendLine("You MUST respond in $displayName. All conversational text, explanations, and summaries must be in this language.")
+                sb.appendLine("Exceptions: tool names, tool parameters, code snippets, wallet addresses, ENS names, and technical identifiers must remain in English/ASCII.")
+                sb.appendLine()
+            }
         }
 
         // Wallet address guidance (only when wallet tools are available)
