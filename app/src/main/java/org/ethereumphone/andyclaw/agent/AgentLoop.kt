@@ -14,6 +14,7 @@ import kotlinx.serialization.json.putJsonArray
 import kotlinx.serialization.json.putJsonObject
 import org.ethereumphone.andyclaw.llm.AnthropicModels
 import org.ethereumphone.andyclaw.llm.LlmClient
+import org.ethereumphone.andyclaw.llm.LocalLlmClient
 import org.ethereumphone.andyclaw.llm.ContentBlock
 import org.ethereumphone.andyclaw.llm.Message
 import org.ethereumphone.andyclaw.llm.ToolResultContent
@@ -314,57 +315,72 @@ class AgentLoop(
         val memoryContext = fetchMemoryContext(userMessage)
 
         val budget = budgetConfig
-        val systemPrompt = buildString {
-            // When using ToolSearch, only pass CORE skills for full tool docs in the
-            // system prompt. The catalog summary provides a compact one-liner per
-            // discoverable skill category — avoids bloating context with 198 tool
-            // descriptions the model can't call until it searches.
-            val promptSkills = if (useToolSearch) {
-                // Include skills that own CORE tools or always-on tools.
-                // These get full tool docs in the system prompt; everything else
-                // is described via the compact catalog summary.
-                val alwaysOnSkillIds = toolSearchService!!.getAlwaysOnSkillIds()
-                skillRegistry.getEnabled(alwaysOnSkillIds)
-            } else {
-                skills
+        val isLocalModel = client is LocalLlmClient
+        val systemPrompt = if (isLocalModel) {
+            // Minimal prompt for local 1.5B models — tool schemas injected by LocalLlmClient
+            buildString {
+                append(PromptAssembler.assembleLocalSystemPrompt(aiName))
+                // Add compact ToolSearch info so the model knows it can discover more tools
+                if (useToolSearch) {
+                    appendLine("You have a few tools loaded. If you need a tool you don't have, use search_available_tools to find it.")
+                    appendLine("Once discovered, new tools stay available for the rest of the conversation.")
+                    appendLine()
+                    append(toolSearchService!!.buildCatalogSummary())
+                }
             }
-            append(PromptAssembler.assembleSystemPrompt(
-                promptSkills, tier, aiName, userStory,
-                soulContent = soulContent,
-                safetyEnabled = safety?.config?.enabled == true,
-                sessionNonce = safety?.sessionNonce,
-                concisePrompt = budget?.preset?.concisePrompt == true,
-                parallelToolCalls = budget?.preset?.parallelToolCalls == true,
-                noPreambleToolCalls = budget?.preset?.noPreambleToolCalls == true,
-            ))
-            // Add meta-tool descriptions and catalog summary when using ToolSearch
-            if (useToolSearch) {
-                appendLine()
-                appendLine("### Tool Discovery")
-                appendLine("`search_available_tools` — Search for tools you don't have yet. " +
-                    "Call this when you need a capability that isn't in your current tool set. " +
-                    "Discovered tools remain available for the rest of the conversation.")
-                appendLine()
-                appendLine("### Sub-Agent Delegation")
-                appendLine("`spawn_subagent` — Delegate a subtask to a focused sub-agent with its own tools and context. " +
-                    "Use for parallel independent tasks or context-heavy work (e.g. virtual display navigation) " +
-                    "that would pollute your conversation history.")
-                appendLine()
-                appendLine("### User Clarification")
-                appendLine("`ask_user` — Ask the user a blocking clarifying question mid-turn when you cannot " +
-                    "proceed without their answer (e.g. multiple contact matches, missing critical detail for an " +
-                    "irreversible action). Pauses execution and resumes when they answer, so you can act immediately. " +
-                    "Only for blocking ambiguity — if the task is done or the question is optional, use normal text.")
-                appendLine()
-                append(toolSearchService!!.buildCatalogSummary())
-            }
-            if (memoryContext.isNotBlank()) {
-                appendLine()
-                appendLine("## Relevant Memories")
-                appendLine("The following context was retrieved from long-term memory and may be relevant:")
-                appendLine()
-                append(memoryContext)
-                appendLine()
+        } else {
+            buildString {
+                // When using ToolSearch, only pass CORE skills for full tool docs in the
+                // system prompt. The catalog summary provides a compact one-liner per
+                // discoverable skill category — avoids bloating context with 198 tool
+                // descriptions the model can't call until it searches.
+                val promptSkills = if (useToolSearch) {
+                    // Include skills that own CORE tools or always-on tools.
+                    // These get full tool docs in the system prompt; everything else
+                    // is described via the compact catalog summary.
+                    val alwaysOnSkillIds = toolSearchService!!.getAlwaysOnSkillIds()
+                    skillRegistry.getEnabled(alwaysOnSkillIds)
+                } else {
+                    skills
+                }
+                append(PromptAssembler.assembleSystemPrompt(
+                    promptSkills, tier, aiName, userStory,
+                    soulContent = soulContent,
+                    safetyEnabled = safety?.config?.enabled == true,
+                    sessionNonce = safety?.sessionNonce,
+                    concisePrompt = budget?.preset?.concisePrompt == true,
+                    parallelToolCalls = budget?.preset?.parallelToolCalls == true,
+                    noPreambleToolCalls = budget?.preset?.noPreambleToolCalls == true,
+                ))
+                // Add meta-tool descriptions and catalog summary when using ToolSearch
+                if (useToolSearch) {
+                    appendLine()
+                    appendLine("### Tool Discovery")
+                    appendLine("`search_available_tools` — Search for tools you don't have yet. " +
+                        "Call this when you need a capability that isn't in your current tool set. " +
+                        "Discovered tools remain available for the rest of the conversation.")
+                    appendLine()
+                    appendLine("### Sub-Agent Delegation")
+                    appendLine("`spawn_subagent` — Delegate a subtask to a focused sub-agent with its own tools and context. " +
+                        "Use for parallel independent tasks or context-heavy work (e.g. virtual display navigation) " +
+                        "that would pollute your conversation history.")
+                    appendLine()
+                    appendLine("### User Clarification")
+                    appendLine("`ask_user` — Ask the user a blocking clarifying question mid-turn when you cannot " +
+                        "proceed without their answer (e.g. multiple contact matches, missing critical detail for an " +
+                        "irreversible action). Pauses execution and resumes when they answer, so you can act immediately. " +
+                        "Only for blocking ambiguity — if the task is done or the question is optional, use normal text.")
+                    appendLine()
+                    append(toolSearchService!!.buildCatalogSummary())
+                }
+                if (memoryContext.isNotBlank()) {
+                    appendLine()
+                    appendLine("## Relevant Memories")
+                    appendLine("The following context was retrieved from long-term memory and may be relevant:")
+                    appendLine()
+                    append(memoryContext)
+                    appendLine()
+                }
             }
         }
 
@@ -388,11 +404,13 @@ class AgentLoop(
         } else {
             PromptAssembler.assembleTools(skills, tier, nameResolver, allowedTools).toMutableList()
         }
-        // Add meta-tools: spawn_subagent, ask_user
-        if (smartRouter != null || useToolSearch) {
-            allToolsJson.add(buildSpawnSubagentToolJson())
+        // Add meta-tools: spawn_subagent, ask_user (skip for local models — too complex for 1.5B)
+        if (!isLocalModel) {
+            if (smartRouter != null || useToolSearch) {
+                allToolsJson.add(buildSpawnSubagentToolJson())
+            }
+            allToolsJson.add(buildAskUserToolJson())
         }
-        allToolsJson.add(buildAskUserToolJson())
         var toolsJson = if (client.maxToolCount > 0 && allToolsJson.size > client.maxToolCount) {
             Log.d(TAG, "Trimming tools from ${allToolsJson.size} to ${client.maxToolCount} for constrained provider")
             allToolsJson.take(client.maxToolCount)

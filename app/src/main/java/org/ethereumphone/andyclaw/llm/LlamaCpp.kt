@@ -51,4 +51,13 @@ class LlamaCpp {
         check(isModelLoaded) { "Model not loaded" }
         LlamaBridge.generateStream(prompt, callback)
     }
+
+    /**
+     * Count tokens for [text] using the loaded model's tokenizer.
+     * Returns -1 if the model is not loaded.
+     */
+    fun tokenize(text: String): Int {
+        if (!isModelLoaded) return -1
+        return LlamaBridge.tokenize(text)
+    }
 }
