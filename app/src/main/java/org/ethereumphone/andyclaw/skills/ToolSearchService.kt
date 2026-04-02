@@ -31,7 +31,7 @@ class ToolSearchService(
         const val TOOL_NAME = "search_available_tools"
         private const val MAX_RESULTS = 5
         private val DEFAULT_CORE_SKILL_IDS = setOf("code_execution", "memory")
-        private val DEFAULT_DGEN1_CORE_SKILL_IDS = setOf("terminal_text")
+        private val DEFAULT_DGEN1_CORE_SKILL_IDS = emptySet<String>()
     }
 
     /** Skills always included regardless of search. */

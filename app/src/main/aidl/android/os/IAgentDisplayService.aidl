@@ -59,12 +59,12 @@ interface IAgentDisplayService {
 
     // ── Accessibility ───────────────────────────────────────────────────
     String getAccessibilityTree();
-    void clickNode(String viewId);
-    void longClickNode(String viewId);
-    void setNodeText(String viewId, String text);
-    void scrollNodeForward(String viewId);
-    void scrollNodeBackward(String viewId);
-    void focusNode(String viewId);
+    String clickNode(String viewId);
+    String longClickNode(String viewId);
+    String setNodeText(String viewId, String text);
+    String scrollNodeForward(String viewId);
+    String scrollNodeBackward(String viewId);
+    String focusNode(String viewId);
     String getNodeInfo(String viewId);
 
     // ── Proxy Management ────────────────────────────────────────────────

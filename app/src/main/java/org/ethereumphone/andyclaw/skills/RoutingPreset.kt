@@ -46,7 +46,7 @@ data class RoutingPreset(
                 name = "Minimal Core",
                 isStock = true,
                 coreSkillIds = setOf("code_execution", "memory"),
-                coreDgen1SkillIds = setOf("terminal_text"),
+                coreDgen1SkillIds = emptySet(),
                 alwaysIncludeTools = emptyMap(),
             ),
             RoutingPreset(
@@ -64,7 +64,6 @@ data class RoutingPreset(
                 ),
                 coreDgen1SkillIds = setOf(
                     "led_matrix",
-                    "terminal_text",
                     "agent_display",
                 ),
                 alwaysIncludeTools = emptyMap(),
@@ -97,7 +96,6 @@ data class RoutingPreset(
                 ),
                 coreDgen1SkillIds = setOf(
                     "led_matrix",
-                    "terminal_text",
                     "agent_display",
                 ),
                 alwaysIncludeTools = emptyMap(),

@@ -25,9 +25,7 @@ object ToolResultFormatter {
                 "fetch_webpage" -> formatFetchWebpage(unwrap(rawResult))
                 "run_shell_command", "run_termux_command" -> formatShellOutput(unwrap(rawResult))
                 "execute_code" -> formatCodeExecution(unwrap(rawResult))
-                "setTerminalText" -> formatSetTerminalText(rawResult, input)
-                "clearTerminalText" -> Formatted("Cleared", "Terminal display cleared.")
-                "list_directory" -> formatListDirectory(unwrap(rawResult))
+"list_directory" -> formatListDirectory(unwrap(rawResult))
                 "read_file" -> formatReadFile(unwrap(rawResult))
                 "write_file" -> formatWriteFile(unwrap(rawResult))
                 "file_info" -> formatFileInfo(unwrap(rawResult))
@@ -165,18 +163,6 @@ object ToolResultFormatter {
             }
         }
         return Formatted(summary, detail.ifBlank { summary })
-    }
-
-    // ── terminal display ────────────────────────────────────────
-
-    private fun formatSetTerminalText(raw: String, input: JsonObject?): Formatted {
-        val text = input?.get("text")?.jsonPrimitive?.contentOrNull
-        return if (text != null) {
-            val display = if (text.length > 40) text.take(40) + "…" else text
-            Formatted("\"$display\"", "Display set to: $text")
-        } else {
-            Formatted("Updated", raw)
-        }
     }
 
     // ── file operations ─────────────────────────────────────────

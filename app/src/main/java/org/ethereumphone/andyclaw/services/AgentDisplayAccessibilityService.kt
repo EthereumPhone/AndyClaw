@@ -3,6 +3,7 @@ package org.ethereumphone.andyclaw.services
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.AccessibilityServiceInfo
 import android.graphics.Rect
+import android.os.Bundle
 import android.os.IBinder
 import android.os.IAgentAccessibilityProxy
 import android.os.IAgentDisplayService
@@ -10,6 +11,7 @@ import android.util.Log
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import android.view.accessibility.AccessibilityWindowInfo
+import org.ethereumphone.andyclaw.analyzer.ScreenAnalyzer
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -17,31 +19,35 @@ import org.json.JSONObject
  * App-hosted accessibility service that provides UI tree queries for the
  * framework's AgentDisplayService via a binder callback proxy.
  *
- * The framework cannot host this service itself because AccessibilityManagerService
- * cannot resolve/bind services declared in the "android" framework package.
+ * Node actions use a hybrid approach: try the a11y performAction() first,
+ * then fall back to coordinate-based input injection via the framework
+ * service if performAction() fails (common on virtual displays).
  */
 class AgentDisplayAccessibilityService : AccessibilityService() {
+
+    /** Framework service reference for input-injection fallback. */
+    private var frameworkService: IAgentDisplayService? = null
 
     private val proxy = object : IAgentAccessibilityProxy.Stub() {
         override fun getTreeForDisplay(displayId: Int): String =
             buildTreeForDisplay(displayId)
 
-        override fun clickNodeByViewId(displayId: Int, viewId: String): Boolean =
+        override fun clickNodeByViewId(displayId: Int, viewId: String): String =
             doClickNode(displayId, viewId)
 
-        override fun setNodeTextByViewId(displayId: Int, viewId: String, text: String): Boolean =
+        override fun setNodeTextByViewId(displayId: Int, viewId: String, text: String): String =
             doSetNodeText(displayId, viewId, text)
 
-        override fun longClickNodeByViewId(displayId: Int, viewId: String): Boolean =
+        override fun longClickNodeByViewId(displayId: Int, viewId: String): String =
             doLongClickNode(displayId, viewId)
 
-        override fun scrollNodeForwardByViewId(displayId: Int, viewId: String): Boolean =
+        override fun scrollNodeForwardByViewId(displayId: Int, viewId: String): String =
             doScrollNode(displayId, viewId, AccessibilityNodeInfo.ACTION_SCROLL_FORWARD)
 
-        override fun scrollNodeBackwardByViewId(displayId: Int, viewId: String): Boolean =
+        override fun scrollNodeBackwardByViewId(displayId: Int, viewId: String): String =
             doScrollNode(displayId, viewId, AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD)
 
-        override fun focusNodeByViewId(displayId: Int, viewId: String): Boolean =
+        override fun focusNodeByViewId(displayId: Int, viewId: String): String =
             doFocusNode(displayId, viewId)
 
         override fun getNodeInfoByViewId(displayId: Int, viewId: String): String =
@@ -77,6 +83,7 @@ class AgentDisplayAccessibilityService : AccessibilityService() {
 
     override fun onDestroy() {
         super.onDestroy()
+        frameworkService = null
         Log.i(TAG, "onDestroy")
     }
 
@@ -92,6 +99,7 @@ class AgentDisplayAccessibilityService : AccessibilityService() {
                 return
             }
             val service = IAgentDisplayService.Stub.asInterface(binder)
+            frameworkService = service
             service.registerAccessibilityProxy(proxy)
             Log.i(TAG, "Proxy registered with AgentDisplayService")
         } catch (e: Exception) {
@@ -99,36 +107,321 @@ class AgentDisplayAccessibilityService : AccessibilityService() {
         }
     }
 
-    // ---- tree building (ported from framework AgentDisplayAccessibilityService.java) ----
+    // ========================================================================
+    // Node actions — hybrid: try a11y performAction, fall back to input injection
+    // ========================================================================
 
-    private fun buildTreeForDisplay(displayId: Int): String {
-        Log.i(TAG, "buildTreeForDisplay: displayId=$displayId")
+    private fun doClickNode(displayId: Int, viewId: String): String {
+        Log.i(DTAG, "A11Y_CLICK_NODE: viewId=$viewId displayId=$displayId")
+        val node = findNodeByViewId(displayId, viewId)
+            ?: run {
+                Log.e(DTAG, "A11Y_CLICK_NODE: node NOT FOUND: $viewId")
+                return """{"ok":false,"error":"Node not found: $viewId"}"""
+            }
+
+        // Try a11y action first
+        if (node.performAction(AccessibilityNodeInfo.ACTION_CLICK)) {
+            node.recycle()
+            Log.d(TAG, "clickNode $viewId -> a11y OK")
+            Log.i(DTAG, "A11Y_CLICK_NODE: $viewId -> a11y performAction OK")
+            return """{"ok":true,"method":"a11y"}"""
+        }
+
+        // Fallback: tap at node center via framework input injection
+        val bounds = Rect()
+        node.getBoundsInScreen(bounds)
+        node.recycle()
+        val cx = bounds.centerX().toFloat()
+        val cy = bounds.centerY().toFloat()
+        return try {
+            frameworkService?.tap(cx, cy)
+                ?: return """{"ok":false,"error":"Framework service unavailable for tap fallback"}"""
+            Log.d(TAG, "clickNode $viewId -> tap fallback ($cx, $cy)")
+            """{"ok":true,"method":"tap","x":$cx,"y":$cy}"""
+        } catch (e: Exception) {
+            Log.e(TAG, "clickNode tap fallback failed for $viewId", e)
+            """{"ok":false,"error":"Tap fallback failed: ${e.message}"}"""
+        }
+    }
+
+    private fun doLongClickNode(displayId: Int, viewId: String): String {
+        val node = findNodeByViewId(displayId, viewId)
+            ?: return """{"ok":false,"error":"Node not found: $viewId"}"""
+
+        if (node.performAction(AccessibilityNodeInfo.ACTION_LONG_CLICK)) {
+            node.recycle()
+            Log.d(TAG, "longClickNode $viewId -> a11y OK")
+            return """{"ok":true,"method":"a11y"}"""
+        }
+
+        val bounds = Rect()
+        node.getBoundsInScreen(bounds)
+        node.recycle()
+        val cx = bounds.centerX().toFloat()
+        val cy = bounds.centerY().toFloat()
+        return try {
+            frameworkService?.longPress(cx, cy, 500)
+                ?: return """{"ok":false,"error":"Framework service unavailable for longPress fallback"}"""
+            Log.d(TAG, "longClickNode $viewId -> longPress fallback ($cx, $cy)")
+            """{"ok":true,"method":"longPress","x":$cx,"y":$cy}"""
+        } catch (e: Exception) {
+            Log.e(TAG, "longClickNode longPress fallback failed for $viewId", e)
+            """{"ok":false,"error":"LongPress fallback failed: ${e.message}"}"""
+        }
+    }
+
+    private fun doSetNodeText(displayId: Int, viewId: String, text: String): String {
+        Log.i(DTAG, "A11Y_SET_TEXT: viewId=$viewId text=\"${text.take(50)}\" displayId=$displayId")
+        val node = findNodeByViewId(displayId, viewId)
+            ?: run {
+                Log.e(DTAG, "A11Y_SET_TEXT: node NOT FOUND: $viewId")
+                return """{"ok":false,"error":"Node not found: $viewId"}"""
+            }
+
+        // Try a11y ACTION_SET_TEXT first
+        val args = Bundle().apply {
+            putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text)
+        }
+        if (node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)) {
+            node.recycle()
+            Log.d(TAG, "setNodeText $viewId -> a11y OK")
+            return """{"ok":true,"method":"a11y"}"""
+        }
+
+        // Fallback: tap to focus, select all, then type text
+        val bounds = Rect()
+        node.getBoundsInScreen(bounds)
+        node.recycle()
+        val cx = bounds.centerX().toFloat()
+        val cy = bounds.centerY().toFloat()
+        return try {
+            val svc = frameworkService
+                ?: return """{"ok":false,"error":"Framework service unavailable for text fallback"}"""
+            svc.tap(cx, cy) // tap to focus
+            Thread.sleep(80)
+            svc.pressKeyWithMeta(29 /* KEYCODE_A */, 4096 /* META_CTRL_ON */) // Ctrl+A select all
+            Thread.sleep(30)
+            svc.inputText(text)
+            Log.d(TAG, "setNodeText $viewId -> type fallback ($cx, $cy)")
+            """{"ok":true,"method":"type","x":$cx,"y":$cy}"""
+        } catch (e: Exception) {
+            Log.e(TAG, "setNodeText type fallback failed for $viewId", e)
+            """{"ok":false,"error":"Type fallback failed: ${e.message}"}"""
+        }
+    }
+
+    private fun doScrollNode(displayId: Int, viewId: String, action: Int): String {
+        val directionStr = if (action == AccessibilityNodeInfo.ACTION_SCROLL_FORWARD) "forward" else "backward"
+        Log.i(DTAG, "A11Y_SCROLL_NODE: viewId=$viewId direction=$directionStr displayId=$displayId")
+        val node = findNodeByViewId(displayId, viewId)
+            ?: run {
+                Log.e(DTAG, "A11Y_SCROLL_NODE: node NOT FOUND: $viewId")
+                return """{"ok":false,"error":"Node not found: $viewId"}"""
+            }
+
+        if (node.performAction(action)) {
+            node.recycle()
+            Log.d(TAG, "scrollNode $viewId $directionStr -> a11y OK")
+            return """{"ok":true,"method":"a11y"}"""
+        }
+
+        // Fallback: swipe within bounds
+        val bounds = Rect()
+        node.getBoundsInScreen(bounds)
+        node.recycle()
+        val cx = bounds.centerX().toFloat()
+        val quarterH = bounds.height() / 4f
+        return try {
+            val svc = frameworkService
+                ?: return """{"ok":false,"error":"Framework service unavailable for scroll fallback"}"""
+            if (action == AccessibilityNodeInfo.ACTION_SCROLL_FORWARD) {
+                // Swipe up (content moves up = scroll forward)
+                svc.swipe(cx, bounds.bottom - quarterH, cx, bounds.top + quarterH, 200)
+            } else {
+                // Swipe down (content moves down = scroll backward)
+                svc.swipe(cx, bounds.top + quarterH, cx, bounds.bottom - quarterH, 200)
+            }
+            Log.d(TAG, "scrollNode $viewId $directionStr -> swipe fallback")
+            """{"ok":true,"method":"swipe"}"""
+        } catch (e: Exception) {
+            Log.e(TAG, "scrollNode swipe fallback failed for $viewId", e)
+            """{"ok":false,"error":"Scroll fallback failed: ${e.message}"}"""
+        }
+    }
+
+    private fun doFocusNode(displayId: Int, viewId: String): String {
+        val node = findNodeByViewId(displayId, viewId)
+            ?: return """{"ok":false,"error":"Node not found: $viewId"}"""
+
+        if (node.performAction(AccessibilityNodeInfo.ACTION_ACCESSIBILITY_FOCUS)) {
+            node.recycle()
+            Log.d(TAG, "focusNode $viewId -> a11y OK")
+            return """{"ok":true,"method":"a11y"}"""
+        }
+
+        // Fallback: tap to focus
+        val bounds = Rect()
+        node.getBoundsInScreen(bounds)
+        node.recycle()
+        val cx = bounds.centerX().toFloat()
+        val cy = bounds.centerY().toFloat()
+        return try {
+            frameworkService?.tap(cx, cy)
+                ?: return """{"ok":false,"error":"Framework service unavailable for focus fallback"}"""
+            Log.d(TAG, "focusNode $viewId -> tap fallback ($cx, $cy)")
+            """{"ok":true,"method":"tap","x":$cx,"y":$cy}"""
+        } catch (e: Exception) {
+            Log.e(TAG, "focusNode tap fallback failed for $viewId", e)
+            """{"ok":false,"error":"Focus fallback failed: ${e.message}"}"""
+        }
+    }
+
+    private fun doGetNodeInfo(displayId: Int, viewId: String): String {
+        val node = findNodeByViewId(displayId, viewId)
+            ?: return """{"error":"Node not found: $viewId"}"""
+        return try {
+            val bounds = Rect()
+            node.getBoundsInScreen(bounds)
+            JSONObject().apply {
+                put("viewId", node.viewIdResourceName ?: viewId)
+                put("className", node.className?.toString() ?: "")
+                node.text?.let { put("text", it.toString()) }
+                node.contentDescription?.let { put("contentDescription", it.toString()) }
+                put("bounds", JSONObject().apply {
+                    put("left", bounds.left)
+                    put("top", bounds.top)
+                    put("right", bounds.right)
+                    put("bottom", bounds.bottom)
+                })
+                put("enabled", node.isEnabled)
+                put("clickable", node.isClickable)
+                put("scrollable", node.isScrollable)
+                put("focused", node.isFocused)
+                put("checked", node.isChecked)
+                put("selected", node.isSelected)
+                put("editable", node.isEditable)
+                put("childCount", node.childCount)
+            }.toString()
+        } catch (e: Exception) {
+            Log.e(TAG, "getNodeInfo $viewId failed", e)
+            """{"error":"${e.message}"}"""
+        } finally {
+            node.recycle()
+        }
+    }
+
+    // ========================================================================
+    // Node lookup — strict display targeting, safe recycling
+    // ========================================================================
+
+    private fun findNodeByViewId(displayId: Int, viewId: String): AccessibilityNodeInfo? {
+        val allWindows = windowsOnAllDisplays
+        val windows = allWindows.get(displayId)
+        if (windows.isNullOrEmpty()) {
+            Log.w(TAG, "findNodeByViewId: no windows on display $displayId (available: ${
+                (0 until allWindows.size()).joinToString { "${allWindows.keyAt(it)}" }
+            })")
+            return null
+        }
+
+        for (window in windows) {
+            val root = window.getRoot() ?: continue
+            val found = root.findAccessibilityNodeInfosByViewId(viewId)
+            // Don't recycle root before using found nodes — found nodes may
+            // reference internal state tied to the root's connection.
+            if (!found.isNullOrEmpty()) {
+                // Return the first match, recycle extras
+                for (i in 1 until found.size) found[i].recycle()
+                root.recycle()
+                return found[0]
+            }
+            root.recycle()
+        }
+        return null
+    }
+
+    // ========================================================================
+    // Smart analysis (A11yJSONExpert ScreenAnalyzer)
+    // ========================================================================
+
+    /**
+     * Build an actionable JSON using ScreenAnalyzer for the given display.
+     * Produces clean, flat, semantic elements optimized for LLM consumption.
+     */
+    fun buildSmartTreeForDisplay(displayId: Int): String {
+        Log.i(TAG, "buildSmartTreeForDisplay: displayId=$displayId")
+        Log.i(DTAG, "SMART_ANALYSIS_START: displayId=$displayId")
         return try {
             val allWindows = windowsOnAllDisplays
 
-            // Diagnostics: log known displays
-            val displayInfo = buildString {
-                for (i in 0 until allWindows.size()) {
-                    if (i > 0) append(", ")
-                    val id = allWindows.keyAt(i)
-                    val wins = allWindows.valueAt(i)
-                    append("$id(${wins?.size ?: 0} windows)")
+            var windows: List<AccessibilityWindowInfo>? = allWindows.get(displayId)
+            if (windows.isNullOrEmpty()) {
+                windows = getWindows()
+                if (windows.isNullOrEmpty()) {
+                    Log.w(DTAG, "SMART_ANALYSIS: no windows found for displayId=$displayId")
+                    return """{"screen":{},"elements":[],"scrollable":false}"""
                 }
             }
-            Log.d(TAG, "buildTreeForDisplay: target=$displayId, displays=[$displayInfo]")
+            Log.i(DTAG, "SMART_ANALYSIS: found ${windows.size} window(s) on displayId=$displayId")
+
+            // Find the primary application window and analyze it
+            val appWindow = windows.firstOrNull { it.type == AccessibilityWindowInfo.TYPE_APPLICATION }
+                ?: windows.firstOrNull()
+            Log.i(DTAG, "SMART_ANALYSIS: appWindow type=${appWindow?.type} title=${appWindow?.title}")
+
+            val root = appWindow?.getRoot()
+            if (root == null) {
+                Log.w(TAG, "buildSmartTreeForDisplay: no root node")
+                Log.w(DTAG, "SMART_ANALYSIS: no root node — returning empty")
+                return """{"screen":{},"elements":[],"scrollable":false}"""
+            }
+
+            try {
+                val result = ScreenAnalyzer.analyze(root)
+                Log.i(DTAG, "SMART_ANALYSIS_DONE: package=${result.screen.packageName} title=${result.screen.title} elements=${result.elements.size} scrollable=${result.scrollable}")
+                result.toJsonString()
+            } finally {
+                try { root.recycle() } catch (_: Exception) {}
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error in smart tree analysis", e)
+            Log.e(DTAG, "SMART_ANALYSIS_ERROR: ${e.message}", e)
+            """{"error":"${e.message}"}"""
+        }
+    }
+
+    // ========================================================================
+    // Tree building — uses ScreenAnalyzer with legacy fallback
+    // ========================================================================
+
+    private fun buildTreeForDisplay(displayId: Int): String {
+        Log.i(TAG, "buildTreeForDisplay: displayId=$displayId (smart analysis)")
+        Log.i(DTAG, "BUILD_TREE: trying smart analysis for displayId=$displayId")
+        // Try the smart ScreenAnalyzer first
+        val smart = buildSmartTreeForDisplay(displayId)
+        if (!smart.contains(""""error":""") && !smart.contains(""""elements":[]""")) {
+            Log.i(DTAG, "BUILD_TREE: smart analysis succeeded (${smart.length} chars)")
+            return smart
+        }
+        // Fallback to legacy tree building
+        Log.w(DTAG, "BUILD_TREE: smart analysis empty/failed, falling back to LEGACY for displayId=$displayId")
+        Log.d(TAG, "Smart analysis empty/failed, falling back to legacy tree")
+        return buildLegacyTreeForDisplay(displayId)
+    }
+
+    private fun buildLegacyTreeForDisplay(displayId: Int): String {
+        Log.i(TAG, "buildLegacyTreeForDisplay: displayId=$displayId")
+        return try {
+            val allWindows = windowsOnAllDisplays
 
             var windows: List<AccessibilityWindowInfo>? = allWindows.get(displayId)
             if (windows.isNullOrEmpty()) {
-                Log.w(TAG, "No windows on display $displayId, fallback to getWindows()")
                 windows = getWindows()
                 if (windows.isNullOrEmpty()) {
-                    Log.w(TAG, "getWindows() also empty")
-                    return "{\"windows\":[]}"
+                    return """{"windows":[]}"""
                 }
-                Log.d(TAG, "getWindows() returned ${windows.size} windows (default display fallback)")
             }
 
-            // Collect interactive elements across all windows for the flat summary
             val interactiveElements = mutableListOf<JSONObject>()
             var elementIndex = 0
 
@@ -146,7 +439,6 @@ class AgentDisplayAccessibilityService : AccessibilityService() {
                 val root = window.getRoot()
                 if (root != null) {
                     nodeToJson(root, 0)?.let { windowObj.put("tree", it) }
-                    // Collect interactive elements from this window
                     collectInteractiveElements(root, interactiveElements, elementIndex)
                     elementIndex = interactiveElements.size
                     root.recycle()
@@ -158,26 +450,20 @@ class AgentDisplayAccessibilityService : AccessibilityService() {
 
             val result = JSONObject().apply {
                 put("windows", windowsArray)
-                // Flat indexed list of all interactive/meaningful elements for quick LLM reference
                 if (interactiveElements.isNotEmpty()) {
                     val elemArr = JSONArray()
                     interactiveElements.forEach { elemArr.put(it) }
                     put("elements", elemArr)
                 }
             }
-            Log.d(TAG, "buildTreeForDisplay: ${windowsArray.length()} windows, ${interactiveElements.size} interactive elements")
+            Log.d(TAG, "buildLegacyTreeForDisplay: ${windowsArray.length()} windows, ${interactiveElements.size} interactive elements")
             result.toString()
         } catch (e: Exception) {
-            Log.e(TAG, "Error building tree", e)
-            "{\"error\":\"${e.message}\"}"
+            Log.e(TAG, "Error building legacy tree", e)
+            """{"error":"${e.message}"}"""
         }
     }
 
-    /**
-     * Walks the tree and collects all interactive or text-bearing nodes into a
-     * flat indexed list. This gives the LLM a quick "table of contents" of
-     * everything it can act on, without parsing the nested tree.
-     */
     private fun collectInteractiveElements(
         node: AccessibilityNodeInfo,
         out: MutableList<JSONObject>,
@@ -221,110 +507,8 @@ class AgentDisplayAccessibilityService : AccessibilityService() {
         }
     }
 
-    private fun doClickNode(displayId: Int, viewId: String): Boolean {
-        val node = findNodeByViewId(displayId, viewId) ?: return false
-        val result = node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-        node.recycle()
-        Log.d(TAG, "clickNode $viewId -> $result")
-        return result
-    }
-
-    private fun doSetNodeText(displayId: Int, viewId: String, text: String): Boolean {
-        val node = findNodeByViewId(displayId, viewId) ?: return false
-        val args = android.os.Bundle().apply {
-            putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text)
-        }
-        val result = node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
-        node.recycle()
-        Log.d(TAG, "setNodeText $viewId -> $result")
-        return result
-    }
-
-    private fun doLongClickNode(displayId: Int, viewId: String): Boolean {
-        val node = findNodeByViewId(displayId, viewId) ?: return false
-        val result = node.performAction(AccessibilityNodeInfo.ACTION_LONG_CLICK)
-        node.recycle()
-        Log.d(TAG, "longClickNode $viewId -> $result")
-        return result
-    }
-
-    private fun doScrollNode(displayId: Int, viewId: String, action: Int): Boolean {
-        val node = findNodeByViewId(displayId, viewId) ?: return false
-        val result = node.performAction(action)
-        node.recycle()
-        Log.d(TAG, "scrollNode $viewId action=$action -> $result")
-        return result
-    }
-
-    private fun doFocusNode(displayId: Int, viewId: String): Boolean {
-        val node = findNodeByViewId(displayId, viewId) ?: return false
-        val result = node.performAction(AccessibilityNodeInfo.ACTION_ACCESSIBILITY_FOCUS)
-        node.recycle()
-        Log.d(TAG, "focusNode $viewId -> $result")
-        return result
-    }
-
-    private fun doGetNodeInfo(displayId: Int, viewId: String): String {
-        val node = findNodeByViewId(displayId, viewId)
-            ?: return "{\"error\":\"Node not found: $viewId\"}"
-        return try {
-            val bounds = Rect()
-            node.getBoundsInScreen(bounds)
-            JSONObject().apply {
-                put("viewId", node.viewIdResourceName ?: viewId)
-                put("className", node.className?.toString() ?: "")
-                node.text?.let { put("text", it.toString()) }
-                node.contentDescription?.let { put("contentDescription", it.toString()) }
-                put("bounds", JSONObject().apply {
-                    put("left", bounds.left)
-                    put("top", bounds.top)
-                    put("right", bounds.right)
-                    put("bottom", bounds.bottom)
-                })
-                put("enabled", node.isEnabled)
-                put("clickable", node.isClickable)
-                put("scrollable", node.isScrollable)
-                put("focused", node.isFocused)
-                put("checked", node.isChecked)
-                put("selected", node.isSelected)
-                put("editable", node.isEditable)
-                put("childCount", node.childCount)
-            }.toString()
-        } catch (e: Exception) {
-            Log.e(TAG, "getNodeInfo $viewId failed", e)
-            "{\"error\":\"${e.message}\"}"
-        } finally {
-            node.recycle()
-        }
-    }
-
-    private fun findNodeByViewId(displayId: Int, viewId: String): AccessibilityNodeInfo? {
-        val allWindows = windowsOnAllDisplays
-        var windows: List<AccessibilityWindowInfo>? = allWindows.get(displayId)
-        if (windows.isNullOrEmpty()) windows = getWindows()
-        if (windows == null) return null
-
-        for (window in windows) {
-            val root = window.getRoot() ?: continue
-            val found = root.findAccessibilityNodeInfosByViewId(viewId)
-            root.recycle()
-            if (!found.isNullOrEmpty()) {
-                // Recycle extras, return the first match
-                for (i in 1 until found.size) found[i].recycle()
-                return found[0]
-            }
-        }
-        return null
-    }
-
     // ---- JSON serialisation (compact, LLM-optimised) ----
 
-    /**
-     * Checks whether a node is "meaningful" — i.e. it carries information or
-     * interaction that the LLM needs to know about. Nodes that are just layout
-     * wrappers (no text, no id, not interactive, not scrollable) are candidates
-     * for collapsing to reduce tree depth and token count.
-     */
     private fun isMeaningful(node: AccessibilityNodeInfo): Boolean {
         if (node.viewIdResourceName != null) return true
         if (!node.text.isNullOrEmpty()) return true
@@ -337,7 +521,6 @@ class AgentDisplayAccessibilityService : AccessibilityService() {
         return false
     }
 
-    /** Strip package prefix: "android.widget.TextView" → "TextView" */
     private fun shortClassName(className: CharSequence?): String {
         val full = className?.toString() ?: return ""
         val dot = full.lastIndexOf('.')
@@ -346,11 +529,8 @@ class AgentDisplayAccessibilityService : AccessibilityService() {
 
     private fun nodeToJson(node: AccessibilityNodeInfo, depth: Int): JSONObject? {
         if (depth > 30) return null
-        // Skip invisible nodes entirely — they add noise without value
         if (!node.isVisibleToUser) return null
         return try {
-            // Collapse: if this node is not meaningful and has exactly one
-            // visible child, skip this node and return the child directly.
             if (!isMeaningful(node) && node.childCount > 0) {
                 var soleVisibleChild: AccessibilityNodeInfo? = null
                 var visibleCount = 0
@@ -369,11 +549,10 @@ class AgentDisplayAccessibilityService : AccessibilityService() {
                     if (visibleCount > 1) break
                 }
                 if (visibleCount == 1 && soleVisibleChild != null) {
-                    val result = nodeToJson(soleVisibleChild, depth) // same depth — we're collapsing
+                    val result = nodeToJson(soleVisibleChild, depth)
                     soleVisibleChild.recycle()
                     return result
                 }
-                // Not collapsible (0 or 2+ visible children) — recycle probe ref and fall through
                 soleVisibleChild?.recycle()
             }
 
@@ -387,7 +566,6 @@ class AgentDisplayAccessibilityService : AccessibilityService() {
                 node.getBoundsInScreen(bounds)
                 put("bounds", bounds.flattenToString())
 
-                // Only include boolean flags when true — saves ~60% on flag tokens
                 if (node.isClickable) put("clickable", true)
                 if (node.isEnabled) put("enabled", true)
                 if (node.isEditable) put("editable", true)
@@ -425,5 +603,6 @@ class AgentDisplayAccessibilityService : AccessibilityService() {
 
     companion object {
         private const val TAG = "AgentDisplayA11y"
+        private const val DTAG = "AGENTDISPLAYDEBUGKEY"
     }
 }

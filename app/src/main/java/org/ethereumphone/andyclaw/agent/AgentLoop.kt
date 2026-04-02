@@ -341,6 +341,15 @@ class AgentLoop(
         }
         Log.d(TAG, "TokenStats | systemPrompt=${systemPrompt.length} chars, ~${systemPrompt.length / 4} tokens (est)")
 
+        // ── AGENTDISPLAYDEBUGKEY: dump the system prompt so we can see exactly what the LLM receives ──
+        Log.i("AGENTDISPLAYDEBUGKEY", "========== SYSTEM PROMPT START ==========")
+        // Split into chunks because logcat truncates long messages
+        val promptChunks = systemPrompt.chunked(3000)
+        for ((ci, chunk) in promptChunks.withIndex()) {
+            Log.i("AGENTDISPLAYDEBUGKEY", "SYSTEM_PROMPT [${ci + 1}/${promptChunks.size}]: $chunk")
+        }
+        Log.i("AGENTDISPLAYDEBUGKEY", "========== SYSTEM PROMPT END ==========")
+
         // Build tool list: ToolSearch (CORE + discovered + search tool) or SmartRouter (filtered)
         var allToolsJson = if (useToolSearch) {
             toolSearchService!!.buildToolList(nameResolver).toMutableList()
@@ -359,8 +368,13 @@ class AgentLoop(
             allToolsJson.toList()
         }
 
+        // ── AGENTDISPLAYDEBUGKEY: log every tool name available to the LLM ──
+        val toolNames = toolsJson.mapNotNull { it["name"]?.jsonPrimitive?.contentOrNull }
+        Log.i("AGENTDISPLAYDEBUGKEY", "TOOL_LIST (${toolNames.size} tools): ${toolNames.joinToString(", ")}")
+
         val messages = conversationHistory.toMutableList()
         messages.add(Message.user(userMessage))
+        Log.i("AGENTDISPLAYDEBUGKEY", "USER_MESSAGE: $userMessage")
 
         var iterations = 0
         val fullText = StringBuilder()
@@ -480,6 +494,36 @@ class AgentLoop(
                     }
                 }
 
+                // ── AGENTDISPLAYDEBUGKEY: log ALL response content blocks ──
+                Log.i("AGENTDISPLAYDEBUGKEY", "===== ITERATION $iterations RESPONSE (${responseBlocks.size} blocks) =====")
+                for ((bi, block) in responseBlocks.withIndex()) {
+                    when (block) {
+                        is ContentBlock.ThinkingBlock -> {
+                            Log.i("AGENTDISPLAYDEBUGKEY", "THINKING [$bi]: ${block.thinking.take(4000)}")
+                            if (block.thinking.length > 4000) {
+                                // Log remainder in chunks
+                                val rest = block.thinking.substring(4000)
+                                val chunks = rest.chunked(3000)
+                                for ((ci, chunk) in chunks.withIndex()) {
+                                    Log.i("AGENTDISPLAYDEBUGKEY", "THINKING [$bi] cont[${ci+1}/${chunks.size}]: $chunk")
+                                }
+                            }
+                        }
+                        is ContentBlock.TextBlock -> {
+                            Log.i("AGENTDISPLAYDEBUGKEY", "TEXT [$bi]: ${block.text.take(2000)}")
+                        }
+                        is ContentBlock.ToolUseBlock -> {
+                            Log.i("AGENTDISPLAYDEBUGKEY", "TOOL_CALL [$bi]: name=${block.name} id=${block.id} input=${block.input.toString().take(1000)}")
+                        }
+                        is ContentBlock.RedactedThinkingBlock -> {
+                            Log.i("AGENTDISPLAYDEBUGKEY", "REDACTED_THINKING [$bi]")
+                        }
+                        is ContentBlock.ToolResult -> {
+                            Log.i("AGENTDISPLAYDEBUGKEY", "TOOL_RESULT [$bi]: id=${block.toolUseId} content=${block.content.take(500)}")
+                        }
+                    }
+                }
+
                 // Add assistant message to conversation
                 if (responseBlocks.isNotEmpty()) {
                     messages.add(Message.assistant(responseBlocks))
@@ -488,6 +532,7 @@ class AgentLoop(
                 // Check for tool_use blocks
                 val toolUseBlocks = responseBlocks.filterIsInstance<ContentBlock.ToolUseBlock>()
                 if (toolUseBlocks.isEmpty()) {
+                    Log.i("AGENTDISPLAYDEBUGKEY", "NO_TOOL_CALLS — loop done after $iterations iteration(s)")
                     Log.i(TAG, "No tool calls in response, agent loop complete after $iterations iteration(s). Total text: ${fullText.length} chars")
                     logRunSummary(iterations, totalInputTokens, totalOutputTokens, totalCacheReadTokens, totalCacheWriteTokens, totalTokensSavedByMaxTokens, totalCharsTruncated, truncationCount, budget)
                     callbacks.onComplete(fullText.toString())
@@ -607,6 +652,14 @@ class AgentLoop(
                     // Await all results
                     regularResultsDeferred?.await()?.let { allToolResults.addAll(it) }
                     subagentResultsDeferreds.awaitAll().let { allToolResults.addAll(it) }
+                }
+
+                // ── AGENTDISPLAYDEBUGKEY: log tool results being fed back ──
+                Log.i("AGENTDISPLAYDEBUGKEY", "===== ITERATION $iterations TOOL RESULTS (${allToolResults.size}) =====")
+                for ((ri, result) in allToolResults.withIndex()) {
+                    val tr = result as? ContentBlock.ToolResult ?: continue
+                    val hasImage = tr.contentBlocks != null
+                    Log.i("AGENTDISPLAYDEBUGKEY", "RESULT [$ri]: id=${tr.toolUseId} isError=${tr.isError} hasImage=$hasImage content=${tr.content.take(1500)}")
                 }
 
                 // Add tool results as user message

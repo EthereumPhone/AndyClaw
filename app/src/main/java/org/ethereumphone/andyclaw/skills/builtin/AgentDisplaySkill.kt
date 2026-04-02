@@ -1,11 +1,9 @@
 package org.ethereumphone.andyclaw.skills.builtin
 
-import android.graphics.BitmapFactory
 import android.os.IBinder
 import android.os.IAgentDisplayService
 import android.util.Base64
 import android.util.Log
-import java.io.ByteArrayOutputStream
 import kotlinx.coroutines.delay
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
@@ -27,6 +25,7 @@ class AgentDisplaySkill : AndyClawSkill {
     companion object {
         private const val TAG = "AgentDisplaySkill"
         private const val LTAG = "AGENT_VIRTUAL_SCREEN" // verbose logging tag
+        private const val DTAG = "AGENTDISPLAYDEBUGKEY" // debug filter tag for tracing agent decisions
         private const val DISPLAY_WIDTH = 720
         private const val DISPLAY_HEIGHT = 720
         private const val DISPLAY_DPI = 240
@@ -36,15 +35,15 @@ class AgentDisplaySkill : AndyClawSkill {
         // Wait times (ms) after actions before auto-capturing UI tree.
         // These are aggressive — a11y tree queries are fast and the tree
         // reflects committed state, so we only need minimal settling time.
-        private const val DELAY_TAP = 200L
-        private const val DELAY_SWIPE = 400L
-        private const val DELAY_TYPE = 150L
-        private const val DELAY_KEY = 200L
-        private const val DELAY_LAUNCH = 1800L
-        private const val DELAY_NODE_CLICK = 200L
-        private const val DELAY_NODE_TEXT = 150L
-        private const val DELAY_DRAG = 300L
-        private const val DELAY_PINCH = 300L
+        private const val DELAY_TAP = 80L
+        private const val DELAY_SWIPE = 150L
+        private const val DELAY_TYPE = 50L
+        private const val DELAY_KEY = 80L
+        private const val DELAY_LAUNCH = 1200L
+        private const val DELAY_NODE_CLICK = 50L
+        private const val DELAY_NODE_TEXT = 30L
+        private const val DELAY_DRAG = 100L
+        private const val DELAY_PINCH = 100L
     }
 
     override val id = "agent_display"
@@ -59,17 +58,17 @@ class AgentDisplaySkill : AndyClawSkill {
     override val privilegedManifest = SkillManifest(
         description = buildString {
             append("Operate a virtual Android display to perform tasks in apps on behalf of the user. ")
-            append("IMPORTANT — a11y-first approach: Every action returns the UI accessibility tree (structured JSON with all elements, their IDs, text, and interaction flags). ")
-            append("Use the tree + accessibility node actions (click_node, set_node_text, scroll_node) as your PRIMARY interaction method — they are faster and more reliable than coordinate-based taps. ")
-            append("Only use coordinate-based touch (tap, swipe, fling) when an element has no viewId or for gesture-specific interactions. ")
-            append("Only use agent_display_screenshot when you MUST visually inspect rendered content (images, charts, colors, layout). ")
-            append("The tree's 'elements' array is a flat indexed list of all interactive elements — scan it first to find what you need.")
+            append("CRITICAL — every action (create, tap, click_node, press_back, etc.) automatically returns the full UI state as structured text listing every visible element with its id, type, label, actions, viewId, and center coordinates. ")
+            append("You NEVER need to call agent_display_screenshot to see the screen — the UI state IS the screen. Read it. ")
+            append("To interact: use click_node(viewId) when a viewId is shown, or tap(center_x, center_y) when there is no viewId. ")
+            append("NEVER call agent_display_screenshot unless the UI state says 'No elements found' (rare — only custom-drawn apps like games). ")
+            append("NEVER call agent_display_look right after agent_display_create — create already returns the UI state.")
         },
         tools = listOf(
             // ── Display Lifecycle ───────────────────────────────────────
             tool(
                 name = "agent_display_create",
-                description = "Create the virtual display (${DISPLAY_WIDTH}x${DISPLAY_HEIGHT} @ ${DISPLAY_DPI}dpi) and launch an app on it. Must be called before any other agent_display tool. Returns the UI tree after the app starts.",
+                description = "Create the virtual display (${DISPLAY_WIDTH}x${DISPLAY_HEIGHT} @ ${DISPLAY_DPI}dpi) and launch an app. Must be called first. Returns the FULL UI state with all elements — read the output to see every button, text field, menu item on screen. Then interact using click_node(viewId) or tap(center_x, center_y). Do NOT call look or screenshot after this — you already have the screen.",
                 props = mapOf(
                     "package_name" to propString("The Android package name, e.g. com.android.settings"),
                 ),
@@ -83,11 +82,6 @@ class AgentDisplaySkill : AndyClawSkill {
             tool(
                 name = "agent_display_destroy_and_promote",
                 description = "Destroy the virtual display but move the currently running app to the user's main screen so they can continue using it. Use this when the user will want to keep interacting with the app after you are done — for example after starting navigation, playing music, opening a webpage, or setting up a video call.",
-                props = emptyMap(),
-            ),
-            tool(
-                name = "agent_display_get_info",
-                description = "Get display info as JSON (displayId, width, height, dpi). Useful to confirm dimensions.",
                 props = emptyMap(),
             ),
             tool(
@@ -125,28 +119,18 @@ class AgentDisplaySkill : AndyClawSkill {
                 props = emptyMap(),
             ),
 
-            // ── Screenshot (use sparingly — prefer UI tree) ───────────────
+            // ── Screenshot (LAST RESORT — almost never needed) ─────
             tool(
                 name = "agent_display_screenshot",
-                description = "Capture a visual screenshot. SLOW and token-heavy — only use when you MUST see rendered visuals (images, charts, maps, colors, web content). For text, buttons, and standard UI elements, use agent_display_get_ui_tree instead.",
+                description = "LAST RESORT — take a visual screenshot. ONLY use when the UI state says 'No elements found' (games, custom-drawn canvas apps). Every other tool already returns the full UI state as text — read that instead. Screenshots are slow and expensive. Do NOT use for normal apps like Settings, browsers, messaging apps, etc.",
                 props = emptyMap(),
             ),
-            tool(
-                name = "agent_display_capture_region",
-                description = "Capture a cropped region as a screenshot. Only for visual inspection of a specific area. Prefer agent_display_get_node_info for element details.",
-                props = mapOf(
-                    "x" to propNumber("Left edge X coordinate"),
-                    "y" to propNumber("Top edge Y coordinate"),
-                    "width" to propNumber("Region width in pixels"),
-                    "height" to propNumber("Region height in pixels"),
-                ),
-                required = listOf("x", "y", "width", "height"),
-            ),
+            // capture_region removed — agent_display_screenshot covers the use case.
 
             // ── Touch Gestures (fallback — prefer a11y node actions when viewId available) ──
             tool(
                 name = "agent_display_tap",
-                description = "Tap at (x, y) coordinates. Fallback when element has no viewId — prefer agent_display_click_node. Returns the UI tree.",
+                description = "Tap at (x, y) coordinates. Use the center_x, center_y from the UI state output. Only use this when the element has no viewId — prefer click_node when viewId is available. Returns updated UI state.",
                 props = mapOf(
                     "x" to propNumber("X coordinate"),
                     "y" to propNumber("Y coordinate"),
@@ -270,15 +254,7 @@ class AgentDisplaySkill : AndyClawSkill {
                 description = "Type text into the focused field via key injection. Prefer agent_display_set_node_text when the field has a viewId (faster, no focus needed). Returns the UI tree.",
                 props = mapOf(
                     "text" to propString("The text to type"),
-                ),
-                required = listOf("text"),
-            ),
-            tool(
-                name = "agent_display_type_text_slow",
-                description = "Type text with per-character delay. Only for search fields that show live suggestions per keystroke. Returns the UI tree.",
-                props = mapOf(
-                    "text" to propString("The text to type"),
-                    "delay_ms" to propNumber("Delay between each character in ms (default 50)"),
+                    "delay_ms" to propNumber("Optional per-character delay in ms. Use ~50ms for search fields that show live suggestions per keystroke. Default 0 (instant)."),
                 ),
                 required = listOf("text"),
             ),
@@ -298,17 +274,17 @@ class AgentDisplaySkill : AndyClawSkill {
                 props = emptyMap(),
             ),
 
-            // ── Accessibility (PREFERRED — fast, reliable, no screenshots needed) ──
+            // ── See the screen + Accessibility (PRIMARY interaction method) ──
             tool(
-                name = "agent_display_get_ui_tree",
-                description = "Get the full UI tree + flat 'elements' list of interactive nodes. This is the FASTEST way to understand what's on screen. The 'elements' array lists all clickable/editable/scrollable elements with their viewId, text, and bounds — scan it to find targets for click_node, set_node_text, scroll_node. Returns structured JSON.",
+                name = "agent_display_look",
+                description = "Re-read the current screen state. Returns every visible UI element with id, type, label, actions, viewId, and center coordinates. You usually do NOT need this — every other action (create, tap, click_node, press_back, etc.) already returns the UI state automatically. Only call this if you need to refresh without performing an action.",
                 props = emptyMap(),
             ),
             tool(
                 name = "agent_display_click_node",
-                description = "PREFERRED over tap — click by viewId (e.g. 'com.android.settings:id/search_bar'). More reliable than coordinates. Returns updated UI tree.",
+                description = "Click by viewId (e.g. 'com.android.settings:id/search_bar'). Use the viewId shown in agent_display_look output. If no viewId is available, use agent_display_tap with the element's bounds center instead. Returns updated UI state.",
                 props = mapOf(
-                    "view_id" to propString("The accessibility view ID of the node to click"),
+                    "view_id" to propString("The full accessibility view ID (e.g. 'com.android.settings:id/search_bar')"),
                 ),
                 required = listOf("view_id"),
             ),
@@ -322,18 +298,18 @@ class AgentDisplaySkill : AndyClawSkill {
             ),
             tool(
                 name = "agent_display_set_node_text",
-                description = "PREFERRED over type_text — set text directly on an editable field by viewId. Instant, no focus needed. Returns updated UI tree.",
+                description = "Set text directly on an editable field by viewId. Instant, no focus needed. Returns updated UI state.",
                 props = mapOf(
-                    "view_id" to propString("The accessibility view ID of the text field"),
+                    "view_id" to propString("The full accessibility view ID of the text field"),
                     "text" to propString("The text to set"),
                 ),
                 required = listOf("view_id", "text"),
             ),
             tool(
                 name = "agent_display_scroll_node",
-                description = "PREFERRED over swipe — scroll a list/container by viewId. More reliable than coordinate-based swiping. Returns updated UI tree.",
+                description = "Scroll a list/container by viewId. More reliable than coordinate-based swiping. Returns updated UI state.",
                 props = mapOf(
-                    "view_id" to propString("The accessibility view ID of the scrollable node"),
+                    "view_id" to propString("The full accessibility view ID of the scrollable node"),
                     "direction" to propEnum("Scroll direction", listOf("forward", "backward")),
                 ),
                 required = listOf("view_id", "direction"),
@@ -361,7 +337,11 @@ class AgentDisplaySkill : AndyClawSkill {
     @Volatile private var displayActive = false
 
     private fun getService(): IAgentDisplayService {
-        service?.let { return it }
+        service?.let { svc ->
+            if (svc.asBinder().isBinderAlive) return svc
+            Log.w(TAG, "AgentDisplayService binder died, reconnecting")
+            service = null
+        }
         val svc = try {
             val smClass = Class.forName("android.os.ServiceManager")
             val getService = smClass.getMethod("getService", String::class.java)
@@ -377,6 +357,7 @@ class AgentDisplaySkill : AndyClawSkill {
 
     override suspend fun execute(tool: String, params: JsonObject, tier: Tier): SkillResult {
         Log.i(LTAG, "execute START tool=$tool params=$params tier=$tier")
+        Log.i(DTAG, "TOOL_EXECUTE: $tool | params=$params")
         val startMs = System.currentTimeMillis()
         return try {
             val result = when (tool) {
@@ -391,7 +372,6 @@ class AgentDisplaySkill : AndyClawSkill {
                 "agent_display_current_activity" -> doCurrentActivity()
                 // Screenshots
                 "agent_display_screenshot" -> captureScreenshot()
-                "agent_display_capture_region" -> doCaptureRegion(params)
                 // Touch gestures
                 "agent_display_tap" -> doTap(params)
                 "agent_display_long_press" -> doLongPress(params)
@@ -409,11 +389,12 @@ class AgentDisplaySkill : AndyClawSkill {
                 "agent_display_press_key" -> doPressKey(params)
                 // Text input
                 "agent_display_type_text" -> doTypeText(params)
-                "agent_display_type_text_slow" -> doTypeTextSlow(params)
+                "agent_display_type_text_slow" -> doTypeText(params) // legacy alias
                 // Clipboard
                 "agent_display_set_clipboard" -> doSetClipboard(params)
                 "agent_display_get_clipboard" -> doGetClipboard()
-                // Accessibility
+                // Accessibility / look at screen
+                "agent_display_look" -> doGetUiTree()
                 "agent_display_get_ui_tree" -> doGetUiTree()
                 "agent_display_click_node" -> doClickNode(params)
                 "agent_display_long_click_node" -> doLongClickNode(params)
@@ -425,10 +406,28 @@ class AgentDisplaySkill : AndyClawSkill {
             }
             val elapsed = System.currentTimeMillis() - startMs
             when (result) {
-                is SkillResult.ImageSuccess -> Log.i(LTAG, "execute DONE tool=$tool elapsed=${elapsed}ms resultType=ImageSuccess base64Len=${result.base64.length} mediaType=${result.mediaType} textLen=${result.text.length}")
-                is SkillResult.Success -> Log.i(LTAG, "execute DONE tool=$tool elapsed=${elapsed}ms resultType=Success dataLen=${result.data.length}")
-                is SkillResult.Error -> Log.w(LTAG, "execute DONE tool=$tool elapsed=${elapsed}ms resultType=Error msg=${result.message}")
-                is SkillResult.RequiresApproval -> Log.i(LTAG, "execute DONE tool=$tool elapsed=${elapsed}ms resultType=RequiresApproval")
+                is SkillResult.ImageSuccess -> {
+                    Log.i(LTAG, "execute DONE tool=$tool elapsed=${elapsed}ms resultType=ImageSuccess base64Len=${result.base64.length} mediaType=${result.mediaType} textLen=${result.text.length}")
+                    Log.w(DTAG, "TOOL_RESULT: $tool -> IMAGE (${elapsed}ms) base64Len=${result.base64.length} — WARNING: screenshot was taken!")
+                }
+                is SkillResult.Success -> {
+                    Log.i(LTAG, "execute DONE tool=$tool elapsed=${elapsed}ms resultType=Success dataLen=${result.data.length}")
+                    Log.i(DTAG, "TOOL_RESULT: $tool -> SUCCESS (${elapsed}ms) dataLen=${result.data.length}")
+                    // Log first 2000 chars of result data for debugging
+                    val preview = result.data.take(2000)
+                    Log.i(DTAG, "TOOL_RESULT_DATA: $tool -> $preview")
+                    if (result.data.length > 2000) {
+                        Log.i(DTAG, "TOOL_RESULT_DATA: $tool -> ... (${result.data.length - 2000} more chars)")
+                    }
+                }
+                is SkillResult.Error -> {
+                    Log.w(LTAG, "execute DONE tool=$tool elapsed=${elapsed}ms resultType=Error msg=${result.message}")
+                    Log.e(DTAG, "TOOL_RESULT: $tool -> ERROR (${elapsed}ms) msg=${result.message}")
+                }
+                is SkillResult.RequiresApproval -> {
+                    Log.i(LTAG, "execute DONE tool=$tool elapsed=${elapsed}ms resultType=RequiresApproval")
+                    Log.i(DTAG, "TOOL_RESULT: $tool -> REQUIRES_APPROVAL (${elapsed}ms)")
+                }
             }
             result
         } catch (e: Exception) {
@@ -454,6 +453,7 @@ class AgentDisplaySkill : AndyClawSkill {
     // ── Screenshot capture ──────────────────────────────────────────────
 
     private fun captureScreenshot(): SkillResult {
+        Log.w(DTAG, "⚠️ SCREENSHOT_REQUESTED — LLM chose agent_display_screenshot instead of using a11y tree!")
         Log.d(LTAG, "captureScreenshot: requesting frame from service")
         val frame = getService().captureFrame()
         if (frame == null) {
@@ -464,42 +464,35 @@ class AgentDisplaySkill : AndyClawSkill {
         return compressAndReturn(frame, "Screenshot captured")
     }
 
-    private fun captureRegion(x: Int, y: Int, width: Int, height: Int): SkillResult {
-        Log.d(LTAG, "captureRegion: x=$x y=$y w=$width h=$height")
-        val frame = getService().captureFrameRegion(x, y, width, height, 80)
-        if (frame == null) {
-            Log.w(LTAG, "captureRegion: returned null")
-            return SkillResult.Error("No frame available for the specified region.")
-        }
-        return compressAndReturn(frame, "Region captured (${x},${y} ${width}x${height})")
-    }
-
     private fun compressAndReturn(frame: ByteArray, label: String): SkillResult {
-        val bitmap = BitmapFactory.decodeByteArray(frame, 0, frame.size)
-        if (bitmap == null) {
-            Log.e(LTAG, "compressAndReturn: BitmapFactory.decodeByteArray returned null for ${frame.size} bytes")
-            return SkillResult.Error("Failed to decode captured frame.")
+        // Pass JPEG through directly when it's already small enough — avoids
+        // the expensive decode→reencode roundtrip.
+        if (frame.size <= MAX_IMAGE_BYTES) {
+            Log.i(LTAG, "compressAndReturn: JPEG passthrough ${frame.size} bytes")
+            val base64 = Base64.encodeToString(frame, Base64.NO_WRAP)
+            return SkillResult.ImageSuccess(
+                text = "$label (${frame.size} bytes). The image is attached — analyze it to understand the current display state.",
+                base64 = base64,
+                mediaType = "image/jpeg",
+            )
         }
-        Log.d(LTAG, "compressAndReturn: decoded bitmap ${bitmap.width}x${bitmap.height}, config=${bitmap.config}")
 
-        var quality = 80
-        var compressed: ByteArray
-        do {
-            val out = ByteArrayOutputStream()
-            bitmap.compress(android.graphics.Bitmap.CompressFormat.WEBP_LOSSY, quality, out)
-            compressed = out.toByteArray()
-            Log.d(LTAG, "compressAndReturn: WebP q=$quality → ${compressed.size} bytes (limit=$MAX_IMAGE_BYTES)")
-            if (compressed.size <= MAX_IMAGE_BYTES) break
+        // JPEG too large — request lower quality from service instead of
+        // re-encoding client side.
+        var quality = 60
+        var compressed = frame
+        while (compressed.size > MAX_IMAGE_BYTES && quality >= MIN_QUALITY) {
+            compressed = getService().captureFrameWithQuality(quality) ?: break
+            Log.d(LTAG, "compressAndReturn: service q=$quality → ${compressed.size} bytes")
             quality -= 10
-        } while (quality >= MIN_QUALITY)
-        bitmap.recycle()
+        }
 
         val base64 = Base64.encodeToString(compressed, Base64.NO_WRAP)
-        Log.i(LTAG, "compressAndReturn: FINAL compressed=${compressed.size} bytes, base64Len=${base64.length} chars, quality=$quality")
+        Log.i(LTAG, "compressAndReturn: FINAL ${compressed.size} bytes, quality=$quality")
         return SkillResult.ImageSuccess(
             text = "$label (${compressed.size} bytes). The image is attached — analyze it to understand the current display state.",
             base64 = base64,
-            mediaType = "image/webp",
+            mediaType = "image/jpeg",
         )
     }
 
@@ -510,21 +503,32 @@ class AgentDisplaySkill : AndyClawSkill {
         action: () -> Unit,
     ): SkillResult {
         Log.d(LTAG, "actionWithUiTree: executing action, then waiting ${delayMs}ms for UI settle")
+        Log.i(DTAG, "ACTION_WITH_TREE: $description (delay=${delayMs}ms)")
         action()
         delay(delayMs)
         Log.d(LTAG, "actionWithUiTree: delay done, fetching UI tree")
         val tree = getService().accessibilityTree ?: "{}"
+        Log.i(DTAG, "ACTION_WITH_TREE: got tree (${tree.length} chars) for: $description")
         return SkillResult.Success(formatTreeResponse(description, tree))
     }
 
     /**
-     * Format the tree response for the LLM: extract the flat `elements` list
-     * and present it prominently as a quick-reference, then include the full
-     * tree below for detailed inspection if needed.
+     * Format the tree response for the LLM. Detects whether the JSON is from
+     * the new ScreenAnalyzer (has "screen" key) or legacy format (has "windows" key)
+     * and formats accordingly.
      */
     private fun formatTreeResponse(description: String, treeJson: String): String {
         return try {
             val root = org.json.JSONObject(treeJson)
+
+            // New smart format from ScreenAnalyzer
+            if (root.has("screen")) {
+                Log.i(DTAG, "FORMAT_TREE: using SMART (ScreenAnalyzer) format for: $description")
+                return formatSmartTreeResponse(description, treeJson)
+            }
+
+            Log.i(DTAG, "FORMAT_TREE: using LEGACY format for: $description")
+            // Legacy format
             val elements = root.optJSONArray("elements")
             val sb = StringBuilder()
             sb.append(description).append("\n\n")
@@ -549,17 +553,105 @@ class AgentDisplaySkill : AndyClawSkill {
                     if (bounds.isNotEmpty()) sb.append(" @$bounds")
                     sb.append("\n")
                 }
-                sb.append("\n")
+            } else {
+                sb.append("No interactive elements found. Use agent_display_screenshot to visually inspect the screen.\n")
             }
 
-            // Include compact tree (without the elements array, to avoid duplication)
-            root.remove("elements")
-            sb.append("Full UI Tree:\n")
-            sb.append(root.toString())
             sb.toString()
         } catch (e: Exception) {
             Log.w(LTAG, "formatTreeResponse: JSON parse failed, returning raw", e)
             "$description\n\nUI Tree:\n$treeJson"
+        }
+    }
+
+    /**
+     * Format the new ScreenAnalyzer JSON into a compact, LLM-friendly text format.
+     * Each element gets one line: [id] type "label" (summary) [actions] {bounds}
+     */
+    private fun formatSmartTreeResponse(description: String, treeJson: String): String {
+        return try {
+            val root = org.json.JSONObject(treeJson)
+            val screen = root.optJSONObject("screen")
+            val elements = root.optJSONArray("elements")
+            val scrollable = root.optBoolean("scrollable", false)
+
+            val elementCount = elements?.length() ?: 0
+            val pkg = screen?.optString("package", "") ?: ""
+            val title = screen?.optString("title", "") ?: ""
+            Log.i(DTAG, "SMART_TREE: screen=$title ($pkg) | elements=$elementCount | scrollable=$scrollable")
+
+            // Log element types breakdown
+            if (elements != null && elements.length() > 0) {
+                val typeCounts = mutableMapOf<String, Int>()
+                val viewIdCount = (0 until elements.length()).count { elements.getJSONObject(it).optString("viewId", "").isNotEmpty() }
+                for (i in 0 until elements.length()) {
+                    val type = elements.getJSONObject(i).optString("type", "unknown")
+                    typeCounts[type] = (typeCounts[type] ?: 0) + 1
+                }
+                Log.i(DTAG, "SMART_TREE_TYPES: $typeCounts | withViewId=$viewIdCount/${elements.length()}")
+            }
+
+            val sb = StringBuilder()
+
+            sb.append(description).append("\n\n")
+
+            // Screen context
+            if (screen != null) {
+                val pkg = screen.optString("package", "")
+                val title = screen.optString("title", "")
+                if (title.isNotEmpty()) sb.append("Screen: $title ($pkg)\n")
+                else if (pkg.isNotEmpty()) sb.append("Screen: $pkg\n")
+            }
+            if (scrollable) sb.append("(scrollable)\n")
+            sb.append("\n")
+
+            if (elements != null && elements.length() > 0) {
+                sb.append("=== UI Elements (use viewId with click_node/set_node_text/scroll_node, or tap at bounds center) ===\n")
+                for (i in 0 until elements.length()) {
+                    val el = elements.getJSONObject(i)
+                    val id = el.optInt("id", i)
+                    val type = el.optString("type", "")
+                    val label = el.optString("label", "")
+                    val summary = el.optString("summary", "")
+                    val hint = el.optString("hint", "")
+                    val checked = if (el.has("checked")) el.optBoolean("checked") else null
+                    val selected = if (el.has("selected")) el.optBoolean("selected") else null
+                    val enabled = if (el.has("enabled")) el.optBoolean("enabled") else null
+                    val password = if (el.has("password")) el.optBoolean("password") else null
+                    val viewId = el.optString("viewId", "")
+                    val actions = el.optJSONArray("actions")
+                    val bounds = el.optJSONObject("bounds")
+
+                    sb.append("[$id] $type")
+                    if (label.isNotEmpty()) sb.append(" \"$label\"")
+                    if (summary.isNotEmpty()) sb.append(" — $summary")
+                    if (hint.isNotEmpty()) sb.append(" hint:\"$hint\"")
+                    if (checked != null) sb.append(if (checked) " [checked]" else " [unchecked]")
+                    if (selected == true) sb.append(" [selected]")
+                    if (enabled == false) sb.append(" [disabled]")
+                    if (password == true) sb.append(" [password]")
+
+                    if (actions != null && actions.length() > 0) {
+                        val actionList = (0 until actions.length()).map { actions.getString(it) }
+                        sb.append(" {${actionList.joinToString(",")}}")
+                    }
+
+                    if (viewId.isNotEmpty()) sb.append(" viewId:$viewId")
+
+                    val cx = el.optInt("center_x", -1)
+                    val cy = el.optInt("center_y", -1)
+                    if (cx >= 0 && cy >= 0) sb.append(" @($cx,$cy)")
+
+                    sb.append("\n")
+                }
+            } else {
+                sb.append("No elements found. Use agent_display_screenshot to visually inspect the screen.\n")
+            }
+
+            sb.toString()
+        } catch (e: Exception) {
+            Log.w(LTAG, "formatSmartTreeResponse: JSON parse failed, returning raw", e)
+            "$description\n\n$treeJson"
         }
     }
 
@@ -637,20 +729,6 @@ class AgentDisplaySkill : AndyClawSkill {
     private fun doCurrentActivity(): SkillResult {
         val activity = getService().currentActivity
         return SkillResult.Success(activity ?: "null (no activity running)")
-    }
-
-    // -- Screenshots --
-
-    private fun doCaptureRegion(params: JsonObject): SkillResult {
-        val x = params["x"]?.jsonPrimitive?.intOrNull
-            ?: return SkillResult.Error("Missing required parameter: x")
-        val y = params["y"]?.jsonPrimitive?.intOrNull
-            ?: return SkillResult.Error("Missing required parameter: y")
-        val w = params["width"]?.jsonPrimitive?.intOrNull
-            ?: return SkillResult.Error("Missing required parameter: width")
-        val h = params["height"]?.jsonPrimitive?.intOrNull
-            ?: return SkillResult.Error("Missing required parameter: height")
-        return captureRegion(x, y, w, h)
     }
 
     // -- Touch gestures --
@@ -811,19 +889,16 @@ class AgentDisplaySkill : AndyClawSkill {
     private suspend fun doTypeText(params: JsonObject): SkillResult {
         val text = params["text"]?.jsonPrimitive?.contentOrNull
             ?: return SkillResult.Error("Missing required parameter: text")
-        return actionWithUiTree(DELAY_TYPE, "Typed text: \"$text\".") {
-            getService().inputText(text)
-        }
-    }
-
-    private suspend fun doTypeTextSlow(params: JsonObject): SkillResult {
-        val text = params["text"]?.jsonPrimitive?.contentOrNull
-            ?: return SkillResult.Error("Missing required parameter: text")
-        val delayMs = params["delay_ms"]?.jsonPrimitive?.intOrNull ?: 50
-        // Total delay = text length * delayMs + settle time
-        val totalWait = (text.length * delayMs).toLong().coerceAtMost(5000L) + DELAY_TYPE
-        return actionWithUiTree(totalWait, "Typed text slowly: \"$text\" (${delayMs}ms/char).") {
-            getService().inputTextWithDelay(text, delayMs)
+        val delayMs = params["delay_ms"]?.jsonPrimitive?.intOrNull ?: 0
+        return if (delayMs > 0) {
+            val totalWait = (text.length * delayMs).toLong().coerceAtMost(5000L) + DELAY_TYPE
+            actionWithUiTree(totalWait, "Typed text: \"$text\" (${delayMs}ms/char).") {
+                getService().inputTextWithDelay(text, delayMs)
+            }
+        } else {
+            actionWithUiTree(DELAY_TYPE, "Typed text: \"$text\".") {
+                getService().inputText(text)
+            }
         }
     }
 
@@ -844,14 +919,43 @@ class AgentDisplaySkill : AndyClawSkill {
     // -- Accessibility --
 
     private fun doGetUiTree(): SkillResult {
+        // The accessibility service now uses ScreenAnalyzer (smart analysis) automatically
+        // via buildTreeForDisplay -> buildSmartTreeForDisplay, with legacy fallback
         val tree = getService().accessibilityTree ?: "{}"
         return SkillResult.Success(formatTreeResponse("Current UI state:", tree))
+    }
+
+    /**
+     * Execute a node action (which now returns a JSON result string) and
+     * return the updated UI tree on success, or a clear error on failure.
+     */
+    private suspend fun nodeActionWithTree(
+        viewId: String,
+        delayMs: Long,
+        description: String,
+        action: () -> String,
+    ): SkillResult {
+        Log.i(DTAG, "NODE_ACTION: $description viewId=$viewId")
+        val result = action()
+        val json = org.json.JSONObject(result)
+        if (!json.optBoolean("ok", false)) {
+            val error = json.optString("error", "Unknown error")
+            Log.e(DTAG, "NODE_ACTION_FAILED: $description viewId=$viewId error=$error")
+            return SkillResult.Error("$description failed: $error")
+        }
+        val method = json.optString("method", "")
+        Log.i(DTAG, "NODE_ACTION_OK: $description viewId=$viewId method=$method")
+        delay(delayMs)
+        val tree = getService().accessibilityTree ?: "{}"
+        Log.i(DTAG, "NODE_ACTION_TREE: got tree (${tree.length} chars) after: $description")
+        val desc = if (method.isNotEmpty()) "$description (via $method)" else description
+        return SkillResult.Success(formatTreeResponse(desc, tree))
     }
 
     private suspend fun doClickNode(params: JsonObject): SkillResult {
         val viewId = params["view_id"]?.jsonPrimitive?.contentOrNull
             ?: return SkillResult.Error("Missing required parameter: view_id")
-        return actionWithUiTree(DELAY_NODE_CLICK, "Clicked node: $viewId.") {
+        return nodeActionWithTree(viewId, DELAY_NODE_CLICK, "Clicked node: $viewId.") {
             getService().clickNode(viewId)
         }
     }
@@ -859,7 +963,7 @@ class AgentDisplaySkill : AndyClawSkill {
     private suspend fun doLongClickNode(params: JsonObject): SkillResult {
         val viewId = params["view_id"]?.jsonPrimitive?.contentOrNull
             ?: return SkillResult.Error("Missing required parameter: view_id")
-        return actionWithUiTree(DELAY_NODE_CLICK, "Long-clicked node: $viewId.") {
+        return nodeActionWithTree(viewId, DELAY_NODE_CLICK, "Long-clicked node: $viewId.") {
             getService().longClickNode(viewId)
         }
     }
@@ -869,7 +973,7 @@ class AgentDisplaySkill : AndyClawSkill {
             ?: return SkillResult.Error("Missing required parameter: view_id")
         val text = params["text"]?.jsonPrimitive?.contentOrNull
             ?: return SkillResult.Error("Missing required parameter: text")
-        return actionWithUiTree(DELAY_NODE_TEXT, "Set text \"$text\" on node: $viewId.") {
+        return nodeActionWithTree(viewId, DELAY_NODE_TEXT, "Set text \"$text\" on node: $viewId.") {
             getService().setNodeText(viewId, text)
         }
     }
@@ -879,19 +983,24 @@ class AgentDisplaySkill : AndyClawSkill {
             ?: return SkillResult.Error("Missing required parameter: view_id")
         val direction = params["direction"]?.jsonPrimitive?.contentOrNull
             ?: return SkillResult.Error("Missing required parameter: direction")
-        return actionWithUiTree(DELAY_SWIPE, "Scrolled $direction on node: $viewId.") {
-            when (direction) {
-                "forward" -> getService().scrollNodeForward(viewId)
-                "backward" -> getService().scrollNodeBackward(viewId)
-                else -> throw IllegalArgumentException("direction must be 'forward' or 'backward'")
-            }
+        val actionResult = when (direction) {
+            "forward" -> getService().scrollNodeForward(viewId)
+            "backward" -> getService().scrollNodeBackward(viewId)
+            else -> return SkillResult.Error("direction must be 'forward' or 'backward'")
         }
+        val json = org.json.JSONObject(actionResult)
+        if (!json.optBoolean("ok", false)) {
+            return SkillResult.Error("Scroll $direction on $viewId failed: ${json.optString("error")}")
+        }
+        delay(DELAY_SWIPE)
+        val tree = getService().accessibilityTree ?: "{}"
+        return SkillResult.Success(formatTreeResponse("Scrolled $direction on node: $viewId.", tree))
     }
 
     private suspend fun doFocusNode(params: JsonObject): SkillResult {
         val viewId = params["view_id"]?.jsonPrimitive?.contentOrNull
             ?: return SkillResult.Error("Missing required parameter: view_id")
-        return actionWithUiTree(DELAY_TAP, "Focused node: $viewId.") {
+        return nodeActionWithTree(viewId, DELAY_TAP, "Focused node: $viewId.") {
             getService().focusNode(viewId)
         }
     }
@@ -900,7 +1009,7 @@ class AgentDisplaySkill : AndyClawSkill {
         val viewId = params["view_id"]?.jsonPrimitive?.contentOrNull
             ?: return SkillResult.Error("Missing required parameter: view_id")
         val info = getService().getNodeInfo(viewId)
-        return SkillResult.Success(info ?: "{\"error\":\"Node not found: $viewId\"}")
+        return SkillResult.Success(info ?: """{"error":"Node not found: $viewId"}""")
     }
 
     // ── Schema helpers ──────────────────────────────────────────────────

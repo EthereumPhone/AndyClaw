@@ -7,11 +7,11 @@ package android.os;
  */
 interface IAgentAccessibilityProxy {
     String getTreeForDisplay(int displayId);
-    boolean clickNodeByViewId(int displayId, String viewId);
-    boolean setNodeTextByViewId(int displayId, String viewId, String text);
-    boolean longClickNodeByViewId(int displayId, String viewId);
-    boolean scrollNodeForwardByViewId(int displayId, String viewId);
-    boolean scrollNodeBackwardByViewId(int displayId, String viewId);
-    boolean focusNodeByViewId(int displayId, String viewId);
+    String clickNodeByViewId(int displayId, String viewId);
+    String setNodeTextByViewId(int displayId, String viewId, String text);
+    String longClickNodeByViewId(int displayId, String viewId);
+    String scrollNodeForwardByViewId(int displayId, String viewId);
+    String scrollNodeBackwardByViewId(int displayId, String viewId);
+    String focusNodeByViewId(int displayId, String viewId);
     String getNodeInfoByViewId(int displayId, String viewId);
 }

@@ -18,7 +18,7 @@ class SmartRouterTest {
         // CORE
         "device_info", "apps", "code_execution", "shell", "memory", "clipboard", "settings",
         // dGEN1 CORE
-        "led_matrix", "terminal_text",
+        "led_matrix",
         // HEAVY
         "agent_display", "skill-creator", "skill-refinement", "clawhub", "bankr_trading", "cli-tool-manager",
         // STANDARD
@@ -33,7 +33,7 @@ class SmartRouterTest {
     private val CORE_IDS = setOf("code_execution", "memory")
 
     /** Default dGEN1 CORE skills when no preset provider is set (stock_minimal). */
-    private val DGEN1_CORE_IDS = setOf("terminal_text")
+    private val DGEN1_CORE_IDS = emptySet<String>()
 
     /** Create a SmartRouter with no context/registry/embedding (keyword-only mode). */
     private fun router(routingMode: RoutingMode? = null) = SmartRouter(
@@ -81,43 +81,9 @@ class SmartRouterTest {
     // ── dGEN1 CORE (PRIVILEGED tier) ────────────────────────────────────
 
     @Test
-    fun `terminal_text always included on dGEN1 privileged tier with keyword`() {
-        val result = route("turn on wifi", tier = Tier.PRIVILEGED)
-        assertTrue("terminal_text should be included on dGEN1", "terminal_text" in result)
-    }
-
-    @Test
-    fun `terminal_text always included on dGEN1 privileged tier`() {
-        val result = route("turn on wifi", tier = Tier.PRIVILEGED)
-        assertTrue("terminal_text should be included on dGEN1", "terminal_text" in result)
-    }
-
-    @Test
     fun `dGEN1 core skills NOT included on OPEN tier`() {
         val result = route("turn on wifi")
         assertFalse("led_matrix should NOT be included on OPEN tier", "led_matrix" in result)
-        assertFalse("terminal_text should NOT be included on OPEN tier", "terminal_text" in result)
-    }
-
-    @Test
-    fun `dGEN1 core skills not included if user disabled them`() {
-        val enabledWithoutHardware = ALL_SKILL_IDS - DGEN1_CORE_IDS
-        val result = route("turn on wifi", enabled = enabledWithoutHardware, tier = Tier.PRIVILEGED)
-        assertFalse("led_matrix should not be included if disabled", "led_matrix" in result)
-        assertFalse("terminal_text should not be included if disabled", "terminal_text" in result)
-    }
-
-    @Test
-    fun `dGEN1 core skills included even with no keyword match besides fallback`() {
-        val result = route("what is the weather like today?", tier = Tier.PRIVILEGED)
-        assertTrue("terminal_text" in result)
-    }
-
-    @Test
-    fun `dGEN1 core skills present alongside matched skills`() {
-        val result = route("send an sms", tier = Tier.PRIVILEGED)
-        assertTrue("sms should match", "sms" in result)
-        assertTrue("terminal_text should always be present on dGEN1", "terminal_text" in result)
     }
 
     // ── Keyword matching: connectivity ──────────────────────────────────
@@ -347,12 +313,6 @@ class SmartRouterTest {
     }
 
     @Test
-    fun `terminal keyword routes to terminal_text`() {
-        val result = route("update the terminal display")
-        assertTrue("terminal_text" in result)
-    }
-
-    @Test
     fun `create skill keyword routes to skill-creator and skill-refinement`() {
         val result = route("create skill for weather")
         assertTrue("skill-creator" in result)
@@ -522,7 +482,7 @@ class SmartRouterTest {
         }
         // "how are you" is conversational -> CORE + dGEN1 CORE
         assertTrue("CORE should be present", CORE_IDS.all { it in result.skillIds })
-        assertTrue("terminal_text should be present on PRIVILEGED", "terminal_text" in result.skillIds)
+        // dGEN1 core skills (if any) should be present on PRIVILEGED
     }
 
     // ── HEAVY skills excluded unless keyword matched ────────────────────
@@ -742,7 +702,6 @@ class SmartRouterTest {
     fun `default tier is OPEN`() {
         val result = route("turn on wifi")
         assertFalse("led_matrix should not be included with default tier", "led_matrix" in result)
-        assertFalse("terminal_text should not be included with default tier", "terminal_text" in result)
     }
 
     // ── Word-boundary keyword accuracy (Phase 3A) ──────────────────────
@@ -910,12 +869,6 @@ class SmartRouterTest {
     fun `order uber routes to agent_display on OPEN tier via keyword`() {
         val result = route("order me an uber")
         assertTrue("agent_display should match via 'order' and 'uber' keywords", "agent_display" in result)
-    }
-
-    @Test
-    fun `terminal_text always included on dGEN1 even without keyword`() {
-        val result = route("turn on wifi", tier = Tier.PRIVILEGED)
-        assertTrue("terminal_text should always be on for dGEN1", "terminal_text" in result)
     }
 
     @Test

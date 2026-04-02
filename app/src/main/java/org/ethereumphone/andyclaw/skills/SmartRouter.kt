@@ -192,7 +192,7 @@ class SmartRouter(
         private const val CACHE_TTL_MS = 604_800_000L // 7 days
         private const val MAX_CORRECTIONS = 3
         private val DEFAULT_CORE_SKILL_IDS = setOf("code_execution", "memory")
-        private val DEFAULT_DGEN1_CORE_SKILL_IDS = setOf("terminal_text")
+        private val DEFAULT_DGEN1_CORE_SKILL_IDS = emptySet<String>()
 
         private val CONVERSATIONAL_PATTERNS = listOf(
             Regex("\\b(hi|hello|hey|howdy|hola|greetings|sup|yo)\\b"),
@@ -207,7 +207,7 @@ class SmartRouter(
             "crypto" to setOf("wallet", "swap", "token_lookup", "ens", "bankr_trading"),
             "messaging" to setOf("sms", "telegram", "messenger", "gmail"),
             "media" to setOf("camera", "audio", "agent_display"),
-            "hardware" to setOf("led_matrix", "terminal_text", "device_power"),
+            "hardware" to setOf("led_matrix", "device_power"),
             "files" to setOf("storage", "filesystem", "drive"),
         )
 
@@ -434,12 +434,6 @@ class SmartRouter(
         val led = setOf("led_matrix")
         for (kw in listOf("led", "matrix", "led matrix", "light", "pixel", "laser")) {
             put(kw, (this[kw] ?: emptySet()) + led)
-        }
-
-        // Terminal text (HEAVY)
-        val terminal = setOf("terminal_text")
-        for (kw in listOf("terminal", "status bar", "touch bar", "terminal text")) {
-            put(kw, (this[kw] ?: emptySet()) + terminal)
         }
 
         // Skill creator / refinement (HEAVY)
