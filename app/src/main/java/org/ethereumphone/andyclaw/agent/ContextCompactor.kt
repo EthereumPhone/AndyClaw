@@ -23,7 +23,7 @@ import org.ethereumphone.andyclaw.llm.MessagesRequest
  */
 class ContextCompactor(
     private val client: LlmClient,
-    private val budgetConfig: BudgetConfig,
+    private val config: CompactionConfig,
 ) {
     companion object {
         private const val TAG = "ContextCompactor"
@@ -74,15 +74,14 @@ Rules:
         modelId: String,
         keepRecentOverride: Int? = null,
     ): CompactionResult {
-        val keepRecent = keepRecentOverride ?: budgetConfig.preset.historySummarizationKeepRecent
-        val overlap = budgetConfig.preset.compactionOverlap
-        val preset = budgetConfig.preset
+        val keepRecent = keepRecentOverride ?: config.keepRecent
+        val overlap = config.overlap
         val isManual = keepRecentOverride != null
 
         Log.i(TAG, "=== compact() START === historySize=${history.size}, keepRecent=$keepRecent, " +
             "overlap=$overlap, modelId=$modelId, clientType=${client.javaClass.simpleName}, manual=$isManual")
-        Log.d(TAG, "Preset: id=${preset.id}, threshold=${preset.compactionThreshold}, " +
-            "interval=${preset.compactionInterval}, historySummarization=${preset.historySummarization}")
+        Log.d(TAG, "Config: enabled=${config.enabled}, threshold=${config.threshold}, " +
+            "interval=${config.interval}, microcompact=${config.microcompactEnabled}, llmSummary=${config.llmSummaryEnabled}")
 
         // Log history composition
         val roleCounts = history.groupingBy { it.role }.eachCount()
@@ -107,21 +106,39 @@ Rules:
             Log.d(TAG, "Clamped keepRecent: $keepRecent → $effectiveKeepRecent (historySize=${history.size})")
         }
 
-        // Layer 1: Microcompact — always runs
-        Log.i(TAG, "--- Layer 1: Microcompact ---")
-        val microcompactStart = System.currentTimeMillis()
-        val microcompacted = microcompact(history, effectiveKeepRecent)
-        val microcompactMs = System.currentTimeMillis() - microcompactStart
-        val microcompactChanged = microcompacted !== history
-        if (microcompactChanged) {
-            val newTotalChars = microcompacted.sumOf { extractText(it).length }
-            val savedChars = totalChars - newTotalChars
-            Log.i(TAG, "Microcompact: ${savedChars} chars saved (${totalChars} → ${newTotalChars}), took ${microcompactMs}ms")
+        // Layer 1: Microcompact
+        val microcompacted: List<Message>
+        val microcompactChanged: Boolean
+        if (config.microcompactEnabled) {
+            Log.i(TAG, "--- Layer 1: Microcompact ---")
+            val microcompactStart = System.currentTimeMillis()
+            microcompacted = microcompact(history, effectiveKeepRecent)
+            val microcompactMs = System.currentTimeMillis() - microcompactStart
+            microcompactChanged = microcompacted !== history
+            if (microcompactChanged) {
+                val newTotalChars = microcompacted.sumOf { extractText(it).length }
+                val savedChars = totalChars - newTotalChars
+                Log.i(TAG, "Microcompact: ${savedChars} chars saved (${totalChars} → ${newTotalChars}), took ${microcompactMs}ms")
+            } else {
+                Log.d(TAG, "Microcompact: no changes needed, took ${microcompactMs}ms")
+            }
         } else {
-            Log.d(TAG, "Microcompact: no changes needed, took ${microcompactMs}ms")
+            Log.d(TAG, "Layer 1: Microcompact DISABLED by config")
+            microcompacted = history
+            microcompactChanged = false
         }
 
-        // Layer 2: LLM Summarization — skip for local models
+        // Layer 2: LLM Summarization
+        if (!config.llmSummaryEnabled) {
+            Log.d(TAG, "Layer 2: LLM Summary DISABLED by config")
+            val result = if (microcompactChanged) {
+                CompactionResult(microcompacted, "", 0, wasCompacted = true)
+            } else {
+                CompactionResult(history, "", 0, wasCompacted = false)
+            }
+            Log.i(TAG, "=== compact() END === wasCompacted=${result.wasCompacted} (microcompact only)")
+            return result
+        }
         if (client is LocalLlmClient) {
             Log.i(TAG, "SKIP Layer 2: local model (${client.javaClass.simpleName}) — microcompact only")
             val result = if (microcompactChanged) {

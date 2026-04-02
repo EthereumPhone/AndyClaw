@@ -353,7 +353,7 @@ class AgentLoop(
                     safetyEnabled = safety?.config?.enabled == true,
                     sessionNonce = safety?.sessionNonce,
                     concisePrompt = budget?.preset?.concisePrompt == true,
-                    parallelToolCalls = budget?.preset?.parallelToolCalls == true,
+                    parallelToolCalls = true,
                     noPreambleToolCalls = budget?.preset?.noPreambleToolCalls == true,
                 ))
                 // Add meta-tool descriptions and catalog summary when using ToolSearch
@@ -481,7 +481,7 @@ class AgentLoop(
                     messages = messages,
                     tools = toolsJson.takeIf { it.isNotEmpty() },
                     stream = true,
-                    parallelToolCalls = budget?.preset?.parallelToolCalls != false,
+                    parallelToolCalls = true,
                     verbosity = verbosity,
                 )
 

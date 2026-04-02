@@ -685,11 +685,16 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
         return getDisplayModelsForProvider(effective, _heartbeatModelSearchQuery.value)
     }
 
-    // ── Compaction model ────────────────────────────────────────────
+    // ── Compaction settings ────────────────────────────────────────
 
+    val compactionConfig = prefs.compactionConfig
     val compactionUseSameModel = prefs.compactionUseSameModel
     val compactionProvider = prefs.compactionProvider
     val compactionModel = prefs.compactionModel
+
+    fun updateCompactionConfig(transform: (org.ethereumphone.andyclaw.agent.CompactionConfig) -> org.ethereumphone.andyclaw.agent.CompactionConfig) {
+        prefs.setCompactionConfig(transform(prefs.compactionConfig.value))
+    }
 
     fun setCompactionUseSameModel(enabled: Boolean) {
         prefs.setCompactionUseSameModel(enabled)

@@ -321,28 +321,10 @@ fun BudgetPresetEditorScreen(
             onToggle = { workingCopy = workingCopy.copy(concisePrompt = it); hasChanges = true },
         ),
         OptimizationItem(
-            title = "PARALLEL TOOL CALLS",
-            description = "Instruct the model to batch independent tool calls into a single response instead of sequential turns.",
-            isEnabled = workingCopy.parallelToolCalls,
-            onToggle = { workingCopy = workingCopy.copy(parallelToolCalls = it); hasChanges = true },
-        ),
-        OptimizationItem(
             title = "NO-PREAMBLE TOOL CALLS",
             description = "Skip explanatory text before tool call JSON, reducing unnecessary output tokens.",
             isEnabled = workingCopy.noPreambleToolCalls,
             onToggle = { workingCopy = workingCopy.copy(noPreambleToolCalls = it); hasChanges = true },
-        ),
-        OptimizationItem(
-            title = "HISTORY SUMMARIZATION",
-            description = "Summarize older conversation messages to keep context small, leading to shorter responses.",
-            isEnabled = workingCopy.historySummarization,
-            onToggle = { workingCopy = workingCopy.copy(historySummarization = it); hasChanges = true },
-        ),
-        OptimizationItem(
-            title = "THINKING BUDGET",
-            description = "Cap reasoning/thinking tokens for models that support extended thinking.",
-            isEnabled = workingCopy.thinkingBudget,
-            onToggle = { workingCopy = workingCopy.copy(thinkingBudget = it); hasChanges = true },
         ),
         OptimizationItem(
             title = "TOOL RESULT TRUNCATION",
@@ -446,55 +428,6 @@ fun BudgetPresetEditorScreen(
                                 hasChanges = true
                             },
                             valueRange = 1000f..5000f,
-                            colors = SliderDefaults.colors(
-                                thumbColor = primaryColor,
-                                activeTrackColor = primaryColor,
-                                inactiveTrackColor = primaryColor.copy(alpha = 0.2f),
-                            ),
-                        )
-                    }
-                }
-
-                // ── History Summarization slider ─────────────────────────
-                if (item.title == "HISTORY SUMMARIZATION" && workingCopy.historySummarization) {
-                    var sliderValue by remember(workingCopy.id) {
-                        mutableFloatStateOf(workingCopy.historySummarizationKeepRecent.toFloat())
-                    }
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(start = 16.dp, end = 16.dp, bottom = 8.dp),
-                    ) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                        ) {
-                            Text(
-                                text = "Keep recent messages",
-                                style = contentBodyStyle,
-                                color = dgenWhite.copy(alpha = 0.7f),
-                            )
-                            Text(
-                                text = "${sliderValue.roundToInt()}",
-                                style = TextStyle(
-                                    fontFamily = SpaceMono,
-                                    fontSize = label_fontSize,
-                                    fontWeight = FontWeight.Bold,
-                                ),
-                                color = primaryColor,
-                            )
-                        }
-                        Slider(
-                            value = sliderValue,
-                            onValueChange = { raw ->
-                                val stepped = (raw / 2f).roundToInt() * 2f
-                                sliderValue = stepped.coerceIn(2f, 10f)
-                            },
-                            onValueChangeFinished = {
-                                workingCopy = workingCopy.copy(historySummarizationKeepRecent = sliderValue.roundToInt())
-                                hasChanges = true
-                            },
-                            valueRange = 2f..10f,
                             colors = SliderDefaults.colors(
                                 thumbColor = primaryColor,
                                 activeTrackColor = primaryColor,

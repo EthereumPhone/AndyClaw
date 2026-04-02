@@ -17,8 +17,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import org.ethereumphone.andyclaw.NodeApp
 import org.ethereumphone.andyclaw.agent.AgentLoop
-import org.ethereumphone.andyclaw.agent.BudgetConfig
-import org.ethereumphone.andyclaw.agent.BudgetPreset
+import org.ethereumphone.andyclaw.agent.CompactionConfig
 import org.ethereumphone.andyclaw.agent.ContextCompactor
 import org.ethereumphone.andyclaw.agent.TokenUsageSnapshot
 import org.ethereumphone.andyclaw.llm.AnthropicModels
@@ -212,17 +211,15 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     Log.w("ChatViewModel", "compactNow: history too short (${history.size}), need at least 3 messages")
                     return@launch
                 }
+                // Manual compaction: force keepRecent=2, use user's compaction config for other settings
                 val keepRecent = 2.coerceAtMost(history.size - 1)
-                val budgetCfg = BudgetConfig(
-                    (app.createBudgetConfig()?.preset ?: BudgetPreset.defaults().first())
-                        .copy(historySummarization = true)
-                )
-                Log.d("ChatViewModel", "compactNow: keepRecent=$keepRecent, historySize=${history.size}")
+                val compactionCfg = app.securePrefs.compactionConfig.value.copy(enabled = true)
+                Log.d("ChatViewModel", "compactNow: keepRecent=$keepRecent, historySize=${history.size}, config=$compactionCfg")
                 val compactionModelId = app.getCompactionModelId()
                 val compactionClient = app.getCompactionLlmClient()
                 Log.i("ChatViewModel", "compactNow: using model=$compactionModelId, client=${compactionClient.javaClass.simpleName}, " +
                     "useSameModel=${app.securePrefs.compactionUseSameModel.value}")
-                val compactor = ContextCompactor(compactionClient, budgetCfg)
+                val compactor = ContextCompactor(compactionClient, compactionCfg)
                 val result = withContext(Dispatchers.IO) {
                     compactor.compact(history, compactionModelId, keepRecentOverride = keepRecent)
                 }
@@ -319,14 +316,13 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
             // ── Context compaction check ──
             // Old messages stay in DB/UI; only the LLM context is compacted.
-            val budgetCfg = app.createBudgetConfig()
+            val compactionCfg = app.securePrefs.compactionConfig.value
             val ctxState = _contextWindow.value
             turnsSinceLastCompaction++
             Log.d("ChatViewModel", "Auto-compact check: usedTokens=${ctxState.usedTokens}, maxTokens=${ctxState.maxTokens}, " +
                 "pct=${(ctxState.percentage * 100).toInt()}%, turns=$turnsSinceLastCompaction, " +
-                "historySummarization=${budgetCfg?.preset?.historySummarization}, " +
-                "threshold=${budgetCfg?.preset?.compactionThreshold}, interval=${budgetCfg?.preset?.compactionInterval}")
-            val shouldCompact = budgetCfg != null && budgetCfg.shouldCompact(ctxState.usedTokens, ctxState.maxTokens, turnsSinceLastCompaction)
+                "enabled=${compactionCfg.enabled}, threshold=${compactionCfg.threshold}, interval=${compactionCfg.interval}")
+            val shouldCompact = compactionCfg.shouldCompact(ctxState.usedTokens, ctxState.maxTokens, turnsSinceLastCompaction)
             Log.d("ChatViewModel", "Auto-compact decision: shouldCompact=$shouldCompact")
             if (shouldCompact) {
                 val autoCompactStart = System.currentTimeMillis()
@@ -339,7 +335,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                         "turns=$turnsSinceLastCompaction, model=$compactionModelId, " +
                         "client=${compactionClient.javaClass.simpleName}, " +
                         "historySize=${conversationHistory.size}")
-                    val compactor = ContextCompactor(compactionClient, budgetCfg!!)
+                    val compactor = ContextCompactor(compactionClient, compactionCfg)
                     val compactResult = compactor.compact(conversationHistory, compactionModelId)
                     val autoCompactMs = System.currentTimeMillis() - autoCompactStart
                     if (compactResult.wasCompacted) {
