@@ -543,6 +543,16 @@ class NodeApp : Application() {
         return getLlmClientForProvider(securePrefs.heartbeatProvider.value, securePrefs.heartbeatModel.value)
     }
 
+    fun getCompactionLlmClient(): LlmClient {
+        if (securePrefs.compactionUseSameModel.value) return getLlmClient()
+        return getLlmClientForProvider(securePrefs.compactionProvider.value, securePrefs.compactionModel.value)
+    }
+
+    fun getCompactionModelId(): String {
+        return if (securePrefs.compactionUseSameModel.value) securePrefs.selectedModel.value
+        else securePrefs.compactionModel.value
+    }
+
     private fun getLlmClientForProvider(provider: LlmProvider, modelId: String): LlmClient {
         if (OsCapabilities.hasPrivilegedAccess) {
             return when (provider) {
@@ -638,6 +648,15 @@ class NodeApp : Application() {
         // Pre-load the Whisper model into RAM so voice transcription is instant.
         // The Q5_1 model (~60 MB on disk, ~388 MB in RAM) stays resident for the process lifetime.
         whisperTranscriber.warmUp(appScope)
+
+        // Refresh OpenRouter model registry so context windows and pricing are available
+        appScope.launch {
+            try {
+                openRouterModelRegistry.refreshIfNeeded()
+            } catch (e: Exception) {
+                Log.w(TAG, "OpenRouter model registry refresh failed: ${e.message}")
+            }
+        }
 
         // Discover extensions in the background and bridge them into the skill system
         appScope.launch {

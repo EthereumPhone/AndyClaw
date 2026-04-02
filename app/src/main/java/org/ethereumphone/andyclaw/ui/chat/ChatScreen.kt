@@ -101,6 +101,7 @@ fun ChatScreen(
     val askUserRequest by viewModel.askUserRequest.collectAsState()
     val displayBitmap by viewModel.agentDisplayBitmap.collectAsState()
     val contextWindow by viewModel.contextWindow.collectAsState()
+    val isCompacting by viewModel.isCompacting.collectAsState()
     val navigationEvent by viewModel.navigationEvent.collectAsState()
     val context = LocalContext.current
     val app = context.applicationContext as NodeApp
@@ -234,6 +235,8 @@ fun ChatScreen(
                 ContextWindowIndicator(
                     state = contextWindow,
                     accentColor = primaryColor,
+                    onCompactClick = if (!isStreaming && !isCompacting) {{ viewModel.compactNow() }} else null,
+                    isCompacting = isCompacting,
                 )
             }
 
@@ -253,7 +256,7 @@ fun ChatScreen(
                         ChatMessageItem(
                             message = message,
                             isExpanded = expandedToolResults.contains(message.id),
-                            onToggleExpand = if (message.role == "tool") {
+                            onToggleExpand = if (message.role == "tool" || message.role == "context_summary") {
                                 {
                                     if (expandedToolResults.contains(message.id)) {
                                         expandedToolResults.remove(message.id)
@@ -316,8 +319,34 @@ fun ChatScreen(
                 androidx.compose.ui.graphics.Color.Transparent
             }
 
+            // Compacting indicator above the input bar
+            if (isCompacting) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.Center,
+                ) {
+                    androidx.compose.material3.CircularProgressIndicator(
+                        modifier = Modifier.size(12.dp),
+                        strokeWidth = 1.5.dp,
+                        color = primaryColor.copy(alpha = 0.7f),
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        text = "Compacting context...",
+                        style = TextStyle(
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = 12.sp,
+                            color = primaryColor.copy(alpha = 0.7f),
+                        ),
+                    )
+                }
+            }
+
             ChatInputBar(
-                isStreaming = isStreaming,
+                isStreaming = isStreaming || isCompacting,
                 onSend = { text ->
                     showSlashOverlay = false
                     slashQuery = ""
@@ -373,8 +402,9 @@ fun ChatScreen(
                             when (result.message) {
                                 "Conversation cleared." -> viewModel.newSession()
                                 "Memory reindex started." -> viewModel.triggerReindex()
+                                "compact" -> viewModel.compactNow()
+                                else -> showDgenToast(context, result.message)
                             }
-                            showDgenToast(context, result.message)
                         }
                         is SlashCommandResult.Navigate -> {
                             showSlashOverlay = false
@@ -896,6 +926,8 @@ private fun ContextWindowIndicator(
     state: ContextWindowState,
     accentColor: androidx.compose.ui.graphics.Color,
     modifier: Modifier = Modifier,
+    onCompactClick: (() -> Unit)? = null,
+    isCompacting: Boolean = false,
 ) {
     val pct = state.percentage.coerceIn(0f, 1f)
     val barColor = when {
@@ -925,14 +957,45 @@ private fun ContextWindowIndicator(
                     color = barColor.copy(alpha = 0.7f),
                 ),
             )
-            Text(
-                text = "${(pct * 100).toInt()}%",
-                style = TextStyle(
-                    fontFamily = FontFamily.Monospace,
-                    fontSize = 10.sp,
-                    color = barColor.copy(alpha = 0.7f),
-                ),
-            )
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                // Show compact button when context usage is high enough
+                if (isCompacting) {
+                    androidx.compose.material3.CircularProgressIndicator(
+                        modifier = Modifier.size(10.dp),
+                        strokeWidth = 1.5.dp,
+                        color = barColor.copy(alpha = 0.7f),
+                    )
+                    Text(
+                        text = "Compacting...",
+                        style = TextStyle(
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = 9.sp,
+                            color = barColor.copy(alpha = 0.7f),
+                        ),
+                    )
+                } else if (pct >= 0.7f && onCompactClick != null) {
+                    Text(
+                        text = "Compact",
+                        style = TextStyle(
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = 9.sp,
+                            color = barColor.copy(alpha = 0.9f),
+                        ),
+                        modifier = Modifier.clickable(onClick = onCompactClick),
+                    )
+                }
+                Text(
+                    text = "${(pct * 100).toInt()}%",
+                    style = TextStyle(
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = 10.sp,
+                        color = barColor.copy(alpha = 0.7f),
+                    ),
+                )
+            }
         }
         Box(
             modifier = Modifier

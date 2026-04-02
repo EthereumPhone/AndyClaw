@@ -61,4 +61,19 @@ class BudgetConfig(val preset: BudgetPreset) {
         if (!preset.historySummarization) return false
         return messageCount > preset.historySummarizationKeepRecent + 2
     }
+
+    /**
+     * Return true if context compaction should be triggered.
+     *
+     * Uses a dual-trigger strategy:
+     * 1. **Token-percentage** (primary): fires when context usage exceeds [BudgetPreset.compactionThreshold].
+     * 2. **Turn-count** (secondary, à la Google ADK `compaction_interval`): fires every N user turns,
+     *    useful as a fallback for providers that don't report accurate token counts.
+     */
+    fun shouldCompact(usedTokens: Int, maxTokens: Int, turnsSinceLastCompaction: Int = 0): Boolean {
+        if (!preset.historySummarization) return false
+        val tokenTrigger = maxTokens > 0 && usedTokens.toFloat() / maxTokens >= preset.compactionThreshold
+        val intervalTrigger = preset.compactionInterval > 0 && turnsSinceLastCompaction >= preset.compactionInterval
+        return tokenTrigger || intervalTrigger
+    }
 }

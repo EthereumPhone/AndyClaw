@@ -17,6 +17,9 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import org.ethereumphone.andyclaw.NodeApp
 import org.ethereumphone.andyclaw.agent.AgentLoop
+import org.ethereumphone.andyclaw.agent.BudgetConfig
+import org.ethereumphone.andyclaw.agent.BudgetPreset
+import org.ethereumphone.andyclaw.agent.ContextCompactor
 import org.ethereumphone.andyclaw.agent.TokenUsageSnapshot
 import org.ethereumphone.andyclaw.llm.AnthropicModels
 import org.ethereumphone.andyclaw.llm.ContentBlock
@@ -67,7 +70,7 @@ data class ContextWindowState(
     val maxTokens: Int = 0,
 ) {
     val percentage: Float get() = if (maxTokens > 0) usedTokens.toFloat() / maxTokens else 0f
-    val isAvailable: Boolean get() = maxTokens > 0 && usedTokens > 0
+    val isAvailable: Boolean get() = maxTokens > 0
 }
 
 class ChatViewModel(application: Application) : AndroidViewModel(application) {
@@ -125,6 +128,11 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     val agentDisplayBitmap: StateFlow<Bitmap?> = _agentDisplayBitmap.asStateFlow()
 
     private var agentDisplayJob: Job? = null
+    private val _isCompacting = MutableStateFlow(false)
+    val isCompacting: StateFlow<Boolean> = _isCompacting.asStateFlow()
+
+    private var turnsSinceLastCompaction = 0
+
     private var currentJob: Job? = null
     private var approvalContinuation: kotlinx.coroutines.CancellableContinuation<Boolean>? = null
     private val pendingExplorerUrls = mutableListOf<String>()
@@ -179,8 +187,71 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         _contextWindow.value = ContextWindowState()
     }
 
+    /**
+     * Manually trigger context compaction for the current session.
+     * Old messages are preserved in the UI; only the LLM context is compacted.
+     */
+    fun compactNow() {
+        val sid = _sessionId.value
+        if (sid == null) {
+            Log.w("ChatViewModel", "compactNow() skipped: no active session")
+            return
+        }
+        if (_isStreaming.value || _isCompacting.value) {
+            Log.d("ChatViewModel", "compactNow() skipped: isStreaming=${_isStreaming.value}, isCompacting=${_isCompacting.value}")
+            return
+        }
+        Log.i("ChatViewModel", "=== compactNow() manual trigger === sessionId=$sid")
+        viewModelScope.launch {
+            _isCompacting.value = true
+            val startMs = System.currentTimeMillis()
+            try {
+                val history = buildConversationHistory()
+                Log.i("ChatViewModel", "compactNow: conversationHistory=${history.size} messages")
+                if (history.size < 3) {
+                    Log.w("ChatViewModel", "compactNow: history too short (${history.size}), need at least 3 messages")
+                    return@launch
+                }
+                val keepRecent = 2.coerceAtMost(history.size - 1)
+                val budgetCfg = BudgetConfig(
+                    (app.createBudgetConfig()?.preset ?: BudgetPreset.defaults().first())
+                        .copy(historySummarization = true)
+                )
+                Log.d("ChatViewModel", "compactNow: keepRecent=$keepRecent, historySize=${history.size}")
+                val compactionModelId = app.getCompactionModelId()
+                val compactionClient = app.getCompactionLlmClient()
+                Log.i("ChatViewModel", "compactNow: using model=$compactionModelId, client=${compactionClient.javaClass.simpleName}, " +
+                    "useSameModel=${app.securePrefs.compactionUseSameModel.value}")
+                val compactor = ContextCompactor(compactionClient, budgetCfg)
+                val result = withContext(Dispatchers.IO) {
+                    compactor.compact(history, compactionModelId, keepRecentOverride = keepRecent)
+                }
+                val elapsedMs = System.currentTimeMillis() - startMs
+                if (result.wasCompacted && result.summaryText.isNotBlank()) {
+                    sessionManager.addMessage(sid, MessageRole.CONTEXT_SUMMARY, result.summaryText)
+                    _messages.value = _messages.value + ChatUiMessage(
+                        id = java.util.UUID.randomUUID().toString(),
+                        role = "context_summary",
+                        content = result.summaryText,
+                    )
+                    turnsSinceLastCompaction = 0
+                    Log.i("ChatViewModel", "compactNow DONE: summarized ${result.removedMessageCount} messages, " +
+                        "summaryLength=${result.summaryText.length}, totalMs=${elapsedMs}")
+                } else {
+                    Log.i("ChatViewModel", "compactNow: nothing to compact (wasCompacted=${result.wasCompacted}, " +
+                        "summaryBlank=${result.summaryText.isBlank()}), totalMs=${elapsedMs}")
+                }
+            } catch (e: Exception) {
+                val elapsedMs = System.currentTimeMillis() - startMs
+                Log.e("ChatViewModel", "compactNow FAILED after ${elapsedMs}ms: ${e.javaClass.simpleName}: ${e.message}", e)
+            } finally {
+                _isCompacting.value = false
+            }
+        }
+    }
+
     fun sendMessage(text: String) {
-        if (text.isBlank() || _isStreaming.value) return
+        if (text.isBlank() || _isStreaming.value || _isCompacting.value) return
 
         // ── Slash command interception ──────────────────────────────────
         val cmdResult = slashExecutor.execute(text)
@@ -211,6 +282,15 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 val model = app.securePrefs.selectedModel.value
                 val session = sessionManager.createSession(model = model)
                 _sessionId.value = session.id
+                // Initialize context window with model limit so the bar is visible immediately
+                if (_contextWindow.value.maxTokens <= 0) {
+                    // Ensure OpenRouter registry is loaded for dynamic context window resolution
+                    try { app.openRouterModelRegistry.refreshIfNeeded() } catch (_: Exception) {}
+                    val contextLimit = resolveContextLimit(model)
+                    if (contextLimit > 0) {
+                        _contextWindow.value = ContextWindowState(usedTokens = 0, maxTokens = contextLimit)
+                    }
+                }
             }
             val sid = _sessionId.value!!
 
@@ -235,7 +315,58 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             ledController.onPromptStart()
 
             // Build conversation history for agent loop
-            val conversationHistory = buildConversationHistory()
+            var conversationHistory = buildConversationHistory()
+
+            // ── Context compaction check ──
+            // Old messages stay in DB/UI; only the LLM context is compacted.
+            val budgetCfg = app.createBudgetConfig()
+            val ctxState = _contextWindow.value
+            turnsSinceLastCompaction++
+            Log.d("ChatViewModel", "Auto-compact check: usedTokens=${ctxState.usedTokens}, maxTokens=${ctxState.maxTokens}, " +
+                "pct=${(ctxState.percentage * 100).toInt()}%, turns=$turnsSinceLastCompaction, " +
+                "historySummarization=${budgetCfg?.preset?.historySummarization}, " +
+                "threshold=${budgetCfg?.preset?.compactionThreshold}, interval=${budgetCfg?.preset?.compactionInterval}")
+            val shouldCompact = budgetCfg != null && budgetCfg.shouldCompact(ctxState.usedTokens, ctxState.maxTokens, turnsSinceLastCompaction)
+            Log.d("ChatViewModel", "Auto-compact decision: shouldCompact=$shouldCompact")
+            if (shouldCompact) {
+                val autoCompactStart = System.currentTimeMillis()
+                try {
+                    _isCompacting.value = true
+                    val compactionModelId = app.getCompactionModelId()
+                    val compactionClient = app.getCompactionLlmClient()
+                    Log.i("ChatViewModel", "=== Auto-compact TRIGGERED === " +
+                        "usedTokens=${ctxState.usedTokens}/${ctxState.maxTokens} (${(ctxState.percentage * 100).toInt()}%), " +
+                        "turns=$turnsSinceLastCompaction, model=$compactionModelId, " +
+                        "client=${compactionClient.javaClass.simpleName}, " +
+                        "historySize=${conversationHistory.size}")
+                    val compactor = ContextCompactor(compactionClient, budgetCfg!!)
+                    val compactResult = compactor.compact(conversationHistory, compactionModelId)
+                    val autoCompactMs = System.currentTimeMillis() - autoCompactStart
+                    if (compactResult.wasCompacted) {
+                        conversationHistory = compactResult.compactedHistory
+                        if (compactResult.summaryText.isNotBlank()) {
+                            sessionManager.addMessage(sid, MessageRole.CONTEXT_SUMMARY, compactResult.summaryText)
+                            _messages.value = _messages.value + ChatUiMessage(
+                                id = java.util.UUID.randomUUID().toString(),
+                                role = "context_summary",
+                                content = compactResult.summaryText,
+                            )
+                        }
+                        turnsSinceLastCompaction = 0
+                        Log.i("ChatViewModel", "Auto-compact DONE: removed=${compactResult.removedMessageCount}, " +
+                            "summaryLen=${compactResult.summaryText.length}, " +
+                            "newHistorySize=${conversationHistory.size}, totalMs=${autoCompactMs}")
+                    } else {
+                        Log.i("ChatViewModel", "Auto-compact: compactor returned wasCompacted=false, totalMs=${autoCompactMs}")
+                    }
+                } catch (e: Exception) {
+                    val autoCompactMs = System.currentTimeMillis() - autoCompactStart
+                    Log.e("ChatViewModel", "Auto-compact FAILED after ${autoCompactMs}ms, continuing without it: " +
+                        "${e.javaClass.simpleName}: ${e.message}", e)
+                } finally {
+                    _isCompacting.value = false
+                }
+            }
 
             val modelId = app.securePrefs.selectedModel.value
             val model = AnthropicModels.fromModelId(modelId) ?: AnthropicModels.MINIMAX_M25
@@ -532,10 +663,32 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private fun buildConversationHistory(): List<Message> {
         // Convert persisted messages to Message objects (excluding last user msg which AgentLoop adds)
         val msgs = _messages.value.dropLast(1) // Drop the user msg we just added
-        return msgs.mapNotNull { msg ->
+
+        // If a CONTEXT_SUMMARY exists, use it as the boundary:
+        // only include the summary + messages after it for the LLM.
+        // Old messages before the summary stay in the UI but are not sent to the LLM.
+        val lastSummaryIndex = msgs.indexOfLast { it.role == "context_summary" }
+        val effectiveMsgs = if (lastSummaryIndex >= 0) {
+            Log.d("ChatViewModel", "buildConversationHistory: found CONTEXT_SUMMARY at index $lastSummaryIndex/${msgs.size}, " +
+                "using ${msgs.size - lastSummaryIndex} of ${msgs.size} messages for LLM")
+            msgs.subList(lastSummaryIndex, msgs.size)
+        } else {
+            Log.d("ChatViewModel", "buildConversationHistory: no CONTEXT_SUMMARY found, using all ${msgs.size} messages")
+            msgs
+        }
+
+        return effectiveMsgs.mapNotNull { msg ->
             when (msg.role) {
                 "user" -> Message.user(msg.content)
                 "assistant" -> Message.assistant(listOf(ContentBlock.TextBlock(msg.content)))
+                "context_summary" -> Message.user(
+                    "<context_summary>\n" +
+                    "This is a compacted summary of older messages in this conversation. " +
+                    "If you need more details about something mentioned here, " +
+                    "use the search_memory skill to retrieve relevant context from long-term memory.\n\n" +
+                    msg.content + "\n" +
+                    "</context_summary>"
+                )
                 "tool" -> null // Tool results are handled within agent loop context
                 else -> null
             }
@@ -557,19 +710,32 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
      * Resolve the model's context window and update [_contextWindow] with the
      * latest token usage from the API response.
      */
+    private fun resolveContextLimit(modelId: String): Int {
+        // Try OpenRouter registry first (dynamic, most accurate)
+        val registryModel = app.openRouterModelRegistry.getModelById(modelId)
+        if (registryModel != null && registryModel.contextLength > 0) {
+            return registryModel.contextLength
+        }
+        // Fall back to static enum value
+        val enumModel = AnthropicModels.fromModelId(modelId)
+        if (enumModel != null && enumModel.contextWindow > 0) {
+            return enumModel.contextWindow
+        }
+        // Last resort: if the previous context window had a valid limit, keep it
+        // (the model didn't change, we just couldn't resolve it this time)
+        if (_contextWindow.value.maxTokens > 0) {
+            return _contextWindow.value.maxTokens
+        }
+        Log.w("ChatViewModel", "ContextWindow | could not resolve context limit for model=$modelId " +
+            "(registry=${registryModel != null}, enum=${enumModel != null})")
+        return 0
+    }
+
     private fun updateContextWindow(tokenUsage: TokenUsageSnapshot, modelId: String) {
         // lastInputTokens already includes non-cached + cached tokens = true full prompt size.
         // Don't add totalOutputTokens — output becomes part of next turn's input automatically.
         val used = tokenUsage.lastInputTokens
-
-        // Try OpenRouter registry first (dynamic, most accurate)
-        val registryModel = app.openRouterModelRegistry.getModelById(modelId)
-        val contextLimit = if (registryModel != null && registryModel.contextLength > 0) {
-            registryModel.contextLength
-        } else {
-            // Fall back to static enum value
-            AnthropicModels.fromModelId(modelId)?.contextWindow ?: 0
-        }
+        val contextLimit = resolveContextLimit(modelId)
 
         _contextWindow.value = ContextWindowState(
             usedTokens = used,
@@ -624,27 +790,26 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         )
         _messages.value = _messages.value + userMsg
 
-        // Show system feedback
-        val systemMsg = ChatUiMessage(
-            id = java.util.UUID.randomUUID().toString(),
-            role = "system",
-            content = result.message,
-        )
-        _messages.value = _messages.value + systemMsg
+        // Show system feedback (skip for /compact — result shown as context_summary card)
+        if (result.message.isNotBlank() && result.message != "compact") {
+            val systemMsg = ChatUiMessage(
+                id = java.util.UUID.randomUUID().toString(),
+                role = "system",
+                content = result.message,
+            )
+            _messages.value = _messages.value + systemMsg
+        }
 
         _slashCommandResult.value = result
 
         when (result) {
             is SlashCommandResult.ActionDone -> {
-                if (rawInput.trim().equals("/clear", ignoreCase = true)) {
-                    newSession()
-                }
-                if (rawInput.trim().equals("/reindex", ignoreCase = true)) {
-                    viewModelScope.launch {
-                        try {
-                            memoryManager.reindex(force = true)
-                        } catch (_: Exception) { }
+                when (result.message) {
+                    "Conversation cleared." -> newSession()
+                    "Memory reindex started." -> viewModelScope.launch {
+                        try { memoryManager.reindex(force = true) } catch (_: Exception) { }
                     }
+                    "compact" -> compactNow()
                 }
             }
             is SlashCommandResult.Navigate -> {

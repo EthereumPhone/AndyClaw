@@ -127,6 +127,15 @@ class SecurePrefs(context: Context) : KeyValueStore {
   private val _heartbeatModel = MutableStateFlow(prefs.getString("agent.heartbeatModel", null) ?: "")
   val heartbeatModel: StateFlow<String> = _heartbeatModel
 
+  private val _compactionUseSameModel = MutableStateFlow(prefs.getBoolean("compaction.useSameModel", true))
+  val compactionUseSameModel: StateFlow<Boolean> = _compactionUseSameModel
+
+  private val _compactionProvider = MutableStateFlow(loadCompactionProvider())
+  val compactionProvider: StateFlow<LlmProvider> = _compactionProvider
+
+  private val _compactionModel = MutableStateFlow(prefs.getString("compaction.model", null) ?: "")
+  val compactionModel: StateFlow<String> = _compactionModel
+
   private val _walletAddress = MutableStateFlow(prefs.getString("auth.walletAddress", "") ?: "")
   val walletAddress: StateFlow<String> = _walletAddress
 
@@ -451,6 +460,22 @@ class SecurePrefs(context: Context) : KeyValueStore {
     val trimmed = value.trim()
     prefs.edit { putString("agent.heartbeatModel", trimmed) }
     _heartbeatModel.value = trimmed
+  }
+
+  fun setCompactionUseSameModel(value: Boolean) {
+    prefs.edit { putBoolean("compaction.useSameModel", value) }
+    _compactionUseSameModel.value = value
+  }
+
+  fun setCompactionProvider(provider: LlmProvider) {
+    prefs.edit { putString("compaction.provider", provider.name) }
+    _compactionProvider.value = provider
+  }
+
+  fun setCompactionModel(value: String) {
+    val trimmed = value.trim()
+    prefs.edit { putString("compaction.model", trimmed) }
+    _compactionModel.value = trimmed
   }
 
   fun setHeartbeatIntervalMinutes(value: Int) {
@@ -786,6 +811,11 @@ class SecurePrefs(context: Context) : KeyValueStore {
     return LlmProvider.fromName(raw ?: "") ?: loadSelectedProvider()
   }
 
+  private fun loadCompactionProvider(): LlmProvider {
+    val raw = prefs.getString("compaction.provider", null)
+    return LlmProvider.fromName(raw ?: "") ?: loadSelectedProvider()
+  }
+
   private fun loadRoutingProvider(): LlmProvider {
     val raw = prefs.getString("routing.provider", null)
     return LlmProvider.fromName(raw ?: "") ?: loadSelectedProvider()
@@ -868,6 +898,9 @@ class SecurePrefs(context: Context) : KeyValueStore {
     _heartbeatUseSameModel.value = prefs.getBoolean("agent.heartbeatUseSameModel", true)
     _heartbeatProvider.value = loadHeartbeatProvider()
     _heartbeatModel.value = prefs.getString("agent.heartbeatModel", null) ?: ""
+    _compactionUseSameModel.value = prefs.getBoolean("compaction.useSameModel", true)
+    _compactionProvider.value = loadCompactionProvider()
+    _compactionModel.value = prefs.getString("compaction.model", null) ?: ""
     _walletAddress.value = prefs.getString("auth.walletAddress", "") ?: ""
     _walletSignature.value = prefs.getString("auth.walletSignature", "") ?: ""
     _apiKey.value = prefs.getString("anthropic.apiKey", "") ?: ""

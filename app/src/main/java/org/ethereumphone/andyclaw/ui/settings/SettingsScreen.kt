@@ -183,6 +183,8 @@ fun SettingsScreen(
             SettingsSubScreen.ProviderSelection -> "Select Provider"
             SettingsSubScreen.HeartbeatModelSelection -> "Heartbeat Model"
             SettingsSubScreen.HeartbeatProviderSelection -> "Heartbeat Provider"
+            SettingsSubScreen.CompactionModelSelection -> "Compaction Model"
+            SettingsSubScreen.CompactionProviderSelection -> "Compaction Provider"
             SettingsSubScreen.RoutingModeSelection -> "Routing Mode"
             SettingsSubScreen.RoutingPresetSelection -> "Always-On Skills Preset"
             SettingsSubScreen.RoutingPresetEditor -> "Edit Preset"
@@ -508,7 +510,7 @@ fun SettingsScreen(
                 }
             }
 
-            // Sync provider to heartbeat & smart router
+            // Sync provider to heartbeat & compaction
             Spacer(Modifier.height(12.dp))
             Row(
                 modifier = Modifier
@@ -518,12 +520,12 @@ fun SettingsScreen(
             ) {
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        text = "APPLY TO HEARTBEAT & ROUTER",
+                        text = "APPLY TO HEARTBEAT & COMPACTION",
                         style = contentTitleStyle,
                         color = primaryColor,
                     )
                     Text(
-                        text = "When enabled, changing the AI provider also updates heartbeat and smart router to match",
+                        text = "When enabled, changing the AI provider also updates heartbeat and compaction to match",
                         style = contentBodyStyle,
                         color = dgenWhite,
                     )
@@ -1590,6 +1592,110 @@ fun SettingsScreen(
                 onNavigateToPresetEditor = { currentSubScreen = SettingsSubScreen.BudgetPresetEditor },
             )
 
+            // Compaction Model Override
+            val compactionUseSameModel by viewModel.compactionUseSameModel.collectAsState()
+            val compactionProvider by viewModel.compactionProvider.collectAsState()
+            val compactionModel by viewModel.compactionModel.collectAsState()
+
+            Spacer(Modifier.height(12.dp))
+            Text(
+                text = "COMPACTION MODEL",
+                color = primaryColor,
+                style = sectionTitleStyle,
+            )
+            Spacer(Modifier.height(8.dp))
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 16.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "USE SAME MODEL AS MAIN",
+                        style = contentTitleStyle,
+                        color = primaryColor,
+                    )
+                    Text(
+                        text = "When disabled, context compaction uses a separate provider and model. Pick a fast, cheap model for summarization.",
+                        style = contentBodyStyle,
+                        color = dgenWhite,
+                    )
+                }
+                Spacer(Modifier.width(rowControlSpacing))
+                DgenSquareSwitch(
+                    checked = compactionUseSameModel,
+                    onCheckedChange = { viewModel.setCompactionUseSameModel(it) },
+                    activeColor = primaryColor,
+                )
+            }
+
+            if (!compactionUseSameModel) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { currentSubScreen = SettingsSubScreen.CompactionProviderSelection }
+                        .padding(vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "PROVIDER",
+                            style = contentBodyStyle.copy(color = primaryColor.copy(alpha = 0.7f)),
+                            color = primaryColor.copy(alpha = 0.7f),
+                        )
+                        Text(
+                            text = compactionProvider.displayName,
+                            style = TextStyle(
+                                fontFamily = PitagonsSans,
+                                color = dgenWhite,
+                                fontWeight = FontWeight.SemiBold,
+                                fontSize = body1_fontSize,
+                                lineHeight = body1_fontSize,
+                                shadow = GlowStyle.body(dgenWhite),
+                            ),
+                        )
+                    }
+                    Icon(
+                        imageVector = Icons.Default.ArrowDropDown,
+                        contentDescription = null,
+                        tint = primaryColor,
+                    )
+                }
+
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { currentSubScreen = SettingsSubScreen.CompactionModelSelection }
+                        .padding(vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "MODEL",
+                            style = contentBodyStyle.copy(color = primaryColor.copy(alpha = 0.7f)),
+                            color = primaryColor.copy(alpha = 0.7f),
+                        )
+                        Text(
+                            text = AnthropicModels.fromModelId(compactionModel)?.name ?: compactionModel,
+                            style = TextStyle(
+                                fontFamily = PitagonsSans,
+                                color = dgenWhite,
+                                fontWeight = FontWeight.SemiBold,
+                                fontSize = body1_fontSize,
+                                lineHeight = body1_fontSize,
+                                shadow = GlowStyle.body(dgenWhite),
+                            ),
+                        )
+                    }
+                    Icon(
+                        imageVector = Icons.Default.ArrowDropDown,
+                        contentDescription = null,
+                        tint = primaryColor,
+                    )
+                }
+            }
+
             Spacer(Modifier.height(24.dp))
             GlowingDivider(primaryColor)
             Spacer(Modifier.height(16.dp))
@@ -1753,6 +1859,50 @@ fun SettingsScreen(
                         disabledSubtitle = if (!configured) providerDisabledMessage(provider) else null,
                         onClick = {
                             viewModel.setHeartbeatProvider(provider)
+                            currentSubScreen = SettingsSubScreen.Main
+                        },
+                    )
+                }
+            }
+        }
+
+        SettingsSubScreen.CompactionModelSelection -> {
+            val cmpSearchQuery by viewModel.compactionModelSearchQuery.collectAsState()
+            val cmpProvider by viewModel.compactionProvider.collectAsState()
+            LaunchedEffect(Unit) { viewModel.refreshOpenRouterModelsIfNeeded() }
+            val cmpDisplayModels = remember(cmpSearchQuery, cmpProvider) { viewModel.getCompactionDisplayModels() }
+            EnrichedModelSelectionContent(
+                displayModels = cmpDisplayModels,
+                selectedModelId = viewModel.compactionModel.value,
+                searchQuery = cmpSearchQuery,
+                onSearchQueryChange = { viewModel.setCompactionModelSearchQuery(it) },
+                onSelectModel = {
+                    viewModel.setCompactionModel(it)
+                    viewModel.setCompactionModelSearchQuery("")
+                    currentSubScreen = SettingsSubScreen.Main
+                },
+                primaryColor = primaryColor,
+            )
+        }
+
+        SettingsSubScreen.CompactionProviderSelection -> {
+            val cmpProvider by viewModel.compactionProvider.collectAsState()
+            LazyColumn(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                items(providerChoices) { provider ->
+                    val configured = viewModel.isProviderConfigured(provider)
+                    SelectionRow(
+                        text = provider.displayName,
+                        isSelected = provider == cmpProvider,
+                        primaryColor = primaryColor,
+                        enabled = configured,
+                        disabledSubtitle = if (!configured) providerDisabledMessage(provider) else null,
+                        onClick = {
+                            viewModel.setCompactionProvider(provider)
                             currentSubScreen = SettingsSubScreen.Main
                         },
                     )
@@ -2404,6 +2554,8 @@ enum class SettingsSubScreen {
     ProviderSelection,
     HeartbeatModelSelection,
     HeartbeatProviderSelection,
+    CompactionModelSelection,
+    CompactionProviderSelection,
     RoutingModeSelection,
     RoutingPresetSelection,
     RoutingPresetEditor,

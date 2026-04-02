@@ -147,7 +147,7 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
                 DisplayModel(
                     modelId = model.modelId,
                     displayName = model.name,
-                    subtitle = extractProvider(model.modelId),
+                    subtitle = buildEnumModelSubtitle(model),
                     sortPriority = if (model == AnthropicModels.defaultForProvider(provider)) 0 else 100,
                 )
             }
@@ -174,14 +174,15 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
         // If registry is empty, fall back to enum-only
         if (registryModels.isEmpty()) {
             return AnthropicModels.forProvider(provider).map { model ->
-                DisplayModel(model.modelId, model.name, extractProvider(model.modelId), sortPriority = 100)
+                DisplayModel(model.modelId, model.name, buildEnumModelSubtitle(model), sortPriority = 100)
             }
         }
 
         // Known popular model IDs in display order (rank = position)
         val popularModelIds = listOf(
-            "anthropic/claude-sonnet-4-6",
-            "anthropic/claude-opus-4-6",
+            "anthropic/claude-sonnet-4.6",
+            "anthropic/claude-opus-4.6",
+            "google/gemini-3.1-pro-preview",
             "google/gemini-2.5-pro",
             "google/gemini-2.5-flash",
             "openai/gpt-4.1",
@@ -206,7 +207,7 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
                 result.add(DisplayModel(
                     modelId = regModel.id,
                     displayName = stripProviderPrefix(regModel.name),
-                    subtitle = extractProvider(regModel.id),
+                    subtitle = buildModelSubtitle(regModel),
                     pricingDetail = buildPricingDetail(regModel),
                     sortPriority = index,
                 ))
@@ -223,7 +224,7 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
             result.add(DisplayModel(
                 modelId = model.id,
                 displayName = stripProviderPrefix(model.name),
-                subtitle = extractProvider(model.id),
+                subtitle = buildModelSubtitle(model),
                 pricingDetail = buildPricingDetail(model),
                 sortPriority = popularModelIds.size + result.size,
             ))
@@ -240,7 +241,7 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
                     result.add(DisplayModel(
                         modelId = model.modelId,
                         displayName = model.name,
-                        subtitle = extractProvider(model.modelId),
+                        subtitle = buildEnumModelSubtitle(model),
                         sortPriority = popularModelIds.size + result.size,
                     ))
                 }
@@ -272,14 +273,42 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
     private fun buildPricingDetail(model: org.ethereumphone.andyclaw.llm.OpenRouterModelRegistry.ParsedModel): String {
         val promptPrice = model.promptPricePerToken * 1_000_000
         val completionPrice = model.completionPricePerToken * 1_000_000
-        val ctx = when {
-            model.contextLength >= 1_000_000 -> "${model.contextLength / 1_000_000}M ctx"
-            model.contextLength >= 1_000 -> "${model.contextLength / 1_000}K ctx"
-            else -> "${model.contextLength} ctx"
+        val ctx = formatContextLength(model.contextLength)
+        val maxOut = when {
+            model.maxCompletionTokens >= 1_000_000 -> "${model.maxCompletionTokens / 1_000_000}M"
+            model.maxCompletionTokens >= 1_000 -> "${model.maxCompletionTokens / 1_000}K"
+            else -> "${model.maxCompletionTokens}"
         }
         val prompt = if (promptPrice < 0.01) "<\$0.01/M in" else "\$${String.format("%.2f", promptPrice)}/M in"
         val completion = "\$${String.format("%.2f", completionPrice)}/M out"
-        return "$prompt · $completion · $ctx"
+        return "$prompt · $completion · $ctx · ${maxOut} max out"
+    }
+
+    /** Build a compact subtitle for OpenRouter registry models: "Anthropic · 1M ctx · $3/$15 per M" */
+    private fun buildModelSubtitle(model: org.ethereumphone.andyclaw.llm.OpenRouterModelRegistry.ParsedModel): String {
+        val provider = extractProvider(model.id)
+        val ctx = formatContextLength(model.contextLength)
+        val inPrice = model.promptPricePerToken * 1_000_000
+        val outPrice = model.completionPricePerToken * 1_000_000
+        val inStr = if (inPrice < 0.01) "<\$0.01" else "\$${String.format("%.2f", inPrice)}"
+        val outStr = "\$${String.format("%.2f", outPrice)}"
+        return "$provider · $ctx · $inStr/$outStr per M"
+    }
+
+    /** Build a subtitle for static enum models: "Anthropic · 1M ctx" */
+    private fun buildEnumModelSubtitle(model: AnthropicModels): String {
+        val provider = extractProvider(model.modelId)
+        return if (model.contextWindow > 0) {
+            "$provider · ${formatContextLength(model.contextWindow)}"
+        } else {
+            provider
+        }
+    }
+
+    private fun formatContextLength(tokens: Int): String = when {
+        tokens >= 1_000_000 -> "${tokens / 1_000_000}M ctx"
+        tokens >= 1_000 -> "${tokens / 1_000}K ctx"
+        else -> "${tokens} ctx"
     }
 
     /** Trigger an OpenRouter model list refresh (if cache is stale). Called when entering model selection. */
@@ -508,20 +537,20 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
         if (provider != LlmProvider.LOCAL && app.llamaCpp.isModelLoaded) {
             app.llamaCpp.unload()
         }
-        // Sync to heartbeat and routing when the toggle is on
+        // Sync to heartbeat and compaction when the toggle is on
         if (prefs.syncProviderToAll.value) {
             syncHeartbeatToProvider(provider)
-            syncRoutingToProvider(provider)
+            syncCompactionToProvider(provider)
         }
     }
 
     fun setSyncProviderToAll(enabled: Boolean) {
         prefs.setSyncProviderToAll(enabled)
-        // When enabling, immediately sync heartbeat and routing to the current provider
+        // When enabling, immediately sync heartbeat and compaction to the current provider
         if (enabled) {
             val provider = prefs.selectedProvider.value
             syncHeartbeatToProvider(provider)
-            syncRoutingToProvider(provider)
+            syncCompactionToProvider(provider)
         }
     }
 
@@ -535,16 +564,11 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
         prefs.setHeartbeatUseSameModel(false)
     }
 
-    private fun syncRoutingToProvider(provider: LlmProvider) {
-        prefs.setRoutingProvider(provider)
-        // Use the user's previous selection for this provider if available, otherwise routing default
-        val userModel = prefs.getRoutingUserModelForProvider(provider)
-        val model = userModel
-            ?: (AnthropicModels.routingModelForProvider(provider)
-                ?: AnthropicModels.defaultForProvider(provider)).modelId
-        prefs.setRoutingModel(model)
-        // Also ensure routing is set to use its own provider (not "same as main")
-        prefs.setRoutingUseSameModel(false)
+    private fun syncCompactionToProvider(provider: LlmProvider) {
+        prefs.setCompactionProvider(provider)
+        val model = AnthropicModels.defaultForProvider(provider).modelId
+        prefs.setCompactionModel(model)
+        prefs.setCompactionUseSameModel(false)
     }
 
     fun setTinfoilApiKey(key: String) {
@@ -659,6 +683,40 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
         val provider = prefs.heartbeatProvider.value
         val effective = if (isPrivileged && provider == LlmProvider.LOCAL) LlmProvider.ETHOS_PREMIUM else provider
         return getDisplayModelsForProvider(effective, _heartbeatModelSearchQuery.value)
+    }
+
+    // ── Compaction model ────────────────────────────────────────────
+
+    val compactionUseSameModel = prefs.compactionUseSameModel
+    val compactionProvider = prefs.compactionProvider
+    val compactionModel = prefs.compactionModel
+
+    fun setCompactionUseSameModel(enabled: Boolean) {
+        prefs.setCompactionUseSameModel(enabled)
+        if (!enabled && prefs.compactionModel.value.isEmpty()) {
+            prefs.setCompactionProvider(prefs.selectedProvider.value)
+            prefs.setCompactionModel(prefs.selectedModel.value)
+        }
+    }
+
+    fun setCompactionProvider(provider: LlmProvider) {
+        prefs.setCompactionProvider(provider)
+        val defaultModel = AnthropicModels.defaultForProvider(provider)
+        prefs.setCompactionModel(defaultModel.modelId)
+    }
+
+    fun setCompactionModel(modelId: String) {
+        prefs.setCompactionModel(modelId)
+    }
+
+    private val _compactionModelSearchQuery = MutableStateFlow("")
+    val compactionModelSearchQuery: StateFlow<String> = _compactionModelSearchQuery.asStateFlow()
+    fun setCompactionModelSearchQuery(query: String) { _compactionModelSearchQuery.value = query }
+
+    fun getCompactionDisplayModels(): List<DisplayModel> {
+        val provider = prefs.compactionProvider.value
+        val effective = if (isPrivileged && provider == LlmProvider.LOCAL) LlmProvider.ETHOS_PREMIUM else provider
+        return getDisplayModelsForProvider(effective, _compactionModelSearchQuery.value)
     }
 
     /** Returns true when the given provider has valid credentials / auth configured. */
