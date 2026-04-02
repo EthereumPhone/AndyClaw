@@ -127,6 +127,9 @@ class SecurePrefs(context: Context) : KeyValueStore {
   private val _heartbeatModel = MutableStateFlow(prefs.getString("agent.heartbeatModel", null) ?: "")
   val heartbeatModel: StateFlow<String> = _heartbeatModel
 
+  private val _compactionConfig = MutableStateFlow(loadCompactionConfig())
+  val compactionConfig: StateFlow<org.ethereumphone.andyclaw.agent.CompactionConfig> = _compactionConfig
+
   private val _compactionUseSameModel = MutableStateFlow(prefs.getBoolean("compaction.useSameModel", true))
   val compactionUseSameModel: StateFlow<Boolean> = _compactionUseSameModel
 
@@ -460,6 +463,19 @@ class SecurePrefs(context: Context) : KeyValueStore {
     val trimmed = value.trim()
     prefs.edit { putString("agent.heartbeatModel", trimmed) }
     _heartbeatModel.value = trimmed
+  }
+
+  fun setCompactionConfig(config: org.ethereumphone.andyclaw.agent.CompactionConfig) {
+    prefs.edit {
+      putBoolean("compaction.enabled", config.enabled)
+      putFloat("compaction.threshold", config.threshold)
+      putInt("compaction.interval", config.interval)
+      putInt("compaction.overlap", config.overlap)
+      putInt("compaction.keepRecent", config.keepRecent)
+      putBoolean("compaction.microcompact", config.microcompactEnabled)
+      putBoolean("compaction.llmSummary", config.llmSummaryEnabled)
+    }
+    _compactionConfig.value = config
   }
 
   fun setCompactionUseSameModel(value: Boolean) {
@@ -811,6 +827,18 @@ class SecurePrefs(context: Context) : KeyValueStore {
     return LlmProvider.fromName(raw ?: "") ?: loadSelectedProvider()
   }
 
+  private fun loadCompactionConfig(): org.ethereumphone.andyclaw.agent.CompactionConfig {
+    return org.ethereumphone.andyclaw.agent.CompactionConfig(
+      enabled = prefs.getBoolean("compaction.enabled", false),
+      threshold = prefs.getFloat("compaction.threshold", 0.85f),
+      interval = prefs.getInt("compaction.interval", 0),
+      overlap = prefs.getInt("compaction.overlap", 1),
+      keepRecent = prefs.getInt("compaction.keepRecent", 6),
+      microcompactEnabled = prefs.getBoolean("compaction.microcompact", true),
+      llmSummaryEnabled = prefs.getBoolean("compaction.llmSummary", true),
+    )
+  }
+
   private fun loadCompactionProvider(): LlmProvider {
     val raw = prefs.getString("compaction.provider", null)
     return LlmProvider.fromName(raw ?: "") ?: loadSelectedProvider()
@@ -898,6 +926,7 @@ class SecurePrefs(context: Context) : KeyValueStore {
     _heartbeatUseSameModel.value = prefs.getBoolean("agent.heartbeatUseSameModel", true)
     _heartbeatProvider.value = loadHeartbeatProvider()
     _heartbeatModel.value = prefs.getString("agent.heartbeatModel", null) ?: ""
+    _compactionConfig.value = loadCompactionConfig()
     _compactionUseSameModel.value = prefs.getBoolean("compaction.useSameModel", true)
     _compactionProvider.value = loadCompactionProvider()
     _compactionModel.value = prefs.getString("compaction.model", null) ?: ""

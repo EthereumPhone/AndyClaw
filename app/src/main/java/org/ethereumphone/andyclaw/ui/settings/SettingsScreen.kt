@@ -1592,108 +1592,206 @@ fun SettingsScreen(
                 onNavigateToPresetEditor = { currentSubScreen = SettingsSubScreen.BudgetPresetEditor },
             )
 
-            // Compaction Model Override
+            // ── Context Compaction ──
+            val compactionCfg by viewModel.compactionConfig.collectAsState()
             val compactionUseSameModel by viewModel.compactionUseSameModel.collectAsState()
             val compactionProvider by viewModel.compactionProvider.collectAsState()
             val compactionModel by viewModel.compactionModel.collectAsState()
 
             Spacer(Modifier.height(12.dp))
             Text(
-                text = "COMPACTION MODEL",
+                text = "CONTEXT COMPACTION",
                 color = primaryColor,
                 style = sectionTitleStyle,
             )
             Spacer(Modifier.height(8.dp))
+
+            // Enable toggle
             Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(vertical = 16.dp),
+                modifier = Modifier.fillMaxWidth().padding(vertical = 12.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = "USE SAME MODEL AS MAIN",
-                        style = contentTitleStyle,
-                        color = primaryColor,
-                    )
-                    Text(
-                        text = "When disabled, context compaction uses a separate provider and model. Pick a fast, cheap model for summarization.",
-                        style = contentBodyStyle,
-                        color = dgenWhite,
-                    )
+                    Text("ENABLE AUTO-COMPACTION", style = contentTitleStyle, color = primaryColor)
+                    Text("Automatically summarize older messages when context window fills up", style = contentBodyStyle, color = dgenWhite)
                 }
                 Spacer(Modifier.width(rowControlSpacing))
                 DgenSquareSwitch(
-                    checked = compactionUseSameModel,
-                    onCheckedChange = { viewModel.setCompactionUseSameModel(it) },
+                    checked = compactionCfg.enabled,
+                    onCheckedChange = { viewModel.updateCompactionConfig { it.copy(enabled = !it.enabled) } },
                     activeColor = primaryColor,
                 )
             }
 
-            if (!compactionUseSameModel) {
+            if (compactionCfg.enabled) {
+                // Microcompact toggle
                 Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable { currentSubScreen = SettingsSubScreen.CompactionProviderSelection }
-                        .padding(vertical = 8.dp),
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = "PROVIDER",
-                            style = contentBodyStyle.copy(color = primaryColor.copy(alpha = 0.7f)),
-                            color = primaryColor.copy(alpha = 0.7f),
-                        )
-                        Text(
-                            text = compactionProvider.displayName,
-                            style = TextStyle(
-                                fontFamily = PitagonsSans,
-                                color = dgenWhite,
-                                fontWeight = FontWeight.SemiBold,
-                                fontSize = body1_fontSize,
-                                lineHeight = body1_fontSize,
-                                shadow = GlowStyle.body(dgenWhite),
-                            ),
-                        )
+                        Text("MICROCOMPACT (PROGRAMMATIC)", style = contentTitleStyle, color = primaryColor)
+                        Text("Truncate old assistant messages and collapse whitespace — no LLM cost", style = contentBodyStyle, color = dgenWhite)
                     }
-                    Icon(
-                        imageVector = Icons.Default.ArrowDropDown,
-                        contentDescription = null,
-                        tint = primaryColor,
+                    Spacer(Modifier.width(rowControlSpacing))
+                    DgenSquareSwitch(
+                        checked = compactionCfg.microcompactEnabled,
+                        onCheckedChange = { viewModel.updateCompactionConfig { it.copy(microcompactEnabled = !it.microcompactEnabled) } },
+                        activeColor = primaryColor,
                     )
                 }
 
+                // LLM Summary toggle
                 Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable { currentSubScreen = SettingsSubScreen.CompactionModelSelection }
-                        .padding(vertical = 8.dp),
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = "MODEL",
-                            style = contentBodyStyle.copy(color = primaryColor.copy(alpha = 0.7f)),
-                            color = primaryColor.copy(alpha = 0.7f),
-                        )
-                        Text(
-                            text = AnthropicModels.fromModelId(compactionModel)?.name ?: compactionModel,
-                            style = TextStyle(
-                                fontFamily = PitagonsSans,
-                                color = dgenWhite,
-                                fontWeight = FontWeight.SemiBold,
-                                fontSize = body1_fontSize,
-                                lineHeight = body1_fontSize,
-                                shadow = GlowStyle.body(dgenWhite),
-                            ),
-                        )
+                        Text("LLM SUMMARY", style = contentTitleStyle, color = primaryColor)
+                        Text("Use an LLM to generate a structured summary of older messages", style = contentBodyStyle, color = dgenWhite)
                     }
-                    Icon(
-                        imageVector = Icons.Default.ArrowDropDown,
-                        contentDescription = null,
-                        tint = primaryColor,
+                    Spacer(Modifier.width(rowControlSpacing))
+                    DgenSquareSwitch(
+                        checked = compactionCfg.llmSummaryEnabled,
+                        onCheckedChange = { viewModel.updateCompactionConfig { it.copy(llmSummaryEnabled = !it.llmSummaryEnabled) } },
+                        activeColor = primaryColor,
                     )
                 }
+
+                // Model picker (only when LLM summary is on)
+                if (compactionCfg.llmSummaryEnabled) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("USE SAME MODEL AS MAIN", style = contentTitleStyle, color = primaryColor)
+                            Text("Pick a fast, cheap model for summarization", style = contentBodyStyle, color = dgenWhite)
+                        }
+                        Spacer(Modifier.width(rowControlSpacing))
+                        DgenSquareSwitch(
+                            checked = compactionUseSameModel,
+                            onCheckedChange = { viewModel.setCompactionUseSameModel(it) },
+                            activeColor = primaryColor,
+                        )
+                    }
+
+                    if (!compactionUseSameModel) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth()
+                                .clickable { currentSubScreen = SettingsSubScreen.CompactionProviderSelection }
+                                .padding(vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text("PROVIDER", style = contentBodyStyle.copy(color = primaryColor.copy(alpha = 0.7f)), color = primaryColor.copy(alpha = 0.7f))
+                                Text(compactionProvider.displayName, style = TextStyle(fontFamily = PitagonsSans, color = dgenWhite, fontWeight = FontWeight.SemiBold, fontSize = body1_fontSize, lineHeight = body1_fontSize, shadow = GlowStyle.body(dgenWhite)))
+                            }
+                            Icon(Icons.Default.ArrowDropDown, null, tint = primaryColor)
+                        }
+                        Row(
+                            modifier = Modifier.fillMaxWidth()
+                                .clickable { currentSubScreen = SettingsSubScreen.CompactionModelSelection }
+                                .padding(vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text("MODEL", style = contentBodyStyle.copy(color = primaryColor.copy(alpha = 0.7f)), color = primaryColor.copy(alpha = 0.7f))
+                                Text(AnthropicModels.fromModelId(compactionModel)?.name ?: compactionModel, style = TextStyle(fontFamily = PitagonsSans, color = dgenWhite, fontWeight = FontWeight.SemiBold, fontSize = body1_fontSize, lineHeight = body1_fontSize, shadow = GlowStyle.body(dgenWhite)))
+                            }
+                            Icon(Icons.Default.ArrowDropDown, null, tint = primaryColor)
+                        }
+                    }
+                }
+
+                // Trigger threshold slider
+                Spacer(Modifier.height(8.dp))
+                Text("TRIGGER THRESHOLD: ${(compactionCfg.threshold * 100).toInt()}%", style = contentTitleStyle, color = primaryColor)
+                Text("Compact when context window usage exceeds this percentage", style = contentBodyStyle, color = dgenWhite)
+                var thresholdSlider by remember(compactionCfg.threshold) { mutableStateOf(compactionCfg.threshold) }
+                androidx.compose.material3.Slider(
+                    value = thresholdSlider,
+                    onValueChange = { raw ->
+                        thresholdSlider = (kotlin.math.round(raw * 20) / 20f).coerceIn(0.50f, 0.95f)
+                    },
+                    onValueChangeFinished = {
+                        viewModel.updateCompactionConfig { it.copy(threshold = thresholdSlider) }
+                    },
+                    valueRange = 0.50f..0.95f,
+                    colors = androidx.compose.material3.SliderDefaults.colors(
+                        thumbColor = primaryColor,
+                        activeTrackColor = primaryColor,
+                        inactiveTrackColor = primaryColor.copy(alpha = 0.2f),
+                    ),
+                    modifier = Modifier.fillMaxWidth(),
+                )
+
+                // Turn interval slider
+                Spacer(Modifier.height(4.dp))
+                val intervalLabel = if (compactionCfg.interval == 0) "TURN INTERVAL: OFF" else "TURN INTERVAL: EVERY ${compactionCfg.interval} TURNS"
+                Text(intervalLabel, style = contentTitleStyle, color = primaryColor)
+                Text("Also compact every N turns regardless of token usage (0 = off)", style = contentBodyStyle, color = dgenWhite)
+                var intervalSlider by remember(compactionCfg.interval) { mutableStateOf(compactionCfg.interval.toFloat()) }
+                androidx.compose.material3.Slider(
+                    value = intervalSlider,
+                    onValueChange = { raw ->
+                        intervalSlider = (kotlin.math.round(raw / 5f) * 5f).coerceIn(0f, 30f)
+                    },
+                    onValueChangeFinished = {
+                        viewModel.updateCompactionConfig { it.copy(interval = intervalSlider.toInt()) }
+                    },
+                    valueRange = 0f..30f,
+                    colors = androidx.compose.material3.SliderDefaults.colors(
+                        thumbColor = primaryColor,
+                        activeTrackColor = primaryColor,
+                        inactiveTrackColor = primaryColor.copy(alpha = 0.2f),
+                    ),
+                    modifier = Modifier.fillMaxWidth(),
+                )
+
+                // Keep recent slider
+                Spacer(Modifier.height(4.dp))
+                Text("KEEP RECENT: ${compactionCfg.keepRecent} MESSAGES", style = contentTitleStyle, color = primaryColor)
+                Text("Number of recent messages kept verbatim after compaction", style = contentBodyStyle, color = dgenWhite)
+                var keepRecentSlider by remember(compactionCfg.keepRecent) { mutableStateOf(compactionCfg.keepRecent.toFloat()) }
+                androidx.compose.material3.Slider(
+                    value = keepRecentSlider,
+                    onValueChange = { raw ->
+                        keepRecentSlider = (kotlin.math.round(raw / 2f) * 2f).coerceIn(2f, 20f)
+                    },
+                    onValueChangeFinished = {
+                        viewModel.updateCompactionConfig { it.copy(keepRecent = keepRecentSlider.toInt()) }
+                    },
+                    valueRange = 2f..20f,
+                    colors = androidx.compose.material3.SliderDefaults.colors(
+                        thumbColor = primaryColor,
+                        activeTrackColor = primaryColor,
+                        inactiveTrackColor = primaryColor.copy(alpha = 0.2f),
+                    ),
+                    modifier = Modifier.fillMaxWidth(),
+                )
+
+                // Overlap slider
+                Spacer(Modifier.height(4.dp))
+                Text("OVERLAP: ${compactionCfg.overlap} MESSAGES", style = contentTitleStyle, color = primaryColor)
+                Text("Messages re-included for continuity between summaries", style = contentBodyStyle, color = dgenWhite)
+                var overlapSlider by remember(compactionCfg.overlap) { mutableStateOf(compactionCfg.overlap.toFloat()) }
+                androidx.compose.material3.Slider(
+                    value = overlapSlider,
+                    onValueChange = { raw ->
+                        overlapSlider = kotlin.math.round(raw).coerceIn(0f, 5f)
+                    },
+                    onValueChangeFinished = {
+                        viewModel.updateCompactionConfig { it.copy(overlap = overlapSlider.toInt()) }
+                    },
+                    valueRange = 0f..5f,
+                    colors = androidx.compose.material3.SliderDefaults.colors(
+                        thumbColor = primaryColor,
+                        activeTrackColor = primaryColor,
+                        inactiveTrackColor = primaryColor.copy(alpha = 0.2f),
+                    ),
+                    modifier = Modifier.fillMaxWidth(),
+                )
             }
 
             Spacer(Modifier.height(24.dp))
