@@ -33,6 +33,12 @@ data class BudgetPreset(
     val toolResultMaxChars: Int = 3000,
     /** Max messages to keep verbatim before summarizing older ones. */
     val historySummarizationKeepRecent: Int = 6,
+    /** Context window usage ratio that triggers compaction (0.0–1.0). */
+    val compactionThreshold: Float = 0.85f,
+    /** Compact every N user turns regardless of token usage (0 = disabled). */
+    val compactionInterval: Int = 0,
+    /** Messages from summarized window end re-included in next summarization for continuity. */
+    val compactionOverlap: Int = 1,
 ) {
     companion object {
         const val defaultPresetId: String = "stock_balanced"
@@ -76,6 +82,9 @@ data class BudgetPreset(
                 toolResultTruncation = true,
                 toolResultMaxChars = 2000,
                 historySummarizationKeepRecent = 4,
+                compactionThreshold = 0.80f,
+                compactionInterval = 10,
+                compactionOverlap = 2,
             ),
         )
     }

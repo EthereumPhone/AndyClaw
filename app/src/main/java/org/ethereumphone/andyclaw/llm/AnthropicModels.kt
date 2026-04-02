@@ -7,18 +7,19 @@ enum class AnthropicModels(
     /** Total context window size in tokens (input + output). 0 = unknown. */
     val contextWindow: Int = 0,
 ) {
-    // OpenRouter models — contextWindow resolved dynamically via OpenRouterModelRegistry
-    CLAUDE_OPUS_4_6("anthropic/claude-opus-4-6", 8192, LlmProvider.OPEN_ROUTER),
-    CLAUDE_SONNET_4_6("anthropic/claude-sonnet-4-6", 8192, LlmProvider.OPEN_ROUTER),
-    MINIMAX_M25("minimax/minimax-m2.5", 8192, LlmProvider.OPEN_ROUTER),
-    KIMI_K25("moonshotai/kimi-k2.5", 8192, LlmProvider.OPEN_ROUTER),
-    GEMINI_3_1_PRO("google/gemini-3.1-pro-preview", 8192, LlmProvider.OPEN_ROUTER),
-    GROK_4("x-ai/grok-4", 8192, LlmProvider.OPEN_ROUTER),
-    GLM_5("z-ai/glm-5", 8192, LlmProvider.OPEN_ROUTER),
-    DEEPSEEK_R1("deepseek/deepseek-r1", 8192, LlmProvider.OPEN_ROUTER),
-    QWEN_3_5_PLUS("qwen/qwen3.5-plus-02-15", 8192, LlmProvider.OPEN_ROUTER),
-    QWEN_3_5_FLASH("qwen/qwen3.5-flash-02-23", 8192, LlmProvider.OPEN_ROUTER),
-    GEMMA_3_4B_IT("google/gemma-3-4b-it", 8192, LlmProvider.OPEN_ROUTER),
+    // OpenRouter models — contextWindow from https://openrouter.ai/api/v1/models
+    // Dynamically overridden by OpenRouterModelRegistry when available.
+    CLAUDE_OPUS_4_6("anthropic/claude-opus-4.6", 8192, LlmProvider.OPEN_ROUTER, contextWindow = 1_000_000),
+    CLAUDE_SONNET_4_6("anthropic/claude-sonnet-4.6", 8192, LlmProvider.OPEN_ROUTER, contextWindow = 1_000_000),
+    MINIMAX_M25("minimax/minimax-m2.5", 8192, LlmProvider.OPEN_ROUTER, contextWindow = 196_600),
+    KIMI_K25("moonshotai/kimi-k2.5", 8192, LlmProvider.OPEN_ROUTER, contextWindow = 262_144),
+    GEMINI_3_1_PRO("google/gemini-3.1-pro-preview", 8192, LlmProvider.OPEN_ROUTER, contextWindow = 1_048_576),
+    GROK_4("x-ai/grok-4", 8192, LlmProvider.OPEN_ROUTER, contextWindow = 256_000),
+    GLM_5("z-ai/glm-5", 8192, LlmProvider.OPEN_ROUTER, contextWindow = 80_000),
+    DEEPSEEK_R1("deepseek/deepseek-r1", 8192, LlmProvider.OPEN_ROUTER, contextWindow = 64_000),
+    QWEN_3_5_PLUS("qwen/qwen3.5-plus-02-15", 8192, LlmProvider.OPEN_ROUTER, contextWindow = 1_000_000),
+    QWEN_3_5_FLASH("qwen/qwen3.5-flash-02-23", 8192, LlmProvider.OPEN_ROUTER, contextWindow = 1_000_000),
+    GEMMA_3_4B_IT("google/gemma-3-4b-it", 8192, LlmProvider.OPEN_ROUTER, contextWindow = 131_072),
 
     // Claude setup-token models (direct Anthropic API)
     CLAUDE_OAUTH_OPUS_4_6("claude-opus-4-6", 8192, LlmProvider.CLAUDE_OAUTH, contextWindow = 1_000_000),
@@ -97,6 +98,9 @@ enum class AnthropicModels(
             // Backward compatibility for previously saved dated Anthropic IDs.
             "claude-opus-4-6-20250514" to "claude-opus-4-6",
             "claude-sonnet-4-6-20250514" to "claude-sonnet-4-6",
+            // Backward compatibility: hyphenated → dotted OpenRouter IDs.
+            "anthropic/claude-opus-4-6" to "anthropic/claude-opus-4.6",
+            "anthropic/claude-sonnet-4-6" to "anthropic/claude-sonnet-4.6",
         )
 
         fun fromModelId(id: String): AnthropicModels? {

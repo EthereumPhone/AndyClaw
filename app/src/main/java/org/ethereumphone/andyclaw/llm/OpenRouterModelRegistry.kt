@@ -355,15 +355,26 @@ class OpenRouterModelRegistry(
             return null
         }
 
-        // Check output modalities — must produce text
+        // Check modalities — must accept and produce text
         val architecture = json.optJSONObject("architecture")
+        val inputModalities = architecture?.optJSONArray("input_modalities")
+        if (inputModalities != null) {
+            var hasTextInput = false
+            for (j in 0 until inputModalities.length()) {
+                if (inputModalities.optString(j) == "text") hasTextInput = true
+            }
+            if (!hasTextInput) {
+                skipCounters?.noText()
+                return null
+            }
+        }
         val outputModalities = architecture?.optJSONArray("output_modalities")
         if (outputModalities != null) {
-            var hasText = false
+            var hasTextOutput = false
             for (j in 0 until outputModalities.length()) {
-                if (outputModalities.optString(j) == "text") hasText = true
+                if (outputModalities.optString(j) == "text") hasTextOutput = true
             }
-            if (!hasText) {
+            if (!hasTextOutput) {
                 skipCounters?.noText()
                 return null
             }

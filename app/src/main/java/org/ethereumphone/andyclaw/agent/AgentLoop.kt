@@ -163,7 +163,11 @@ class AgentLoop(
                                 }
                                 putJsonObject("type") {
                                     put("type", "string")
-                                    put("enum", "single_select, multi_select, ranked_choice")
+                                    putJsonArray("enum") {
+                                        add(kotlinx.serialization.json.JsonPrimitive("single_select"))
+                                        add(kotlinx.serialization.json.JsonPrimitive("multi_select"))
+                                        add(kotlinx.serialization.json.JsonPrimitive("ranked_choice"))
+                                    }
                                     put("description", "single_select: pick one option or type custom. multi_select: pick multiple + optional custom entry. ranked_choice: reorder options by preference.")
                                 }
                                 putJsonObject("options") {

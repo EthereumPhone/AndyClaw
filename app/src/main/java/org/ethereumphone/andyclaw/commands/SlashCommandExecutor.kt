@@ -251,6 +251,9 @@ class SlashCommandExecutor(
 
     private fun executeAction(cmd: SlashCommand.Action): SlashCommandResult {
         return when (cmd.id) {
+            "compact" -> SlashCommandResult.ActionDone(
+                message = "compact",
+            )
             "clear" -> SlashCommandResult.ActionDone(
                 message = "Conversation cleared.",
             )

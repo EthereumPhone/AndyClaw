@@ -54,6 +54,7 @@ fun ChatMessageItem(
 ) {
     val isUser = message.role == "user"
     val isTool = message.role == "tool"
+    val isSummary = message.role == "context_summary"
     val isSecurity = message.isSecurityBlock
     val textColor = MaterialTheme.colorScheme.onBackground
     val primaryColor = MaterialTheme.colorScheme.primary
@@ -113,6 +114,63 @@ fun ChatMessageItem(
                 onToggle = onToggleExpand,
                 primaryColor = primaryColor,
             )
+        } else if (isSummary) {
+            // Render compacted conversation summary as a dimmed collapsible card
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth(0.95f)
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f))
+                    .clickable { onToggleExpand?.invoke() }
+                    .padding(10.dp),
+            ) {
+                Column {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            text = if (isExpanded) "▾ Conversation Summary" else "▸ Conversation Summary",
+                            style = MaterialTheme.typography.labelSmall.copy(
+                                fontFamily = FontFamily.Monospace,
+                                fontWeight = FontWeight.Bold,
+                            ),
+                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                        )
+                    }
+                    if (isExpanded) {
+                        Spacer(Modifier.height(6.dp))
+                        SelectionContainer {
+                            Text(
+                                text = message.content,
+                                style = MaterialTheme.typography.bodySmall.copy(
+                                    fontFamily = FontFamily.Monospace,
+                                ),
+                                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+                            )
+                        }
+                        val clipboardManager = LocalClipboardManager.current
+                        IconButton(
+                            onClick = { clipboardManager.setText(AnnotatedString(message.content)) },
+                            modifier = Modifier.padding(top = 4.dp).size(24.dp),
+                        ) {
+                            Icon(
+                                painter = painterResource(id = R.drawable.content_copy),
+                                contentDescription = "Copy summary",
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
+                                modifier = Modifier.size(16.dp),
+                            )
+                        }
+                    } else {
+                        // Show preview when collapsed
+                        Text(
+                            text = message.content.take(100).replace('\n', ' ') + if (message.content.length > 100) "…" else "",
+                            style = MaterialTheme.typography.bodySmall.copy(
+                                fontFamily = FontFamily.Monospace,
+                            ),
+                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
+                            maxLines = 1,
+                        )
+                    }
+                }
+            }
         } else if (isUser) {
             SelectionContainer {
                 Text(

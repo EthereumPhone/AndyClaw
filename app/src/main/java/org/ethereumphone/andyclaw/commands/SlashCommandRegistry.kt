@@ -54,6 +54,11 @@ object SlashCommandRegistry {
             description = "Open model selector in settings",
         ),
         SlashCommand.Action(
+            id = "compact",
+            label = "Compact",
+            description = "Summarize older messages to free up context window",
+        ),
+        SlashCommand.Action(
             id = "clear",
             label = "Clear",
             description = "Start a fresh conversation",

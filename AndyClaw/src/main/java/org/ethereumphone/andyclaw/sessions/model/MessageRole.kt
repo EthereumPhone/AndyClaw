@@ -13,7 +13,9 @@ enum class MessageRole {
     /** A system-level instruction injected at the start of a session. */
     SYSTEM,
     /** The result of a tool/skill execution. */
-    TOOL;
+    TOOL,
+    /** A compacted summary of older conversation history. */
+    CONTEXT_SUMMARY;
 
     companion object {
         /**
