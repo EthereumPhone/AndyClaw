@@ -118,7 +118,8 @@ dependencies {
     implementation(libs.okhttp)
     implementation(libs.okhttp.sse)
     implementation(libs.kotlinx.serialization.json)
-    // Room is provided transitively via the :AndyClaw library module
+    implementation(libs.room.runtime)
+    implementation(libs.room.ktx)
     implementation(libs.lifecycle.viewmodel.compose)
     implementation(libs.navigation.compose)
     implementation(libs.appcompat)
@@ -133,7 +134,7 @@ dependencies {
     // Tinfoil bridge — Go wrapper around tinfoil-go SDK for TEE-attested inference
     implementation(files("../tinfoil-bridge/tinfoil-bridge.aar"))
     // Llamatik — Kotlin Multiplatform llama.cpp wrapper for local LLM inference
-    implementation("com.llamatik:library:0.16.0")
+    implementation(files("../llamatik/llamatik.aar"))
     // Aurora Store gplayapi for downloading apps from Play Store
     implementation(libs.gplayapi)
     // Dgen component library for UI components
