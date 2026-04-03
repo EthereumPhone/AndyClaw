@@ -343,6 +343,9 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
     private val _autoStoreEnabled = MutableStateFlow(true)
     val autoStoreEnabled: StateFlow<Boolean> = _autoStoreEnabled.asStateFlow()
 
+    private val _smartExtractionEnabled = MutableStateFlow(false)
+    val smartExtractionEnabled: StateFlow<Boolean> = _smartExtractionEnabled.asStateFlow()
+
     private val _isReindexing = MutableStateFlow(false)
     val isReindexing: StateFlow<Boolean> = _isReindexing.asStateFlow()
 
@@ -982,8 +985,12 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
 
     fun setAutoStoreEnabled(enabled: Boolean) {
         _autoStoreEnabled.value = enabled
-        // Persist preference
         prefs.putString("memory.autoStore", if (enabled) "true" else "false")
+    }
+
+    fun setSmartExtractionEnabled(enabled: Boolean) {
+        _smartExtractionEnabled.value = enabled
+        prefs.putString("memory.smartExtraction", if (enabled) "true" else "false")
     }
 
     fun reindexMemory() {
@@ -1117,6 +1124,7 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
 
     private fun loadAutoStorePreference() {
         _autoStoreEnabled.value = prefs.getString("memory.autoStore") != "false"
+        _smartExtractionEnabled.value = prefs.getString("memory.smartExtraction") == "true"
     }
 
     private fun refreshExtensions() {

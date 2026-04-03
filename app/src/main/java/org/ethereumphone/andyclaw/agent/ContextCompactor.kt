@@ -24,11 +24,12 @@ import org.ethereumphone.andyclaw.llm.MessagesRequest
 class ContextCompactor(
     private val client: LlmClient,
     private val config: CompactionConfig,
+    private val postCompactRestoration: PostCompactRestoration? = null,
 ) {
     companion object {
         private const val TAG = "ContextCompactor"
         private const val MICROCOMPACT_TRUNCATE_CHARS = 300
-        private const val SUMMARY_MAX_TOKENS = 1024
+        private const val SUMMARY_MAX_TOKENS = 8192
         private const val SUMMARY_BEGIN = "<context_summary>"
         private const val SUMMARY_END = "</context_summary>"
         private const val MEMORY_NUDGE = "This is a compacted summary of older messages in this conversation. " +
@@ -38,17 +39,120 @@ class ContextCompactor(
         private val WHITESPACE_RUN = Regex("[ \\t]{3,}")
         private val BLANK_LINES = Regex("\\n{3,}")
 
-        private val SUMMARIZATION_SYSTEM_PROMPT = """
-Summarize this conversation in plain text. Be SHORTER than the original.
+        // Regex for stripping the analysis scratchpad and extracting the summary
+        private val ANALYSIS_BLOCK = Regex("<analysis>[\\s\\S]*?</analysis>")
+        private val SUMMARY_XML = Regex("<summary>([\\s\\S]*?)</summary>")
+        private val MULTI_BLANK = Regex("\\n{3,}")
 
-Rules:
-- Write plain sentences, no markdown, no bullet points, no headers, no asterisks.
-- Include EVERY distinct question the user asked and the answer they received.
-- Preserve exact values: times, dates, numbers, names, URLs, paths, IDs, code.
-- Do not add interpretation, commentary, or meta-text like "Summary:" or "Status: Completed".
-- Do not invent information that wasn't in the conversation.
-- If the user asked about multiple things, mention all of them.
+        /**
+         * Structured 9-section summarization prompt ported from Claude Code's compact/prompt.ts.
+         * Produces an <analysis> scratchpad (stripped post-hoc) followed by a <summary> block.
+         */
+        private val SUMMARIZATION_SYSTEM_PROMPT = """
+CRITICAL: Respond with TEXT ONLY. Do NOT call any tools.
+
+- Do NOT use any tool calls whatsoever.
+- You already have all the context you need in the conversation above.
+- Tool calls will be REJECTED and will waste your only turn — you will fail the task.
+- Your entire response must be plain text: an <analysis> block followed by a <summary> block.
+
+Your task is to create a detailed summary of the conversation so far, paying close attention to the user's explicit requests and your previous actions.
+This summary should be thorough in capturing technical details, code patterns, and architectural decisions that would be essential for continuing development work without losing context.
+
+Before providing your final summary, wrap your analysis in <analysis> tags to organize your thoughts and ensure you've covered all necessary points. In your analysis process:
+
+1. Chronologically analyze each message and section of the conversation. For each section thoroughly identify:
+   - The user's explicit requests and intents
+   - Your approach to addressing the user's requests
+   - Key decisions, technical concepts and code patterns
+   - Specific details like:
+     - file names
+     - full code snippets
+     - function signatures
+     - file edits
+   - Errors that you ran into and how you fixed them
+   - Pay special attention to specific user feedback that you received, especially if the user told you to do something differently.
+2. Double-check for technical accuracy and completeness, addressing each required element thoroughly.
+
+Your summary should include the following sections:
+
+1. Primary Request and Intent: Capture all of the user's explicit requests and intents in detail
+2. Key Technical Concepts: List all important technical concepts, technologies, and frameworks discussed.
+3. Files and Code Sections: Enumerate specific files and code sections examined, modified, or created. Pay special attention to the most recent messages and include full code snippets where applicable and include a summary of why this file read or edit is important.
+4. Errors and fixes: List all errors that you ran into, and how you fixed them. Pay special attention to specific user feedback that you received, especially if the user told you to do something differently.
+5. Problem Solving: Document problems solved and any ongoing troubleshooting efforts.
+6. All user messages: List ALL user messages that are not tool results. These are critical for understanding the users' feedback and changing intent.
+7. Pending Tasks: Outline any pending tasks that you have explicitly been asked to work on.
+8. Current Work: Describe in detail precisely what was being worked on immediately before this summary request, paying special attention to the most recent messages from both user and assistant. Include file names and code snippets where applicable.
+9. Optional Next Step: List the next step that you will take that is related to the most recent work you were doing. IMPORTANT: ensure that this step is DIRECTLY in line with the user's most recent explicit requests, and the task you were working on immediately before this summary request. If your last task was concluded, then only list next steps if they are explicitly in line with the users request. Do not start on tangential requests or really old requests that were already completed without confirming with the user first.
+   If there is a next step, include direct quotes from the most recent conversation showing exactly what task you were working on and where you left off. This should be verbatim to ensure there's no drift in task interpretation.
+
+Here's an example of how your output should be structured:
+
+<example>
+<analysis>
+[Your thought process, ensuring all points are covered thoroughly and accurately]
+</analysis>
+
+<summary>
+1. Primary Request and Intent:
+   [Detailed description]
+
+2. Key Technical Concepts:
+   - [Concept 1]
+   - [Concept 2]
+
+3. Files and Code Sections:
+   - [File Name 1]
+      - [Summary of why this file is important]
+      - [Summary of the changes made to this file, if any]
+      - [Important Code Snippet]
+
+4. Errors and fixes:
+    - [Detailed description of error 1]:
+      - [How you fixed the error]
+      - [User feedback on the error if any]
+
+5. Problem Solving:
+   [Description of solved problems and ongoing troubleshooting]
+
+6. All user messages:
+    - [Detailed non tool use user message]
+
+7. Pending Tasks:
+   - [Task 1]
+
+8. Current Work:
+   [Precise description of current work]
+
+9. Optional Next Step:
+   [Optional Next step to take]
+
+</summary>
+</example>
+
+Please provide your summary based on the conversation so far, following this structure and ensuring precision and thoroughness in your response.
+
+REMINDER: Do NOT call any tools. Respond with text only.
 """.trimIndent()
+
+        /**
+         * Strips the `<analysis>` scratchpad and extracts the `<summary>` content
+         * from the raw LLM compaction output.
+         */
+        fun formatCompactSummary(rawSummary: String): String {
+            // Strip the analysis scratchpad (it's a drafting aid, not part of the summary)
+            var result = rawSummary.replace(ANALYSIS_BLOCK, "")
+
+            // Extract summary content from <summary> tags
+            val match = SUMMARY_XML.find(result)
+            if (match != null) {
+                result = match.groupValues[1].trim()
+            }
+
+            // Collapse excessive blank lines
+            return result.replace(MULTI_BLANK, "\n\n").trim()
+        }
     }
 
     data class CompactionResult(
@@ -321,7 +425,7 @@ Rules:
             system = SUMMARIZATION_SYSTEM_PROMPT,
             messages = listOf(Message.user(summaryInput)),
             stream = false,
-            temperature = 0.2f,
+            temperature = 0.0f,
         )
 
         Log.d(TAG, "Sending summarization request to LLM...")
@@ -333,14 +437,18 @@ Rules:
             "stopReason=${response.stopReason}, " +
             "usage=[input=${response.usage?.inputTokens ?: "?"}, output=${response.usage?.outputTokens ?: "?"}]")
 
-        val summaryText = response.content
+        val rawSummary = response.content
             .filterIsInstance<ContentBlock.TextBlock>()
             .joinToString("\n") { it.text }
 
-        if (summaryText.isBlank()) {
+        if (rawSummary.isBlank()) {
             Log.w(TAG, "LLM returned EMPTY summary (contentBlocks=${response.content.map { it.javaClass.simpleName }})")
             return CompactionResult(history, "", 0, wasCompacted = false)
         }
+
+        // Strip <analysis> scratchpad and extract <summary> content
+        val summaryText = formatCompactSummary(rawSummary)
+        Log.d(TAG, "formatCompactSummary: raw=${rawSummary.length} chars → formatted=${summaryText.length} chars")
 
         val compressionRatio = if (summaryInput.isNotEmpty()) {
             String.format("%.1f", summaryInput.length.toFloat() / summaryText.length)
@@ -350,9 +458,18 @@ Rules:
             "${summaryInput.length} input → ${summaryText.length} output)")
         Log.d(TAG, "Summary preview: \"${summaryText.take(200)}${if (summaryText.length > 200) "..." else ""}\"")
 
-        // Build compacted history: summary message + kept recent messages
+        // Build compacted history: summary message + optional restoration + kept recent messages
         val compactedHistory = mutableListOf<Message>()
         compactedHistory.add(Message.user("$SUMMARY_BEGIN\n$MEMORY_NUDGE\n\n$summaryText\n$SUMMARY_END"))
+
+        // Inject post-compact restoration (discovered tools, recent file content)
+        val restoration = postCompactRestoration?.buildRestoration(history)
+        if (restoration != null) {
+            compactedHistory.add(Message.assistant(listOf(ContentBlock.TextBlock("I'll note the following context that was preserved across compaction:"))))
+            compactedHistory.add(Message.user(restoration))
+            Log.i(TAG, "Post-compact restoration injected: ${restoration.length} chars")
+        }
+
         compactedHistory.addAll(toKeep)
 
         Log.i(TAG, "Compacted history built: ${compactedHistory.size} messages " +

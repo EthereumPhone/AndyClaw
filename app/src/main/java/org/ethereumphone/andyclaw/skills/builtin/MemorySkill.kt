@@ -3,6 +3,7 @@ package org.ethereumphone.andyclaw.skills.builtin
 import android.util.Log
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.float
 import kotlinx.serialization.json.int
@@ -13,6 +14,7 @@ import kotlinx.serialization.json.putJsonArray
 import kotlinx.serialization.json.putJsonObject
 import org.ethereumphone.andyclaw.memory.MemoryManager
 import org.ethereumphone.andyclaw.memory.model.MemorySource
+import org.ethereumphone.andyclaw.memory.model.MemoryType
 import org.ethereumphone.andyclaw.skills.AndyClawSkill
 import org.ethereumphone.andyclaw.skills.SkillManifest
 import org.ethereumphone.andyclaw.skills.SkillResult
@@ -92,13 +94,24 @@ class MemorySkill(
                 name = "memory_store",
                 description = "Store a new long-term memory. Use this to save important facts, user preferences, " +
                     "decisions, or any context that should persist across conversations. " +
-                    "Be concise but include enough context for future retrieval.",
+                    "Be concise but include enough context for future retrieval. " +
+                    "For FEEDBACK/PROJECT types, use format: fact/rule + **Why:** (reason) + **How to apply:** (guidance).",
                 inputSchema = buildJsonObject {
                     put("type", "object")
                     putJsonObject("properties") {
                         putJsonObject("content") {
                             put("type", "string")
                             put("description", "The text to remember — be specific and self-contained")
+                        }
+                        putJsonObject("type") {
+                            put("type", "string")
+                            putJsonArray("enum") {
+                                add(JsonPrimitive("USER"))
+                                add(JsonPrimitive("FEEDBACK"))
+                                add(JsonPrimitive("PROJECT"))
+                                add(JsonPrimitive("REFERENCE"))
+                            }
+                            put("description", "Memory type: USER (user info/preferences), FEEDBACK (corrections/guidance), PROJECT (project context/decisions), REFERENCE (external resource pointers)")
                         }
                         putJsonObject("tags") {
                             put("type", "array")
@@ -232,8 +245,10 @@ class MemorySkill(
             ?: return SkillResult.Error("Missing required parameter: content")
         val tags = params["tags"]?.jsonArray?.map { it.jsonPrimitive.content } ?: emptyList()
         val importance = params["importance"]?.jsonPrimitive?.float ?: 0.5f
+        val typeStr = params["type"]?.jsonPrimitive?.contentOrNull
+        val type = typeStr?.let { runCatching { MemoryType.valueOf(it) }.getOrNull() }
 
-        Log.d(TAG, "memory_store: contentLength=${content.length}, tags=$tags, importance=$importance")
+        Log.d(TAG, "memory_store: contentLength=${content.length}, type=$type, tags=$tags, importance=$importance")
 
         return try {
             val entry = memoryManager.store(
@@ -241,6 +256,7 @@ class MemorySkill(
                 source = MemorySource.MANUAL,
                 tags = tags,
                 importance = importance,
+                type = type,
             )
             Log.i(TAG, "memory_store: stored id=${entry.id}")
             SkillResult.Success("Memory stored (id: ${entry.id}). Tags: ${tags.ifEmpty { listOf("none") }.joinToString(", ")}")

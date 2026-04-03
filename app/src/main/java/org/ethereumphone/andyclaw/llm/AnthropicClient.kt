@@ -70,7 +70,8 @@ class AnthropicClient(
         val response = client.newCall(httpRequest).execute()
         if (!response.isSuccessful) {
             val errorBody = response.body?.string() ?: "Unknown error"
-            throw AnthropicApiException(response.code, errorBody)
+            val retryAfter = response.header("retry-after")?.toIntOrNull()
+            throw AnthropicApiException(response.code, errorBody, retryAfter)
         }
         val responseBody = response.body?.string() ?: throw AnthropicApiException(500, "Empty response")
         json.decodeFromString<MessagesResponse>(responseBody)
@@ -89,9 +90,9 @@ class AnthropicClient(
         val response = client.newCall(httpRequest).execute()
         if (!response.isSuccessful) {
             val errorBody = response.body?.string() ?: "Unknown error"
+            val retryAfter = response.header("retry-after")?.toIntOrNull()
             Log.e("AGENT_VIRTUAL_SCREEN", "AnthropicClient.streamMessage: HTTP ${response.code}, errorBody=${errorBody.take(500)}")
-            callback.onError(AnthropicApiException(response.code, errorBody))
-            return@withContext
+            throw AnthropicApiException(response.code, errorBody, retryAfter)
         }
 
         val parser = SseParser(callback)
@@ -242,4 +243,9 @@ class AnthropicClient(
     }
 }
 
-class AnthropicApiException(val statusCode: Int, message: String) : Exception("Anthropic API error ($statusCode): $message")
+class AnthropicApiException(
+    val statusCode: Int,
+    message: String,
+    /** Parsed from the `retry-after` response header, if present. */
+    val retryAfterSeconds: Int? = null,
+) : Exception("Anthropic API error ($statusCode): $message")

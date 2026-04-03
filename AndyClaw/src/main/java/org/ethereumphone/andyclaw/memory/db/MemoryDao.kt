@@ -53,6 +53,18 @@ interface MemoryDao {
         source: String,
     ): List<MemoryEntryEntity>
 
+    @Query(
+        """
+        SELECT * FROM memory_entries
+        WHERE agentId = :agentId AND type = :type
+        ORDER BY updatedAt DESC
+        """
+    )
+    suspend fun getEntriesByAgentAndType(
+        agentId: String,
+        type: String,
+    ): List<MemoryEntryEntity>
+
     @Query("SELECT * FROM memory_entries WHERE hash = :hash LIMIT 1")
     suspend fun getEntryByHash(hash: String): MemoryEntryEntity?
 

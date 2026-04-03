@@ -8,6 +8,7 @@ import org.ethereumphone.andyclaw.memory.embedding.EmbeddingProvider
 import org.ethereumphone.andyclaw.memory.model.MemoryEntry
 import org.ethereumphone.andyclaw.memory.model.MemorySearchResult
 import org.ethereumphone.andyclaw.memory.model.MemorySource
+import org.ethereumphone.andyclaw.memory.model.MemoryType
 import org.ethereumphone.andyclaw.memory.search.ChunkingEngine
 import org.ethereumphone.andyclaw.memory.search.MemorySearchManager
 
@@ -71,10 +72,11 @@ class MemoryManager(
         source: MemorySource = MemorySource.MANUAL,
         tags: List<String> = emptyList(),
         importance: Float = 0.5f,
+        type: MemoryType? = null,
     ): MemoryEntry {
-        Log.d(TAG, "Storing memory: source=$source, tags=$tags, importance=$importance, " +
+        Log.d(TAG, "Storing memory: source=$source, type=$type, tags=$tags, importance=$importance, " +
             "contentLength=${content.length}")
-        val entry = repository.store(agentId, content, source, tags, importance)
+        val entry = repository.store(agentId, content, source, tags, importance, type)
         Log.i(TAG, "Memory stored: id=${entry.id}, tags=${entry.tags}")
 
         // Eagerly embed new chunks so they are searchable immediately
@@ -143,9 +145,10 @@ class MemoryManager(
         source: MemorySource? = null,
         tags: List<String>? = null,
         limit: Int = 50,
+        type: MemoryType? = null,
     ): List<MemoryEntry> {
-        Log.d(TAG, "Listing memories: source=$source, tags=$tags, limit=$limit")
-        val entries = repository.list(agentId, source, tags, limit)
+        Log.d(TAG, "Listing memories: source=$source, type=$type, tags=$tags, limit=$limit")
+        val entries = repository.list(agentId, source, tags, limit, type)
         Log.i(TAG, "List returned ${entries.size} memory/memories")
         return entries
     }
