@@ -19,6 +19,7 @@ import org.ethereumphone.andyclaw.NodeApp
 import org.ethereumphone.andyclaw.agent.AgentLoop
 import org.ethereumphone.andyclaw.agent.BackgroundMemoryExtractor
 import org.ethereumphone.andyclaw.agent.CompactionConfig
+import org.ethereumphone.andyclaw.agent.MemoryReranker
 import org.ethereumphone.andyclaw.agent.ContextCompactor
 import org.ethereumphone.andyclaw.agent.TokenUsageSnapshot
 import org.ethereumphone.andyclaw.llm.AnthropicModels
@@ -392,13 +393,17 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 toolSearchService = app.createToolSearchService(currentTier, currentEnabledSkillIds),
                 budgetConfig = app.createBudgetConfig(),
                 compactionConfig = app.securePrefs.compactionConfig.value,
+                memoryReranker = if (app.securePrefs.getString("memory.aiReranking") == "true" && app.getMemoryAiLlmClient() !is LocalLlmClient) {
+                    MemoryReranker(app.getMemoryAiLlmClient(), app.getMemoryAiModelId())
+                } else null,
             )
 
             // Initialize background memory extractor for this run (opt-in)
             val smartExtractionEnabled = app.securePrefs.getString("memory.smartExtraction") == "true"
-            val llmClient = app.getLlmClient()
-            backgroundExtractor = if (smartExtractionEnabled && llmClient !is LocalLlmClient) {
-                BackgroundMemoryExtractor(llmClient, memoryManager, model.modelId)
+            val memoryAiClient = app.getMemoryAiLlmClient()
+            val memoryAiModelId = app.getMemoryAiModelId()
+            backgroundExtractor = if (smartExtractionEnabled && memoryAiClient !is LocalLlmClient) {
+                BackgroundMemoryExtractor(memoryAiClient, memoryManager, memoryAiModelId)
             } else null
 
             agentLoop.run(text, conversationHistory, object : AgentLoop.Callbacks {

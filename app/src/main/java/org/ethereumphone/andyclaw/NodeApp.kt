@@ -539,6 +539,16 @@ class NodeApp : Application() {
      */
     fun getLlmClient(): LlmClient = getLlmClientForProvider(securePrefs.selectedProvider.value, securePrefs.selectedModel.value)
 
+    fun getMemoryAiLlmClient(): LlmClient {
+        if (securePrefs.memoryAiUseSameModel.value) return getLlmClient()
+        return getLlmClientForProvider(securePrefs.memoryAiProvider.value, securePrefs.memoryAiModel.value)
+    }
+
+    fun getMemoryAiModelId(): String {
+        return if (securePrefs.memoryAiUseSameModel.value) securePrefs.selectedModel.value
+        else securePrefs.memoryAiModel.value
+    }
+
     fun getHeartbeatLlmClient(): LlmClient {
         if (securePrefs.heartbeatUseSameModel.value) return getLlmClient()
         return getLlmClientForProvider(securePrefs.heartbeatProvider.value, securePrefs.heartbeatModel.value)

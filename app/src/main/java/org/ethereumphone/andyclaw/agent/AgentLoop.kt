@@ -67,6 +67,8 @@ class AgentLoop(
     private val toolSearchService: ToolSearchService? = null,
     private val budgetConfig: BudgetConfig? = null,
     private val compactionConfig: CompactionConfig? = null,
+    /** Optional LLM-based memory reranker (opt-in, costs ~500 tokens per query). */
+    private val memoryReranker: MemoryReranker? = null,
 ) {
     companion object {
         private const val TAG = "AgentLoop"
@@ -75,6 +77,8 @@ class AgentLoop(
         private const val MAX_SUBAGENT_ITERATIONS = 50
         private const val KEEP_RECENT_IMAGES = 2
         private const val MEMORY_CONTEXT_MAX_RESULTS = 3
+        /** When AI reranking is enabled, fetch more candidates for the LLM to filter. */
+        private const val MEMORY_RERANK_CANDIDATE_POOL = 8
         private const val MEMORY_CONTEXT_MIN_SCORE = 0.25f
         internal const val SPAWN_SUBAGENT_TOOL_NAME = "spawn_subagent"
         internal const val ASK_USER_TOOL_NAME = "ask_user"
@@ -319,8 +323,20 @@ class AgentLoop(
         // Warm up the search index eagerly so first search doesn't stall
         if (useToolSearch) toolSearchService!!.warmUp()
 
-        // Search memory for relevant context to inject into the system prompt.
-        val memoryContext = fetchMemoryContext(userMessage)
+        // Memory injection: only on first turn (cold start) or after compaction
+        // (context loss). Mid-conversation, everything is already in the prompt —
+        // the model can call memory_search explicitly if it needs more context.
+        val isFirstTurn = conversationHistory.isEmpty()
+        val isPostCompaction = conversationHistory.any { msg ->
+            val text = extractText(msg)
+            text.startsWith("<context_summary>")
+        }
+        val memoryContext = if (isFirstTurn || isPostCompaction) {
+            fetchMemoryContext(userMessage, conversationHistory, isFirstTurn = isFirstTurn)
+        } else {
+            Log.d(TAG, "Skipping memory injection (turn ${conversationHistory.size / 2 + 1}, not first/post-compact)")
+            ""
+        }
 
         val budget = budgetConfig
         val isLocalModel = client is LocalLlmClient
@@ -381,13 +397,13 @@ class AgentLoop(
                     appendLine()
                     append(toolSearchService!!.buildCatalogSummary())
                 }
-                if (memoryContext.isNotBlank()) {
+                // Structured memory section: behavioral instructions + relevant results
+                val memorySection = MemoryPromptBuilder.buildMemorySection(
+                    memoryManager, memoryContext, hasMemoryTools = true,
+                )
+                if (memorySection.isNotBlank()) {
                     appendLine()
-                    appendLine("## Relevant Memories")
-                    appendLine("The following context was retrieved from long-term memory and may be relevant:")
-                    appendLine()
-                    append(memoryContext)
-                    appendLine()
+                    append(memorySection)
                 }
             }
         }
@@ -1036,36 +1052,224 @@ class AgentLoop(
      * Returns a formatted string suitable for injection into the system prompt,
      * or blank if no relevant memories are found (or no memory manager is set).
      */
-    private suspend fun fetchMemoryContext(userMessage: String): String {
+    /**
+     * Conversation-aware multi-query memory retrieval.
+     *
+     * Instead of searching with just the raw user message (which fails for
+     * "yes", "do it", "same as before"), this builds multiple search queries
+     * from conversation context and deduplicates the results.
+     *
+     * Queries (in priority order):
+     * 1. User's message (if substantive — >30 chars after stop word removal)
+     * 2. Keywords from the last assistant message (captures the actual topic)
+     * 3. Combined: user message + last assistant summary (broadest recall)
+     *
+     * Results are boosted by recency (newer memories score higher).
+     */
+    private suspend fun fetchMemoryContext(
+        userMessage: String,
+        conversationHistory: List<Message>,
+        isFirstTurn: Boolean = false,
+    ): String {
         val manager = memoryManager ?: run {
             Log.d(TAG, "fetchMemoryContext: no MemoryManager set, skipping")
             return ""
         }
 
         return try {
-            Log.d(TAG, "fetchMemoryContext: searching for context, query=\"${userMessage.take(80)}\"")
-            val results = manager.search(
-                query = userMessage,
-                maxResults = MEMORY_CONTEXT_MAX_RESULTS,
-                minScore = MEMORY_CONTEXT_MIN_SCORE,
-            )
-            if (results.isEmpty()) {
-                Log.d(TAG, "fetchMemoryContext: no relevant memories found")
-                return ""
-            }
+            val sections = mutableListOf<String>()
 
-            Log.i(TAG, "fetchMemoryContext: injecting ${results.size} memory/memories into system prompt")
-            results.joinToString("\n") { result ->
-                buildString {
-                    append("- ${result.snippet}")
-                    if (result.tags.isNotEmpty()) {
-                        append(" [${result.tags.joinToString(", ")}]")
-                    }
+            // ── First turn: always load USER + FEEDBACK memories (query-independent) ──
+            // These describe WHO the user is and HOW they want to be helped.
+            // Relevant regardless of what the user's first message says.
+            if (isFirstTurn) {
+                val profileMemories = fetchProfileMemories(manager)
+                if (profileMemories.isNotBlank()) {
+                    sections.add(profileMemories)
                 }
             }
+
+            // ── Query-based search (topic-specific memories) ──
+            val queryResults = fetchQueryMemories(manager, userMessage, conversationHistory)
+            if (queryResults.isNotBlank()) {
+                sections.add(queryResults)
+            }
+
+            sections.joinToString("\n")
         } catch (e: Exception) {
             Log.w(TAG, "fetchMemoryContext: search failed: ${e.message}", e)
             ""
         }
+    }
+
+    /**
+     * Fetches USER and FEEDBACK memories regardless of query content.
+     * These are "profile" memories that inform how the model should behave.
+     */
+    private suspend fun fetchProfileMemories(manager: MemoryManager): String {
+        val userMemories = manager.list(limit = 3, type = org.ethereumphone.andyclaw.memory.model.MemoryType.USER)
+        val feedbackMemories = manager.list(limit = 3, type = org.ethereumphone.andyclaw.memory.model.MemoryType.FEEDBACK)
+        val profileEntries = (userMemories + feedbackMemories)
+            .sortedByDescending { it.updatedAt }
+            .take(MEMORY_CONTEXT_MAX_RESULTS)
+
+        if (profileEntries.isEmpty()) return ""
+
+        Log.i(TAG, "fetchMemoryContext: injecting ${profileEntries.size} profile memories (USER/FEEDBACK)")
+        return profileEntries.joinToString("\n") { entry ->
+            MemoryPromptBuilder.formatSearchResult(entry)
+        }
+    }
+
+    /**
+     * Fetches query-matched memories using multi-query hybrid search + optional reranking.
+     */
+    private suspend fun fetchQueryMemories(
+        manager: MemoryManager,
+        userMessage: String,
+        conversationHistory: List<Message>,
+    ): String {
+        // Extract recent conversation context for query building
+        val lastAssistantText = conversationHistory.lastOrNull { it.role == "assistant" }
+            ?.let { extractText(it) }
+            ?.take(200)
+            ?: ""
+
+        // Build multiple search queries
+        val queries = buildSearchQueries(userMessage, lastAssistantText)
+        if (queries.isEmpty()) return ""
+        Log.d(TAG, "fetchMemoryContext: ${queries.size} queries: ${queries.map { "\"${it.take(60)}\"" }}")
+
+        // When reranking, fetch a wider candidate pool for the LLM to filter
+        val fetchLimit = if (memoryReranker != null) MEMORY_RERANK_CANDIDATE_POOL else MEMORY_CONTEXT_MAX_RESULTS
+
+        // Execute all queries and deduplicate by memory ID
+        val seenIds = mutableSetOf<String>()
+        val allResults = mutableListOf<Pair<org.ethereumphone.andyclaw.memory.model.MemorySearchResult, Float>>()
+
+        for (query in queries) {
+            val results = manager.search(
+                query = query,
+                maxResults = fetchLimit,
+                minScore = MEMORY_CONTEXT_MIN_SCORE,
+            )
+            for (result in results) {
+                if (result.memoryId !in seenIds) {
+                    seenIds.add(result.memoryId)
+                    allResults.add(result to result.score)
+                }
+            }
+        }
+
+        if (allResults.isEmpty()) {
+            Log.d(TAG, "fetchMemoryContext: no query-matched memories across ${queries.size} queries")
+            return ""
+        }
+
+        // Apply recency boost
+        val boosted = allResults.mapNotNull { (result, score) ->
+            val entry = manager.get(result.memoryId) ?: return@mapNotNull null
+            val age = MemoryPromptBuilder.daysSince(entry.updatedAt)
+            val recencyMultiplier = when {
+                age == 0 -> 1.3f
+                age <= 3 -> 1.1f
+                age <= 7 -> 1.0f
+                age <= 30 -> 0.9f
+                else -> 0.8f
+            }
+            Triple(entry, score * recencyMultiplier, result)
+        }
+            .sortedByDescending { it.second }
+            .take(if (memoryReranker != null) MEMORY_RERANK_CANDIDATE_POOL else MEMORY_CONTEXT_MAX_RESULTS)
+
+        // Optional LLM reranking
+        val finalEntries = if (memoryReranker != null && boosted.size > 1) {
+            val candidateEntries = boosted.map { it.first }
+            val reranked = memoryReranker.rerank(
+                candidates = candidateEntries,
+                userMessage = userMessage,
+                conversationContext = lastAssistantText,
+                maxResults = MEMORY_CONTEXT_MAX_RESULTS,
+            )
+            Log.i(TAG, "fetchMemoryContext: AI reranked ${candidateEntries.size} → ${reranked.size}")
+            reranked
+        } else {
+            boosted.map { it.first }
+        }
+
+        if (finalEntries.isEmpty()) return ""
+
+        Log.i(TAG, "fetchMemoryContext: injecting ${finalEntries.size} query-matched memories")
+        return finalEntries.joinToString("\n") { entry ->
+            MemoryPromptBuilder.formatSearchResult(entry)
+        }
+    }
+
+    /**
+     * Builds 1-3 search queries from the user message and conversation context.
+     * Handles short/vague messages by falling back to assistant context.
+     */
+    private fun buildSearchQueries(userMessage: String, lastAssistantText: String): List<String> {
+        val queries = mutableListOf<String>()
+        val cleanedUser = removeStopWords(userMessage).trim()
+
+        // Query 1: User's message (if it has substance after stop word removal)
+        if (cleanedUser.length >= 15) {
+            queries.add(cleanedUser)
+        }
+
+        // Query 2: Keywords from the last assistant message
+        // This is the key insight — when user says "yes do it", the assistant's
+        // previous message contains the actual topic.
+        if (lastAssistantText.isNotBlank()) {
+            val assistantKeywords = removeStopWords(lastAssistantText).trim()
+            if (assistantKeywords.length >= 15 && assistantKeywords != cleanedUser) {
+                queries.add(assistantKeywords)
+            }
+        }
+
+        // Query 3: Combined (broadest recall, catches cross-references)
+        if (cleanedUser.isNotBlank() && lastAssistantText.isNotBlank()) {
+            val combined = "${cleanedUser.take(100)} ${removeStopWords(lastAssistantText).take(100)}".trim()
+            if (combined.length >= 20 && combined !in queries) {
+                queries.add(combined)
+            }
+        }
+
+        // Fallback: if all queries were too short, use raw user message
+        if (queries.isEmpty() && userMessage.length >= 10) {
+            queries.add(userMessage)
+        }
+
+        return queries
+    }
+
+    /** Common English stop words that add noise to FTS queries. */
+    private val STOP_WORDS = setOf(
+        "a", "an", "the", "is", "are", "was", "were", "be", "been", "being",
+        "have", "has", "had", "do", "does", "did", "will", "would", "could",
+        "should", "may", "might", "can", "shall", "to", "of", "in", "for",
+        "on", "with", "at", "by", "from", "as", "into", "about", "like",
+        "through", "after", "over", "between", "out", "up", "down", "off",
+        "and", "but", "or", "nor", "not", "so", "yet", "both", "either",
+        "that", "this", "these", "those", "it", "its", "i", "me", "my",
+        "we", "our", "you", "your", "he", "she", "they", "them", "their",
+        "what", "which", "who", "whom", "how", "when", "where", "why",
+        "if", "then", "else", "just", "also", "very", "too", "quite",
+        "please", "yes", "no", "ok", "okay", "sure", "thanks", "hey",
+        "hi", "hello", "um", "uh",
+    )
+
+    private fun removeStopWords(text: String): String =
+        text.split(Regex("\\s+"))
+            .filter { it.lowercase() !in STOP_WORDS && it.length > 1 }
+            .joinToString(" ")
+
+    /** Extracts plain text from a Message (handles both Text and Blocks content). */
+    private fun extractText(msg: Message): String = when (val content = msg.content) {
+        is MessageContent.Text -> content.value
+        is MessageContent.Blocks -> content.blocks
+            .filterIsInstance<ContentBlock.TextBlock>()
+            .joinToString("\n") { it.text }
     }
 }

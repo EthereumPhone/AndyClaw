@@ -25,9 +25,11 @@ fun MemorySettingsSection(
     memoryCount: Int,
     autoStoreEnabled: Boolean,
     smartExtractionEnabled: Boolean,
+    aiRerankingEnabled: Boolean,
     isReindexing: Boolean,
     onAutoStoreToggle: (Boolean) -> Unit,
     onSmartExtractionToggle: (Boolean) -> Unit,
+    onAiRerankingToggle: (Boolean) -> Unit,
     onReindex: () -> Unit,
     onClearMemories: () -> Unit,
     modifier: Modifier = Modifier,
@@ -116,6 +118,33 @@ fun MemorySettingsSection(
             DgenSquareSwitch(
                 checked = smartExtractionEnabled,
                 onCheckedChange = onSmartExtractionToggle,
+                activeColor = primaryColor,
+            )
+        }
+
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "AI MEMORY RECALL",
+                    style = contentTitleStyle,
+                    color = primaryColor,
+                )
+                Text(
+                    text = "Uses a cheap LLM call to filter retrieved memories for relevance. " +
+                        "Reduces noise when many memories are stored. ~500 tokens per query.",
+                    style = contentBodyStyle,
+                    color = dgenWhite,
+                )
+            }
+            Spacer(Modifier.width(20.dp))
+            DgenSquareSwitch(
+                checked = aiRerankingEnabled,
+                onCheckedChange = onAiRerankingToggle,
                 activeColor = primaryColor,
             )
         }
