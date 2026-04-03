@@ -121,6 +121,7 @@ fun SettingsScreen(
     val memoryCount by viewModel.memoryCount.collectAsState()
     val autoStoreEnabled by viewModel.autoStoreEnabled.collectAsState()
     val smartExtractionEnabled by viewModel.smartExtractionEnabled.collectAsState()
+    val aiRerankingEnabled by viewModel.aiRerankingEnabled.collectAsState()
     val isReindexing by viewModel.isReindexing.collectAsState()
     val extensions by viewModel.extensions.collectAsState()
     val isExtensionScanning by viewModel.isExtensionScanning.collectAsState()
@@ -1481,9 +1482,11 @@ fun SettingsScreen(
                 memoryCount = memoryCount,
                 autoStoreEnabled = autoStoreEnabled,
                 smartExtractionEnabled = smartExtractionEnabled,
+                aiRerankingEnabled = aiRerankingEnabled,
                 isReindexing = isReindexing,
                 onAutoStoreToggle = { viewModel.setAutoStoreEnabled(it) },
                 onSmartExtractionToggle = { viewModel.setSmartExtractionEnabled(it) },
+                onAiRerankingToggle = { viewModel.setAiRerankingEnabled(it) },
                 onReindex = { viewModel.reindexMemory() },
                 onClearMemories = { viewModel.clearAllMemories() },
             )

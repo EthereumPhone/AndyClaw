@@ -346,6 +346,9 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
     private val _smartExtractionEnabled = MutableStateFlow(false)
     val smartExtractionEnabled: StateFlow<Boolean> = _smartExtractionEnabled.asStateFlow()
 
+    private val _aiRerankingEnabled = MutableStateFlow(false)
+    val aiRerankingEnabled: StateFlow<Boolean> = _aiRerankingEnabled.asStateFlow()
+
     private val _isReindexing = MutableStateFlow(false)
     val isReindexing: StateFlow<Boolean> = _isReindexing.asStateFlow()
 
@@ -993,6 +996,11 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
         prefs.putString("memory.smartExtraction", if (enabled) "true" else "false")
     }
 
+    fun setAiRerankingEnabled(enabled: Boolean) {
+        _aiRerankingEnabled.value = enabled
+        prefs.putString("memory.aiReranking", if (enabled) "true" else "false")
+    }
+
     fun reindexMemory() {
         viewModelScope.launch {
             _isReindexing.value = true
@@ -1125,6 +1133,7 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
     private fun loadAutoStorePreference() {
         _autoStoreEnabled.value = prefs.getString("memory.autoStore") != "false"
         _smartExtractionEnabled.value = prefs.getString("memory.smartExtraction") == "true"
+        _aiRerankingEnabled.value = prefs.getString("memory.aiReranking") == "true"
     }
 
     private fun refreshExtensions() {

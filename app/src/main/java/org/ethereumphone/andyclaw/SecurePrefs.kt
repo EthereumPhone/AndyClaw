@@ -139,6 +139,16 @@ class SecurePrefs(context: Context) : KeyValueStore {
   private val _compactionModel = MutableStateFlow(prefs.getString("compaction.model", null) ?: "")
   val compactionModel: StateFlow<String> = _compactionModel
 
+  // Memory AI (shared by smart extraction + AI reranking)
+  private val _memoryAiUseSameModel = MutableStateFlow(prefs.getBoolean("memory.ai.useSameModel", true))
+  val memoryAiUseSameModel: StateFlow<Boolean> = _memoryAiUseSameModel
+
+  private val _memoryAiProvider = MutableStateFlow(loadMemoryAiProvider())
+  val memoryAiProvider: StateFlow<LlmProvider> = _memoryAiProvider
+
+  private val _memoryAiModel = MutableStateFlow(prefs.getString("memory.ai.model", null) ?: "")
+  val memoryAiModel: StateFlow<String> = _memoryAiModel
+
   private val _walletAddress = MutableStateFlow(prefs.getString("auth.walletAddress", "") ?: "")
   val walletAddress: StateFlow<String> = _walletAddress
 
@@ -494,6 +504,31 @@ class SecurePrefs(context: Context) : KeyValueStore {
     _compactionModel.value = trimmed
   }
 
+  // Memory AI model settings
+  fun setMemoryAiUseSameModel(value: Boolean) {
+    prefs.edit { putBoolean("memory.ai.useSameModel", value) }
+    _memoryAiUseSameModel.value = value
+  }
+
+  fun setMemoryAiProvider(provider: LlmProvider) {
+    prefs.edit { putString("memory.ai.provider", provider.name) }
+    _memoryAiProvider.value = provider
+  }
+
+  fun setMemoryAiModel(value: String) {
+    val trimmed = value.trim()
+    prefs.edit { putString("memory.ai.model", trimmed) }
+    _memoryAiModel.value = trimmed
+  }
+
+  fun setMemoryAiUserModelForProvider(provider: LlmProvider, modelId: String) {
+    val trimmed = modelId.trim()
+    prefs.edit { putString("memory.ai.model.${provider.name}", trimmed) }
+    if (provider == _memoryAiProvider.value) {
+      _memoryAiModel.value = trimmed
+    }
+  }
+
   fun setHeartbeatIntervalMinutes(value: Int) {
     val stored = if (value <= 0) -1 else value.coerceIn(5, 1440)
     prefs.edit { putInt("agent.heartbeatIntervalMinutes", stored) }
@@ -844,6 +879,11 @@ class SecurePrefs(context: Context) : KeyValueStore {
     return LlmProvider.fromName(raw ?: "") ?: loadSelectedProvider()
   }
 
+  private fun loadMemoryAiProvider(): LlmProvider {
+    val raw = prefs.getString("memory.ai.provider", null)
+    return LlmProvider.fromName(raw ?: "") ?: loadSelectedProvider()
+  }
+
   private fun loadRoutingProvider(): LlmProvider {
     val raw = prefs.getString("routing.provider", null)
     return LlmProvider.fromName(raw ?: "") ?: loadSelectedProvider()
@@ -930,6 +970,9 @@ class SecurePrefs(context: Context) : KeyValueStore {
     _compactionUseSameModel.value = prefs.getBoolean("compaction.useSameModel", true)
     _compactionProvider.value = loadCompactionProvider()
     _compactionModel.value = prefs.getString("compaction.model", null) ?: ""
+    _memoryAiUseSameModel.value = prefs.getBoolean("memory.ai.useSameModel", true)
+    _memoryAiProvider.value = loadMemoryAiProvider()
+    _memoryAiModel.value = prefs.getString("memory.ai.model", null) ?: ""
     _walletAddress.value = prefs.getString("auth.walletAddress", "") ?: ""
     _walletSignature.value = prefs.getString("auth.walletSignature", "") ?: ""
     _apiKey.value = prefs.getString("anthropic.apiKey", "") ?: ""

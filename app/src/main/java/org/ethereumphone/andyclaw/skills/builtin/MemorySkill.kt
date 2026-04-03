@@ -15,6 +15,7 @@ import kotlinx.serialization.json.putJsonObject
 import org.ethereumphone.andyclaw.memory.MemoryManager
 import org.ethereumphone.andyclaw.memory.model.MemorySource
 import org.ethereumphone.andyclaw.memory.model.MemoryType
+import org.ethereumphone.andyclaw.agent.MemoryPromptBuilder
 import org.ethereumphone.andyclaw.skills.AndyClawSkill
 import org.ethereumphone.andyclaw.skills.SkillManifest
 import org.ethereumphone.andyclaw.skills.SkillResult
@@ -190,11 +191,23 @@ class MemorySkill(
             } else {
                 Log.i(TAG, "memory_search: ${results.size} result(s) for \"$query\"")
                 val formatted = results.mapIndexed { i, r ->
+                    // Fetch full entry for type and age
+                    val entry = try { memoryManager.get(r.memoryId) } catch (_: Exception) { null }
+                    val typeLabel = entry?.type?.name ?: r.source.name
+                    val age = entry?.let { MemoryPromptBuilder.daysSince(it.updatedAt) } ?: 0
+                    val ageStr = when (age) {
+                        0 -> "today"
+                        1 -> "1d ago"
+                        else -> "${age}d ago"
+                    }
                     buildString {
-                        appendLine("${i + 1}. [id: ${r.memoryId}] (score: ${"%.2f".format(r.score)})")
+                        appendLine("${i + 1}. [$typeLabel] (id: ${r.memoryId}, score: ${"%.2f".format(r.score)}, $ageStr)")
                         appendLine("   ${r.snippet}")
                         if (r.tags.isNotEmpty()) {
                             appendLine("   tags: ${r.tags.joinToString(", ")}")
+                        }
+                        if (age > 7) {
+                            appendLine("   ⚠️ This memory is ${age} days old — verify before relying on it")
                         }
                     }
                 }.joinToString("\n")
@@ -224,11 +237,21 @@ class MemorySkill(
             } else {
                 Log.i(TAG, "memory_list: returning ${entries.size} memory/memories")
                 val formatted = entries.mapIndexed { i, entry ->
+                    val typeLabel = entry.type?.name ?: entry.source.name
+                    val age = MemoryPromptBuilder.daysSince(entry.updatedAt)
+                    val ageStr = when (age) {
+                        0 -> "today"
+                        1 -> "1d ago"
+                        else -> "${age}d ago"
+                    }
                     buildString {
-                        appendLine("${i + 1}. [id: ${entry.id}] (source: ${entry.source}, importance: ${"%.1f".format(entry.importance)})")
+                        appendLine("${i + 1}. [$typeLabel] (id: ${entry.id}, $ageStr)")
                         appendLine("   ${entry.content.take(300)}${if (entry.content.length > 300) "..." else ""}")
                         if (entry.tags.isNotEmpty()) {
                             appendLine("   tags: ${entry.tags.joinToString(", ")}")
+                        }
+                        if (age > 7) {
+                            appendLine("   ⚠️ ${age} days old — may be outdated")
                         }
                     }
                 }.joinToString("\n")
