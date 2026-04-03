@@ -107,8 +107,13 @@ You have a persistent memory system that spans across conversations.
 - Raw conversation text — extract the key fact instead
 - Information the user told you to forget
 
-### Staleness
-Memories older than a week may be outdated. Verify before acting on them.
+### Staleness & Verification
+Memories older than a week may be outdated. Before acting on a memory:
+- If it names an app or package → check it's still installed (`list_installed_apps` or `get_app_info`)
+- If it names a contact or phone number → verify with `search_contacts`
+- If it names a file or path → check it exists (`file_info` or `list_directory`)
+- If it names a setting value or device state → re-check the current state
+- If you're just answering a question about history ("what did I..."), the memory is fine as-is — only verify when you're about to TAKE ACTION based on the memory
 """.trimIndent()
 
     /**
