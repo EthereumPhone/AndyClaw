@@ -12,9 +12,12 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
 import kotlinx.serialization.json.putJsonObject
+import org.ethereumphone.andyclaw.llm.AnthropicApiException
 import org.ethereumphone.andyclaw.llm.AnthropicModels
+import org.ethereumphone.andyclaw.llm.CannotRetryException
 import org.ethereumphone.andyclaw.llm.LlmClient
 import org.ethereumphone.andyclaw.llm.LocalLlmClient
+import org.ethereumphone.andyclaw.llm.withRetry
 import org.ethereumphone.andyclaw.llm.ContentBlock
 import org.ethereumphone.andyclaw.llm.Message
 import org.ethereumphone.andyclaw.llm.ToolResultContent
@@ -63,6 +66,7 @@ class AgentLoop(
     private val smartRouter: SmartRouter? = null,
     private val toolSearchService: ToolSearchService? = null,
     private val budgetConfig: BudgetConfig? = null,
+    private val compactionConfig: CompactionConfig? = null,
 ) {
     companion object {
         private const val TAG = "AgentLoop"
@@ -468,6 +472,16 @@ class AgentLoop(
                 Log.i(TAG, "BudgetMode | disabled")
             }
 
+            // Reactive compaction: handles prompt-too-long errors with automatic compaction + circuit breaker
+            val compactTracking = AutoCompactTrackingState()
+            val reactiveCompaction = if (client !is LocalLlmClient && compactionConfig != null) {
+                val restoration = PostCompactRestoration(toolSearchService)
+                ReactiveCompaction(
+                    ContextCompactor(client, compactionConfig, restoration),
+                    effectiveModelId,
+                )
+            } else null
+
             while (iterations < MAX_ITERATIONS) {
                 iterations++
                 Log.i(TAG, "--- AgentLoop iteration $iterations/$MAX_ITERATIONS ---")
@@ -502,6 +516,27 @@ class AgentLoop(
                 val responseBlocks = mutableListOf<ContentBlock>()
                 val streamText = StringBuilder()
 
+                // Streaming tool executor: starts executing tools as they arrive from the stream
+                val streamingExecutor = StreamingToolExecutor(
+                    executeToolCall = { block ->
+                        callbacks.onToolExecution(block.name)
+                        val engine = ExecutionEngineFactory.create(
+                            skillRegistry = skillRegistry,
+                            tier = tier,
+                            enabledSkillIds = enabledSkillIds,
+                            safetyLayer = safety,
+                            agentCallbacks = callbacks,
+                            budgetConfig = budget,
+                        )
+                        val calls = ExecutionEngineFactory.toToolCalls(listOf(block))
+                        val batchResult = engine.executeBatch(calls)
+                        ExecutionEngineFactory.toContentBlocks(batchResult.results).firstOrNull()
+                            ?: ContentBlock.ToolResult(block.id, "No result", isError = true)
+                    },
+                    isConcurrencySafe = StreamingToolExecutor::defaultIsConcurrencySafe,
+                    scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO),
+                )
+
                 val streamCallback = object : StreamingCallback {
                     override fun onToken(text: String) {
                         streamText.append(text)
@@ -510,7 +545,10 @@ class AgentLoop(
                     }
 
                     override fun onToolUse(id: String, name: String, input: JsonObject) {
-                        // Collected via onComplete
+                        // Start executing regular tools immediately (not search/ask_user/subagent)
+                        if (name != ToolSearchService.TOOL_NAME && name != ASK_USER_TOOL_NAME && name != SPAWN_SUBAGENT_TOOL_NAME) {
+                            streamingExecutor.addTool(ContentBlock.ToolUseBlock(id, name, input))
+                        }
                     }
 
                     override fun onComplete(response: MessagesResponse) {
@@ -536,7 +574,32 @@ class AgentLoop(
 
                 Log.i(TAG, "Sending streaming request to LLM (iteration $iterations, messages=${messages.size})...")
                 val iterStartMs = System.currentTimeMillis()
-                client.streamMessage(request, streamCallback)
+                try {
+                    withRetry { attempt ->
+                        if (attempt > 0) {
+                            // Reset accumulators on retry so we don't double-count
+                            responseBlocks.clear()
+                            streamText.clear()
+                        }
+                        client.streamMessage(request, streamCallback)
+                    }
+                } catch (e: CannotRetryException) {
+                    val apiEx = e.originalError as? AnthropicApiException
+                    if (apiEx != null && reactiveCompaction?.isPromptTooLong(apiEx) == true) {
+                        Log.w(TAG, "Prompt too long (HTTP ${apiEx.statusCode}), attempting reactive compaction...")
+                        val compactResult = reactiveCompaction.tryReactiveCompact(messages, compactTracking)
+                        if (compactResult != null) {
+                            // Replace history with compacted version and retry this iteration
+                            messages.clear()
+                            messages.addAll(compactResult.compactedHistory)
+                            Log.i(TAG, "Reactive compaction succeeded, retrying with ${messages.size} messages")
+                            iterations-- // don't count this as an iteration
+                            continue
+                        }
+                        Log.e(TAG, "Reactive compaction failed or circuit breaker tripped, propagating error")
+                    }
+                    throw e.originalError
+                }
                 val iterElapsedMs = System.currentTimeMillis() - iterStartMs
                 Log.i(TAG, "LLM stream complete (iteration $iterations): ${iterElapsedMs}ms, ${streamText.length} chars streamed, ${responseBlocks.size} content blocks")
 
@@ -665,26 +728,38 @@ class AgentLoop(
                 }
 
                 coroutineScope {
-                    // Regular tools via ExecutionEngine
-                    val regularResultsDeferred = if (regularCalls.isNotEmpty()) {
-                        async {
-                            val engine = ExecutionEngineFactory.create(
-                                skillRegistry = skillRegistry,
-                                tier = tier,
-                                enabledSkillIds = enabledSkillIds,
-                                safetyLayer = safety,
-                                agentCallbacks = callbacks,
-                                budgetConfig = budget,
-                            )
-                            val engineCalls = ExecutionEngineFactory.toToolCalls(regularCalls)
-                            val batchResult = engine.executeBatch(engineCalls)
-                            val engineMetrics = batchResult.metrics
-                            Log.i(TAG, "ExecutionEngine | ${engineMetrics.executedCount} executed, " +
-                                "${engineMetrics.blockedCount} blocked, ${engineMetrics.errorCount} errors, " +
-                                "${engineMetrics.totalDurationMs}ms total (max tool: ${engineMetrics.maxToolDurationMs}ms)")
-                            ExecutionEngineFactory.toContentBlocks(batchResult.results)
-                        }
-                    } else null
+                    // Regular tools: already executing via StreamingToolExecutor.
+                    // Any regular tools NOT caught by the streaming callback (e.g. if
+                    // onToolUse wasn't fired) get executed here as fallback.
+                    val regularNotInExecutor = regularCalls.filter { call ->
+                        !streamingExecutor.hasTools ||
+                            call.name == ToolSearchService.TOOL_NAME // search already handled above
+                    }
+                    if (regularNotInExecutor.isNotEmpty()) {
+                        val engine = ExecutionEngineFactory.create(
+                            skillRegistry = skillRegistry,
+                            tier = tier,
+                            enabledSkillIds = enabledSkillIds,
+                            safetyLayer = safety,
+                            agentCallbacks = callbacks,
+                            budgetConfig = budget,
+                        )
+                        val engineCalls = ExecutionEngineFactory.toToolCalls(regularNotInExecutor)
+                        val batchResult = engine.executeBatch(engineCalls)
+                        val engineMetrics = batchResult.metrics
+                        Log.i(TAG, "ExecutionEngine (fallback) | ${engineMetrics.executedCount} executed, " +
+                            "${engineMetrics.blockedCount} blocked, ${engineMetrics.errorCount} errors, " +
+                            "${engineMetrics.totalDurationMs}ms total")
+                        allToolResults.addAll(ExecutionEngineFactory.toContentBlocks(batchResult.results))
+                    }
+
+                    // Streaming executor results (tools that started during streaming)
+                    if (streamingExecutor.hasTools) {
+                        val streamedResults = streamingExecutor.awaitAll()
+                        Log.i(TAG, "StreamingToolExecutor | ${streamedResults.size} results collected")
+                        allToolResults.addAll(streamedResults)
+                        streamingExecutor.reset()
+                    }
 
                     // Sub-agent calls — each runs its own routing + mini agent loop
                     val subagentResultsDeferreds = subagentCalls.map { call ->
@@ -715,8 +790,7 @@ class AgentLoop(
                         }
                     }
 
-                    // Await all results
-                    regularResultsDeferred?.await()?.let { allToolResults.addAll(it) }
+                    // Await sub-agent results
                     subagentResultsDeferreds.awaitAll().let { allToolResults.addAll(it) }
                 }
 

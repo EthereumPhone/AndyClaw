@@ -5,6 +5,8 @@ import androidx.room.Database
 import androidx.room.Room
 import androidx.room.RoomDatabase
 import androidx.room.TypeConverters
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
 import org.ethereumphone.andyclaw.memory.db.entity.MemoryChunkEntity
 import org.ethereumphone.andyclaw.memory.db.entity.MemoryChunkFts
 import org.ethereumphone.andyclaw.memory.db.entity.MemoryEntryEntity
@@ -29,7 +31,7 @@ import org.ethereumphone.andyclaw.memory.db.entity.MemoryTagEntity
         MemoryEntryTagCrossRef::class,
         MemoryMetaEntity::class,
     ],
-    version = 1,
+    version = 2,
     exportSchema = true,
 )
 @TypeConverters(Converters::class)
@@ -54,6 +56,13 @@ abstract class MemoryDatabase : RoomDatabase() {
     companion object {
         private const val DB_NAME = "andyclaw_memory.db"
 
+        /** v1 → v2: Add nullable `type` column for memory taxonomy. */
+        private val MIGRATION_1_2 = object : Migration(1, 2) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE memory_entries ADD COLUMN type TEXT DEFAULT NULL")
+            }
+        }
+
         @Volatile
         private var INSTANCE: MemoryDatabase? = null
 
@@ -64,6 +73,7 @@ abstract class MemoryDatabase : RoomDatabase() {
                     MemoryDatabase::class.java,
                     DB_NAME,
                 )
+                    .addMigrations(MIGRATION_1_2)
                     .build()
                     .also { INSTANCE = it }
             }

@@ -33,6 +33,10 @@ data class MemoryEntryEntity(
     /** How the memory was created (MANUAL / CONVERSATION / SYSTEM). */
     val source: String,
 
+    /** Semantic type (USER, FEEDBACK, PROJECT, REFERENCE). Nullable for backward compat. */
+    @ColumnInfo(defaultValue = "NULL")
+    val type: String? = null,
+
     /** Importance weight [0, 1]. */
     val importance: Float = 0.5f,
 

@@ -19,6 +19,9 @@ data class MemoryEntry(
     /** How this memory was created. */
     val source: MemorySource,
 
+    /** Semantic type (USER, FEEDBACK, PROJECT, REFERENCE). Null for pre-taxonomy memories. */
+    val type: MemoryType? = null,
+
     /** Human-readable tags for categorisation. */
     val tags: List<String>,
 

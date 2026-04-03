@@ -25,11 +25,15 @@ class ToolSearchService(
     private val tier: Tier,
     private val enabledSkillIds: Set<String>,
     private val presetProvider: (() -> RoutingPreset)? = null,
+    /** When true, sibling tools get full schemas loaded. When false (default), siblings are listed by name + hint only. */
+    private val autoLoadSiblings: Boolean = false,
 ) {
     companion object {
         private const val TAG = "ToolSearchService"
         const val TOOL_NAME = "search_available_tools"
         private const val MAX_RESULTS = 5
+        /** Max sibling tools to auto-load schemas for. Rest are listed by name only. */
+        private const val MAX_AUTO_LOAD_SIBLINGS = 5
         private val DEFAULT_CORE_SKILL_IDS = setOf("code_execution", "memory")
         private val DEFAULT_DGEN1_CORE_SKILL_IDS = emptySet<String>()
     }
@@ -54,6 +58,8 @@ class ToolSearchService(
         val description: String,
         val skillId: String,
         val skillName: String,
+        /** Optional search hint — extra keywords for discovery (higher weight than description). */
+        val searchHint: String? = null,
     )
 
     /**
@@ -64,9 +70,10 @@ class ToolSearchService(
         val catalog: CatalogEntry,
         val nameTokens: Set<String>,
         val descTokens: List<String>,
+        val hintTokens: Set<String>,
         val allTokens: List<String>,
         val docLength: Double,
-        /** Pre-computed weighted term frequencies (name tokens weighted 3x). */
+        /** Pre-computed weighted term frequencies (name 3x, hint 2x, desc 1x). */
         val weightedTf: Map<String, Double>,
     )
 
@@ -87,6 +94,32 @@ class ToolSearchService(
 
     /** Tools the model has discovered in this conversation session. */
     private val discoveredToolNames = mutableSetOf<String>()
+
+    /** Tools announced to the model in previous API calls (for delta tracking). */
+    private val previouslyAnnouncedTools = mutableSetOf<String>()
+
+    /**
+     * Delta announcement: tools added/removed since last announcement.
+     * Ported from Claude Code's deferred tools delta tracking.
+     */
+    data class DeltaToolAnnouncement(
+        val addedNames: Set<String>,
+        val removedNames: Set<String>,
+    )
+
+    /**
+     * Computes the delta between current discovered tools and what was previously
+     * announced. Returns null if nothing changed (no message needed).
+     */
+    fun getDeltaAnnouncement(): DeltaToolAnnouncement? {
+        val current = discoveredToolNames.toSet()
+        val added = current - previouslyAnnouncedTools
+        val removed = previouslyAnnouncedTools - current
+        if (added.isEmpty() && removed.isEmpty()) return null
+        previouslyAnnouncedTools.clear()
+        previouslyAnnouncedTools.addAll(current)
+        return DeltaToolAnnouncement(added, removed)
+    }
 
     /**
      * Ensures the search index is up to date with the skill registry.
@@ -137,6 +170,7 @@ class ToolSearchService(
                     description = tool.description,
                     skillId = skill.id,
                     skillName = skill.name,
+                    searchHint = tool.searchHint ?: SearchHints.forTool(tool.name),
                 ))
             }
             if (tier == Tier.PRIVILEGED) {
@@ -148,6 +182,7 @@ class ToolSearchService(
                         description = tool.description,
                         skillId = skill.id,
                         skillName = skill.name,
+                        searchHint = tool.searchHint ?: SearchHints.forTool(tool.name),
                     ))
                 }
             }
@@ -170,16 +205,23 @@ class ToolSearchService(
     private fun buildSearchIndex(): List<IndexedEntry> {
         val startMs = System.currentTimeMillis()
         val nameWeight = 3.0
+        val hintWeight = 2.0
         val index = catalog.map { entry ->
             val nameTokens = tokenize(entry.toolName)
             val descTokens = tokenize(entry.description)
-            val allTokens = nameTokens + descTokens
+            val hintTokens = entry.searchHint?.let { tokenize(it) } ?: emptyList()
+            val allTokens = nameTokens + hintTokens + descTokens
             val nameTokenSet = nameTokens.toSet()
+            val hintTokenSet = hintTokens.toSet()
 
-            // Pre-compute weighted term frequencies
+            // Pre-compute weighted term frequencies (name 3x, hint 2x, desc 1x)
             val tf = mutableMapOf<String, Double>()
             for (token in allTokens) {
-                val weight = if (token in nameTokenSet) nameWeight else 1.0
+                val weight = when {
+                    token in nameTokenSet -> nameWeight
+                    token in hintTokenSet -> hintWeight
+                    else -> 1.0
+                }
                 tf[token] = (tf[token] ?: 0.0) + weight
             }
 
@@ -187,6 +229,7 @@ class ToolSearchService(
                 catalog = entry,
                 nameTokens = nameTokenSet,
                 descTokens = descTokens,
+                hintTokens = hintTokenSet,
                 allTokens = allTokens,
                 docLength = allTokens.size.toDouble(),
                 weightedTf = tf,
@@ -201,7 +244,7 @@ class ToolSearchService(
         val docCount = searchIndex.size.toDouble()
         val df = mutableMapOf<String, Int>()
         for (entry in searchIndex) {
-            val uniqueTokens = (entry.nameTokens + entry.descTokens).toSet()
+            val uniqueTokens = (entry.nameTokens + entry.hintTokens + entry.descTokens).toSet()
             for (token in uniqueTokens) {
                 df[token] = (df[token] ?: 0) + 1
             }
@@ -230,22 +273,93 @@ class ToolSearchService(
         return score
     }
 
+    // ── Query mode patterns ────────────────────────────────────────
+
+    private val selectPattern = Regex("^select:(.+)$", RegexOption.IGNORE_CASE)
+    private val requiredPrefix = "+"
+
     /**
-     * Searches the catalog and returns the top [maxResults] matching entries.
+     * Searches the catalog with support for multiple query modes:
+     *
+     * - **`select:Tool1,Tool2`** — Direct selection by exact tool name.
+     * - **`+required keyword`** — `+`-prefixed terms must match in name, hint, or description.
+     *   Remaining terms score normally. Example: `+wallet balance check`
+     * - **Regular keywords** — BM25-ranked search across name (3x), hint (2x), description (1x).
      */
     fun search(query: String, maxResults: Int = MAX_RESULTS): List<CatalogEntry> {
-        val queryTokens = tokenize(query)
-        if (queryTokens.isEmpty()) return emptyList()
-
-        // Rebuild index if skills have changed since last build
         ensureIndexCurrent()
 
-        return searchIndex
-            .map { it to bm25Score(it, queryTokens) }
+        // ── Mode 1: select:Tool1,Tool2 ──
+        val selectMatch = selectPattern.find(query)
+        if (selectMatch != null) {
+            return selectByName(selectMatch.groupValues[1], maxResults)
+        }
+
+        // ── Fast path: exact tool name match ──
+        val queryLower = query.trim().lowercase()
+        val exactMatch = catalog.find { it.toolName.lowercase() == queryLower }
+        if (exactMatch != null) {
+            Log.d(TAG, "search: exact name match → ${exactMatch.toolName}")
+            return listOf(exactMatch)
+        }
+
+        // ── Parse +required and optional terms ──
+        val rawTokens = tokenize(query)
+        if (rawTokens.isEmpty()) return emptyList()
+
+        val queryWords = query.trim().split(whitespaceRegex).filter { it.isNotEmpty() }
+        val requiredRaw = queryWords.filter { it.startsWith(requiredPrefix) && it.length > 1 }
+            .map { it.removePrefix(requiredPrefix).lowercase() }
+        val requiredTokens = requiredRaw.flatMap { tokenize(it) }.toSet()
+
+        // ── Mode 2: +required pre-filter ──
+        val candidates = if (requiredTokens.isNotEmpty()) {
+            searchIndex.filter { entry ->
+                requiredTokens.all { req ->
+                    req in entry.nameTokens ||
+                        entry.nameTokens.any { it.contains(req) } ||
+                        req in entry.hintTokens ||
+                        entry.descTokens.contains(req)
+                }
+            }.also { Log.d(TAG, "search: +required filter kept ${it.size}/${searchIndex.size} entries for $requiredTokens") }
+        } else {
+            searchIndex
+        }
+
+        // ── Mode 3: BM25 scoring over all terms ──
+        val allQueryTokens = rawTokens // includes both required and optional
+        return candidates
+            .map { it to bm25Score(it, allQueryTokens) }
             .filter { it.second > 0.0 }
             .sortedByDescending { it.second }
             .take(maxResults)
             .map { it.first.catalog }
+    }
+
+    /**
+     * Direct selection by comma-separated tool names.
+     */
+    private fun selectByName(nameList: String, maxResults: Int): List<CatalogEntry> {
+        val requested = nameList.split(",").map { it.trim() }.filter { it.isNotEmpty() }
+        val found = mutableListOf<CatalogEntry>()
+        val missing = mutableListOf<String>()
+
+        for (name in requested) {
+            val nameLower = name.lowercase()
+            val match = catalog.find { it.toolName.lowercase() == nameLower || it.effectiveName.lowercase() == nameLower }
+            if (match != null) {
+                if (found.none { it.toolName == match.toolName }) found.add(match)
+            } else {
+                missing.add(name)
+            }
+        }
+
+        if (missing.isNotEmpty()) {
+            Log.d(TAG, "select: found=${found.map { it.toolName }}, missing=$missing")
+        } else {
+            Log.d(TAG, "select: all found → ${found.map { it.toolName }}")
+        }
+        return found.take(maxResults)
     }
 
     // ── Tool execution (called by AgentLoop) ─────────────────────────
@@ -265,13 +379,28 @@ class ToolSearchService(
             return "No tools found matching '$query'. Try a different search query."
         }
 
-        // Track discovered tools
+        // Track discovered tools — primary results
         for (entry in results) {
             discoveredToolNames.add(entry.toolName)
         }
 
+        // Skill-level auto-discovery: find sibling tools from the same skill(s).
+        // Behavior depends on autoLoadSiblings setting:
+        //   true  → siblings get full schema loaded (added to discoveredToolNames)
+        //   false → siblings listed by name + searchHint only (model can select: to load)
+        val siblingSkillIds = results.map { it.skillId }.toSet()
+        val allSiblings = catalog.filter { it.skillId in siblingSkillIds && it.toolName !in discoveredToolNames }
+
+        if (autoLoadSiblings) {
+            val toLoad = allSiblings.take(MAX_AUTO_LOAD_SIBLINGS)
+            for (entry in toLoad) {
+                discoveredToolNames.add(entry.toolName)
+            }
+        }
+
         Log.i(TAG, "search_available_tools('$query') -> ${results.size} results: " +
-            results.joinToString { it.toolName })
+            results.joinToString { it.toolName } +
+            if (allSiblings.isNotEmpty()) " (${allSiblings.size} siblings, autoLoad=$autoLoadSiblings)" else "")
 
         // Format results for the model
         val sb = StringBuilder()
@@ -280,6 +409,29 @@ class ToolSearchService(
         for (entry in results) {
             sb.appendLine("- **${entry.effectiveName}** (${entry.skillName})")
             sb.appendLine("  ${entry.description.take(200)}")
+            sb.appendLine()
+        }
+        if (allSiblings.isNotEmpty()) {
+            if (autoLoadSiblings) {
+                val loaded = allSiblings.take(MAX_AUTO_LOAD_SIBLINGS)
+                val remaining = allSiblings.drop(MAX_AUTO_LOAD_SIBLINGS)
+                sb.appendLine("Also loaded ${loaded.size} related tool(s) from the same skill(s):")
+                for (entry in loaded) {
+                    sb.appendLine("- **${entry.effectiveName}**: ${entry.searchHint ?: entry.description.take(80)}")
+                }
+                if (remaining.isNotEmpty()) {
+                    sb.appendLine()
+                    sb.appendLine("${remaining.size} more available (use select: to load):")
+                    for (entry in remaining) {
+                        sb.appendLine("- ${entry.effectiveName} — ${entry.searchHint ?: entry.description.take(60)}")
+                    }
+                }
+            } else {
+                sb.appendLine("Related tool(s) from the same skill(s) — use \"select:name\" to load:")
+                for (entry in allSiblings) {
+                    sb.appendLine("- ${entry.effectiveName} — ${entry.searchHint ?: entry.description.take(60)}")
+                }
+            }
             sb.appendLine()
         }
         sb.appendLine("These tools are now available for you to call directly.")
@@ -294,17 +446,17 @@ class ToolSearchService(
     fun buildSearchToolJson(): JsonObject = buildJsonObject {
         put("name", TOOL_NAME)
         put("description", buildString {
-            append("Search for available tools by keyword or description. ")
-            append("Use this when you need a tool that isn't in your current set. ")
-            append("Returns matching tools which become available for immediate use. ")
-            append("You only need to search once — discovered tools remain available for the rest of the conversation.")
+            append("Search for available tools by keyword. ")
+            append("Returns matching tools plus related tools from the same skill. ")
+            append("Discovered tools stay available for the rest of the conversation — no need to search again. ")
+            append("To load tools you've seen listed by name, use \"select:name1,name2\" as the query.")
         })
         putJsonObject("input_schema") {
             put("type", "object")
             putJsonObject("properties") {
                 putJsonObject("query") {
                     put("type", "string")
-                    put("description", "Search query describing the tool you need (e.g. 'send SMS', 'ENS resolve', 'wallet balance', 'wifi toggle')")
+                    put("description", "Keyword query (e.g. 'send SMS') or 'select:name1,name2' to load specific tools by name.")
                 }
             }
             putJsonArray("required") {
@@ -487,5 +639,6 @@ class ToolSearchService(
     /** Reset discovered tools (e.g. for a new conversation). */
     fun resetSession() {
         discoveredToolNames.clear()
+        previouslyAnnouncedTools.clear()
     }
 }

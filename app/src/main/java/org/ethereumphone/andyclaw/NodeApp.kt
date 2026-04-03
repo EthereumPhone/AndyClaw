@@ -306,6 +306,7 @@ class NodeApp : Application() {
                     ?: RoutingPreset.defaults().find { it.id == presetId }
                     ?: RoutingPreset.defaults().first { it.id == RoutingPreset.defaultPresetId }
             },
+            autoLoadSiblings = securePrefs.getString("toolSearch.autoLoadSiblings") == "true",
         )
     }
 

@@ -15,6 +15,7 @@ import org.ethereumphone.andyclaw.memory.db.entity.MemoryTagEntity
 import org.ethereumphone.andyclaw.memory.embedding.EmbeddingProvider
 import org.ethereumphone.andyclaw.memory.model.MemoryEntry
 import org.ethereumphone.andyclaw.memory.model.MemorySource
+import org.ethereumphone.andyclaw.memory.model.MemoryType
 import org.ethereumphone.andyclaw.memory.search.ChunkingEngine
 import java.security.MessageDigest
 import java.util.UUID
@@ -47,6 +48,7 @@ class MemoryRepository(
         source: MemorySource = MemorySource.MANUAL,
         tags: List<String> = emptyList(),
         importance: Float = 0.5f,
+        type: MemoryType? = null,
     ): MemoryEntry = withContext(Dispatchers.IO) {
         val hash = sha256(content)
 
@@ -63,6 +65,7 @@ class MemoryRepository(
             agentId = agentId,
             content = content,
             source = source.name,
+            type = type?.name,
             importance = importance.coerceIn(0f, 1f),
             hash = hash,
             createdAt = now,
@@ -97,12 +100,13 @@ class MemoryRepository(
         source: MemorySource? = null,
         tags: List<String>? = null,
         limit: Int = 50,
+        type: MemoryType? = null,
     ): List<MemoryEntry> = withContext(Dispatchers.IO) {
-        // Start with entries by agent (optionally filtered by source)
-        val entries = if (source != null) {
-            dao.getEntriesByAgentAndSource(agentId, source.name)
-        } else {
-            dao.getEntriesByAgent(agentId)
+        // Start with entries by agent (optionally filtered by source or type)
+        val entries = when {
+            source != null -> dao.getEntriesByAgentAndSource(agentId, source.name)
+            type != null -> dao.getEntriesByAgentAndType(agentId, type.name)
+            else -> dao.getEntriesByAgent(agentId)
         }
 
         // Tag filter
@@ -330,6 +334,7 @@ class MemoryRepository(
             agentId = agentId,
             content = content,
             source = runCatching { MemorySource.valueOf(source) }.getOrDefault(MemorySource.MANUAL),
+            type = type?.let { runCatching { MemoryType.valueOf(it) }.getOrNull() },
             tags = tags,
             importance = importance,
             createdAt = createdAt,

@@ -17,11 +17,13 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import org.ethereumphone.andyclaw.NodeApp
 import org.ethereumphone.andyclaw.agent.AgentLoop
+import org.ethereumphone.andyclaw.agent.BackgroundMemoryExtractor
 import org.ethereumphone.andyclaw.agent.CompactionConfig
 import org.ethereumphone.andyclaw.agent.ContextCompactor
 import org.ethereumphone.andyclaw.agent.TokenUsageSnapshot
 import org.ethereumphone.andyclaw.llm.AnthropicModels
 import org.ethereumphone.andyclaw.llm.ContentBlock
+import org.ethereumphone.andyclaw.llm.LocalLlmClient
 import org.ethereumphone.andyclaw.llm.Message
 import org.ethereumphone.andyclaw.llm.MessageContent
 import org.ethereumphone.andyclaw.memory.MemoryManager
@@ -78,6 +80,9 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private val sessionManager: SessionManager = app.sessionManager
     private val memoryManager: MemoryManager = app.memoryManager
     private val ledController = app.ledController
+
+    /** Background memory extractor — initialized lazily per agent run. */
+    private var backgroundExtractor: BackgroundMemoryExtractor? = null
 
     val slashExecutor = SlashCommandExecutor(app.securePrefs, memoryManager)
 
@@ -386,7 +391,15 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 smartRouter = if (app.securePrefs.smartRoutingEnabled.value && !app.securePrefs.toolSearchEnabled.value) app.smartRouter else null,
                 toolSearchService = app.createToolSearchService(currentTier, currentEnabledSkillIds),
                 budgetConfig = app.createBudgetConfig(),
+                compactionConfig = app.securePrefs.compactionConfig.value,
             )
+
+            // Initialize background memory extractor for this run (opt-in)
+            val smartExtractionEnabled = app.securePrefs.getString("memory.smartExtraction") == "true"
+            val llmClient = app.getLlmClient()
+            backgroundExtractor = if (smartExtractionEnabled && llmClient !is LocalLlmClient) {
+                BackgroundMemoryExtractor(llmClient, memoryManager, model.modelId)
+            } else null
 
             agentLoop.run(text, conversationHistory, object : AgentLoop.Callbacks {
                 override fun onToken(text: String) {
@@ -520,6 +533,9 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
                     // Auto-store conversation turn in memory for future context
                     autoStoreConversationTurn(text, fullText)
+
+                    // Background memory extraction (ported from Claude Code)
+                    backgroundExtractor?.extractIfNeeded(conversationHistory, viewModelScope)
 
                     // Show ask_user overlay now that the turn is fully complete
                     pendingAskUserRequest?.let {
@@ -740,23 +756,71 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         Log.d("ChatViewModel", "ContextWindow | used=$used/$contextLimit (${String.format("%.1f", if (contextLimit > 0) used * 100f / contextLimit else 0f)}%) inputTokens=${tokenUsage.lastInputTokens} (cache_read=${tokenUsage.cacheReadTokens} cache_write=${tokenUsage.cacheWriteTokens})")
     }
 
-    private fun autoStoreConversationTurn(userText: String, @Suppress("UNUSED_PARAMETER") assistantText: String) {
+    /**
+     * Stores a structured summary of the conversation turn in long-term memory.
+     *
+     * Improvements over the original implementation:
+     * - Includes both user and assistant text (not just user)
+     * - Filters out trivial turns (short confirmations, greetings)
+     * - Formats as a structured turn summary for better retrieval
+     * - Scores importance based on content substance
+     * - Auto-tags based on simple keyword detection
+     */
+    private fun autoStoreConversationTurn(userText: String, assistantText: String) {
         val autoStoreEnabled = app.securePrefs.getString("memory.autoStore") != "false"
         if (!autoStoreEnabled) return
-        if (userText.length < 20) return
+
+        // Skip trivial user messages (confirmations, greetings, single words)
+        val trimmedUser = userText.trim()
+        if (trimmedUser.length < 30) return
+        if (TRIVIAL_PATTERN.matches(trimmedUser)) return
+
+        // Skip if assistant response is empty (error/cancelled)
+        val trimmedAssistant = assistantText.trim()
+        if (trimmedAssistant.isEmpty()) return
+
+        // Build structured turn summary
+        val userSummary = trimmedUser.take(400)
+        val assistantSummary = trimmedAssistant.take(400)
+        val content = "User: $userSummary\nAssistant: $assistantSummary"
+
+        // Auto-detect tags from content
+        val tags = mutableListOf("conversation")
+        val lowerContent = content.lowercase()
+        if (PREFERENCE_KEYWORDS.any { it in lowerContent }) tags.add("preference")
+        if (ERROR_KEYWORDS.any { it in lowerContent }) tags.add("troubleshooting")
+        if (DECISION_KEYWORDS.any { it in lowerContent }) tags.add("decision")
+
+        // Score importance based on substance
+        val importance = when {
+            trimmedUser.length > 200 && trimmedAssistant.length > 200 -> 0.5f
+            trimmedUser.contains('?') -> 0.4f  // Questions are valuable
+            else -> 0.3f
+        }
 
         viewModelScope.launch {
             try {
                 memoryManager.store(
-                    content = userText.take(500),
+                    content = content,
                     source = MemorySource.CONVERSATION,
-                    tags = listOf("conversation"),
-                    importance = 0.3f,
+                    tags = tags,
+                    importance = importance,
                 )
             } catch (_: Exception) {
                 // Memory storage is best-effort; don't disrupt the UI
             }
         }
+    }
+
+    companion object {
+        /** Matches trivial user messages that aren't worth remembering. */
+        private val TRIVIAL_PATTERN = Regex(
+            "^(yes|no|ok|okay|sure|thanks|thank you|yep|nope|got it|do it|go ahead|looks good|perfect|great|nice|cool|lgtm|\\+1|👍|k|y|n)\\s*[.!?]*$",
+            RegexOption.IGNORE_CASE,
+        )
+        private val PREFERENCE_KEYWORDS = listOf("prefer", "always use", "never use", "i like", "i don't like", "i want", "don't want")
+        private val ERROR_KEYWORDS = listOf("error", "bug", "fix", "crash", "fail", "broken", "wrong")
+        private val DECISION_KEYWORDS = listOf("decided", "let's go with", "we'll use", "the plan is", "going to", "switch to")
     }
 
     private suspend fun fetchUserBalance(walletAddress: String): BigDecimal? =

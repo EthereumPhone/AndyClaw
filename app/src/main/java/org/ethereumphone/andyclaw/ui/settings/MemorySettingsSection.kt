@@ -24,8 +24,10 @@ import org.ethereumphone.andyclaw.ui.components.DgenSquareSwitch
 fun MemorySettingsSection(
     memoryCount: Int,
     autoStoreEnabled: Boolean,
+    smartExtractionEnabled: Boolean,
     isReindexing: Boolean,
     onAutoStoreToggle: (Boolean) -> Unit,
+    onSmartExtractionToggle: (Boolean) -> Unit,
     onReindex: () -> Unit,
     onClearMemories: () -> Unit,
     modifier: Modifier = Modifier,
@@ -87,6 +89,33 @@ fun MemorySettingsSection(
             DgenSquareSwitch(
                 checked = autoStoreEnabled,
                 onCheckedChange = onAutoStoreToggle,
+                activeColor = primaryColor,
+            )
+        }
+
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "SMART EXTRACTION",
+                    style = contentTitleStyle,
+                    color = primaryColor,
+                )
+                Text(
+                    text = "Uses an extra LLM call after each turn to extract structured memories " +
+                        "(preferences, corrections, project context). Higher quality but costs additional tokens.",
+                    style = contentBodyStyle,
+                    color = dgenWhite,
+                )
+            }
+            Spacer(Modifier.width(20.dp))
+            DgenSquareSwitch(
+                checked = smartExtractionEnabled,
+                onCheckedChange = onSmartExtractionToggle,
                 activeColor = primaryColor,
             )
         }

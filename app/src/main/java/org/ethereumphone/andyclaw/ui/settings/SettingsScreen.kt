@@ -120,6 +120,7 @@ fun SettingsScreen(
     val heartbeatModel by viewModel.heartbeatModel.collectAsState()
     val memoryCount by viewModel.memoryCount.collectAsState()
     val autoStoreEnabled by viewModel.autoStoreEnabled.collectAsState()
+    val smartExtractionEnabled by viewModel.smartExtractionEnabled.collectAsState()
     val isReindexing by viewModel.isReindexing.collectAsState()
     val extensions by viewModel.extensions.collectAsState()
     val isExtensionScanning by viewModel.isExtensionScanning.collectAsState()
@@ -1479,8 +1480,10 @@ fun SettingsScreen(
             MemorySettingsSection(
                 memoryCount = memoryCount,
                 autoStoreEnabled = autoStoreEnabled,
+                smartExtractionEnabled = smartExtractionEnabled,
                 isReindexing = isReindexing,
                 onAutoStoreToggle = { viewModel.setAutoStoreEnabled(it) },
+                onSmartExtractionToggle = { viewModel.setSmartExtractionEnabled(it) },
                 onReindex = { viewModel.reindexMemory() },
                 onClearMemories = { viewModel.clearAllMemories() },
             )
