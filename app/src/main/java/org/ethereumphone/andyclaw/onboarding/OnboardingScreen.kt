@@ -1,6 +1,10 @@
 package org.ethereumphone.andyclaw.onboarding
 
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.keyframes
+import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInHorizontally
@@ -16,6 +20,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -111,28 +116,33 @@ fun OnboardingScreen(
                 .fillMaxSize()
                 .padding(24.dp),
         ) {
-            // Step counter
+            // Bobbing personality emoji (matches ethOSLauncher dGENT tab)
+            val bobTransition = rememberInfiniteTransition(label = "onboardingBob")
+            val bobOffset by bobTransition.animateFloat(
+                initialValue = -4f,
+                targetValue = 4f,
+                animationSpec = infiniteRepeatable(
+                    animation = keyframes {
+                        durationMillis = 1900
+                        -4f at 0
+                        -4f at 949
+                        4f at 950
+                        4f at 1900
+                    },
+                ),
+                label = "bobOffset",
+            )
             Text(
-                text = "[ STEP ${currentStep + 1} / $totalSteps ]",
+                text = "( \u02D8\u03C9\u02D8 )",
                 fontFamily = SpaceMono,
                 fontWeight = FontWeight.Bold,
-                fontSize = 14.sp,
+                fontSize = 24.sp,
                 color = primaryColor,
                 style = MaterialTheme.typography.bodyMedium.copy(
                     shadow = GlowStyle.subtitle(primaryColor),
                 ),
+                modifier = Modifier.offset(y = bobOffset.dp),
             )
-
-            // Progress bar as a thin accent line
-            Spacer(Modifier.height(8.dp))
-            Box(Modifier.fillMaxWidth().height(2.dp).background(primaryColor.copy(alpha = 0.2f))) {
-                Box(
-                    Modifier
-                        .fillMaxWidth((currentStep + 1) / totalSteps.toFloat())
-                        .height(2.dp)
-                        .background(primaryColor),
-                )
-            }
 
             Spacer(Modifier.height(24.dp))
 

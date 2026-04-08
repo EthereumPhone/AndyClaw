@@ -53,11 +53,12 @@ fun AppNavigation() {
         startDestination = startDestination,
     ) {
         composable(Routes.ONBOARDING) {
+            val activity = LocalContext.current as? android.app.Activity
             OnboardingScreen(
                 onComplete = {
-                    navController.navigate(Routes.CHAT) {
-                        popUpTo(Routes.ONBOARDING) { inclusive = true }
-                    }
+                    // Close the app so the user returns to ethOSLauncher's dgent fragment.
+                    // The launcher's onResume() will detect the completed setup.
+                    activity?.finish()
                 },
             )
         }
