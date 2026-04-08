@@ -224,9 +224,6 @@ class AnthropicClient(
                 put("tools", kotlinx.serialization.json.JsonArray(tools))
                 put("parallel_tool_calls", kotlinx.serialization.json.JsonPrimitive(request.parallelToolCalls))
             }
-            request.verbosity?.let {
-                put("verbosity", kotlinx.serialization.json.JsonPrimitive(it.value))
-            }
             request.temperature?.let {
                 put("temperature", kotlinx.serialization.json.JsonPrimitive(it))
             }

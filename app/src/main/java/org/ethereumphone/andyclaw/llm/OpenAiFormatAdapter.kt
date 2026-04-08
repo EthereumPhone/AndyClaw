@@ -61,9 +61,6 @@ object OpenAiFormatAdapter {
                     put("parallel_tool_calls", request.parallelToolCalls)
                 }
             }
-            request.verbosity?.let {
-                put("verbosity", it.value)
-            }
             request.temperature?.let {
                 put("temperature", it)
             }
