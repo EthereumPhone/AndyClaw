@@ -222,7 +222,15 @@ class AnthropicClient(
             put("messages", kotlinx.serialization.json.JsonArray(messagesJson))
             request.tools?.let { tools ->
                 put("tools", kotlinx.serialization.json.JsonArray(tools))
-                put("parallel_tool_calls", kotlinx.serialization.json.JsonPrimitive(request.parallelToolCalls))
+                // Anthropic's Messages API does not accept `parallel_tool_calls` (OpenAI-only).
+                // The equivalent is tool_choice.disable_parallel_tool_use, which we only set
+                // when the user has opted out so the default (parallel allowed) stays implicit.
+                if (!request.parallelToolCalls) {
+                    put("tool_choice", kotlinx.serialization.json.buildJsonObject {
+                        put("type", kotlinx.serialization.json.JsonPrimitive("auto"))
+                        put("disable_parallel_tool_use", kotlinx.serialization.json.JsonPrimitive(true))
+                    })
+                }
             }
             request.temperature?.let {
                 put("temperature", kotlinx.serialization.json.JsonPrimitive(it))
