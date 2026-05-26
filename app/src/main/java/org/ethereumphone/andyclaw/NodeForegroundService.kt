@@ -75,21 +75,25 @@ class NodeForegroundService : Service() {
             runtime.llmClient = app.getLlmClient()
             runtime.agentRunner = HeartbeatAgentRunner(app, app.heartbeatLogStore)
 
-            // Configure heartbeat with user-chosen interval
+            // Configure heartbeat with the user-chosen interval.
+            // intervalMinutes <= 0 means "disabled" — we still construct a
+            // HeartbeatConfig (NodeRuntime.initialize() may need it for
+            // heartbeatRunner construction) but use a placeholder positive
+            // intervalMs so the runner is not handed a non-positive delay.
+            // Actual start/stop is delegated to [observeHeartbeatInterval]
+            // which is the single source of truth for "is heartbeat running".
             val intervalMinutes = app.securePrefs.heartbeatIntervalMinutes.value
             runtime.heartbeatConfig = HeartbeatConfig(
-                intervalMs = intervalMinutes.toLong() * 60 * 1000,
+                intervalMs = intervalMinutes.toLong().coerceAtLeast(1L) * 60 * 1000,
                 heartbeatFilePath = File(filesDir, "HEARTBEAT.md").absolutePath,
             )
 
             // Seed HEARTBEAT.md if it doesn't exist
             seedHeartbeatFile()
 
-            // Initialize and start the heartbeat
+            // Initialize the runtime (skills, runners). Heartbeat is not yet
+            // running — observeHeartbeatInterval will start it if interval > 0.
             runtime.initialize()
-            runtime.startHeartbeat()
-
-            // Observe interval changes and update config dynamically
             observeHeartbeatInterval()
 
             // Start listening for XMTP new-message callbacks
@@ -124,19 +128,30 @@ class NodeForegroundService : Service() {
     }
 
     /**
-     * Observes the heartbeat interval preference and updates the runtime config
-     * whenever the user changes it in settings.
+     * Owns heartbeat start/stop based on the user's interval preference.
+     * Single source of truth — the init flow does not call startHeartbeat
+     * directly. StateFlow emits the current value to new collectors, so
+     * the initial state (enabled or disabled) is established on first
+     * collection, then any subsequent toggle in Settings flips us cleanly.
+     *
+     *  - `minutes <= 0` → stop (default; opt-in only)
+     *  - `minutes > 0`  → reconfigure + (re)start
      */
     private fun observeHeartbeatInterval() {
         serviceScope.launch {
             app.securePrefs.heartbeatIntervalMinutes
                 .collect { minutes ->
-                    val newIntervalMs = minutes.toLong() * 60 * 1000
-                    Log.i(TAG, "Heartbeat interval changed to ${minutes}m")
-                    runtime.heartbeatConfig = HeartbeatConfig(
-                        intervalMs = newIntervalMs,
-                        heartbeatFilePath = File(filesDir, "HEARTBEAT.md").absolutePath,
-                    )
+                    runtime.stopHeartbeat()
+                    if (minutes > 0) {
+                        runtime.heartbeatConfig = HeartbeatConfig(
+                            intervalMs = minutes.toLong() * 60 * 1000,
+                            heartbeatFilePath = File(filesDir, "HEARTBEAT.md").absolutePath,
+                        )
+                        runtime.startHeartbeat()
+                        Log.i(TAG, "Heartbeat started (interval=${minutes}m)")
+                    } else {
+                        Log.i(TAG, "Heartbeat disabled (interval=$minutes) — opt in via Settings")
+                    }
                 }
         }
     }

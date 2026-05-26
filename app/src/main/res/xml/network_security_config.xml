@@ -1,4 +1,18 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+    Cleartext HTTP is permitted app-wide so the CUSTOM provider can reach
+    user-hosted LAN endpoints (Ollama / LM Studio / vLLM / llama.cpp server
+    typically expose http://192.168.x.x:11434 or :1234 without TLS).
+
+    Android's network-security-config does not support CIDR or wildcard hosts,
+    only literal domain names, so a per-LAN-subnet rule isn't expressible.
+    HTTPS endpoints (api.openai.com, api.anthropic.com, chatgpt.com, etc.)
+    are unaffected by this permission — it widens what's allowed, not what's
+    required.
+
+    If you host TLS on a self-signed cert, you'll separately need a
+    <trust-anchors> entry for that cert.
+-->
 <network-security-config>
-  <base-config cleartextTrafficPermitted="false" />
+  <base-config cleartextTrafficPermitted="true" />
 </network-security-config>

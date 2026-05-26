@@ -2,6 +2,7 @@ package org.ethereumphone.andyclaw.llm
 
 import android.util.Log
 import com.llamatik.library.platform.GenStream
+import com.llamatik.library.platform.LlamaBridge
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonObject
@@ -27,6 +28,14 @@ import kotlinx.serialization.json.jsonObject as kxJsonObject
 class LocalLlmClient(
     private val llamaCpp: LlamaCpp,
     private val modelDownloadManager: ModelDownloadManager?,
+    /**
+     * Returns the absolute path of the user-selected GGUF, or null to fall
+     * back to [modelDownloadManager]'s default download. Wired in NodeApp
+     * from [GgufRegistry] + the `selectedGgufFilename` pref.
+     */
+    private val selectedModelPathProvider: () -> String? = { null },
+    /** Returns the current runtime config to apply at init + per-generation. */
+    private val configProvider: () -> LocalLlmRuntimeConfig = { LocalLlmRuntimeConfig.DEFAULT },
 ) : LlmClient {
 
     companion object {
@@ -47,24 +56,50 @@ class LocalLlmClient(
     override val maxToolCount: Int = 8
 
     /**
-     * Ensures the model is loaded into memory, auto-loading from disk if needed.
-     * Returns true if the model is ready, false otherwise.
+     * Ensures a model is loaded with the current config. Resolves the path in
+     * this order: (1) the user-selected GGUF from [selectedModelPathProvider],
+     * (2) [modelDownloadManager]'s default download. Reloads if the selected
+     * path or hardware-level config changed since the last load. Sampling
+     * params are applied unconditionally (cheap, no reload).
      */
     private fun ensureModelLoaded(): Boolean {
-        if (llamaCpp.isModelLoaded) return true
+        val desiredConfig = configProvider()
 
-        if (modelDownloadManager?.isModelDownloaded != true) {
-            Log.e(TAG, "Model file not downloaded — cannot load")
-            return false
-        }
+        val selectedPath = try { selectedModelPathProvider() } catch (_: Exception) { null }
+        val path = selectedPath
+            ?: modelDownloadManager?.takeIf { it.isModelDownloaded }?.modelFile?.absolutePath
+            ?: run {
+                Log.e(TAG, "No GGUF available — none selected and default not downloaded")
+                return false
+            }
 
-        val path = modelDownloadManager!!.modelFile.absolutePath
-        Log.i(TAG, "Auto-loading model from $path")
-        val loaded = llamaCpp.load(path)
-        if (!loaded) {
-            Log.e(TAG, "Failed to load model from $path")
+        // Compare HARDWARE fields only: sampling changes (temp / topP / etc.)
+        // are applied per-generation via updateGenerateParams and must not
+        // trigger a 750MB+ model reload. See LocalLlmRuntimeConfig.hardwareEquals.
+        val needsLoad = !llamaCpp.isModelLoaded ||
+            llamaCpp.loadedModelPath != path ||
+            !desiredConfig.hardwareEquals(llamaCpp.loadedConfig)
+        if (needsLoad) {
+            Log.i(TAG, "Loading model: $path (config=$desiredConfig)")
+            val loaded = llamaCpp.load(path, desiredConfig)
+            if (!loaded) {
+                Log.e(TAG, "Failed to load model from $path")
+                return false
+            }
         }
-        return loaded
+        applySamplingParams(desiredConfig)
+        return true
+    }
+
+    /** Push the sampling knobs into Llamatik. Cheap; no model reload. */
+    private fun applySamplingParams(config: LocalLlmRuntimeConfig) {
+        LlamaBridge.updateGenerateParams(
+            temperature   = config.temperature,
+            maxTokens     = config.maxTokens,
+            topP          = config.topP,
+            topK          = config.topK,
+            repeatPenalty = config.repeatPenalty,
+        )
     }
 
     override suspend fun sendMessage(request: MessagesRequest): MessagesResponse = withContext(Dispatchers.IO) {
@@ -108,15 +143,27 @@ class LocalLlmClient(
     }
 
     /**
-     * Format messages into a ChatML prompt string for Qwen2.5.
+     * Format messages into a model-appropriate prompt string.
      *
-     * Injects tool schemas into the system prompt in a simple text format
-     * that small models can parse. Uses Hermes-style `<tool_call>` tags
-     * which Qwen2.5-Instruct models are fine-tuned to produce.
+     * Dispatches by the loaded GGUF's filename: Gemma family uses
+     * `<start_of_turn>/<end_of_turn>` with `user`/`model` roles; everything
+     * else falls back to Qwen2.5 ChatML (`<|im_start|>/<|im_end|>` with
+     * `system`/`user`/`assistant` roles). This is a heuristic — when no
+     * GGUF is loaded yet (path null), Qwen ChatML is the safe default since
+     * the bundled model is Qwen2.5-1.5B-Instruct.
      *
-     * Adds `/no_think` to disable thinking mode (faster, avoids `<think>` tags).
+     * Future: read `tokenizer.chat_template` from GGUF metadata via Llamatik
+     * and apply it via llama.cpp's `llama_chat_apply_template`. For now the
+     * filename heuristic covers the two model families we ship with.
      */
     internal fun formatChatML(request: MessagesRequest): String {
+        val loadedPath = llamaCpp.loadedModelPath?.lowercase().orEmpty()
+        return if ("gemma" in loadedPath) formatGemma(request)
+        else formatQwenChatML(request)
+    }
+
+    /** Qwen2.5 ChatML format: `<|im_start|>role\n...<|im_end|>`. */
+    private fun formatQwenChatML(request: MessagesRequest): String {
         val sb = StringBuilder()
 
         // System prompt with tool schemas
@@ -164,6 +211,63 @@ class LocalLlmClient(
 
         // Prompt for assistant response
         sb.append("<|im_start|>assistant\n")
+        return sb.toString()
+    }
+
+    /**
+     * Gemma 2 / 3 / 3n chat format. Differences vs Qwen ChatML:
+     *  - Turn delimiters are `<start_of_turn>role\n...<end_of_turn>`.
+     *  - Roles are `user` and `model` (no `assistant`, no `system`).
+     *  - There is no system role — the system prompt + tool schemas are folded
+     *    into the first user turn.
+     *  - `<bos>` is added by the tokenizer (we don't emit it literally).
+     */
+    private fun formatGemma(request: MessagesRequest): String {
+        // Build the system+tools preamble that will prefix the first user turn.
+        val preamble = buildString {
+            if (!request.system.isNullOrBlank()) {
+                append(request.system).append("\n\n")
+            }
+            val tools = request.tools
+            if (!tools.isNullOrEmpty()) {
+                append("# Tools\n")
+                append("You have these tools:\n\n")
+                for (tool in tools) {
+                    val name = tool["name"]?.jsonPrimitive?.content ?: continue
+                    val desc = tool["description"]?.jsonPrimitive?.content ?: ""
+                    append("## $name\n")
+                    append("$desc\n")
+                    val schema = tool["input_schema"]?.jsonObject
+                    val props = schema?.get("properties")?.jsonObject
+                    if (props != null && props.isNotEmpty()) {
+                        append("Parameters: ")
+                        append(props.keys.joinToString(", "))
+                        append("\n")
+                    }
+                    append("\n")
+                }
+                append("To use a tool, respond ONLY with:\n")
+                append("<tool_call>\n")
+                append("{\"name\": \"tool_name\", \"arguments\": {\"param\": \"value\"}}\n")
+                append("</tool_call>\n\n")
+            }
+        }
+
+        val sb = StringBuilder()
+        val messages = request.messages
+        for ((idx, msg) in messages.withIndex()) {
+            val role = if (msg.role == "assistant") "model" else "user"
+            sb.append("<start_of_turn>").append(role).append("\n")
+            // Prepend preamble to the first user turn so the model gets the
+            // system instructions + tool schemas in-band.
+            if (idx == 0 && role == "user" && preamble.isNotEmpty()) {
+                sb.append(preamble)
+            }
+            sb.append(extractText(msg.content))
+            sb.append("<end_of_turn>\n")
+        }
+        // Prompt for the model to respond.
+        sb.append("<start_of_turn>model\n")
         return sb.toString()
     }
 

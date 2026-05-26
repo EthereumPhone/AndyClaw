@@ -16,7 +16,10 @@ import org.ethereumphone.andyclaw.skills.termux.ClawHubTermuxSkillAdapter
 import org.ethereumphone.andyclaw.skills.termux.TermuxCommandRunner
 import org.ethereumphone.andyclaw.skills.termux.TermuxSkillSync
 import org.ethereumphone.andyclaw.llm.AnthropicClient
+import org.ethereumphone.andyclaw.llm.ChatGptOauthClient
+import org.ethereumphone.andyclaw.llm.ChatGptOauthTokenManager
 import org.ethereumphone.andyclaw.llm.ClaudeOauthClient
+import org.ethereumphone.andyclaw.llm.GgufRegistry
 import org.ethereumphone.andyclaw.llm.LlamaCpp
 import org.ethereumphone.andyclaw.llm.LlmClient
 import org.ethereumphone.andyclaw.llm.LlmProvider
@@ -508,6 +511,16 @@ class NodeApp : Application() {
         )
     }
 
+    /** User-configured OpenAI-compatible endpoint (Ollama / LM Studio / vLLM / etc.).
+     *  baseUrl + apiKey are re-read from SecurePrefs on every request, so the user
+     *  can change them in Settings without restarting the app. */
+    private val customClient: OpenAiNativeClient by lazy {
+        OpenAiNativeClient(
+            apiKey = { securePrefs.customApiKey.value },
+            baseUrlProvider = { securePrefs.customBaseUrl.value },
+        )
+    }
+
     val tinfoilProxyClient: TinfoilProxyClient by lazy {
         TinfoilProxyClient(
             userId = { securePrefs.walletAddress.value },
@@ -522,14 +535,46 @@ class NodeApp : Application() {
         ModelDownloadManager(this)
     }
 
+    /** Multi-GGUF registry — backs the BYO-model picker in Local LLM settings. */
+    val ggufRegistry: GgufRegistry by lazy { GgufRegistry(this) }
+
     private val claudeOauthClient: ClaudeOauthClient by lazy {
         ClaudeOauthClient(
             setupTokenProvider = { securePrefs.claudeOauthRefreshToken.value },
         )
     }
 
+    private val chatGptOauthTokenManager: ChatGptOauthTokenManager by lazy {
+        ChatGptOauthTokenManager(
+            refreshTokenProvider = { securePrefs.chatgptOauthRefreshToken.value },
+            accessTokenProvider  = { securePrefs.chatgptOauthAccessToken.value },
+            expiresAtProvider    = { securePrefs.chatgptOauthExpiresAt.value },
+            accountIdProvider    = { securePrefs.chatgptOauthAccountId.value },
+            onTokensUpdated = { accessToken, expiresAt, accountId ->
+                securePrefs.setChatGptOauthAccessToken(accessToken)
+                securePrefs.setChatGptOauthExpiresAt(expiresAt)
+                securePrefs.setChatGptOauthAccountId(accountId)
+            },
+            refreshTokenSetter = { rotated ->
+                // Server rotated: keep the just-persisted access-token cache warm.
+                securePrefs.silentlyUpdateChatGptOauthRefreshToken(rotated)
+            },
+        )
+    }
+
+    private val chatGptOauthClient: ChatGptOauthClient by lazy {
+        ChatGptOauthClient(chatGptOauthTokenManager)
+    }
+
     private val localLlmClient: LocalLlmClient by lazy {
-        LocalLlmClient(llamaCpp, modelDownloadManager)
+        LocalLlmClient(
+            llamaCpp = llamaCpp,
+            modelDownloadManager = modelDownloadManager,
+            selectedModelPathProvider = {
+                ggufRegistry.find(securePrefs.selectedGgufFilename.value)?.absolutePath
+            },
+            configProvider = { securePrefs.currentLocalLlmConfig() },
+        )
     }
 
     /**
@@ -579,20 +624,24 @@ class NodeApp : Application() {
                 }
                 LlmProvider.OPEN_ROUTER -> openRouterClient
                 LlmProvider.CLAUDE_OAUTH -> claudeOauthClient
+                LlmProvider.OPENAI_OAUTH -> chatGptOauthClient
                 LlmProvider.TINFOIL -> tinfoilClient
                 LlmProvider.OPENAI -> openAiNativeClient
                 LlmProvider.VENICE -> veniceClient
                 LlmProvider.LOCAL -> localLlmClient
+                LlmProvider.CUSTOM -> customClient
             }
         }
         return when (provider) {
             LlmProvider.ETHOS_PREMIUM -> anthropicClient
             LlmProvider.OPEN_ROUTER -> openRouterClient
             LlmProvider.CLAUDE_OAUTH -> claudeOauthClient
+            LlmProvider.OPENAI_OAUTH -> chatGptOauthClient
             LlmProvider.TINFOIL -> tinfoilClient
             LlmProvider.OPENAI -> openAiNativeClient
             LlmProvider.VENICE -> veniceClient
             LlmProvider.LOCAL -> localLlmClient
+            LlmProvider.CUSTOM -> customClient
         }
     }
 

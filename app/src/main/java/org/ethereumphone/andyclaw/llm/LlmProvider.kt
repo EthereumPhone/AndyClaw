@@ -17,6 +17,10 @@ enum class LlmProvider(val displayName: String, val description: String) {
         displayName = "Claude (OAuth)",
         description = "Uses your Claude Pro/Max subscription directly via Anthropic's API. Requires a setup-token from Claude Code CLI.",
     ),
+    OPENAI_OAUTH(
+        displayName = "ChatGPT (OAuth)",
+        description = "Uses your ChatGPT Plus/Pro/Business subscription via OpenAI's Codex backend. Requires a refresh token from the Codex CLI (~/.codex/auth.json after `codex login`). Codex-supported models only.",
+    ),
     OPENAI(
         displayName = "OpenAI",
         description = "Cloud inference via OpenAI's API. Requires an OpenAI API key.",
@@ -28,6 +32,10 @@ enum class LlmProvider(val displayName: String, val description: String) {
     LOCAL(
         displayName = "On-Device",
         description = "Runs entirely on your phone. No data leaves the device. Slower performance, limited capabilities.",
+    ),
+    CUSTOM(
+        displayName = "Custom Server",
+        description = "Connect to any OpenAI-compatible HTTP endpoint you host yourself (Ollama, LM Studio, vLLM, llama.cpp server, LocalAI, …). Enter the full /v1/chat/completions URL, an optional API key, and the model id served by your backend.",
     );
 
     companion object {

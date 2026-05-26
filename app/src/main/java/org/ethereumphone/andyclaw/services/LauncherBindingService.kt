@@ -371,9 +371,11 @@ class LauncherBindingService : Service() {
                     LlmProvider.OPEN_ROUTER -> prefs.apiKey.value.isNotBlank()
                     LlmProvider.TINFOIL -> prefs.tinfoilApiKey.value.isNotBlank()
                     LlmProvider.CLAUDE_OAUTH -> prefs.claudeOauthRefreshToken.value.isNotBlank()
+                    LlmProvider.OPENAI_OAUTH -> prefs.chatgptOauthRefreshToken.value.isNotBlank()
                     LlmProvider.OPENAI -> prefs.openaiApiKey.value.isNotBlank()
                     LlmProvider.VENICE -> prefs.veniceApiKey.value.isNotBlank()
                     LlmProvider.LOCAL -> true
+                    LlmProvider.CUSTOM -> prefs.customBaseUrl.value.isNotBlank() && prefs.customModelId.value.isNotBlank()
                 }
                 arr.put(JSONObject().apply {
                     put("name", provider.name)

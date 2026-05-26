@@ -32,6 +32,8 @@ android {
         buildConfigField("String", "PREMIUM_LLM_URL", "\"${localProps.getProperty("PREMIUM_LLM_URL", "https://api.markushaas.com/api/premium-llm-andy")}\"")
         buildConfigField("String", "ZEROX_API_KEY", "\"${localProps.getProperty("ZEROX_API_KEY", "")}\"")
         buildConfigField("String", "BANKR_API", "\"${localProps.getProperty("BANKR_API", "")}\"")
+        buildConfigField("String", "VENICE_API", "\"${localProps.getProperty("VENICE_API", "")}\"")
+
 
         ndk {
             abiFilters += listOf("arm64-v8a")

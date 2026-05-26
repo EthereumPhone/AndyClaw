@@ -245,4 +245,6 @@ class AnthropicApiException(
     message: String,
     /** Parsed from the `retry-after` response header, if present. */
     val retryAfterSeconds: Int? = null,
-) : Exception("Anthropic API error ($statusCode): $message")
+    /** Provider name used in the error label, e.g. "Anthropic", "Venice", "OpenAI". */
+    val provider: String = "Anthropic",
+) : Exception("$provider API error ($statusCode): $message")

@@ -148,8 +148,10 @@ class OnboardingViewModel(application: Application) : AndroidViewModel(applicati
                         LlmProvider.TINFOIL -> app.securePrefs.setTinfoilApiKey(tinfoilApiKey.value.trim())
                         LlmProvider.OPENAI -> app.securePrefs.setOpenaiApiKey(openaiApiKey.value.trim())
                         LlmProvider.VENICE -> app.securePrefs.setVeniceApiKey(veniceApiKey.value.trim())
+                        LlmProvider.OPENAI_OAUTH,
+                        LlmProvider.CUSTOM,
                         LlmProvider.LOCAL,
-                        LlmProvider.ETHOS_PREMIUM -> { /* No API key needed */ }
+                        LlmProvider.ETHOS_PREMIUM -> { /* No API key needed / configure in Settings */ }
                     }
                     // Set default model for the selected provider
                     val defaultModel = AnthropicModels.defaultForProvider(provider)
