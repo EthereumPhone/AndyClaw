@@ -2,6 +2,7 @@ package org.ethereumphone.andyclaw.backup
 
 import android.content.Context
 import android.util.Log
+import androidx.room.withTransaction
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.ethereumphone.andyclaw.NodeApp
@@ -19,6 +20,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
+import java.io.File
 import java.io.InputStream
 import java.io.OutputStream
 import java.security.SecureRandom
@@ -83,7 +85,8 @@ class BackupManager(private val context: Context) {
             app.userStoryManager.read()?.let { writeZipEntry(zip, "user_story.md", it) }
             writeZipEntry(zip, "heartbeat_logs.json", exportHeartbeatLogs().toString())
             writeZipEntry(zip, "custom_tools.json", exportCustomTools().toString())
-            exportClawHubSkills(zip)
+            exportSkillDir(zip, app.clawHubSkillsDir, "clawhub-skills/")
+            exportSkillDir(zip, app.aiSkillsDir, "ai-skills/")
         }
 
         val plaintext = zipBytes.toByteArray()
@@ -178,7 +181,7 @@ class BackupManager(private val context: Context) {
         entries["user_story.md"]?.let { app.userStoryManager.write(it.decodeToString()) }
         entries["heartbeat_logs.json"]?.let { importHeartbeatLogs(JSONArray(it.decodeToString())) }
         entries["custom_tools.json"]?.let { importCustomTools(JSONArray(it.decodeToString())) }
-        importClawHubSkills(entries)
+        importSkills(entries)
 
         Log.i(TAG, "Backup restored successfully")
     }
@@ -334,10 +337,11 @@ class BackupManager(private val context: Context) {
     }
 
     private suspend fun importMemories(json: JSONObject) {
-        val memoryDao = MemoryDatabase.getInstance(context).memoryDao()
+        val db = MemoryDatabase.getInstance(context)
+        val memoryDao = db.memoryDao()
 
-        memoryDao.deleteAllEntries()
-
+        // Parse everything BEFORE touching the DB so malformed input throws
+        // before any deletion.
         val entriesArr = json.getJSONArray("entries")
         val entries = (0 until entriesArr.length()).map { i ->
             val obj = entriesArr.getJSONObject(i)
@@ -354,7 +358,6 @@ class BackupManager(private val context: Context) {
                 accessCount = obj.optInt("accessCount", 0),
             )
         }
-        memoryDao.insertEntries(entries)
 
         val tagsArr = json.getJSONArray("tags")
         val tags = (0 until tagsArr.length()).map { i ->
@@ -364,7 +367,6 @@ class BackupManager(private val context: Context) {
                 name = obj.getString("name"),
             )
         }
-        memoryDao.insertTags(tags)
 
         val xrefsArr = json.getJSONArray("entryTags")
         val xrefs = (0 until xrefsArr.length()).map { i ->
@@ -374,23 +376,38 @@ class BackupManager(private val context: Context) {
                 tagId = obj.getLong("tagId"),
             )
         }
-        memoryDao.insertEntryTagCrossRefs(xrefs)
 
         val chunksArr = json.optJSONArray("chunks")
-        if (chunksArr != null && chunksArr.length() > 0) {
-            val chunks = (0 until chunksArr.length()).map { i ->
-                val obj = chunksArr.getJSONObject(i)
-                MemoryChunkEntity(
-                    chunkUuid = obj.getString("chunkUuid"),
-                    memoryId = obj.getString("memoryId"),
-                    text = obj.getString("text"),
-                    startOffset = obj.getInt("startOffset"),
-                    endOffset = obj.getInt("endOffset"),
-                    hash = obj.getString("hash"),
-                    updatedAt = obj.getLong("updatedAt"),
-                )
-            }
-            memoryDao.insertChunks(chunks)
+        val chunks = if (chunksArr != null) (0 until chunksArr.length()).map { i ->
+            val obj = chunksArr.getJSONObject(i)
+            MemoryChunkEntity(
+                chunkUuid = obj.getString("chunkUuid"),
+                memoryId = obj.getString("memoryId"),
+                text = obj.getString("text"),
+                startOffset = obj.getInt("startOffset"),
+                endOffset = obj.getInt("endOffset"),
+                hash = obj.getString("hash"),
+                updatedAt = obj.getLong("updatedAt"),
+            )
+        } else emptyList()
+
+        // Atomic replace: a failure mid-restore rolls back, never wiping memories.
+        db.withTransaction {
+            memoryDao.deleteAllEntries()
+            memoryDao.insertEntries(entries)
+            memoryDao.insertTags(tags)
+            memoryDao.insertEntryTagCrossRefs(xrefs)
+            if (chunks.isNotEmpty()) memoryDao.insertChunks(chunks)
+        }
+
+        // External-content FTS4 does not auto-sync after batch writes — rebuild
+        // the index so restored memories are searchable (otherwise search is stale).
+        // Non-fatal: a rebuild hiccup must not abort the rest of restoreBackup
+        // (sessions/transactions still need to restore); a stale index is rebuildable.
+        try {
+            db.rebuildFtsIndex()
+        } catch (e: Exception) {
+            Log.w(TAG, "FTS rebuild after memory restore failed (index may be stale)", e)
         }
     }
 
@@ -438,10 +455,11 @@ class BackupManager(private val context: Context) {
     }
 
     private suspend fun importSessions(json: JSONObject) {
-        val sessionDao = SessionDatabase.getInstance(context).sessionDao()
+        val db = SessionDatabase.getInstance(context)
+        val sessionDao = db.sessionDao()
 
-        sessionDao.deleteAllSessions()
-
+        // Parse everything BEFORE touching the DB: malformed input throws here,
+        // before any deletion, so a bad backup can never wipe existing data.
         val sessionsArr = json.getJSONArray("sessions")
         val sessions = (0 until sessionsArr.length()).map { i ->
             val obj = sessionsArr.getJSONObject(i)
@@ -460,7 +478,6 @@ class BackupManager(private val context: Context) {
                 isAborted = obj.optBoolean("isAborted", false),
             )
         }
-        sessionDao.insertSessions(sessions)
 
         val messagesArr = json.getJSONArray("messages")
         val messages = (0 until messagesArr.length()).map { i ->
@@ -476,7 +493,14 @@ class BackupManager(private val context: Context) {
                 orderIndex = obj.getInt("orderIndex"),
             )
         }
-        sessionDao.insertMessages(messages)
+
+        // Atomic replace: delete + both inserts commit together, or roll back
+        // together. A failure mid-restore never leaves conversations wiped.
+        db.withTransaction {
+            sessionDao.deleteAllSessions()
+            sessionDao.insertSessions(sessions)
+            sessionDao.insertMessages(messages)
+        }
     }
 
     // ── Transaction export/import ───────────────────────────────────────
@@ -500,8 +524,8 @@ class BackupManager(private val context: Context) {
     }
 
     private suspend fun importTransactions(arr: JSONArray) {
-        val txDao = AgentTxDatabase.getInstance(context).agentTxDao()
-        txDao.deleteAll()
+        val db = AgentTxDatabase.getInstance(context)
+        val txDao = db.agentTxDao()
         val txs = (0 until arr.length()).map { i ->
             val obj = arr.getJSONObject(i)
             AgentTxEntity(
@@ -515,7 +539,11 @@ class BackupManager(private val context: Context) {
                 timestamp = obj.getLong("timestamp"),
             )
         }
-        txDao.insertAll(txs)
+        // Atomic replace.
+        db.withTransaction {
+            txDao.deleteAll()
+            txDao.insertAll(txs)
+        }
     }
 
     // ── Heartbeat log export/import ─────────────────────────────────────
@@ -586,42 +614,49 @@ class BackupManager(private val context: Context) {
 
     // ── ClawHub skills export/import ────────────────────────────────────
 
-    private fun exportClawHubSkills(zip: ZipOutputStream) {
-        val skillsDir = app.clawHubSkillsDir
-        if (!skillsDir.exists()) return
-
-        skillsDir.walkTopDown().forEach { file ->
+    /** Write every file under [dir] into the zip under [prefix]. */
+    private fun exportSkillDir(zip: ZipOutputStream, dir: File, prefix: String) {
+        if (!dir.exists()) return
+        dir.walkTopDown().forEach { file ->
             if (file.isFile) {
-                val relativePath = file.relativeTo(skillsDir).path
-                val zipPath = "clawhub-skills/$relativePath"
-                zip.putNextEntry(ZipEntry(zipPath))
+                val relativePath = file.relativeTo(dir).path
+                zip.putNextEntry(ZipEntry("$prefix$relativePath"))
                 file.inputStream().use { it.copyTo(zip) }
                 zip.closeEntry()
             }
         }
     }
 
-    private suspend fun importClawHubSkills(entries: Map<String, ByteArray>) {
-        val prefix = "clawhub-skills/"
+    /** Restore both ClawHub-installed and AI-created skills, then rescan once. */
+    private suspend fun importSkills(entries: Map<String, ByteArray>) {
+        var restoredAny = false
+        restoredAny = restoreSkillDir(entries, app.clawHubSkillsDir, "clawhub-skills/") || restoredAny
+        restoredAny = restoreSkillDir(entries, app.aiSkillsDir, "ai-skills/") || restoredAny
+
+        if (restoredAny) {
+            try {
+                app.extensionEngine.discoverAndRegister()
+            } catch (_: Exception) {
+                // Best-effort; user can rescan from settings
+            }
+        }
+    }
+
+    /** Replace [dir]'s contents with the archive entries under [prefix]. Returns
+     *  true if the archive contained anything for this dir. */
+    private fun restoreSkillDir(entries: Map<String, ByteArray>, dir: File, prefix: String): Boolean {
         val skillEntries = entries.filter { it.key.startsWith(prefix) }
-        if (skillEntries.isEmpty()) return
+        if (skillEntries.isEmpty()) return false
 
-        val skillsDir = app.clawHubSkillsDir
-
-        skillsDir.listFiles()?.forEach { it.deleteRecursively() }
+        dir.listFiles()?.forEach { it.deleteRecursively() }
 
         for ((path, data) in skillEntries) {
             val relativePath = path.removePrefix(prefix)
-            val target = java.io.File(skillsDir, relativePath)
+            val target = File(dir, relativePath)
             target.parentFile?.mkdirs()
             target.writeBytes(data)
         }
-
-        try {
-            app.extensionEngine.discoverAndRegister()
-        } catch (_: Exception) {
-            // Best-effort; user can rescan from settings
-        }
+        return true
     }
 
     // ── Manifest ────────────────────────────────────────────────────────

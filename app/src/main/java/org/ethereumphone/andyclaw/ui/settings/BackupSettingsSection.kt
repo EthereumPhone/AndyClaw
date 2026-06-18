@@ -150,8 +150,9 @@ fun BackupSettingsSection(
             text = {
                 Column {
                     Text(
-                        text = "Set a password to encrypt your backup. This protects " +
-                            "your API keys and other sensitive data.",
+                        text = "Set a password to encrypt your backup. Without one, the file " +
+                            "is saved to Downloads with your API keys and wallet signature in " +
+                            "plain text — anyone who gets the file can read them.",
                         style = contentBodyStyle,
                         color = dgenWhite,
                     )
