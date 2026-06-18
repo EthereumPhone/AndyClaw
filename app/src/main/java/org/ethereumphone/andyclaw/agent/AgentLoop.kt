@@ -844,7 +844,11 @@ class AgentLoop(
                 enabledSkillIds = enabledSkillIds,
                 presetProvider = null, // sub-agents use default CORE
             )
-            effectiveModelId = model.modelId
+            // Honor the raw model-id override (e.g. CUSTOM provider's non-enum
+            // ids like `gpt-oss:20b`) on this path too — matches the SmartRouter
+            // path below and the main loop. Without it a CUSTOM-provider subagent
+            // on the ToolSearch path would send the enum-fallback id instead.
+            effectiveModelId = customModelIdOverride ?: model.modelId
             baseMaxTokens = model.maxTokens
             subagentSkills = skillRegistry.getEnabled(enabledSkillIds)
             subagentToolsJson = subagentToolSearch.buildToolList(nameResolver)
