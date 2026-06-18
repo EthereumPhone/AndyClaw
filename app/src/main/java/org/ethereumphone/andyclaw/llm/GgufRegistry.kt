@@ -80,6 +80,34 @@ class GgufRegistry(
     }
 
     /**
+     * Copy a GGUF from an open file descriptor (cross-process import from the
+     * launcher via AIDL) into `filesDir/models/<filename>`, then refresh.
+     * Synchronous — call off the main thread. Writes to a `.tmp` first and
+     * renames on full-copy success so a cancelled/half copy never appears in
+     * the registry. Returns the new entry, or null on failure.
+     */
+    fun importFromFd(fd: android.os.ParcelFileDescriptor, displayName: String): GgufModel? {
+        return try {
+            val safeName = ensureGgufExtension(sanitize(displayName))
+            val dest = uniqueDest(safeName)
+            val tmp = File(dest.parentFile, "${dest.name}.tmp")
+            java.io.FileInputStream(fd.fileDescriptor).use { input ->
+                tmp.outputStream().use { output -> input.copyTo(output, BUFFER_SIZE) }
+            }
+            if (!tmp.renameTo(dest)) {
+                tmp.delete()
+                error("rename ${tmp.name} -> ${dest.name} failed")
+            }
+            Log.i(TAG, "imported gguf (fd): ${dest.name} (${dest.length()} bytes)")
+            refresh()
+            _models.value.firstOrNull { it.filename == dest.name }
+        } catch (e: Exception) {
+            Log.e(TAG, "importFromFd failed", e)
+            null
+        }
+    }
+
+    /**
      * Delete an entry from `filesDir/models/`. Refuses to delete the builtin —
      * for that, call [ModelDownloadManager.deleteModel] so the download-state
      * flow is reset consistently.
