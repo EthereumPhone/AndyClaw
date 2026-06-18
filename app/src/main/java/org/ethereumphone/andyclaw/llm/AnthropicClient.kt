@@ -19,6 +19,11 @@ class AnthropicClient(
     private val extraHeaders: () -> Map<String, String> = { emptyMap() },
     private val baseUrl: String = "https://api.markushaas.com/api/premium-llm-andy",
     private val channel: () -> String = { "" },
+    /** Provider name used in error labels. This client speaks the Anthropic
+     *  Messages format, but the endpoint behind it varies (direct Anthropic,
+     *  OpenRouter, or the ethOS premium backend), so the label is set per
+     *  instance rather than assumed to be "Anthropic". */
+    private val provider: String = "Anthropic",
 ) : LlmClient {
     companion object {
         private const val API_VERSION = "2023-06-01"
@@ -71,9 +76,9 @@ class AnthropicClient(
         if (!response.isSuccessful) {
             val errorBody = response.body?.string() ?: "Unknown error"
             val retryAfter = response.header("retry-after")?.toIntOrNull()
-            throw AnthropicApiException(response.code, errorBody, retryAfter)
+            throw AnthropicApiException(response.code, errorBody, retryAfter, provider = provider)
         }
-        val responseBody = response.body?.string() ?: throw AnthropicApiException(500, "Empty response")
+        val responseBody = response.body?.string() ?: throw AnthropicApiException(500, "Empty response", provider = provider)
         json.decodeFromString<MessagesResponse>(responseBody)
     }
 
@@ -92,7 +97,7 @@ class AnthropicClient(
             val errorBody = response.body?.string() ?: "Unknown error"
             val retryAfter = response.header("retry-after")?.toIntOrNull()
             Log.e("AGENT_VIRTUAL_SCREEN", "AnthropicClient.streamMessage: HTTP ${response.code}, errorBody=${errorBody.take(500)}")
-            throw AnthropicApiException(response.code, errorBody, retryAfter)
+            throw AnthropicApiException(response.code, errorBody, retryAfter, provider = provider)
         }
 
         val parser = SseParser(callback)

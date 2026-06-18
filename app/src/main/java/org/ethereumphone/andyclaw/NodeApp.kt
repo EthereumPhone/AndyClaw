@@ -479,11 +479,13 @@ class NodeApp : Application() {
                 userId = { securePrefs.walletAddress.value },
                 signature = { securePrefs.walletSignature.value },
                 channel = { getUpdateChannel() },
+                provider = "ethOS Premium",
             )
         } else {
             AnthropicClient(
                 apiKey = { securePrefs.apiKey.value },
                 baseUrl = "https://openrouter.ai/api/v1/messages",
+                provider = "ethOS Premium",
             )
         }
     }
@@ -493,6 +495,7 @@ class NodeApp : Application() {
         AnthropicClient(
             apiKey = { securePrefs.apiKey.value },
             baseUrl = "https://openrouter.ai/api/v1/messages",
+            provider = "OpenRouter",
         )
     }
 
