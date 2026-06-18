@@ -22,7 +22,9 @@ class HeartbeatSettingsProvider : ContentProvider() {
 
     companion object {
         const val AUTHORITY = "org.ethereumphone.andyclaw.heartbeat.settings"
-        private const val DEFAULT_INTERVAL_MINUTES = 30
+        /** Disabled by default — must be opted in via Settings → Heartbeat.
+         *  The system_server consumer treats `interval <= 0` as "off" and skips scheduling. */
+        private const val DEFAULT_INTERVAL_MINUTES = -1
     }
 
     override fun onCreate(): Boolean = true

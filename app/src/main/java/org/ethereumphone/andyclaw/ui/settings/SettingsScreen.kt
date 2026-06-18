@@ -17,6 +17,7 @@ import androidx.compose.animation.Crossfade
 import androidx.compose.foundation.background
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
+import kotlinx.coroutines.delay
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.size
@@ -104,6 +105,13 @@ fun SettingsScreen(
     val openaiApiKey by viewModel.openaiApiKey.collectAsState()
     val veniceApiKey by viewModel.veniceApiKey.collectAsState()
     val claudeOauthRefreshToken by viewModel.claudeOauthRefreshToken.collectAsState()
+    val chatgptOauthRefreshToken by viewModel.chatgptOauthRefreshToken.collectAsState()
+    val customBaseUrl  by viewModel.customBaseUrl.collectAsState()
+    val customApiKey   by viewModel.customApiKey.collectAsState()
+    val customModelId  by viewModel.customModelId.collectAsState()
+    val customAvailableModels   by viewModel.customAvailableModels.collectAsState()
+    val customModelsFetching    by viewModel.customModelsFetching.collectAsState()
+    val customModelsFetchError  by viewModel.customModelsFetchError.collectAsState()
     val downloadProgress by viewModel.modelDownloadManager.downloadProgress.collectAsState()
     val isDownloading by viewModel.modelDownloadManager.isDownloading.collectAsState()
     val downloadError by viewModel.modelDownloadManager.downloadError.collectAsState()
@@ -162,6 +170,12 @@ fun SettingsScreen(
         uri?.let { viewModel.onImportFilePicked(it, context) }
     }
 
+    val ggufImportLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument(),
+    ) { uri ->
+        uri?.let { viewModel.importGgufFromUri(it) }
+    }
+
     LaunchedEffect(Unit) {
         SystemColorManager.refresh(context)
     }
@@ -173,9 +187,14 @@ fun SettingsScreen(
     val rowControlSpacing = 20.dp
 
     val providerChoices = if (viewModel.isPrivileged) {
-        listOf(LlmProvider.ETHOS_PREMIUM, LlmProvider.OPEN_ROUTER, LlmProvider.CLAUDE_OAUTH, LlmProvider.OPENAI, LlmProvider.VENICE, LlmProvider.TINFOIL, LlmProvider.LOCAL)
+        // OPENAI_OAUTH (ChatGPT via Codex Responses) is built but hidden from
+        // the picker until the live round-trip is validated. The enum entry,
+        // client, token manager, model entries, and Settings UI all stay in
+        // the tree; re-add OPENAI_OAUTH here to re-enable. See chatgpt-oauth
+        // memory entry for the v1 limitations (no tools, no 401-retry).
+        listOf(LlmProvider.ETHOS_PREMIUM, LlmProvider.OPEN_ROUTER, LlmProvider.CLAUDE_OAUTH, LlmProvider.OPENAI, LlmProvider.VENICE, LlmProvider.TINFOIL, LlmProvider.LOCAL, LlmProvider.CUSTOM)
     } else {
-        listOf(LlmProvider.OPEN_ROUTER, LlmProvider.CLAUDE_OAUTH, LlmProvider.OPENAI, LlmProvider.VENICE, LlmProvider.TINFOIL, LlmProvider.LOCAL)
+        listOf(LlmProvider.OPEN_ROUTER, LlmProvider.CLAUDE_OAUTH, LlmProvider.OPENAI, LlmProvider.VENICE, LlmProvider.TINFOIL, LlmProvider.LOCAL, LlmProvider.CUSTOM)
     }
 
     DgenBackNavigationBackground(
@@ -197,6 +216,7 @@ fun SettingsScreen(
             SettingsSubScreen.ModelRoutingLightSelection -> "Easy Task Model"
             SettingsSubScreen.ModelRoutingStandardSelection -> "Medium Task Model"
             SettingsSubScreen.ModelRoutingPowerfulSelection -> "Hard Task Model"
+            SettingsSubScreen.LocalLlmSettings -> "Local LLM"
         },
         primaryColor = primaryColor,
         onNavigateBack = {
@@ -411,6 +431,95 @@ fun SettingsScreen(
                         color = dgenWhite,
                     )
                 }
+                LlmProvider.OPENAI_OAUTH -> {
+                    var editingChatGptToken by remember { mutableStateOf(chatgptOauthRefreshToken) }
+                    DgenCursorTextfield(
+                        value = editingChatGptToken,
+                        onValueChange = {
+                            editingChatGptToken = it
+                            viewModel.setChatGptOauthRefreshToken(it)
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = "ChatGPT Refresh Token",
+                        placeholder = { Text("eyJhbGciOiJSUzI1Ni...", color = dgenWhite.copy(alpha = 0.3f), style = MaterialTheme.typography.bodySmall.copy(shadow = GlowStyle.placeholder(dgenWhite))) },
+                        visualTransformation = PasswordVisualTransformation(),
+                        primaryColor = primaryColor,
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        text = "Install the Codex CLI (`npm i -g @openai/codex`), run `codex login`, then paste the `tokens.refresh_token` from `~/.codex/auth.json`. Requires a ChatGPT Plus / Pro / Business subscription. Codex-supported models only; tools not yet wired.",
+                        style = contentBodyStyle,
+                        color = dgenWhite,
+                    )
+                }
+                LlmProvider.CUSTOM -> {
+                    var editingUrl by remember { mutableStateOf(customBaseUrl) }
+                    var editingKey by remember { mutableStateOf(customApiKey) }
+
+                    // Debounced auto-fetch: 500 ms after the user stops typing
+                    // the URL we hit GET {base}/v1/models so the MODEL picker
+                    // at the top of Settings is populated by the time the user
+                    // looks at it.
+                    LaunchedEffect(customBaseUrl, customApiKey) {
+                        if (customBaseUrl.isNotBlank()) {
+                            delay(500)
+                            viewModel.fetchCustomModels()
+                        }
+                    }
+
+                    DgenCursorTextfield(
+                        value = editingUrl,
+                        onValueChange = {
+                            editingUrl = it
+                            viewModel.setCustomBaseUrl(it)
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = "Base URL",
+                        placeholder = { Text("http://192.168.1.42:11434/v1/chat/completions", color = dgenWhite.copy(alpha = 0.3f), style = MaterialTheme.typography.bodySmall.copy(shadow = GlowStyle.placeholder(dgenWhite))) },
+                        primaryColor = primaryColor,
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    DgenCursorTextfield(
+                        value = editingKey,
+                        onValueChange = {
+                            editingKey = it
+                            viewModel.setCustomApiKey(it)
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = "API Key (optional)",
+                        placeholder = { Text("leave empty if your server doesn't auth", color = dgenWhite.copy(alpha = 0.3f), style = MaterialTheme.typography.bodySmall.copy(shadow = GlowStyle.placeholder(dgenWhite))) },
+                        visualTransformation = PasswordVisualTransformation(),
+                        primaryColor = primaryColor,
+                    )
+
+                    // Connection status — auto-fetched /v1/models result. Model
+                    // picking happens via the MODEL row at the top of Settings
+                    // (it reads the same fetched list + lets you type any id
+                    // directly via the search bar).
+                    Spacer(Modifier.height(12.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        val label = when {
+                            customModelsFetching -> "Fetching /v1/models…"
+                            customModelsFetchError != null -> "Models fetch failed: $customModelsFetchError"
+                            customAvailableModels.isNotEmpty() -> "${customAvailableModels.size} models available on server"
+                            customBaseUrl.isBlank() -> "Enter a Base URL to discover models"
+                            else -> "No models reported by server"
+                        }
+                        Text(label, style = contentBodyStyle, color = dgenWhite, modifier = Modifier.weight(1f))
+                        DgenSmallPrimaryButton(
+                            text = "Refresh",
+                            primaryColor = primaryColor,
+                            onClick = { viewModel.fetchCustomModels() },
+                        )
+                    }
+
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        text = "Connect to any OpenAI-compatible HTTP endpoint you host (Ollama, LM Studio, vLLM, llama.cpp server, LocalAI). Phone and server must share a network. Plain HTTP is allowed for LAN servers. Pick a model from the MODEL row at the top of Settings — the picker lists what the server returns from /v1/models, and the search bar there lets you type any id directly (useful for servers that don't expose the list).",
+                        style = contentBodyStyle,
+                        color = dgenWhite,
+                    )
+                }
                 LlmProvider.TINFOIL -> {
                     var editingKey by remember { mutableStateOf(tinfoilApiKey) }
                     DgenCursorTextfield(
@@ -508,6 +617,13 @@ fun SettingsScreen(
                                 onClick = { viewModel.downloadLocalModel() },
                             )
                         }
+
+                        Spacer(Modifier.height(12.dp))
+                        DgenSmallPrimaryButton(
+                            text = "Configure local LLM →",
+                            primaryColor = primaryColor,
+                            onClick = { currentSubScreen = SettingsSubScreen.LocalLlmSettings },
+                        )
                     }
                 }
             }
@@ -1887,8 +2003,17 @@ fun SettingsScreen(
 
         SettingsSubScreen.ModelSelection -> {
             val searchQuery by viewModel.modelSearchQuery.collectAsState()
-            LaunchedEffect(Unit) { viewModel.refreshOpenRouterModelsIfNeeded() }
-            val displayModels = remember(searchQuery, selectedProvider) { viewModel.getDisplayModels() }
+            LaunchedEffect(Unit) {
+                viewModel.refreshOpenRouterModelsIfNeeded()
+                // For CUSTOM provider, also auto-fetch /v1/models so the
+                // picker is populated by the time the user looks at it.
+                if (selectedProvider == LlmProvider.CUSTOM) viewModel.fetchCustomModels()
+            }
+            // Re-key on customAvailableModels too so the list rebuilds when
+            // /v1/models lands asynchronously.
+            val displayModels = remember(searchQuery, selectedProvider, customAvailableModels) {
+                viewModel.getDisplayModels()
+            }
             EnrichedModelSelectionContent(
                 displayModels = displayModels,
                 selectedModelId = selectedModel,
@@ -2258,6 +2383,16 @@ fun SettingsScreen(
             } else {
                 currentSubScreen = SettingsSubScreen.Main
             }
+        }
+        SettingsSubScreen.LocalLlmSettings -> {
+            LocalLlmSettingsContent(
+                viewModel = viewModel,
+                onImportClick = { ggufImportLauncher.launch(arrayOf("*/*")) },
+                primaryColor = primaryColor,
+                sectionTitleStyle = sectionTitleStyle,
+                contentTitleStyle = contentTitleStyle,
+                contentBodyStyle = contentBodyStyle,
+            )
         }
         }
         }
@@ -2670,4 +2805,5 @@ enum class SettingsSubScreen {
     ModelRoutingLightSelection,
     ModelRoutingStandardSelection,
     ModelRoutingPowerfulSelection,
+    LocalLlmSettings,
 }

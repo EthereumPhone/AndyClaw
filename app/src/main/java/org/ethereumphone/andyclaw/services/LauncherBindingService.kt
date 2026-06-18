@@ -1,8 +1,11 @@
 package org.ethereumphone.andyclaw.services
 
 import android.app.Service
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.os.Binder
 import android.os.IAgentDisplayService
 import android.os.IBinder
@@ -42,6 +45,9 @@ import org.ethereumphone.andyclaw.ui.chat.ToolResultFormatter
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
+import java.util.concurrent.TimeUnit
+import okhttp3.OkHttpClient
+import okhttp3.Request
 import java.util.concurrent.atomic.AtomicBoolean
 import android.os.Parcel
 import kotlinx.coroutines.flow.first
@@ -298,6 +304,22 @@ class LauncherBindingService : Service() {
                 put("googleOauthClientSecret", prefs.googleOauthClientSecret.value)
                 put("isPrivileged", OsCapabilities.hasPrivilegedAccess)
                 put("currentTier", OsCapabilities.currentTier().name)
+                // Custom (self-hosted OpenAI-compatible) provider
+                put("customBaseUrl", prefs.customBaseUrl.value)
+                put("customApiKey", prefs.customApiKey.value)
+                put("customModelId", prefs.customModelId.value)
+                // Local LLM (on-device) — selected GGUF + runtime knobs
+                put("selectedGguf", prefs.selectedGgufFilename.value)
+                put("localTemperature", prefs.localLlmTemperature.value)
+                put("localTopP", prefs.localLlmTopP.value)
+                put("localTopK", prefs.localLlmTopK.value)
+                put("localMaxTokens", prefs.localLlmMaxTokens.value)
+                put("localRepeatPenalty", prefs.localLlmRepeatPenalty.value)
+                put("localNCtx", prefs.localLlmNCtx.value)
+                put("localNBatch", prefs.localLlmNBatch.value)
+                put("localNThreads", prefs.localLlmNThreads.value)
+                put("localNGpuLayers", prefs.localLlmNGpuLayers.value)
+                put("localUseMmap", prefs.localLlmUseMmap.value)
             }.toString()
         }
 
@@ -351,6 +373,22 @@ class LauncherBindingService : Service() {
                     "selectedRoutingPresetId" -> prefs.setSelectedRoutingPresetId(value)
                     "googleOauthClientId" -> prefs.setGoogleOauthClientId(value)
                     "googleOauthClientSecret" -> prefs.setGoogleOauthClientSecret(value)
+                    // Custom provider
+                    "customBaseUrl" -> prefs.setCustomBaseUrl(value)
+                    "customApiKey" -> prefs.setCustomApiKey(value)
+                    "customModelId" -> prefs.setCustomModelId(value)
+                    // Local LLM runtime knobs
+                    "selectedGguf" -> prefs.setSelectedGgufFilename(value)
+                    "localTemperature" -> prefs.setLocalLlmTemperature(value.toFloat())
+                    "localTopP" -> prefs.setLocalLlmTopP(value.toFloat())
+                    "localTopK" -> prefs.setLocalLlmTopK(value.toInt())
+                    "localMaxTokens" -> prefs.setLocalLlmMaxTokens(value.toInt())
+                    "localRepeatPenalty" -> prefs.setLocalLlmRepeatPenalty(value.toFloat())
+                    "localNCtx" -> prefs.setLocalLlmNCtx(value.toInt())
+                    "localNBatch" -> prefs.setLocalLlmNBatch(value.toInt())
+                    "localNThreads" -> prefs.setLocalLlmNThreads(value.toInt())
+                    "localNGpuLayers" -> prefs.setLocalLlmNGpuLayers(value.toInt())
+                    "localUseMmap" -> prefs.setLocalLlmUseMmap(value.toBooleanStrict())
                     else -> return false
                 }
                 true
@@ -366,14 +404,20 @@ class LauncherBindingService : Service() {
             val prefs = app.securePrefs
             val arr = JSONArray()
             for (provider in LlmProvider.entries) {
+                // OPENAI_OAUTH (ChatGPT) is hidden until its live round-trip is
+                // validated — keep it out of the launcher picker too, matching
+                // AndyClaw's own provider list.
+                if (provider == LlmProvider.OPENAI_OAUTH) continue
                 val isConfigured = when (provider) {
                     LlmProvider.ETHOS_PREMIUM -> OsCapabilities.hasPrivilegedAccess
                     LlmProvider.OPEN_ROUTER -> prefs.apiKey.value.isNotBlank()
                     LlmProvider.TINFOIL -> prefs.tinfoilApiKey.value.isNotBlank()
                     LlmProvider.CLAUDE_OAUTH -> prefs.claudeOauthRefreshToken.value.isNotBlank()
+                    LlmProvider.OPENAI_OAUTH -> prefs.chatgptOauthRefreshToken.value.isNotBlank()
                     LlmProvider.OPENAI -> prefs.openaiApiKey.value.isNotBlank()
                     LlmProvider.VENICE -> prefs.veniceApiKey.value.isNotBlank()
                     LlmProvider.LOCAL -> true
+                    LlmProvider.CUSTOM -> prefs.customBaseUrl.value.isNotBlank() && prefs.customModelId.value.isNotBlank()
                 }
                 arr.put(JSONObject().apply {
                     put("name", provider.name)
@@ -387,6 +431,13 @@ class LauncherBindingService : Service() {
         override fun getAvailableModels(providerName: String): String {
             enforceCallerIsLauncher()
             val provider = LlmProvider.fromName(providerName) ?: return "[]"
+            // CUSTOM: discover models from the user's self-hosted server via
+            // GET {base}/v1/models (cached 30s). Blocking HTTP on the binder
+            // thread, bounded by a 5s timeout — the launcher calls this from
+            // a background coroutine.
+            if (provider == LlmProvider.CUSTOM) {
+                return fetchCustomModelsJson()
+            }
             val models = AnthropicModels.forProvider(provider)
             val arr = JSONArray()
             for (model in models) {
@@ -638,6 +689,22 @@ class LauncherBindingService : Service() {
 
         override fun getAgentWalletAddress(): String? {
             enforceCallerIsLauncher()
+            val app = application as? NodeApp ?: return null
+            val prefs = app.securePrefs
+
+            // The agent wallet address is counterfactual/deterministic — once
+            // known it never changes. Cache it so we never need an RPC again.
+            //
+            // This also fixes a crash: SubWalletSDK.getAddress() performs the
+            // Alchemy eth_call on its OWN internal coroutine scope, so a network
+            // failure there throws UNCAUGHT — our try/catch below cannot see it,
+            // and it kills the whole AndyClaw process. (Repro: open dGent
+            // settings while offline.) So: return the cached value if we have
+            // one, and only ever touch the SDK when we're actually online.
+            val cacheKey = "agent.wallet.cachedAddress"
+            prefs.getString(cacheKey)?.takeIf { it.isNotBlank() }?.let { return it }
+            if (!isOnline()) return null
+
             return runBlocking(Dispatchers.IO) {
                 try {
                     val sdk = org.ethereumphone.subwalletsdk.SubWalletSDK(
@@ -649,7 +716,9 @@ class LauncherBindingService : Service() {
                         ),
                         bundlerRPCUrl = "https://api.pimlico.io/v2/1/rpc?apikey=${org.ethereumphone.andyclaw.BuildConfig.BUNDLER_API}",
                     )
-                    sdk.getAddress()
+                    val addr = sdk.getAddress()
+                    if (!addr.isNullOrBlank()) prefs.putString(cacheKey, addr)
+                    addr
                 } catch (_: Exception) { null }
             }
         }
@@ -871,7 +940,111 @@ class LauncherBindingService : Service() {
             // Also remove from the cached summary so it doesn't reappear on next fetch
             app.executiveSummaryManager.removeBulletFromCachedSummary(bulletText)
         }
+
+        // ── Local LLM GGUF management (launcher port) ────────────────────
+        override fun getGgufModels(): String {
+            enforceCallerIsLauncher()
+            val app = application as? NodeApp ?: return "[]"
+            app.ggufRegistry.refresh()
+            val arr = JSONArray()
+            for (m in app.ggufRegistry.models.value) {
+                arr.put(JSONObject().apply {
+                    put("filename", m.filename)
+                    put("displayName", m.displayName)
+                    put("sizeBytes", m.sizeBytes)
+                    put("isBuiltin", m.isBuiltin)
+                })
+            }
+            return arr.toString()
+        }
+
+        override fun importGguf(fd: ParcelFileDescriptor?, displayName: String?): Boolean {
+            enforceCallerIsLauncher()
+            if (fd == null) return false
+            val app = application as? NodeApp ?: return false
+            return try {
+                // Synchronous copy on this binder thread; the launcher calls
+                // from a background coroutine and shows a blocking spinner.
+                app.ggufRegistry.importFromFd(fd, displayName ?: "imported.gguf") != null
+            } catch (e: Exception) {
+                Log.e(TAG, "importGguf failed", e)
+                false
+            } finally {
+                try { fd.close() } catch (_: Exception) {}
+            }
+        }
+
+        override fun deleteGguf(filename: String?): Boolean {
+            enforceCallerIsLauncher()
+            if (filename.isNullOrBlank()) return false
+            val app = application as? NodeApp ?: return false
+            return app.ggufRegistry.delete(filename)
+        }
     }
+
+    // ── Custom /v1/models discovery (cached 30s) ────────────────────────
+    @Volatile private var customModelsCacheJson: String = "[]"
+    @Volatile private var customModelsCacheUrl: String = ""
+    @Volatile private var customModelsCacheAt: Long = 0L
+
+    private fun fetchCustomModelsJson(): String {
+        val app = application as? NodeApp ?: return "[]"
+        val baseUrl = app.securePrefs.customBaseUrl.value.trim()
+        if (baseUrl.isBlank()) return "[]"
+        val now = System.currentTimeMillis()
+        if (baseUrl == customModelsCacheUrl && now - customModelsCacheAt < 30_000L) {
+            return customModelsCacheJson
+        }
+        val url = modelsUrlFromChatUrl(baseUrl)
+        return try {
+            val client = OkHttpClient.Builder()
+                .connectTimeout(5, TimeUnit.SECONDS)
+                .readTimeout(5, TimeUnit.SECONDS)
+                .build()
+            val req = Request.Builder().url(url).apply {
+                val key = app.securePrefs.customApiKey.value
+                if (key.isNotBlank()) addHeader("Authorization", "Bearer $key")
+            }.build()
+            client.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) return "[]"
+                val data = JSONObject(resp.body?.string().orEmpty()).optJSONArray("data")
+                    ?: return "[]"
+                val arr = JSONArray()
+                for (i in 0 until data.length()) {
+                    val id = data.getJSONObject(i).optString("id", "")
+                    if (id.isNotBlank()) arr.put(JSONObject().apply { put("modelId", id); put("name", id) })
+                }
+                customModelsCacheJson = arr.toString()
+                customModelsCacheUrl = baseUrl
+                customModelsCacheAt = now
+                arr.toString()
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "fetchCustomModelsJson failed", e)
+            "[]"
+        }
+    }
+
+    private fun modelsUrlFromChatUrl(chatUrl: String): String {
+        val t = chatUrl.trim().trimEnd('/')
+        return when {
+            t.endsWith("/chat/completions") -> t.removeSuffix("/chat/completions") + "/models"
+            t.endsWith("/v1") -> "$t/models"
+            t.contains("/v1/") -> t.substringBefore("/v1/") + "/v1/models"
+            else -> "$t/v1/models"
+        }
+    }
+
+    /** True only when there's a validated internet-capable active network.
+     *  Used to avoid kicking off RPC calls (and the SDK's crash-prone internal
+     *  coroutine) while offline. */
+    private fun isOnline(): Boolean = try {
+        val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+        val caps = cm?.activeNetwork?.let { cm.getNetworkCapabilities(it) }
+        caps != null &&
+            caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
+            caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+    } catch (_: Exception) { false }
 
     private fun notifyOsTelegramRegister(token: String) {
         try {

@@ -15,6 +15,14 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import java.util.concurrent.TimeUnit
 import org.ethereumphone.andyclaw.NodeApp
 import org.ethereumphone.andyclaw.extensions.ExtensionDescriptor
 import org.ethereumphone.andyclaw.extensions.toSkillAdapters
@@ -87,7 +95,33 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
     val apiKey = prefs.apiKey
     val openaiApiKey = prefs.openaiApiKey
     val veniceApiKey = prefs.veniceApiKey
+
+    // ── Local LLM (on-device, llama.cpp via Llamatik) ──────────────────
+    val ggufModels = app.ggufRegistry.models
+    val selectedGgufFilename  = prefs.selectedGgufFilename
+    val localLlmTemperature   = prefs.localLlmTemperature
+    val localLlmTopP          = prefs.localLlmTopP
+    val localLlmTopK          = prefs.localLlmTopK
+    val localLlmMaxTokens     = prefs.localLlmMaxTokens
+    val localLlmRepeatPenalty = prefs.localLlmRepeatPenalty
+    val localLlmNCtx          = prefs.localLlmNCtx
+    val localLlmNBatch        = prefs.localLlmNBatch
+    val localLlmNThreads      = prefs.localLlmNThreads
+    val localLlmNGpuLayers    = prefs.localLlmNGpuLayers
+    val localLlmUseMmap       = prefs.localLlmUseMmap
     val claudeOauthRefreshToken = prefs.claudeOauthRefreshToken
+    val chatgptOauthRefreshToken = prefs.chatgptOauthRefreshToken
+    val customBaseUrl  = prefs.customBaseUrl
+    val customApiKey   = prefs.customApiKey
+    val customModelId  = prefs.customModelId
+
+    // CUSTOM-provider /v1/models discovery — populated by fetchCustomModels()
+    private val _customAvailableModels = MutableStateFlow<List<String>>(emptyList())
+    val customAvailableModels: StateFlow<List<String>> = _customAvailableModels.asStateFlow()
+    private val _customModelsFetching = MutableStateFlow(false)
+    val customModelsFetching: StateFlow<Boolean> = _customModelsFetching.asStateFlow()
+    private val _customModelsFetchError = MutableStateFlow<String?>(null)
+    val customModelsFetchError: StateFlow<String?> = _customModelsFetchError.asStateFlow()
 
     val telegramBotEnabled = prefs.telegramBotEnabled
     val telegramOwnerChatId = prefs.telegramOwnerChatId
@@ -140,10 +174,12 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
     ): List<DisplayModel> {
         val query = searchQuery.trim().lowercase()
 
-        val models = if (provider == LlmProvider.OPEN_ROUTER || provider == LlmProvider.ETHOS_PREMIUM) {
-            buildOpenRouterDisplayModels(provider, includeEnumFallbacks)
-        } else {
-            AnthropicModels.forProvider(provider).map { model ->
+        val models = when {
+            provider == LlmProvider.OPEN_ROUTER || provider == LlmProvider.ETHOS_PREMIUM ->
+                buildOpenRouterDisplayModels(provider, includeEnumFallbacks)
+            provider == LlmProvider.CUSTOM ->
+                buildCustomDisplayModels()
+            else -> AnthropicModels.forProvider(provider).map { model ->
                 DisplayModel(
                     modelId = model.modelId,
                     displayName = model.name,
@@ -153,7 +189,7 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
             }
         }
 
-        return if (query.isBlank()) {
+        val filtered = if (query.isBlank()) {
             models.sortedBy { it.sortPriority }
         } else {
             models.filter {
@@ -161,6 +197,40 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
                     it.modelId.lowercase().contains(query) ||
                     it.subtitle.lowercase().contains(query)
             }.sortedBy { it.sortPriority }
+        }
+
+        // For CUSTOM provider: if the user typed something that doesn't match
+        // any fetched model id, surface a synthetic "Use \"<query>\"" row so
+        // they can pick a model the server didn't advertise (some self-hosted
+        // setups don't expose /v1/models, or expose it incompletely). The row
+        // produces modelId = the raw typed string.
+        if (provider == LlmProvider.CUSTOM && query.isNotBlank() &&
+            filtered.none { it.modelId.equals(_modelSearchQuery.value.trim(), ignoreCase = true) }
+        ) {
+            val raw = _modelSearchQuery.value.trim()
+            if (raw.isNotEmpty()) {
+                return filtered + DisplayModel(
+                    modelId = raw,
+                    displayName = "Use \"$raw\"",
+                    subtitle = "Send this as the model id (not in server list)",
+                    sortPriority = 999,
+                )
+            }
+        }
+        return filtered
+    }
+
+    /** /v1/models discovery results for the CUSTOM provider, in DisplayModel shape. */
+    private fun buildCustomDisplayModels(): List<DisplayModel> {
+        val fetched = _customAvailableModels.value
+        val currentlySelected = prefs.selectedModel.value
+        return fetched.map { id ->
+            DisplayModel(
+                modelId = id,
+                displayName = id,
+                subtitle = "self-hosted",
+                sortPriority = if (id == currentlySelected) 0 else 100,
+            )
         }
     }
 
@@ -593,6 +663,118 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
         prefs.setVeniceApiKey(key)
     }
 
+    // ── Local LLM setters / actions ────────────────────────────────────
+    fun selectGguf(filename: String)            = prefs.setSelectedGgufFilename(filename)
+    fun setLocalLlmTemperature(v: Float)        = prefs.setLocalLlmTemperature(v)
+    fun setLocalLlmTopP(v: Float)               = prefs.setLocalLlmTopP(v)
+    fun setLocalLlmTopK(v: Int)                 = prefs.setLocalLlmTopK(v)
+    fun setLocalLlmMaxTokens(v: Int)            = prefs.setLocalLlmMaxTokens(v)
+    fun setLocalLlmRepeatPenalty(v: Float)      = prefs.setLocalLlmRepeatPenalty(v)
+    fun setLocalLlmNCtx(v: Int)                 = prefs.setLocalLlmNCtx(v)
+    fun setLocalLlmNBatch(v: Int)               = prefs.setLocalLlmNBatch(v)
+    fun setLocalLlmNThreads(v: Int)             = prefs.setLocalLlmNThreads(v)
+    fun setLocalLlmNGpuLayers(v: Int)           = prefs.setLocalLlmNGpuLayers(v)
+    fun setLocalLlmUseMmap(v: Boolean)          = prefs.setLocalLlmUseMmap(v)
+
+    /** Copy a user-picked .gguf URI into filesDir/models/ and auto-select it. */
+    fun importGgufFromUri(uri: android.net.Uri) {
+        viewModelScope.launch {
+            val model = app.ggufRegistry.importFromUri(uri)
+            if (model != null) prefs.setSelectedGgufFilename(model.filename)
+        }
+    }
+
+    /** Delete an imported GGUF (refuses to delete the builtin). */
+    fun deleteImportedGguf(filename: String) {
+        if (app.ggufRegistry.delete(filename)) {
+            if (prefs.selectedGgufFilename.value == filename) {
+                prefs.setSelectedGgufFilename(org.ethereumphone.andyclaw.llm.DEFAULT_BUILTIN_GGUF)
+            }
+        }
+    }
+
+    /** Restore every local-LLM knob to LocalLlmRuntimeConfig.DEFAULT. */
+    fun resetLocalLlmConfig() {
+        val d = org.ethereumphone.andyclaw.llm.LocalLlmRuntimeConfig.DEFAULT
+        prefs.setLocalLlmTemperature(d.temperature)
+        prefs.setLocalLlmTopP(d.topP)
+        prefs.setLocalLlmTopK(d.topK)
+        prefs.setLocalLlmMaxTokens(d.maxTokens)
+        prefs.setLocalLlmRepeatPenalty(d.repeatPenalty)
+        prefs.setLocalLlmNCtx(d.nCtx)
+        prefs.setLocalLlmNBatch(d.nBatch)
+        prefs.setLocalLlmNThreads(d.nThreads)
+        prefs.setLocalLlmNGpuLayers(d.nGpuLayers)
+        prefs.setLocalLlmUseMmap(d.useMmap)
+    }
+
+    fun setChatGptOauthRefreshToken(token: String) {
+        prefs.setChatGptOauthRefreshToken(token)
+    }
+
+    fun setCustomBaseUrl(value: String)  = prefs.setCustomBaseUrl(value)
+    fun setCustomApiKey(value: String)   = prefs.setCustomApiKey(value)
+    fun setCustomModelId(value: String)  = prefs.setCustomModelId(value)
+
+    /**
+     * GET {derived}/v1/models against the user's CUSTOM endpoint. Every major
+     * OpenAI-compatible self-hosted server (Ollama, LM Studio, vLLM, LocalAI,
+     * llama.cpp server) exposes this list. Failure modes are recorded in
+     * [customModelsFetchError] — UI shows them but keeps the free-text Model
+     * ID field as a fallback.
+     */
+    fun fetchCustomModels() {
+        val baseUrl = prefs.customBaseUrl.value.trim()
+        if (baseUrl.isBlank()) {
+            _customAvailableModels.value = emptyList()
+            _customModelsFetchError.value = null
+            return
+        }
+        val modelsUrl = modelsUrlFromChatUrl(baseUrl)
+        viewModelScope.launch {
+            _customModelsFetching.value = true
+            _customModelsFetchError.value = null
+            try {
+                val ids = withContext(Dispatchers.IO) {
+                    val client = OkHttpClient.Builder()
+                        .connectTimeout(5, TimeUnit.SECONDS)
+                        .readTimeout(10, TimeUnit.SECONDS)
+                        .build()
+                    val req = Request.Builder().url(modelsUrl).apply {
+                        val key = prefs.customApiKey.value
+                        if (key.isNotBlank()) addHeader("Authorization", "Bearer $key")
+                    }.build()
+                    client.newCall(req).execute().use { resp ->
+                        if (!resp.isSuccessful) {
+                            throw RuntimeException("HTTP ${resp.code}")
+                        }
+                        val body = resp.body?.string().orEmpty()
+                        val data = Json.parseToJsonElement(body).jsonObject["data"]?.jsonArray
+                            ?: throw RuntimeException("response missing 'data' array")
+                        data.mapNotNull { it.jsonObject["id"]?.jsonPrimitive?.contentOrNull }
+                    }
+                }
+                _customAvailableModels.value = ids
+            } catch (e: Exception) {
+                _customAvailableModels.value = emptyList()
+                _customModelsFetchError.value = e.message ?: "fetch failed"
+            } finally {
+                _customModelsFetching.value = false
+            }
+        }
+    }
+
+    /** Derive the /v1/models URL from the user's chat-completions URL. */
+    private fun modelsUrlFromChatUrl(chatUrl: String): String {
+        val trimmed = chatUrl.trim().trimEnd('/')
+        return when {
+            trimmed.endsWith("/chat/completions") -> trimmed.removeSuffix("/chat/completions") + "/models"
+            trimmed.endsWith("/v1") -> "$trimmed/models"
+            trimmed.contains("/v1/") -> trimmed.substringBefore("/v1/") + "/v1/models"
+            else -> "$trimmed/v1/models"
+        }
+    }
+
     fun setClaudeOauthRefreshToken(token: String) {
         prefs.setClaudeOauthRefreshToken(token)
         // Clear cached access token so the manager fetches a fresh one
@@ -735,10 +917,12 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
         LlmProvider.ETHOS_PREMIUM -> isPrivileged
         LlmProvider.OPEN_ROUTER -> prefs.apiKey.value.isNotBlank()
         LlmProvider.CLAUDE_OAUTH -> prefs.claudeOauthRefreshToken.value.isNotBlank()
+        LlmProvider.OPENAI_OAUTH -> prefs.chatgptOauthRefreshToken.value.isNotBlank()
         LlmProvider.TINFOIL -> prefs.tinfoilApiKey.value.isNotBlank()
         LlmProvider.OPENAI -> prefs.openaiApiKey.value.isNotBlank()
         LlmProvider.VENICE -> prefs.veniceApiKey.value.isNotBlank()
         LlmProvider.LOCAL -> if (isPrivileged) true else app.modelDownloadManager.isModelDownloaded
+        LlmProvider.CUSTOM -> prefs.customBaseUrl.value.isNotBlank() && prefs.customModelId.value.isNotBlank()
     }
 
     val isLedAvailable: Boolean get() = app.ledController.isAvailable

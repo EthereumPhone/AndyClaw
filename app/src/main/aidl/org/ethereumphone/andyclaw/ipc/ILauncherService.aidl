@@ -145,4 +145,15 @@ interface ILauncherService {
     void unregisterExecSummaryCallback();
     // Dismisses a bullet from the exec summary so the LLM won't regenerate similar content.
     void dismissExecSummaryBullet(String bulletText);
+
+    // ── Local LLM GGUF management ──────────────────────────────────────
+    // Returns the GGUFs in filesDir/models/ as a JSON array:
+    //   [{ "filename", "displayName", "sizeBytes", "isBuiltin" }]
+    String getGgufModels();
+    // Copies a user-picked .gguf (passed as an fd) into filesDir/models/.
+    // Synchronous — caller should run off the main thread + show progress.
+    // Returns true on success.
+    boolean importGguf(in ParcelFileDescriptor fd, String displayName);
+    // Deletes an imported GGUF by filename (refuses the builtin). True on success.
+    boolean deleteGguf(String filename);
 }

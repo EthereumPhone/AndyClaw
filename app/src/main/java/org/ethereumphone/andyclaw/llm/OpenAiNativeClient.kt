@@ -3,6 +3,7 @@ package org.ethereumphone.andyclaw.llm
 import android.util.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import org.ethereumphone.andyclaw.BuildConfig
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -22,8 +23,18 @@ import java.util.concurrent.TimeUnit
  */
 class OpenAiNativeClient(
     private val apiKey: () -> String,
-    private val baseUrl: String = "https://api.openai.com/v1/chat/completions",
+    /** Re-evaluated on every request so live settings changes (CUSTOM provider's
+     *  base URL) take effect without recreating the client. Static-URL providers
+     *  use the [String] overload below which wraps a constant. */
+    private val baseUrlProvider: () -> String =
+        { "https://api.openai.com/v1/chat/completions" },
 ) : LlmClient {
+
+    /** Convenience constructor for static-URL providers (Venice, OpenAI). */
+    constructor(apiKey: () -> String, baseUrl: String) : this(apiKey, { baseUrl })
+
+    private val baseUrl: String
+        get() = baseUrlProvider()
 
     companion object {
         private const val TAG = "OpenAiNativeClient"
@@ -35,6 +46,13 @@ class OpenAiNativeClient(
         .readTimeout(120, TimeUnit.SECONDS)
         .writeTimeout(30, TimeUnit.SECONDS)
         .build()
+
+    /** Human-readable provider name derived from [baseUrl], used in error labels and logs. */
+    private val providerLabel: String = when {
+        baseUrl.contains("venice", ignoreCase = true) -> "Venice"
+        baseUrl.contains("openai", ignoreCase = true) -> "OpenAI"
+        else -> "OpenAI-compatible"
+    }
 
     private fun buildRequest(body: String): Request {
         return Request.Builder()
@@ -55,12 +73,16 @@ class OpenAiNativeClient(
 
             if (!response.isSuccessful) {
                 val errorBody = response.body?.string() ?: "Unknown error"
-                Log.e(TAG, "sendMessage: HTTP ${response.code}, error=$errorBody")
-                throw AnthropicApiException(response.code, errorBody)
+                Log.e(TAG, "sendMessage: HTTP ${response.code} from $providerLabel, error=$errorBody")
+                // The request body is otherwise never logged; on a schema rejection
+                // (e.g. Venice "Unrecognized key(s) in object: '<key>'") this shows
+                // exactly which key was sent. Debug builds only — body has chat content.
+                if (BuildConfig.DEBUG) Log.e(TAG, "sendMessage: rejected request body=$openAiJson")
+                throw AnthropicApiException(response.code, errorBody, provider = providerLabel)
             }
 
             val responseBody = response.body?.string()
-                ?: throw AnthropicApiException(500, "Empty response")
+                ?: throw AnthropicApiException(500, "Empty response", provider = providerLabel)
             OpenAiFormatAdapter.fromOpenAiResponseJson(responseBody)
         }
 
@@ -76,8 +98,9 @@ class OpenAiNativeClient(
 
         if (!response.isSuccessful) {
             val errorBody = response.body?.string() ?: "Unknown error"
-            Log.e(TAG, "streamMessage: HTTP ${response.code}, error=$errorBody")
-            callback.onError(AnthropicApiException(response.code, errorBody))
+            Log.e(TAG, "streamMessage: HTTP ${response.code} from $providerLabel, error=$errorBody")
+            if (BuildConfig.DEBUG) Log.e(TAG, "streamMessage: rejected request body=$openAiJson")
+            callback.onError(AnthropicApiException(response.code, errorBody, provider = providerLabel))
             return@withContext
         }
 

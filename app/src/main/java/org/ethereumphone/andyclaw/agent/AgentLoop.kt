@@ -69,6 +69,12 @@ class AgentLoop(
     private val compactionConfig: CompactionConfig? = null,
     /** Optional LLM-based memory reranker (opt-in, costs ~500 tokens per query). */
     private val memoryReranker: MemoryReranker? = null,
+    /** Raw model id to use in MessagesRequest.model — takes precedence over
+     *  [model].modelId and [routingResult.modelIdOverride]. Set this when the
+     *  selected model id isn't an entry in [AnthropicModels] (e.g. CUSTOM
+     *  provider hitting a self-hosted Ollama/LM Studio backend whose model
+     *  ids — `gpt-oss:20b`, `llama3.2:latest`, … — aren't enum-resolvable). */
+    private val customModelIdOverride: String? = null,
 ) {
     companion object {
         private const val TAG = "AgentLoop"
@@ -461,8 +467,10 @@ class AgentLoop(
         var totalCharsTruncated = 0
         var truncationCount = 0
 
-        // Resolve effective model ID and max tokens (model routing may override)
-        val effectiveModelId = modelIdOverride ?: model.modelId
+        // Resolve effective model ID and max tokens (model routing may override).
+        // customModelIdOverride takes top priority — used when the user's
+        // configured id isn't in the AnthropicModels enum (CUSTOM provider).
+        val effectiveModelId = customModelIdOverride ?: modelIdOverride ?: model.modelId
         val baseMaxTokens = maxTokensOverride ?: model.maxTokens
         if (modelIdOverride != null) {
             Log.i(TAG, "ModelRouting | override active: $modelIdOverride (default was ${model.modelId}), maxTokens=$baseMaxTokens (default was ${model.maxTokens})")
@@ -903,7 +911,7 @@ class AgentLoop(
             val subagentSkillIds = subagentRouting?.skillIds ?: enabledSkillIds
             val subagentAllowedTools = subagentRouting?.allowedTools
             subagentSkills = skillRegistry.getEnabled(subagentSkillIds)
-            effectiveModelId = subagentRouting?.modelIdOverride ?: model.modelId
+            effectiveModelId = customModelIdOverride ?: subagentRouting?.modelIdOverride ?: model.modelId
             baseMaxTokens = subagentRouting?.maxTokensOverride ?: model.maxTokens
             subagentToolsJson = PromptAssembler.assembleTools(subagentSkills, tier, nameResolver, subagentAllowedTools)
             Log.i(TAG, "Subagent (SmartRouter): '${taskDescription.take(60)}' -> ${subagentSkillIds.size} skills" +

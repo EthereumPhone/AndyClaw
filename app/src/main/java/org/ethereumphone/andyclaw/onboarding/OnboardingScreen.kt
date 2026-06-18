@@ -171,6 +171,8 @@ fun OnboardingScreen(
                             LlmProvider.TINFOIL -> tinfoilApiKey.isNotBlank()
                             LlmProvider.OPENAI -> openaiApiKey.isNotBlank()
                             LlmProvider.VENICE -> veniceApiKey.isNotBlank()
+                            LlmProvider.OPENAI_OAUTH,
+                            LlmProvider.CUSTOM,
                             LlmProvider.LOCAL,
                             LlmProvider.ETHOS_PREMIUM -> true
                         }
@@ -250,6 +252,8 @@ fun OnboardingScreen(
                                     LlmProvider.TINFOIL -> tinfoilApiKey.isNotBlank()
                                     LlmProvider.OPENAI -> openaiApiKey.isNotBlank()
                                     LlmProvider.VENICE -> veniceApiKey.isNotBlank()
+                                    LlmProvider.OPENAI_OAUTH,
+                                    LlmProvider.CUSTOM,
                                     LlmProvider.LOCAL,
                                     LlmProvider.ETHOS_PREMIUM -> true
                                 }
@@ -501,6 +505,8 @@ private fun StepProviderSelection(
                     primaryColor = primaryColor,
                 )
             }
+            LlmProvider.OPENAI_OAUTH,
+            LlmProvider.CUSTOM,
             LlmProvider.LOCAL,
             LlmProvider.ETHOS_PREMIUM -> {
                 Text(

@@ -115,7 +115,11 @@ class SecurePrefs(context: Context) : KeyValueStore {
   private val _heartbeatOnXmtpMessageEnabled = MutableStateFlow(prefs.getBoolean("agent.heartbeatOnXmtpMessage", false))
   val heartbeatOnXmtpMessageEnabled: StateFlow<Boolean> = _heartbeatOnXmtpMessageEnabled
 
-  private val _heartbeatIntervalMinutes = MutableStateFlow(prefs.getInt("agent.heartbeatIntervalMinutes", 30))
+  // Default is -1 (disabled). The UI treats `interval > 0` as enabled and
+  // calls setHeartbeatIntervalMinutes(-1) to disable. Default-off so that fresh
+  // installs do not silently consume LLM tokens on a periodic schedule the
+  // user never opted into — opt-in via Settings → Heartbeat.
+  private val _heartbeatIntervalMinutes = MutableStateFlow(prefs.getInt("agent.heartbeatIntervalMinutes", -1))
   val heartbeatIntervalMinutes: StateFlow<Int> = _heartbeatIntervalMinutes
 
   private val _heartbeatUseSameModel = MutableStateFlow(prefs.getBoolean("agent.heartbeatUseSameModel", true))
@@ -167,6 +171,17 @@ class SecurePrefs(context: Context) : KeyValueStore {
   private val _claudeOauthRefreshToken = MutableStateFlow(prefs.getString("claude.oauth.refreshToken", "") ?: "")
   val claudeOauthRefreshToken: StateFlow<String> = _claudeOauthRefreshToken
 
+  // ── ChatGPT OAuth (Codex backend) ─────────────────────────────────────
+  private val _chatgptOauthRefreshToken = MutableStateFlow(prefs.getString("chatgpt.oauth.refreshToken", "") ?: "")
+  val chatgptOauthRefreshToken: StateFlow<String> = _chatgptOauthRefreshToken
+  private val _chatgptOauthAccessToken = MutableStateFlow(prefs.getString("chatgpt.oauth.accessToken", "") ?: "")
+  val chatgptOauthAccessToken: StateFlow<String> = _chatgptOauthAccessToken
+  private val _chatgptOauthExpiresAt = MutableStateFlow(prefs.getLong("chatgpt.oauth.expiresAt", 0L))
+  val chatgptOauthExpiresAt: StateFlow<Long> = _chatgptOauthExpiresAt
+  /** ChatGPT account ID extracted from the id_token (required header on every request). */
+  private val _chatgptOauthAccountId = MutableStateFlow(prefs.getString("chatgpt.oauth.accountId", "") ?: "")
+  val chatgptOauthAccountId: StateFlow<String> = _chatgptOauthAccountId
+
   private val _claudeOauthAccessToken = MutableStateFlow(prefs.getString("claude.oauth.accessToken", "") ?: "")
   val claudeOauthAccessToken: StateFlow<String> = _claudeOauthAccessToken
 
@@ -176,8 +191,57 @@ class SecurePrefs(context: Context) : KeyValueStore {
   private val _openaiApiKey = MutableStateFlow(prefs.getString("openai.apiKey", "") ?: "")
   val openaiApiKey: StateFlow<String> = _openaiApiKey
 
-  private val _veniceApiKey = MutableStateFlow(prefs.getString("venice.apiKey", "") ?: "")
+  private val _veniceApiKey = MutableStateFlow(
+    (prefs.getString("venice.apiKey", "") ?: "").ifBlank {
+      // Dev convenience: when no key has been set in-app, fall back to the
+      // VENICE_API value from local.properties (wired via BuildConfig in
+      // app/build.gradle.kts). Debug builds only — never bake a key into release.
+      if (BuildConfig.DEBUG) BuildConfig.VENICE_API else ""
+    }
+  )
   val veniceApiKey: StateFlow<String> = _veniceApiKey
+
+  // ── Custom (self-hosted, OpenAI-compatible) endpoint ────────────────────
+  // For Ollama / LM Studio / vLLM / llama.cpp-server / LocalAI etc. The user
+  // provides the full chat completions URL, an optional API key (many self-
+  // hosted servers don't require auth on the LAN), and the model id their
+  // backend serves.
+  private val _customBaseUrl = MutableStateFlow(prefs.getString("custom.baseUrl", "") ?: "")
+  val customBaseUrl: StateFlow<String> = _customBaseUrl
+  private val _customApiKey = MutableStateFlow(prefs.getString("custom.apiKey", "") ?: "")
+  val customApiKey: StateFlow<String> = _customApiKey
+  private val _customModelId = MutableStateFlow(prefs.getString("custom.modelId", "") ?: "")
+  val customModelId: StateFlow<String> = _customModelId
+
+  // ── Local LLM (on-device, llama.cpp via Llamatik) ───────────────────────
+  // Active GGUF — must be the filename of an entry in filesDir/models/ (see GgufRegistry).
+  // Default = the model ModelDownloadManager downloads.
+  private val _selectedGgufFilename = MutableStateFlow(prefs.getString("local.selectedGguf", org.ethereumphone.andyclaw.llm.DEFAULT_BUILTIN_GGUF) ?: org.ethereumphone.andyclaw.llm.DEFAULT_BUILTIN_GGUF)
+  val selectedGgufFilename: StateFlow<String> = _selectedGgufFilename
+
+  // Sampling params (applied per-generation via LlamaBridge.updateGenerateParams)
+  private val _localLlmTemperature = MutableStateFlow(prefs.getFloat("local.temperature", 0.3f))
+  val localLlmTemperature: StateFlow<Float> = _localLlmTemperature
+  private val _localLlmTopP = MutableStateFlow(prefs.getFloat("local.topP", 0.9f))
+  val localLlmTopP: StateFlow<Float> = _localLlmTopP
+  private val _localLlmTopK = MutableStateFlow(prefs.getInt("local.topK", 40))
+  val localLlmTopK: StateFlow<Int> = _localLlmTopK
+  private val _localLlmMaxTokens = MutableStateFlow(prefs.getInt("local.maxTokens", 256))
+  val localLlmMaxTokens: StateFlow<Int> = _localLlmMaxTokens
+  private val _localLlmRepeatPenalty = MutableStateFlow(prefs.getFloat("local.repeatPenalty", 1.0f))
+  val localLlmRepeatPenalty: StateFlow<Float> = _localLlmRepeatPenalty
+
+  // Hardware params (applied at model init via LlamaBridge.initGenerateModelWithConfig)
+  private val _localLlmNCtx = MutableStateFlow(prefs.getInt("local.nCtx", 4096))
+  val localLlmNCtx: StateFlow<Int> = _localLlmNCtx
+  private val _localLlmNBatch = MutableStateFlow(prefs.getInt("local.nBatch", 2048))
+  val localLlmNBatch: StateFlow<Int> = _localLlmNBatch
+  private val _localLlmNThreads = MutableStateFlow(prefs.getInt("local.nThreads", 0)) // 0 = auto
+  val localLlmNThreads: StateFlow<Int> = _localLlmNThreads
+  private val _localLlmNGpuLayers = MutableStateFlow(prefs.getInt("local.nGpuLayers", 0)) // 0 = CPU
+  val localLlmNGpuLayers: StateFlow<Int> = _localLlmNGpuLayers
+  private val _localLlmUseMmap = MutableStateFlow(prefs.getBoolean("local.useMmap", true))
+  val localLlmUseMmap: StateFlow<Boolean> = _localLlmUseMmap
 
   private val _selectedModel = MutableStateFlow(prefs.getString("anthropic.model", "kimi-k2-5") ?: "kimi-k2-5")
   val selectedModel: StateFlow<String> = _selectedModel
@@ -559,12 +623,57 @@ class SecurePrefs(context: Context) : KeyValueStore {
   fun setSelectedProvider(provider: LlmProvider) {
     prefs.edit { putString("llm.provider", provider.name) }
     _selectedProvider.value = provider
+    // When switching INTO the CUSTOM provider, mirror the user's configured
+    // customModelId into selectedModel so outgoing MessagesRequest.model
+    // matches what their self-hosted backend serves. Without this, switching
+    // to CUSTOM from another provider would leave a stale model id (e.g.
+    // an OpenRouter "minimax/minimax-m2.5") and the backend would 404.
+    if (provider == LlmProvider.CUSTOM) {
+      val custom = _customModelId.value
+      if (custom.isNotBlank()) setSelectedModel(custom)
+    }
   }
 
   fun setTinfoilApiKey(value: String) {
     val trimmed = value.trim()
     prefs.edit { putString("tinfoil.apiKey", trimmed) }
     _tinfoilApiKey.value = trimmed
+  }
+
+  /** User-paste entry point: stores the new refresh token AND clears any cached
+   *  access_token / expiry / accountId so they get re-derived on the next call.
+   *  Use [silentlyUpdateChatGptOauthRefreshToken] from the refresh manager
+   *  when the server rotates the refresh token (cache stays warm). */
+  fun setChatGptOauthRefreshToken(value: String) {
+    silentlyUpdateChatGptOauthRefreshToken(value)
+    prefs.edit {
+      putString("chatgpt.oauth.accessToken", "")
+      putLong("chatgpt.oauth.expiresAt", 0L)
+      putString("chatgpt.oauth.accountId", "")
+    }
+    _chatgptOauthAccessToken.value = ""
+    _chatgptOauthExpiresAt.value = 0L
+    _chatgptOauthAccountId.value = ""
+  }
+  /** Persist a server-rotated refresh token without clearing the access-token cache. */
+  fun silentlyUpdateChatGptOauthRefreshToken(value: String) {
+    val trimmed = value.trim()
+    prefs.edit { putString("chatgpt.oauth.refreshToken", trimmed) }
+    _chatgptOauthRefreshToken.value = trimmed
+  }
+  fun setChatGptOauthAccessToken(value: String) {
+    val trimmed = value.trim()
+    prefs.edit { putString("chatgpt.oauth.accessToken", trimmed) }
+    _chatgptOauthAccessToken.value = trimmed
+  }
+  fun setChatGptOauthExpiresAt(value: Long) {
+    prefs.edit { putLong("chatgpt.oauth.expiresAt", value) }
+    _chatgptOauthExpiresAt.value = value
+  }
+  fun setChatGptOauthAccountId(value: String) {
+    val trimmed = value.trim()
+    prefs.edit { putString("chatgpt.oauth.accountId", trimmed) }
+    _chatgptOauthAccountId.value = trimmed
   }
 
   fun setClaudeOauthRefreshToken(value: String) {
@@ -595,6 +704,91 @@ class SecurePrefs(context: Context) : KeyValueStore {
     prefs.edit { putString("venice.apiKey", trimmed) }
     _veniceApiKey.value = trimmed
   }
+
+  // ── Custom endpoint setters ────────────────────────────────────────────
+  fun setCustomBaseUrl(value: String) {
+    val trimmed = value.trim()
+    prefs.edit { putString("custom.baseUrl", trimmed) }
+    _customBaseUrl.value = trimmed
+  }
+  fun setCustomApiKey(value: String) {
+    val trimmed = value.trim()
+    prefs.edit { putString("custom.apiKey", trimmed) }
+    _customApiKey.value = trimmed
+  }
+  /** Sets the model id served by the custom backend. When CUSTOM is the
+   *  active provider, also mirrors the value into `selectedModel` so that
+   *  the rest of the system (agent loop, routing, etc.) reads the same id
+   *  when building outgoing MessagesRequest.model fields. */
+  fun setCustomModelId(value: String) {
+    val trimmed = value.trim()
+    prefs.edit { putString("custom.modelId", trimmed) }
+    _customModelId.value = trimmed
+    if (_selectedProvider.value == LlmProvider.CUSTOM && trimmed.isNotBlank()) {
+      setSelectedModel(trimmed)
+    }
+  }
+
+  // ── Local LLM setters ──────────────────────────────────────────────────
+  fun setSelectedGgufFilename(value: String) {
+    prefs.edit { putString("local.selectedGguf", value) }
+    _selectedGgufFilename.value = value
+  }
+  fun setLocalLlmTemperature(value: Float) {
+    prefs.edit { putFloat("local.temperature", value) }
+    _localLlmTemperature.value = value
+  }
+  fun setLocalLlmTopP(value: Float) {
+    prefs.edit { putFloat("local.topP", value) }
+    _localLlmTopP.value = value
+  }
+  fun setLocalLlmTopK(value: Int) {
+    prefs.edit { putInt("local.topK", value) }
+    _localLlmTopK.value = value
+  }
+  fun setLocalLlmMaxTokens(value: Int) {
+    prefs.edit { putInt("local.maxTokens", value) }
+    _localLlmMaxTokens.value = value
+  }
+  fun setLocalLlmRepeatPenalty(value: Float) {
+    prefs.edit { putFloat("local.repeatPenalty", value) }
+    _localLlmRepeatPenalty.value = value
+  }
+  fun setLocalLlmNCtx(value: Int) {
+    prefs.edit { putInt("local.nCtx", value) }
+    _localLlmNCtx.value = value
+  }
+  fun setLocalLlmNBatch(value: Int) {
+    prefs.edit { putInt("local.nBatch", value) }
+    _localLlmNBatch.value = value
+  }
+  fun setLocalLlmNThreads(value: Int) {
+    prefs.edit { putInt("local.nThreads", value) }
+    _localLlmNThreads.value = value
+  }
+  fun setLocalLlmNGpuLayers(value: Int) {
+    prefs.edit { putInt("local.nGpuLayers", value) }
+    _localLlmNGpuLayers.value = value
+  }
+  fun setLocalLlmUseMmap(value: Boolean) {
+    prefs.edit { putBoolean("local.useMmap", value) }
+    _localLlmUseMmap.value = value
+  }
+
+  /** Snapshot of the current local-LLM runtime config. */
+  fun currentLocalLlmConfig(): org.ethereumphone.andyclaw.llm.LocalLlmRuntimeConfig =
+    org.ethereumphone.andyclaw.llm.LocalLlmRuntimeConfig(
+      temperature   = _localLlmTemperature.value,
+      topP          = _localLlmTopP.value,
+      topK          = _localLlmTopK.value,
+      maxTokens     = _localLlmMaxTokens.value,
+      repeatPenalty = _localLlmRepeatPenalty.value,
+      nCtx          = _localLlmNCtx.value,
+      nBatch        = _localLlmNBatch.value,
+      nThreads      = _localLlmNThreads.value,
+      nGpuLayers    = _localLlmNGpuLayers.value,
+      useMmap       = _localLlmUseMmap.value,
+    )
 
   fun setSelectedModel(value: String) {
     val trimmed = value.trim()
@@ -962,7 +1156,7 @@ class SecurePrefs(context: Context) : KeyValueStore {
     _executiveSummaryEnabled.value = prefs.getBoolean("agent.executiveSummaryEnabled", false)
     _heartbeatOnNotificationEnabled.value = prefs.getBoolean("agent.heartbeatOnNotification", false)
     _heartbeatOnXmtpMessageEnabled.value = prefs.getBoolean("agent.heartbeatOnXmtpMessage", false)
-    _heartbeatIntervalMinutes.value = prefs.getInt("agent.heartbeatIntervalMinutes", 30)
+    _heartbeatIntervalMinutes.value = prefs.getInt("agent.heartbeatIntervalMinutes", -1)
     _heartbeatUseSameModel.value = prefs.getBoolean("agent.heartbeatUseSameModel", true)
     _heartbeatProvider.value = loadHeartbeatProvider()
     _heartbeatModel.value = prefs.getString("agent.heartbeatModel", null) ?: ""
@@ -981,8 +1175,28 @@ class SecurePrefs(context: Context) : KeyValueStore {
     _claudeOauthRefreshToken.value = prefs.getString("claude.oauth.refreshToken", "") ?: ""
     _claudeOauthAccessToken.value = prefs.getString("claude.oauth.accessToken", "") ?: ""
     _claudeOauthExpiresAt.value = prefs.getLong("claude.oauth.expiresAt", 0L)
+    _chatgptOauthRefreshToken.value = prefs.getString("chatgpt.oauth.refreshToken", "") ?: ""
+    _chatgptOauthAccessToken.value = prefs.getString("chatgpt.oauth.accessToken", "") ?: ""
+    _chatgptOauthExpiresAt.value = prefs.getLong("chatgpt.oauth.expiresAt", 0L)
+    _chatgptOauthAccountId.value = prefs.getString("chatgpt.oauth.accountId", "") ?: ""
     _openaiApiKey.value = prefs.getString("openai.apiKey", "") ?: ""
-    _veniceApiKey.value = prefs.getString("venice.apiKey", "") ?: ""
+    _veniceApiKey.value = (prefs.getString("venice.apiKey", "") ?: "").ifBlank {
+      if (BuildConfig.DEBUG) BuildConfig.VENICE_API else ""
+    }
+    _customBaseUrl.value = prefs.getString("custom.baseUrl", "") ?: ""
+    _customApiKey.value = prefs.getString("custom.apiKey", "") ?: ""
+    _customModelId.value = prefs.getString("custom.modelId", "") ?: ""
+    _selectedGgufFilename.value = prefs.getString("local.selectedGguf", org.ethereumphone.andyclaw.llm.DEFAULT_BUILTIN_GGUF) ?: org.ethereumphone.andyclaw.llm.DEFAULT_BUILTIN_GGUF
+    _localLlmTemperature.value = prefs.getFloat("local.temperature", 0.3f)
+    _localLlmTopP.value = prefs.getFloat("local.topP", 0.9f)
+    _localLlmTopK.value = prefs.getInt("local.topK", 40)
+    _localLlmMaxTokens.value = prefs.getInt("local.maxTokens", 256)
+    _localLlmRepeatPenalty.value = prefs.getFloat("local.repeatPenalty", 1.0f)
+    _localLlmNCtx.value = prefs.getInt("local.nCtx", 4096)
+    _localLlmNBatch.value = prefs.getInt("local.nBatch", 2048)
+    _localLlmNThreads.value = prefs.getInt("local.nThreads", 0)
+    _localLlmNGpuLayers.value = prefs.getInt("local.nGpuLayers", 0)
+    _localLlmUseMmap.value = prefs.getBoolean("local.useMmap", true)
     _selectedModel.value = prefs.getString("anthropic.model", "kimi-k2-5") ?: "kimi-k2-5"
     _aiName.value = prefs.getString("ai.name", "AndyClaw") ?: "AndyClaw"
     _enabledSkills.value = loadEnabledSkills()

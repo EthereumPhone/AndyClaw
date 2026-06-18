@@ -26,6 +26,14 @@ enum class AnthropicModels(
     CLAUDE_OAUTH_SONNET_4_6("claude-sonnet-4-6", 8192, LlmProvider.CLAUDE_OAUTH, contextWindow = 1_000_000),
     CLAUDE_OAUTH_HAIKU_3_5("claude-3-5-haiku-latest", 8192, LlmProvider.CLAUDE_OAUTH, contextWindow = 200_000),
 
+    // ChatGPT OAuth (Codex backend) — uses ~/.codex/auth.json refresh token.
+    // Model IDs are best-effort; the live list is discoverable at
+    // chatgpt.com/backend-api/codex/models?client_version=. Edit as needed.
+    CHATGPT_OAUTH_GPT_5_4("gpt-5.4", 16384, LlmProvider.OPENAI_OAUTH, contextWindow = 400_000),
+    CHATGPT_OAUTH_GPT_5_4_PRO("gpt-5.4-pro", 16384, LlmProvider.OPENAI_OAUTH, contextWindow = 400_000),
+    CHATGPT_OAUTH_GPT_5_3_CODEX("gpt-5.3-codex", 16384, LlmProvider.OPENAI_OAUTH, contextWindow = 400_000),
+    CHATGPT_OAUTH_GPT_5_2_CODEX("gpt-5.2-codex", 16384, LlmProvider.OPENAI_OAUTH, contextWindow = 400_000),
+
     // Tinfoil TEE models
     TINFOIL_KIMI_K25("kimi-k2-5", 8192, LlmProvider.TINFOIL, contextWindow = 262_144),
     TINFOIL_LLAMA3_3_70B("llama3-3-70b", 8192, LlmProvider.TINFOIL, contextWindow = 131_072),
@@ -123,8 +131,10 @@ enum class AnthropicModels(
             LlmProvider.CLAUDE_OAUTH -> CLAUDE_OAUTH_HAIKU_3_5
             LlmProvider.TINFOIL -> TINFOIL_LLAMA3_3_70B
             LlmProvider.OPENAI -> OPENAI_GPT_4_1_NANO
+            LlmProvider.OPENAI_OAUTH -> null // Codex models aren't designed as fast routers; fall back to heuristic.
             LlmProvider.VENICE -> VENICE_LLAMA_3_2_3B
             LlmProvider.LOCAL -> null
+            LlmProvider.CUSTOM -> null // We don't know what the user's backend has; skip LLM routing for CUSTOM.
         }
 
         /** Default model for a given provider. */
@@ -134,8 +144,13 @@ enum class AnthropicModels(
             LlmProvider.CLAUDE_OAUTH -> CLAUDE_OAUTH_SONNET_4_6
             LlmProvider.TINFOIL -> TINFOIL_KIMI_K25
             LlmProvider.OPENAI -> OPENAI_GPT_4_1
+            LlmProvider.OPENAI_OAUTH -> CHATGPT_OAUTH_GPT_5_4
             LlmProvider.VENICE -> VENICE_LLAMA_3_3_70B
             LlmProvider.LOCAL -> QWEN2_5_1_5B
+            // CUSTOM has no built-in "default" model — the user supplies the id in Settings.
+            // We pick QWEN2_5_1_5B here as a harmless placeholder; getLlmClientForProvider
+            // for CUSTOM ignores this and uses securePrefs.customModelId / selectedModel.
+            LlmProvider.CUSTOM -> QWEN2_5_1_5B
         }
 
         /**
@@ -164,6 +179,13 @@ enum class AnthropicModels(
                 ModelTier.STANDARD -> OPENAI_GPT_4_1
                 ModelTier.POWERFUL -> OPENAI_GPT_5
             }
+            LlmProvider.OPENAI_OAUTH -> when (tier) {
+                ModelTier.LIGHT -> CHATGPT_OAUTH_GPT_5_2_CODEX
+                ModelTier.STANDARD -> CHATGPT_OAUTH_GPT_5_3_CODEX
+                ModelTier.POWERFUL -> CHATGPT_OAUTH_GPT_5_4
+            }
+            // CUSTOM uses the user's single configured model id regardless of tier.
+            LlmProvider.CUSTOM -> null
             LlmProvider.VENICE -> when (tier) {
                 ModelTier.LIGHT -> VENICE_QWEN3_5_35B
                 ModelTier.STANDARD -> VENICE_CLAUDE_SONNET_4_6

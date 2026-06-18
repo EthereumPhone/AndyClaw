@@ -167,6 +167,15 @@ class HeartbeatBindingService : Service() {
         override fun notificationReceived(prompt: String) {
             enforceSystemCaller()
             Log.i(TAG, "notificationReceived() from OS: prompt=\"${prompt.take(120)}\"")
+            // Gate the LLM call on the user's opt-in. Previously this fired
+            // unconditionally on every system notification, burning tokens
+            // even when "Executive summary" was off in Settings — a silent
+            // billing source. The setting now actually controls the call site.
+            val prefs = (application as NodeApp).securePrefs
+            if (!prefs.executiveSummaryEnabled.value) {
+                Log.i(TAG, "notificationReceived: executive summary disabled by user — skipping LLM call")
+                return
+            }
             ensureRuntimeReady()
             Log.i(TAG, "notificationReceived: launching executive summary generation")
             serviceScope.launch {
