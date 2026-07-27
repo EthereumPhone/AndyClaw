@@ -980,6 +980,39 @@ class LauncherBindingService : Service() {
             val app = application as? NodeApp ?: return false
             return app.ggufRegistry.delete(filename)
         }
+
+        // ── Heartbeat logs (launcher port) ───────────────────────────────
+        override fun getHeartbeatLogs(): String {
+            enforceCallerIsLauncher()
+            val app = application as? NodeApp ?: return "[]"
+            val arr = JSONArray()
+            // Already newest-first from the store.
+            for (entry in app.heartbeatLogStore.getAll()) {
+                val toolCalls = JSONArray()
+                for (tc in entry.toolCalls) {
+                    toolCalls.put(JSONObject().apply {
+                        put("toolName", tc.toolName)
+                        put("result", tc.result)
+                    })
+                }
+                arr.put(JSONObject().apply {
+                    put("timestampMs", entry.timestampMs)
+                    put("outcome", entry.outcome)
+                    put("prompt", entry.prompt)
+                    put("responseText", entry.responseText)
+                    entry.error?.let { put("error", it) }
+                    put("durationMs", entry.durationMs)
+                    put("toolCalls", toolCalls)
+                })
+            }
+            return arr.toString()
+        }
+
+        override fun clearHeartbeatLogs() {
+            enforceCallerIsLauncher()
+            val app = application as? NodeApp ?: return
+            app.heartbeatLogStore.clear()
+        }
     }
 
     // ── Custom /v1/models discovery (cached 30s) ────────────────────────

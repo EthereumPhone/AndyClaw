@@ -156,4 +156,17 @@ interface ILauncherService {
     boolean importGguf(in ParcelFileDescriptor fd, String displayName);
     // Deletes an imported GGUF by filename (refuses the builtin). True on success.
     boolean deleteGguf(String filename);
+
+    // ── Heartbeat logs ────────────────────────────────────────────────
+    // IMPORTANT: these sit at the same ordinals as the launcher's copy of
+    // this AIDL — right after deleteGguf and BEFORE its clawHub* block.
+    // Anything new must be appended after the launcher's clawHub methods,
+    // never inserted here, or every later transaction code shifts.
+    //
+    // Returns heartbeat run logs as a JSON array, newest first. Each object:
+    //   { "timestampMs", "outcome", "prompt", "responseText", "error",
+    //     "durationMs", "toolCalls": [{ "toolName", "result" }] }
+    String getHeartbeatLogs();
+    // Deletes all stored heartbeat run logs.
+    void clearHeartbeatLogs();
 }
