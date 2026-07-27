@@ -10,8 +10,10 @@ import org.ethereumphone.andyclaw.agent.AgentLoop
 import org.ethereumphone.andyclaw.agent.AgentRunner
 import org.ethereumphone.andyclaw.agent.AgentResponse
 import org.ethereumphone.andyclaw.heartbeat.HeartbeatConfig
+import org.ethereumphone.andyclaw.heartbeat.HeartbeatLogEntry
 import org.ethereumphone.andyclaw.heartbeat.HeartbeatOutcome
 import org.ethereumphone.andyclaw.heartbeat.HeartbeatRunner
+import org.ethereumphone.andyclaw.heartbeat.HeartbeatSkipReason
 import org.ethereumphone.andyclaw.llm.AnthropicClient
 import org.ethereumphone.andyclaw.llm.LlmClient
 import org.ethereumphone.andyclaw.llm.AnthropicModels
@@ -235,7 +237,8 @@ class NodeRuntime(private val context: Context) {
                         Log.d(TAG, "Heartbeat OK")
                     }
                     HeartbeatOutcome.SKIPPED -> {
-                        Log.d(TAG, "Heartbeat skipped")
+                        Log.d(TAG, "Heartbeat skipped: ${result.skipReason}")
+                        logSkippedHeartbeat(result.skipReason)
                     }
                     HeartbeatOutcome.ERROR -> {
                         Log.w(TAG, "Heartbeat error: ${result.error}")
@@ -243,6 +246,35 @@ class NodeRuntime(private val context: Context) {
                     }
                 }
             },
+        )
+    }
+
+    /**
+     * Records a skipped heartbeat in the log store.
+     *
+     * Skips never reach [org.ethereumphone.andyclaw.agent.HeartbeatAgentRunner]
+     * — the runner bails before invoking the agent — so without this the logs
+     * look empty even though the OS is triggering heartbeats on schedule.
+     */
+    private fun logSkippedHeartbeat(reason: HeartbeatSkipReason?) {
+        val store = (context.applicationContext as? NodeApp)?.heartbeatLogStore ?: return
+        val explanation = when (reason) {
+            HeartbeatSkipReason.DISABLED ->
+                "Skipped: heartbeat is disabled."
+            HeartbeatSkipReason.QUIET_HOURS ->
+                "Skipped: outside the configured active hours."
+            HeartbeatSkipReason.EMPTY_HEARTBEAT_FILE ->
+                "Skipped: HEARTBEAT.md has no actionable content."
+            null ->
+                "Skipped."
+        }
+        store.append(
+            HeartbeatLogEntry(
+                timestampMs = System.currentTimeMillis(),
+                outcome = "skipped",
+                prompt = "",
+                responseText = explanation,
+            )
         )
     }
 }

@@ -17,6 +17,8 @@ data class HeartbeatResult(
     val outcome: HeartbeatOutcome,
     val text: String? = null,
     val error: String? = null,
+    /** Why the run was skipped. Only set when [outcome] is [HeartbeatOutcome.SKIPPED]. */
+    val skipReason: HeartbeatSkipReason? = null,
 )
 
 enum class HeartbeatOutcome {
@@ -99,7 +101,7 @@ class HeartbeatRunner(
         val skipReason = shouldSkip()
         if (skipReason != null) {
             Log.i(TAG, "Heartbeat skipped: $skipReason")
-            return HeartbeatResult(HeartbeatOutcome.SKIPPED)
+            return HeartbeatResult(HeartbeatOutcome.SKIPPED, skipReason = skipReason)
         }
 
         return try {
@@ -222,7 +224,7 @@ class HeartbeatRunner(
     private suspend fun runOnceWithContext(extraContext: String): HeartbeatResult {
         if (!config.enabled) {
             Log.i(TAG, "runOnceWithContext: heartbeat disabled, skipping")
-            return HeartbeatResult(HeartbeatOutcome.SKIPPED)
+            return HeartbeatResult(HeartbeatOutcome.SKIPPED, skipReason = HeartbeatSkipReason.DISABLED)
         }
 
         Log.i(TAG, "runOnceWithContext: extraContext=${extraContext.take(200)}")
