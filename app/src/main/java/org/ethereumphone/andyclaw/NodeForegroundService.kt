@@ -150,6 +150,7 @@ class NodeForegroundService : Service() {
                         runtime.startHeartbeat()
                         Log.i(TAG, "Heartbeat started (interval=${minutes}m)")
                     } else {
+                        runtime.heartbeatConfig = runtime.heartbeatConfig.copy(enabled = false)
                         Log.i(TAG, "Heartbeat disabled (interval=$minutes) — opt in via Settings")
                     }
                 }
@@ -221,6 +222,7 @@ class NodeForegroundService : Service() {
      * falls back to a generic prompt.
      */
     private fun handleXmtpWakeup(messageCount: Int) {
+        if (app.securePrefs.heartbeatIntervalMinutes.value <= 0) return
         if (!app.securePrefs.heartbeatOnXmtpMessageEnabled.value) return
 
         serviceScope.launch {
@@ -259,6 +261,7 @@ class NodeForegroundService : Service() {
                 Log.i(TAG, "MessengerSDK identity bound for XMTP message listening")
 
                 sdk.identity.newMessages.collect { count ->
+                    if (app.securePrefs.heartbeatIntervalMinutes.value <= 0) return@collect
                     if (!app.securePrefs.heartbeatOnXmtpMessageEnabled.value) return@collect
                     if (count <= 0) return@collect
 

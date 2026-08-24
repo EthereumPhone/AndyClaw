@@ -503,24 +503,27 @@ class SecurePrefs(context: Context) : KeyValueStore {
   }
 
   fun setExecutiveSummaryEnabled(value: Boolean) {
-    prefs.edit { putBoolean("agent.executiveSummaryEnabled", value) }
-    _executiveSummaryEnabled.value = value
+    val stored = value && _heartbeatIntervalMinutes.value > 0
+    prefs.edit { putBoolean("agent.executiveSummaryEnabled", stored) }
+    _executiveSummaryEnabled.value = stored
     // Also write to Settings.Secure so SystemUI can read the enabled state
     try {
       android.provider.Settings.Secure.putInt(
-        appContext.contentResolver, "executive_summary_enabled", if (value) 1 else 0
+        appContext.contentResolver, "executive_summary_enabled", if (stored) 1 else 0
       )
     } catch (_: Exception) { }
   }
 
   fun setHeartbeatOnNotificationEnabled(value: Boolean) {
-    prefs.edit { putBoolean("agent.heartbeatOnNotification", value) }
-    _heartbeatOnNotificationEnabled.value = value
+    val stored = value && _heartbeatIntervalMinutes.value > 0
+    prefs.edit { putBoolean("agent.heartbeatOnNotification", stored) }
+    _heartbeatOnNotificationEnabled.value = stored
   }
 
   fun setHeartbeatOnXmtpMessageEnabled(value: Boolean) {
-    prefs.edit { putBoolean("agent.heartbeatOnXmtpMessage", value) }
-    _heartbeatOnXmtpMessageEnabled.value = value
+    val stored = value && _heartbeatIntervalMinutes.value > 0
+    prefs.edit { putBoolean("agent.heartbeatOnXmtpMessage", stored) }
+    _heartbeatOnXmtpMessageEnabled.value = stored
   }
 
   fun setHeartbeatUseSameModel(value: Boolean) {
@@ -597,6 +600,14 @@ class SecurePrefs(context: Context) : KeyValueStore {
     val stored = if (value <= 0) -1 else value.coerceIn(5, 1440)
     prefs.edit { putInt("agent.heartbeatIntervalMinutes", stored) }
     _heartbeatIntervalMinutes.value = stored
+    // The master switch is a kill switch for every automatic child trigger.
+    // Clear their persisted state as well as gating the call sites, so turning
+    // heartbeat back on never silently restores background inference.
+    if (stored < 0) {
+      setHeartbeatOnNotificationEnabled(false)
+      setHeartbeatOnXmtpMessageEnabled(false)
+      setExecutiveSummaryEnabled(false)
+    }
     // Notify OS heartbeat service to re-schedule at the new interval
     try {
       appContext.sendBroadcast(

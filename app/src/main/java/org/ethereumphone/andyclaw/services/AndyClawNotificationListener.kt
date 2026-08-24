@@ -44,8 +44,11 @@ class AndyClawNotificationListener : NotificationListenerService() {
         // Gate: privileged capability required
         if (!OsCapabilities.hasCapability(Capability.HEARTBEAT_ON_NOTIFICATION)) return
 
-        // Gate: user must have the setting enabled
+        // The master heartbeat switch is a kill switch for every automatic trigger.
         val app = applicationContext as? NodeApp ?: return
+        if (app.securePrefs.heartbeatIntervalMinutes.value <= 0) return
+
+        // Gate: user must have the notification trigger enabled
         if (!app.securePrefs.heartbeatOnNotificationEnabled.value) return
 
         // Throttle: honour cooldown to avoid spamming heartbeats

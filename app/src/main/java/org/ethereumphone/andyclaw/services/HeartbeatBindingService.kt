@@ -172,6 +172,10 @@ class HeartbeatBindingService : Service() {
             // even when "Executive summary" was off in Settings — a silent
             // billing source. The setting now actually controls the call site.
             val prefs = (application as NodeApp).securePrefs
+            if (prefs.heartbeatIntervalMinutes.value <= 0) {
+                Log.i(TAG, "notificationReceived: heartbeat disabled by user — skipping LLM call")
+                return
+            }
             if (!prefs.executiveSummaryEnabled.value) {
                 Log.i(TAG, "notificationReceived: executive summary disabled by user — skipping LLM call")
                 return
@@ -343,6 +347,10 @@ class HeartbeatBindingService : Service() {
     }
 
     private fun performHeartbeat() {
+        if ((application as NodeApp).securePrefs.heartbeatIntervalMinutes.value <= 0) {
+            Log.i(TAG, "performHeartbeat: heartbeat disabled by user, skipping")
+            return
+        }
         if (!isWalletAuthReady()) {
             Log.i(TAG, "performHeartbeat: wallet auth not ready, skipping")
             return
@@ -480,6 +488,10 @@ class HeartbeatBindingService : Service() {
     }
 
     private fun performHeartbeatWithXmtp(senderAddress: String, messageText: String) {
+        if ((application as NodeApp).securePrefs.heartbeatIntervalMinutes.value <= 0) {
+            Log.i(TAG, "performHeartbeatWithXmtp: heartbeat disabled by user, skipping")
+            return
+        }
         if (!isWalletAuthReady()) return
         serviceScope.launch {
             // Prevent duplicate processing (OS may relay the same event twice)
