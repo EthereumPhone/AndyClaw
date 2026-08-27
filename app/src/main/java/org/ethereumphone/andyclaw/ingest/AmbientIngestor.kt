@@ -34,8 +34,8 @@ data class IngestReport(
  * one row.
  */
 class AmbientIngestor(
-    private val mail: GmailIngestSource,
-    private val calendar: CalendarIngestSource,
+    private val mail: MailSource,
+    private val calendar: CalendarSource,
     private val contexts: PredictedContextRepository,
     private val clock: () -> Long = System::currentTimeMillis,
     private val zone: ZoneId = ZoneId.systemDefault(),

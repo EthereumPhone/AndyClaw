@@ -20,14 +20,17 @@ import java.time.ZoneId
 class CalendarIngestSource(
     private val getAccessToken: suspend () -> String,
     private val client: OkHttpClient = GmailIngestSource.defaultClient(),
-) {
+) : CalendarSource {
 
-    suspend fun fetch(
+    override suspend fun fetch(fromMs: Long, toMs: Long, zone: ZoneId): List<CalendarEvent> =
+        fetchCalendar(fromMs, toMs, "primary", DEFAULT_MAX_RESULTS, zone)
+
+    suspend fun fetchCalendar(
         fromMs: Long,
         toMs: Long,
-        calendarId: String = "primary",
-        maxResults: Int = DEFAULT_MAX_RESULTS,
-        zone: ZoneId = ZoneId.systemDefault(),
+        calendarId: String,
+        maxResults: Int,
+        zone: ZoneId,
     ): List<CalendarEvent> = withContext(Dispatchers.IO) {
         val token = try {
             getAccessToken()

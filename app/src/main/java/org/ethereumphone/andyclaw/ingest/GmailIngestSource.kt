@@ -32,7 +32,7 @@ import java.util.concurrent.TimeUnit
 class GmailIngestSource(
     private val getAccessToken: suspend () -> String,
     private val client: OkHttpClient = defaultClient(),
-) {
+) : MailSource {
 
     private val json = Json { ignoreUnknownKeys = true; isLenient = true }
 
@@ -43,9 +43,11 @@ class GmailIngestSource(
      * — because this runs on a battery behind a metered connection and a mail with a 30 MB
      * PDF in it is not a boarding pass.
      */
-    suspend fun fetch(
-        query: String = DEFAULT_QUERY,
-        maxResults: Int = DEFAULT_MAX_RESULTS,
+    override suspend fun fetch(): List<MailMessage> = fetchMatching(DEFAULT_QUERY, DEFAULT_MAX_RESULTS)
+
+    suspend fun fetchMatching(
+        query: String,
+        maxResults: Int,
     ): List<MailMessage> = withContext(Dispatchers.IO) {
         val token = try {
             getAccessToken()
