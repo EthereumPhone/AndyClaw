@@ -20,6 +20,8 @@ import org.ethereumphone.andyclaw.ingest.CalendarIngestSource
 import org.ethereumphone.andyclaw.ingest.GmailIngestSource
 import org.ethereumphone.andyclaw.ledger.LedgerRecorder
 import org.ethereumphone.andyclaw.ledger.LedgerRepository
+import org.ethereumphone.andyclaw.ledger.SessionReplay
+import org.ethereumphone.andyclaw.llm.ZeroBalanceFallbackClient
 import org.ethereumphone.andyclaw.ledger.db.LedgerDatabase
 import org.ethereumphone.andyclaw.extensions.ExtensionEngine
 import org.ethereumphone.andyclaw.extensions.clawhub.ClawHubManager
@@ -397,6 +399,17 @@ class NodeApp : Application() {
         )
     }
 
+    /**
+     * The join between the two halves of a recording.
+     *
+     * The rows and the frames are written by components that know nothing about each
+     * other and meet on the session id alone; this is where they meet. Phase 4's ledger
+     * viewer reads it over the binder rather than reaching into either store.
+     */
+    val sessionReplay: SessionReplay by lazy {
+        SessionReplay(ledgerRepository, sessionFrameStore)
+    }
+
     // ── Anticipatory context (mail and calendar, parsed deterministically) ──
 
     val predictedContextRepository: PredictedContextRepository by lazy {
@@ -748,7 +761,12 @@ class NodeApp : Application() {
             llamaCpp = llamaCpp,
             modelDownloadManager = modelDownloadManager,
             selectedModelPathProvider = {
+                // Fall back to whatever is on disk when nothing has been picked. The
+                // zero-balance path reaches this client without anyone having visited the
+                // model settings, and "a GGUF is installed but none is selected" would
+                // otherwise mean no model at all.
                 ggufRegistry.find(securePrefs.selectedGgufFilename.value)?.absolutePath
+                    ?: ggufRegistry.models.value.firstOrNull()?.absolutePath
             },
             configProvider = { securePrefs.currentLocalLlmConfig() },
         )
@@ -776,9 +794,58 @@ class NodeApp : Application() {
         else securePrefs.memoryAiModel.value
     }
 
+    /**
+     * The client the ambient surface runs on: the executive summary and the heartbeat.
+     *
+     * Wrapped so that an empty balance degrades this work rather than stopping it —
+     * `agent-first-plan.md` §D.3. These two are the paths the user did not ask for and is
+     * not waiting on, which is exactly what makes a silent downgrade the right answer here
+     * and the wrong one in chat: `getLlmClient()` is deliberately left unwrapped, so a user
+     * who typed a question is told their balance is empty instead of being handed a visibly
+     * worse answer with no explanation.
+     */
     fun getHeartbeatLlmClient(): LlmClient {
-        if (securePrefs.heartbeatUseSameModel.value) return getLlmClient()
-        return getLlmClientForProvider(securePrefs.heartbeatProvider.value, securePrefs.heartbeatModel.value)
+        val provider =
+            if (securePrefs.heartbeatUseSameModel.value) securePrefs.selectedProvider.value
+            else securePrefs.heartbeatProvider.value
+        val primary =
+            if (securePrefs.heartbeatUseSameModel.value) getLlmClient()
+            else getLlmClientForProvider(provider, securePrefs.heartbeatModel.value)
+        return withZeroBalanceFallback(primary, provider)
+    }
+
+    /**
+     * Adds the on-device floor, when there is one to add.
+     *
+     * Returns [primary] untouched unless all three hold: the request is going to the
+     * gateway that can run out of funds, the device is privileged (nothing else has a
+     * balance to exhaust), and a GGUF is actually on disk. Otherwise the wrapper would only
+     * add a layer that can never fire.
+     */
+    private fun withZeroBalanceFallback(primary: LlmClient, provider: LlmProvider): LlmClient {
+        if (provider != LlmProvider.ETHOS_PREMIUM) return primary
+        if (!OsCapabilities.hasPrivilegedAccess) return primary
+        if (primary is LocalLlmClient) return primary
+        return ZeroBalanceFallbackClient(
+            primary = primary,
+            local = localLlmClient,
+            localAvailable = ::hasLocalModel,
+            usingPremiumGateway = { provider == LlmProvider.ETHOS_PREMIUM },
+        )
+    }
+
+    /**
+     * Whether anything is in `filesDir/models/`.
+     *
+     * The registry caches its scan at construction, so an empty cache is re-checked: the
+     * one way it goes stale is a model finishing its download after start-up, which is
+     * precisely the case where the answer must change. A non-empty cache is trusted, so the
+     * common path is a field read rather than a directory listing.
+     */
+    private fun hasLocalModel(): Boolean {
+        if (ggufRegistry.models.value.isNotEmpty()) return true
+        ggufRegistry.refresh()
+        return ggufRegistry.models.value.isNotEmpty()
     }
 
     fun getCompactionLlmClient(): LlmClient {

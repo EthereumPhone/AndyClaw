@@ -59,7 +59,7 @@ authority; the short version:
 |---|---|---|
 | `org.ethereumphone.andyclaw.ipc.IHeartbeatService` | `app/src/main/aidl/…` **and** hand-written `Parcel.transact` in `AndyClawHeartbeatService.java` | OS → app, ordinals `FIRST+0…+5` are the contract on both sides. Authentication is `Binder.getCallingUid() == SYSTEM_UID` (`HeartbeatBindingService.enforceSystemCaller`) — the service is exported with no permission because `system_server` must be able to bind it before first unlock. |
 | `com.android.server.IAndyClawHeartbeat` | raw `transact` on the `andyclawheartbeat` binder | app → OS, `FIRST+0…+3`. Gated OS-side by a package check on the calling UID. |
-| `ILauncherService` | `app/src/main/aidl/…/ILauncherService.aidl` (49 methods) | Three copies: this one, the launcher's (longer — it has a `clawHub*` block at 50–60 this app lacks), SystemUI's (the first 6 only). New methods go **after** the launcher's `clawHub*` block. See the comment at `ILauncherService.aidl:160`. |
+| `ILauncherService` | `app/src/main/aidl/…/ILauncherService.aidl` (69 methods) | Three copies: this one, the launcher's, SystemUI's (the first 6 only). This copy and the launcher's now agree at **every** ordinal 1–69: the `clawHub*` block the launcher has always had sits at 50–60 and is declared here as stubs purely to hold those slots, and the ambient/approval/ledger methods are appended at 61–69. Anything new goes at 70+, in both copies, in the same release. |
 | `IAgentDisplayService` | `app/src/main/aidl/android/os/…` (47 methods) | AIDL-generated ordinals, mirrored by the framework's own copy. Append at 47. |
 | On-disk state under `filesDir` | see §4 | Must survive an OTA from an arbitrary older build **and a rollback**. New fields are defaulted and trailing; new files are ignored by older code. |
 
@@ -140,6 +140,17 @@ New background trigger? It states its `Provenance` explicitly. The defaults are 
   `adb shell am broadcast -a com.android.server.andyclaw.HEARTBEAT_NOW` forces a heartbeat.
 - Heartbeat cadence and LLM spend come out of `user_funds.usd_balance`, which is **shared with
   sponsored gas**. A chatty background loop costs the user transactions, not just tokens.
+- **The ambient paths have a floor; chat deliberately does not.**
+  `NodeApp.getHeartbeatLlmClient()` — the executive summary and the heartbeat — is wrapped in
+  `ZeroBalanceFallbackClient`, which re-runs a request on the bundled GGUF when the gateway
+  refuses for lack of funds, so an empty balance degrades the ambient surface instead of
+  stopping it. `getLlmClient()` is left unwrapped on purpose: a user who typed a question
+  should be told their balance is empty, not handed a 1.5B answer and left to wonder. Only a
+  403 whose body says `Insufficient balance` falls back, and only a stream that has not yet
+  emitted a token; widening either is the bug this class exists to avoid.
+- **The ledger records provenance, rung, outcome and duration — never a tool's input or its
+  output.** `LauncherBindingService`'s ledger methods hand that store to the launcher, and to
+  an export the user can take off the device. Anything added to a row is added to both.
 - `HeartbeatPrompt.isContentEffectivelyEmpty` treats a header-only `HEARTBEAT.md` as "nothing to
   do", so seeding the file and setting an interval are two halves of one change — one without
   the other leaves the proactive agent silently doing nothing.

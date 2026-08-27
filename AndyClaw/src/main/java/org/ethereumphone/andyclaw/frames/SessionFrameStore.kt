@@ -77,6 +77,15 @@ class SessionFrameStore(
     /** The bytes of one frame, or null if it is gone. */
     fun read(ref: FrameRef): ByteArray? = read(ref.id)
 
+    /**
+     * The file behind a frame id, if it is still there.
+     *
+     * Exists so a viewer can be handed a read-only fd for one frame rather than the bytes
+     * over a binder transaction. Same id validation as [read] -- an id is `<dir>/<file>`
+     * and nothing else, so this cannot be walked out of [root].
+     */
+    fun fileFor(frameId: String): File? = resolve(frameId)?.takeIf { it.isFile }
+
     fun read(frameId: String): ByteArray? {
         val file = resolve(frameId) ?: return null
         return try {

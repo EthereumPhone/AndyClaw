@@ -1067,6 +1067,313 @@ class LauncherBindingService : Service() {
             val app = application as? NodeApp ?: return
             app.heartbeatLogStore.clear()
         }
+
+        // ── ClawHub (ordinals 50-60) ─────────────────────────────────────
+        //
+        // Placeholders holding the launcher's ordinals; see the AIDL. Each returns what
+        // the launcher already copes with today, when the transaction finds no method at
+        // all and the reply parcel comes back empty. Nothing here is a feature; the point
+        // is that clawHubSearch() lands on clawHubSearch() and not on getPredictedCards().
+        override fun clawHubSearch(query: String?, limit: Int): String = "[]"
+        override fun clawHubBrowse(cursor: String?): String =
+            """{"items":[],"nextCursor":null}"""
+        override fun clawHubListInstalled(): String = "[]"
+        override fun clawHubIsInstalled(slug: String?): Boolean = false
+        override fun clawHubDownloadAndAssess(slug: String?): String =
+            """{"status":"failed","reason":"ClawHub is not available on this build"}"""
+        override fun clawHubConfirmInstall(slug: String?, version: String?): String =
+            """{"status":"failed","reason":"ClawHub is not available on this build"}"""
+        override fun clawHubCancelPendingInstall(slug: String?) {}
+        override fun clawHubUninstall(slug: String?): Boolean = false
+        override fun clawHubUpdate(slug: String?): String =
+            """{"status":"failed","reason":"ClawHub is not available on this build"}"""
+        override fun clawHubReadSkillContent(slug: String?): String? = null
+        override fun clawHubGetRiskData(slug: String?): String? = null
+
+        // ── Ambient card stack (ordinals 61-62) ──────────────────────────
+
+        /**
+         * What the device expects to matter soon, ranked.
+         *
+         * The ranking is [PredictedContextScorer]'s, not this method's and not the
+         * launcher's: relevance is "how far into this kind of thing's own window are we",
+         * which is why a flight two hours out comes above a standup in twenty minutes. If
+         * the launcher re-sorted by `startMs` it would undo that, so the order this
+         * returns is the order to draw.
+         */
+        override fun getPredictedCards(limit: Int): String {
+            enforceCallerIsLauncher()
+            val app = application as? NodeApp ?: return "[]"
+            val n = limit.coerceIn(1, 100)
+            return try {
+                val ranked = runBlocking { app.predictedContextRepository.relevantNow(limit = n) }
+                val arr = JSONArray()
+                for (scored in ranked) {
+                    val c = scored.context
+                    arr.put(JSONObject().apply {
+                        put("id", c.id)
+                        put("kind", c.kind.name)
+                        put("title", c.title)
+                        c.subtitle?.let { put("subtitle", it) }
+                        put("startMs", c.startMs)
+                        c.endMs?.let { put("endMs", it) }
+                        c.location?.let { put("location", it) }
+                        // Typed data, verbatim, as an object -- never as prose. The card
+                        // library reads named fields out of it; nothing splices it into a
+                        // prompt, which is the whole reason ingestion stores it this way.
+                        put("payload", runCatching { JSONObject(c.payloadJson) }.getOrElse { JSONObject() })
+                        put("provenance", c.provenance)
+                        put("source", c.source)
+                        put("score", scored.score)
+                        put("untilStartMs", scored.untilStartMs)
+                    })
+                }
+                arr.toString()
+            } catch (e: Exception) {
+                Log.w(TAG, "getPredictedCards failed", e)
+                "[]"
+            }
+        }
+
+        override fun dismissPredictedCard(id: String?) {
+            enforceCallerIsLauncher()
+            if (id.isNullOrBlank()) return
+            val app = application as? NodeApp ?: return
+            scope.launch {
+                runCatching { app.predictedContextRepository.dismiss(id) }
+                    .onFailure { Log.w(TAG, "dismissPredictedCard failed", it) }
+            }
+        }
+
+        // ── Pending approvals (ordinals 63-64) ───────────────────────────
+
+        override fun getPendingApprovals(): String {
+            enforceCallerIsLauncher()
+            val app = application as? NodeApp ?: return "[]"
+            return try {
+                val arr = JSONArray()
+                for (e in app.pendingApprovalStore.getAll()) {
+                    arr.put(JSONObject().apply {
+                        put("id", e.id)
+                        put("timestampMs", e.timestampMs)
+                        put("source", e.source)
+                        put("provenance", e.provenance)
+                        put("toolName", e.toolName)
+                        put("description", e.description)
+                        e.conversationId?.let { put("conversationId", it) }
+                        e.inputPreview?.let { put("inputPreview", it) }
+                    })
+                }
+                arr.toString()
+            } catch (e: Exception) {
+                Log.w(TAG, "getPendingApprovals failed", e)
+                "[]"
+            }
+        }
+
+        /**
+         * Records the user's decision on a raised card and removes it.
+         *
+         * It deliberately does not run anything. The store keeps a truncated preview of the
+         * refused call's arguments and nothing more -- on purpose, since those arguments
+         * carry message bodies and addresses -- so there is nothing here to replay
+         * faithfully, and replaying an untrusted-triggered call because the user tapped yes
+         * would launder the provenance that stopped it. Approval is the launcher following
+         * this with an ordinary sendPrompt(), which is USER provenance and passes the gate
+         * on its own merits.
+         *
+         * The decision itself is worth a ledger row: a card the user declined is the
+         * boundary doing its job, and that belongs in the record beside the block that
+         * raised it.
+         */
+        override fun resolvePendingApproval(id: String?, approved: Boolean): Boolean {
+            enforceCallerIsLauncher()
+            if (id.isNullOrBlank()) return false
+            val app = application as? NodeApp ?: return false
+            val entry = app.pendingApprovalStore.getAll().firstOrNull { it.id == id }
+            val removed = app.pendingApprovalStore.remove(id)
+            if (removed && entry != null && app.securePrefs.ledgerEnabled.value) {
+                runCatching {
+                    app.ledgerRecorder.record(
+                        LedgerDraft(
+                            sessionId = entry.conversationId ?: "approval:${entry.id}",
+                            kind = LedgerKind.TURN,
+                            intent = (if (approved) "Approved: " else "Declined: ") + entry.description,
+                            provenance = Provenance.USER.name,
+                            outcome = if (approved) LedgerOutcome.OK else LedgerOutcome.BLOCKED,
+                            actions = listOf(
+                                LedgerAction(
+                                    tool = entry.toolName,
+                                    ok = approved,
+                                    durationMs = 0L,
+                                    note = if (approved) "approved by user" else "declined by user",
+                                )
+                            ),
+                        )
+                    )
+                }.onFailure { Log.w(TAG, "could not record approval decision", it) }
+            }
+            return removed
+        }
+
+        // ── Ledger (ordinals 65-69) ──────────────────────────────────────
+
+        override fun getLedgerEntries(limit: Int): String {
+            enforceCallerIsLauncher()
+            val app = application as? NodeApp ?: return "[]"
+            val n = limit.coerceIn(1, 1000)
+            return try {
+                val rows = runBlocking { app.ledgerRepository.recent(n) }
+                val arr = JSONArray()
+                for (row in rows) arr.put(ledgerEntryJson(row))
+                arr.toString()
+            } catch (e: Exception) {
+                Log.w(TAG, "getLedgerEntries failed", e)
+                "[]"
+            }
+        }
+
+        override fun getLedgerSession(sessionId: String?): String {
+            enforceCallerIsLauncher()
+            if (sessionId.isNullOrBlank()) return "{}"
+            val app = application as? NodeApp ?: return "{}"
+            return try {
+                val replay = runBlocking { app.sessionReplay.of(sessionId) }
+                val entries = JSONArray()
+                for (row in replay.entries) entries.put(ledgerEntryJson(row))
+                val frames = JSONArray()
+                for (f in replay.frames) {
+                    frames.put(JSONObject().apply {
+                        put("id", f.id)
+                        put("index", f.index)
+                        put("timestampMs", f.timestampMs)
+                        put("sizeBytes", f.sizeBytes)
+                    })
+                }
+                val missing = JSONArray()
+                for (m in replay.missingFrames) missing.put(m)
+                JSONObject().apply {
+                    put("sessionId", replay.sessionId)
+                    put("intent", replay.intent)
+                    put("startedMs", replay.startedMs)
+                    put("endedMs", replay.endedMs)
+                    put("entries", entries)
+                    put("frames", frames)
+                    // Named by the rows, gone from disk. Surfaced rather than hidden: a
+                    // replay that quietly plays a shorter version misrepresents the run.
+                    put("missingFrames", missing)
+                }.toString()
+            } catch (e: Exception) {
+                Log.w(TAG, "getLedgerSession failed", e)
+                "{}"
+            }
+        }
+
+        override fun verifyLedger(): String {
+            enforceCallerIsLauncher()
+            val app = application as? NodeApp ?: return """{"ok":false,"checked":0}"""
+            return try {
+                val v = runBlocking { app.ledgerRepository.verify() }
+                JSONObject().apply {
+                    put("ok", v.ok)
+                    put("checked", v.checkedLinks)
+                    put("firstSeq", v.firstSeq)
+                    put("lastSeq", v.lastSeq)
+                    if (v.brokenAtSeq != null) put("brokenAtSeq", v.brokenAtSeq) else put("brokenAtSeq", JSONObject.NULL)
+                    v.reason?.let { put("reason", it) }
+                }.toString()
+            } catch (e: Exception) {
+                Log.w(TAG, "verifyLedger failed", e)
+                """{"ok":false,"checked":0,"reason":"verification failed"}"""
+            }
+        }
+
+        override fun openLedgerFrame(frameId: String?): ParcelFileDescriptor? {
+            enforceCallerIsLauncher()
+            if (frameId.isNullOrBlank()) return null
+            val app = application as? NodeApp ?: return null
+            return try {
+                val file = app.sessionFrameStore.fileFor(frameId) ?: return null
+                ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY)
+            } catch (e: Exception) {
+                Log.w(TAG, "openLedgerFrame failed for $frameId", e)
+                null
+            }
+        }
+
+        /**
+         * The ledger as JSONL, one row per line, oldest first.
+         *
+         * Oldest first because that is chain order, and an export whose whole claim is that
+         * it can be re-verified off the device has to be walkable in the direction the
+         * hashes run. The temp file is unlinked as soon as it is open: the fd keeps it
+         * alive for the reader and nothing is left in cacheDir afterwards.
+         */
+        override fun exportLedger(): ParcelFileDescriptor? {
+            enforceCallerIsLauncher()
+            val app = application as? NodeApp ?: return null
+            return try {
+                val rows = runBlocking { app.ledgerRepository.recent(Int.MAX_VALUE) }.reversed()
+                val tmp = File.createTempFile("ledger-export", ".jsonl", cacheDir)
+                tmp.bufferedWriter().use { w ->
+                    for (row in rows) {
+                        w.write(ledgerEntryJson(row).toString())
+                        w.write("\n")
+                    }
+                }
+                val fd = ParcelFileDescriptor.open(tmp, ParcelFileDescriptor.MODE_READ_ONLY)
+                tmp.delete()
+                fd
+            } catch (e: Exception) {
+                Log.w(TAG, "exportLedger failed", e)
+                null
+            }
+        }
+    }
+
+    /**
+     * One ledger row as JSON.
+     *
+     * `costUsd` is written as an explicit null when it is unknown rather than omitted or
+     * zeroed. A model whose price the registry has never seen has an unknown cost, and a
+     * viewer that renders that as free is lying in the one screen whose entire job is being
+     * trustworthy -- so the null has to survive the wire.
+     */
+    private fun ledgerEntryJson(row: org.ethereumphone.andyclaw.ledger.LedgerEntry): JSONObject {
+        val actions = JSONArray()
+        for (a in row.actions) {
+            actions.put(JSONObject().apply {
+                put("tool", a.tool)
+                put("ok", a.ok)
+                put("durationMs", a.durationMs)
+                a.note?.let { put("note", it) }
+            })
+        }
+        val frames = JSONArray()
+        for (f in row.frames) frames.put(f)
+        val models = JSONArray()
+        for (m in row.modelIds) models.put(m)
+        return JSONObject().apply {
+            put("id", row.id)
+            put("seq", row.seq)
+            put("sessionId", row.sessionId)
+            put("ts", row.ts)
+            put("kind", row.kind.name)
+            put("intent", row.intent)
+            put("provenance", row.provenance)
+            if (row.routeRung != null) put("routeRung", row.routeRung) else put("routeRung", JSONObject.NULL)
+            if (row.flowRef != null) put("flowRef", row.flowRef) else put("flowRef", JSONObject.NULL)
+            put("actions", actions)
+            put("frames", frames)
+            put("outcome", row.outcome.name)
+            put("modelIds", models)
+            if (row.costUsd != null) put("costUsd", row.costUsd) else put("costUsd", JSONObject.NULL)
+            put("inputTokens", row.inputTokens)
+            put("outputTokens", row.outputTokens)
+            put("durationMs", row.durationMs)
+            put("prevHash", row.prevHash)
+            put("hash", row.hash)
+        }
     }
 
     // ── Custom /v1/models discovery (cached 30s) ────────────────────────

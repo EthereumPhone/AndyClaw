@@ -169,4 +169,79 @@ interface ILauncherService {
     String getHeartbeatLogs();
     // Deletes all stored heartbeat run logs.
     void clearHeartbeatLogs();
+
+    // ── ClawHub (ordinals 50-60) ──────────────────────────────────────
+    // DECLARED HERE ONLY TO HOLD THE ORDINALS. The launcher's copy of this AIDL has
+    // carried this block since before the app's copy existed, so on the wire slots 50-60
+    // already mean these methods: without them, the first method appended below would sit
+    // at 50 and the launcher's clawHubSearch() would call it. The skill marketplace itself
+    // is not implemented in the app -- these return the same empty answers the launcher
+    // already handles, which is exactly what it sees today when the transaction finds
+    // nothing at all. Implementing ClawHub for real means filling these in, never moving
+    // them.
+    String clawHubSearch(String query, int limit);
+    String clawHubBrowse(String cursor);
+    String clawHubListInstalled();
+    boolean clawHubIsInstalled(String slug);
+    String clawHubDownloadAndAssess(String slug);
+    String clawHubConfirmInstall(String slug, String version);
+    void clawHubCancelPendingInstall(String slug);
+    boolean clawHubUninstall(String slug);
+    String clawHubUpdate(String slug);
+    String clawHubReadSkillContent(String slug);
+    String clawHubGetRiskData(String slug);
+
+    // ══════════════════════════════════════════════════════════════════
+    // APPEND POINT. Everything below is new in this release and must land in the
+    // launcher's copy at the same ordinals, in the same order, in the same release.
+    //
+    // Both directions of the version skew are handled by returning nothing rather than
+    // failing: a launcher older than this app never calls any of them, and a launcher
+    // newer than the installed app gets a transaction that finds no method, whose reply
+    // parcel is empty -- so every call below must be null-safe on the launcher side.
+    // ══════════════════════════════════════════════════════════════════
+
+    // ── Ambient card stack ────────────────────────────────────────────
+    // The things the device expects to matter soon, already ranked by time-to-relevance,
+    // newest-relevant first. Nothing here was written by a model: every field was parsed
+    // deterministically out of something that was already structured. JSON array:
+    //   [{ "id", "kind", "title", "subtitle", "startMs", "endMs", "location",
+    //      "payload": {...}, "score", "untilStartMs", "source" }]
+    String getPredictedCards(int limit);
+    // Waves a card away. It comes back only if the underlying thing actually changes --
+    // a moved departure time is exactly when it should.
+    void dismissPredictedCard(String id);
+
+    // ── Pending approvals ─────────────────────────────────────────────
+    // Actions a run refused to take on its own because its trigger was untrusted, waiting
+    // for the user. This is what an ActionConfirmCard renders. JSON array:
+    //   [{ "id", "timestampMs", "source", "provenance", "toolName", "description",
+    //      "conversationId", "inputPreview" }]
+    String getPendingApprovals();
+    // Resolves one, either way, and writes the decision to the ledger. Approving does not
+    // replay the refused call -- the store deliberately keeps only a truncated preview of
+    // its arguments -- so the launcher follows an approval with a normal sendPrompt() from
+    // the user, which is USER-provenance and passes the gate honestly. True if it existed.
+    boolean resolvePendingApproval(String id, boolean approved);
+
+    // ── Ledger ────────────────────────────────────────────────────────
+    // The append-only, hash-chained record of what the agent did, newest first. A TURN row
+    // is a run; the TOOL rows under it are its steps. Rows carry no tool input and no tool
+    // output, by design. JSON array of
+    //   { "id", "seq", "sessionId", "ts", "kind", "intent", "provenance", "routeRung",
+    //     "flowRef", "actions": [{ "tool", "ok", "durationMs", "note" }], "frames": [],
+    //     "outcome", "modelIds": [], "costUsd" (null when unknown -- not zero),
+    //     "inputTokens", "outputTokens", "durationMs", "prevHash", "hash" }
+    String getLedgerEntries(int limit);
+    // One session assembled for playback: its rows, the frames still on disk, and the
+    // frames the rows name that retention has since evicted. JSON:
+    //   { "sessionId", "intent", "startedMs", "endedMs", "entries": [...],
+    //     "frames": [{ "id", "index", "timestampMs", "sizeBytes" }], "missingFrames": [] }
+    String getLedgerSession(String sessionId);
+    // Re-hashes the whole chain. JSON: { "ok", "checked", "brokenAtSeq" (null when ok) }.
+    String verifyLedger();
+    // One captured frame, by the id the ledger names, as a read-only fd. Null if evicted.
+    ParcelFileDescriptor openLedgerFrame(String frameId);
+    // The whole ledger as JSONL, one row per line, for "exportable and verifiable".
+    ParcelFileDescriptor exportLedger();
 }
