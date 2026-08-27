@@ -26,6 +26,7 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import org.ethereumphone.andyclaw.NodeApp
+import org.ethereumphone.andyclaw.ExecutionEngine.Provenance
 import org.ethereumphone.andyclaw.agent.HeartbeatAgentRunner
 import org.ethereumphone.andyclaw.heartbeat.HeartbeatConfig
 import org.ethereumphone.andyclaw.heartbeat.HeartbeatInstructions
@@ -391,7 +392,8 @@ class HeartbeatBindingService : Service() {
                     appendLine("your available tools. If it's a simple reminder to alert the user,")
                     appendLine("create a notification so they see it.")
                 }
-                val response = app.runtime.agentRunner.run(prompt)
+                // The reminder is one the user asked for — trusted content.
+                val response = app.runtime.agentRunner.run(prompt, provenance = Provenance.TRUSTED)
                 Log.i(TAG, "Reminder agent response (error=${response.isError}): " +
                         "\"${response.text.take(100)}\"")
             }
@@ -421,7 +423,8 @@ class HeartbeatBindingService : Service() {
                     appendLine("Execute the task described in the reason above. Use your available tools")
                     appendLine("as needed. This cron job will fire again in ${intervalMs / 60000} minutes.")
                 }
-                val response = app.runtime.agentRunner.run(prompt)
+                // The cron job is one the user created — trusted content.
+                val response = app.runtime.agentRunner.run(prompt, provenance = Provenance.TRUSTED)
                 Log.i(TAG, "Cronjob agent response (error=${response.isError}): " +
                         "\"${response.text.take(100)}\"")
             }
@@ -571,9 +574,16 @@ class HeartbeatBindingService : Service() {
             appendLine("Do NOT use send_xmtp_message — your response will be sent automatically.")
         }
 
-        // Step 4: Run agent
-        Log.i(TAG, "XMTP: running agent for $senderAddress...")
-        val response = app.runtime.agentRunner.run(prompt)
+        // Step 4: Run agent.
+        // The prompt is built from a stranger's message body plus four more of their
+        // messages, so the whole run is UNTRUSTED and is confined to replying to
+        // this sender.
+        Log.i(TAG, "XMTP: running agent for $senderAddress (UNTRUSTED)...")
+        val response = app.runtime.agentRunner.run(
+            prompt = prompt,
+            provenance = Provenance.UNTRUSTED,
+            conversationId = senderAddress,
+        )
         Log.i(TAG, "XMTP: agent response (error=${response.isError}): \"${response.text.take(100)}\"")
 
         if (response.isError) {

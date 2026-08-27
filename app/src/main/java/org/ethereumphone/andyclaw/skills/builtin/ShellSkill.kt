@@ -13,6 +13,7 @@ import org.ethereumphone.andyclaw.skills.SkillManifest
 import org.ethereumphone.andyclaw.skills.SkillResult
 import org.ethereumphone.andyclaw.skills.Tier
 import org.ethereumphone.andyclaw.skills.ToolDefinition
+import org.ethereumphone.andyclaw.skills.ToolEffect
 import java.io.BufferedReader
 import java.io.InputStreamReader
 import java.util.concurrent.TimeUnit
@@ -111,6 +112,7 @@ class ShellSkill(
                     "required" to kotlinx.serialization.json.JsonArray(listOf(JsonPrimitive("command"))),
                 )),
                 requiresApproval = true,
+                effect = ToolEffect.IRREVERSIBLE,
             ),
         ),
     )

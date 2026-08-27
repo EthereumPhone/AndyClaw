@@ -151,6 +151,7 @@ object SkillFrontmatter {
             args = argsRaw?.entries?.associate { (key, value) ->
                 key to parseArgSpec(value)
             } ?: emptyMap(),
+            effect = parseToolEffect(obj["effect"]?.jsonPrimitive?.content),
         )
     }
 
@@ -164,6 +165,22 @@ object SkillFrontmatter {
             required = obj["required"]?.jsonPrimitive?.booleanOrNull ?: false,
             default = obj["default"]?.jsonPrimitive?.content,
         )
+    }
+
+    /**
+     * Resolve a frontmatter `effect:` value. Anything unrecognised — including a
+     * missing value — returns `null`, which resolves to
+     * [ToolEffect.IRREVERSIBLE] downstream. Fail closed.
+     */
+    private fun parseToolEffect(raw: String?): ToolEffect? {
+        val value = raw?.trim()?.lowercase() ?: return null
+        return when (value) {
+            "read", "read_only", "readonly" -> ToolEffect.READ
+            "reversible", "undoable" -> ToolEffect.REVERSIBLE
+            "irreversible" -> ToolEffect.IRREVERSIBLE
+            "sensitive" -> ToolEffect.SENSITIVE
+            else -> null
+        }
     }
 
     // ── JSON / YAML parsing helpers ─────────────────────────────────

@@ -1,12 +1,74 @@
 package org.ethereumphone.andyclaw.heartbeat
 
+import android.util.Log
+import java.io.File
+
 object HeartbeatInstructions {
+
+    private const val TAG = "HeartbeatInstructions"
 
     /** Seeded into HEARTBEAT.md — only contains a header so isContentEffectivelyEmpty() returns true
      *  until the user adds their own periodic tasks. */
     const val CONTENT = """# Periodic Tasks
 
 """
+
+    /**
+     * The task list a fresh device starts with.
+     *
+     * Out of the box the proactive agent used to do nothing at all, for two
+     * independent reasons: the heartbeat interval defaults to `-1` (off), and
+     * [CONTENT] seeds HEARTBEAT.md with a bare header that
+     * `HeartbeatPrompt.isContentEffectivelyEmpty` reads as "nothing to do" — so even
+     * turning the interval on left the agent with an empty list.
+     *
+     * Onboarding writes this instead. Deliberately short: everything here is re-sent
+     * on every heartbeat, and `user_funds.usd_balance` is shared with sponsored gas,
+     * so a chatty task list costs the user transactions.
+     *
+     * Read-only tasks only. Nothing here spends, sends, or installs.
+     */
+    const val STARTER_CONTENT = """# Periodic Tasks
+
+Everything in this list runs on every heartbeat, so keep it short.
+
+- Check notifications for anything time-critical — a delivery, a flight change, a
+  payment request — and tell me about it once. Do not repeat something you already
+  reported.
+- Check the device for a battery below 15% or free storage below 2 GB.
+- If nothing needs my attention, reply HEARTBEAT_OK and do nothing else.
+
+## Notes
+
+- Add your own tasks as list items. They run on the schedule set in
+  Settings -> Heartbeat.
+- Delete a task to stop it. An empty list means the heartbeat does nothing at all.
+"""
+
+    /**
+     * Put the starter task list in place unless the user has written their own.
+     *
+     * Safe to call repeatedly and safe to call after the OS has already seeded the
+     * placeholder: it only writes when the file is missing or still effectively
+     * empty, so a task list the user edited is never overwritten.
+     *
+     * @return true when the file was written.
+     */
+    fun seedStarterTasks(file: File): Boolean {
+        return try {
+            val existing = if (file.exists()) file.readText() else null
+            if (existing != null && !HeartbeatPrompt.isContentEffectivelyEmpty(existing)) {
+                Log.i(TAG, "HEARTBEAT.md already has tasks — leaving it alone")
+                return false
+            }
+            file.writeText(STARTER_CONTENT)
+            Log.i(TAG, "Seeded HEARTBEAT.md with the starter task list")
+            true
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not seed HEARTBEAT.md: ${e.message}")
+            false
+        }
+    }
 
     /** Previous proactive instructions kept for reference — not seeded into HEARTBEAT.md. */
     @Suppress("unused")

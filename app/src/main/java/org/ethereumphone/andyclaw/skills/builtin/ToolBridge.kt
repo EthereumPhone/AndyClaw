@@ -10,6 +10,9 @@ import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import org.ethereumphone.andyclaw.ExecutionEngine.Provenance
+import org.ethereumphone.andyclaw.safety.ProvenanceGate
+import org.ethereumphone.andyclaw.safety.ToolEffects
 import org.ethereumphone.andyclaw.skills.NativeSkillRegistry
 import org.ethereumphone.andyclaw.skills.SkillResult
 import org.ethereumphone.andyclaw.skills.Tier
@@ -27,14 +30,55 @@ import org.ethereumphone.andyclaw.skills.Tier
  * Thread safety: [call] dispatches tool execution to [Dispatchers.IO] via
  * [runBlocking], blocking the BeanShell thread. The outer timeout from
  * [CodeExecutionSkill] still applies as the overall deadline.
+ *
+ * **This class is a second front door to every tool.** It reaches the registry
+ * directly, so none of the execution engine's pre-flight checks see the call, and
+ * the tool list the model was shown is irrelevant to what it can invoke here. That
+ * makes it the one place where filtering a tool out of a prompt is provably not
+ * enforcement — so the provenance gate is applied again, in [enforceProvenance],
+ * with [provenance] captured from the run that started this `execute_code`.
  */
 class ToolBridge(
     private val registry: NativeSkillRegistry,
     private val tier: Tier,
     private val enabledSkillIds: Set<String>,
+    /**
+     * Provenance of the agent run that invoked `execute_code`. Defaults closed:
+     * a bridge built without one cannot reach anything irreversible.
+     */
+    private val provenance: Provenance = Provenance.UNTRUSTED,
+    /** false makes the provenance gate log-only here too, matching the engine. */
+    private val enforceProvenance: Boolean = true,
 ) {
     companion object {
         private const val TAG = "ToolBridge"
+    }
+
+    /**
+     * Refuse a tool this run is not allowed to reach unattended.
+     *
+     * There is no way to ask the user from inside BeanShell — the interpreter is
+     * running on its own executor thread behind a blocking `future.get`. So anything
+     * the gate does not outright pass is a refusal, and the message tells the model
+     * to call the tool directly instead, where an approval card can actually be
+     * raised.
+     */
+    private fun enforceProvenance(toolName: String) {
+        val skill = registry.findSkillForTool(toolName, tier)
+        val toolDef = skill?.baseManifest?.tools?.find { it.name == toolName }
+            ?: skill?.privilegedManifest?.tools?.find { it.name == toolName }
+        val effect = ToolEffects.of(toolName, toolDef)
+        if (ProvenanceGate.allowsUnattended(provenance, effect)) return
+
+        Log.w(TAG, "Provenance gate: refusing '$toolName' ($effect) under $provenance" +
+            if (enforceProvenance) "" else " [LOG-ONLY, not enforced]")
+        if (!enforceProvenance) return
+
+        throw RuntimeException(
+            "Tool '$toolName' is $effect and this code is running for a request that " +
+                "came from untrusted content, so it cannot be called from code. " +
+                "Call it as a direct tool call instead — that path can ask the user."
+        )
     }
 
     data class ToolCallRecord(
@@ -56,6 +100,8 @@ class ToolBridge(
      */
     fun call(toolName: String, params: Map<String, Any?>): String {
         val startMs = System.currentTimeMillis()
+
+        enforceProvenance(toolName)
 
         // Validate tool exists and skill is enabled
         val skill = registry.findSkillForTool(toolName, tier)
@@ -124,6 +170,8 @@ class ToolBridge(
      */
     fun callParallel(toolName: String, paramsList: List<Map<String, Any?>>): List<String> {
         if (paramsList.isEmpty()) return emptyList()
+
+        enforceProvenance(toolName)
 
         // Validate tool exists and is callable before dispatching
         val skill = registry.findSkillForTool(toolName, tier)

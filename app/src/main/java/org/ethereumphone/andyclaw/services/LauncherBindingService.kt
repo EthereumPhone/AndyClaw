@@ -26,6 +26,7 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.JsonObject
 import org.json.JSONArray
 import org.json.JSONObject
+import org.ethereumphone.andyclaw.ExecutionEngine.Provenance
 import org.ethereumphone.andyclaw.NodeApp
 import org.ethereumphone.andyclaw.agent.AgentLoop
 import org.ethereumphone.andyclaw.ipc.IExecSummaryCallback
@@ -272,6 +273,7 @@ class LauncherBindingService : Service() {
                 put("aiName", prefs.aiName.value)
                 put("yoloMode", prefs.yoloMode.value)
                 put("safetyEnabled", prefs.safetyEnabled.value)
+                put("provenanceEnforcement", prefs.provenanceEnforcementEnabled.value)
                 put("notificationReplyEnabled", prefs.notificationReplyEnabled.value)
                 put("executiveSummaryEnabled", prefs.executiveSummaryEnabled.value)
                 put("heartbeatOnNotification", prefs.heartbeatOnNotificationEnabled.value)
@@ -338,6 +340,9 @@ class LauncherBindingService : Service() {
                     "aiName" -> prefs.setAiName(value)
                     "yoloMode" -> prefs.setYoloMode(value.toBooleanStrict())
                     "safetyEnabled" -> prefs.setSafetyEnabled(value.toBooleanStrict())
+                    // Off = the provenance gate logs its verdicts without applying
+                    // them. The switch to watch real traffic with before enforcing.
+                    "provenanceEnforcement" -> prefs.setProvenanceEnforcementEnabled(value.toBooleanStrict())
                     "notificationReplyEnabled" -> prefs.setNotificationReplyEnabled(value.toBooleanStrict())
                     "executiveSummaryEnabled" -> prefs.setExecutiveSummaryEnabled(value.toBooleanStrict())
                     "heartbeatOnNotification" -> prefs.setHeartbeatOnNotificationEnabled(value.toBooleanStrict())
@@ -1214,6 +1219,9 @@ class LauncherBindingService : Service() {
             smartRouter = if (app.securePrefs.smartRoutingEnabled.value && !app.securePrefs.toolSearchEnabled.value) app.smartRouter else null,
             toolSearchService = app.createToolSearchService(tier, enabledSkillIds),
             budgetConfig = app.createBudgetConfig(),
+            // sendPrompt / sendLockscreenPrompt are the user typing or speaking.
+            provenance = Provenance.USER,
+            enforceProvenance = app.securePrefs.provenanceEnforcementEnabled.value,
         )
 
         // Get or create conversation history for this session

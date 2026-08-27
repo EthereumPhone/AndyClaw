@@ -25,6 +25,7 @@ class CustomToolAdapter(
                 description = toolDef.description,
                 inputSchema = toolDef.parameters,
                 requiresApproval = true,
+                effect = toolDef.effect,
             ),
         ),
     )

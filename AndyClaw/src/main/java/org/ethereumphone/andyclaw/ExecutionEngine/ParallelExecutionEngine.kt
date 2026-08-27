@@ -240,11 +240,22 @@ class ParallelExecutionEngine(
                 return@map resultToToolCallResult(call, result, phase)
             }
 
-            // Run through post-processor chain
-            var processed = defaultPostProcess(call, result)
+            // Run through the post-processor chain. Each processor after the first
+            // sees the PREVIOUS processor's output, not the raw executor result —
+            // feeding `result` in every time meant the last processor silently
+            // discarded every earlier one's work (truncation threw away
+            // sanitization). Warnings accumulate across the whole chain.
+            var chained: PostProcessedResult? = null
+            val warnings = mutableListOf<String>()
             for (processor in postProcessors) {
-                processed = processor.process(call, result)
-                if (processed.blocked) break
+                val input = chained?.asExecResult() ?: result
+                chained = processor.process(call, input)
+                warnings.addAll(chained.warnings)
+                if (chained.blocked) break
+            }
+            var processed = chained ?: defaultPostProcess(call, result)
+            if (!processed.blocked) {
+                processed = processed.copy(warnings = warnings.toList())
             }
 
             val finalResult = if (processed.blocked) {
@@ -278,6 +289,21 @@ class ParallelExecutionEngine(
     // ═══════════════════════════════════════════
     // Helpers
     // ═══════════════════════════════════════════
+
+    /**
+     * Re-wrap a [PostProcessedResult] as a [ToolExecResult] so it can be handed to
+     * the next [PostProcessor] in the chain. An image survives the hop so a
+     * screenshot is not silently dropped by a text-only processor upstream of one
+     * that expects it.
+     */
+    private fun PostProcessedResult.asExecResult(): ToolExecResult {
+        val img = imageData
+        return when {
+            isError -> ToolExecResult.Error(content)
+            img != null -> ToolExecResult.ImageSuccess(content, img.base64, img.mediaType)
+            else -> ToolExecResult.Success(content)
+        }
+    }
 
     private fun defaultPostProcess(call: ToolCall, result: ToolExecResult): PostProcessedResult {
         return when (result) {

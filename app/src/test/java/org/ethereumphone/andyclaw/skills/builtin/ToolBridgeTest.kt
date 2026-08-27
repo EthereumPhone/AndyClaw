@@ -4,6 +4,7 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonObject
+import org.ethereumphone.andyclaw.ExecutionEngine.Provenance
 import org.ethereumphone.andyclaw.skills.AndyClawSkill
 import org.ethereumphone.andyclaw.skills.NativeSkillRegistry
 import org.ethereumphone.andyclaw.skills.SkillManifest
@@ -20,7 +21,12 @@ class ToolBridgeTest {
     private lateinit var bridge: ToolBridge
 
     /** Minimal tool definition builder. */
-    private fun tool(name: String, description: String, requiresApproval: Boolean = false) =
+    private fun tool(
+        name: String,
+        description: String,
+        requiresApproval: Boolean = false,
+        effect: org.ethereumphone.andyclaw.skills.ToolEffect? = null,
+    ) =
         ToolDefinition(
             name = name,
             description = description,
@@ -29,6 +35,7 @@ class ToolBridgeTest {
                 putJsonObject("properties") {}
             },
             requiresApproval = requiresApproval,
+            effect = effect,
         )
 
     /** Skill that echoes params back as JSON. */
@@ -68,8 +75,15 @@ class ToolBridgeTest {
             tool("protected_tool", "Needs approval", requiresApproval = true)))
         registry.register(errorSkill())
 
+        registry.register(echoSkill("agentwallet",
+            tool("agent_send_transaction", "Signs with no prompt",
+                effect = org.ethereumphone.andyclaw.skills.ToolEffect.IRREVERSIBLE)))
+        // A tool no seed table and no declaration has ever classified.
+        registry.register(echoSkill("mystery", tool("a_tool_nobody_classified", "unknown effect")))
+
         val allSkillIds = registry.getAll().map { it.id }.toSet()
-        bridge = ToolBridge(registry, Tier.OPEN, allSkillIds)
+        // These tests exercise bridge mechanics for a run the user started.
+        bridge = ToolBridge(registry, Tier.OPEN, allSkillIds, provenance = Provenance.USER)
     }
 
     // ── Basic call tests ─────────────────────────────────────────────
@@ -142,7 +156,7 @@ class ToolBridgeTest {
 
     @Test(expected = RuntimeException::class)
     fun `call throws when skill is disabled`() {
-        val limitedBridge = ToolBridge(registry, Tier.OPEN, setOf("ens")) // only ens enabled
+        val limitedBridge = ToolBridge(registry, Tier.OPEN, setOf("ens"), provenance = Provenance.USER)
         limitedBridge.call("get_balance", emptyMap()) // wallet skill not enabled
     }
 
@@ -282,7 +296,7 @@ class ToolBridgeTest {
 
     @Test(expected = RuntimeException::class)
     fun `callParallel throws on disabled skill`() {
-        val limitedBridge = ToolBridge(registry, Tier.OPEN, setOf("ens"))
+        val limitedBridge = ToolBridge(registry, Tier.OPEN, setOf("ens"), provenance = Provenance.USER)
         limitedBridge.callParallel("get_balance", listOf(emptyMap()))
     }
 
@@ -305,6 +319,98 @@ class ToolBridgeTest {
         } catch (e: RuntimeException) {
             assertTrue(e.message!!.contains("intentional failure"))
         }
+    }
+
+    // ── Provenance: the bypass that matters most ─────────────────────
+    //
+    // The bridge reaches NativeSkillRegistry directly, so none of the execution
+    // engine's pre-flight checks see these calls. Filtering a tool out of the
+    // model's tool list does nothing here — `tools.call(name, params)` names it.
+
+    private fun untrustedBridge(): ToolBridge = ToolBridge(
+        registry,
+        Tier.OPEN,
+        registry.getAll().map { it.id }.toSet(),
+        provenance = Provenance.UNTRUSTED,
+    )
+
+    @Test
+    fun `untrusted code cannot reach the agent wallet through the bridge`() {
+        try {
+            untrustedBridge().call("agent_send_transaction", mapOf("to" to "0xattacker"))
+            fail("execute_code must not be a way around the provenance gate")
+        } catch (e: RuntimeException) {
+            assertTrue(e.message, e.message!!.contains("untrusted content"))
+        }
+    }
+
+    @Test
+    fun `untrusted code cannot reach the agent wallet through callParallel either`() {
+        try {
+            untrustedBridge().callParallel("agent_send_transaction", listOf(mapOf("to" to "0xattacker")))
+            fail("callParallel must be gated the same as call")
+        } catch (e: RuntimeException) {
+            assertTrue(e.message, e.message!!.contains("untrusted content"))
+        }
+    }
+
+    @Test
+    fun `untrusted code is refused before the tool ever runs`() {
+        val untrusted = untrustedBridge()
+        try {
+            untrusted.call("agent_send_transaction", mapOf("to" to "0xattacker"))
+            fail("should have thrown")
+        } catch (_: RuntimeException) {}
+        // Nothing executed, so nothing is in the call log.
+        assertTrue(untrusted.callLog.isEmpty())
+    }
+
+    @Test
+    fun `an unclassified tool is refused under untrusted provenance`() {
+        try {
+            untrustedBridge().call("a_tool_nobody_classified", emptyMap())
+            fail("unclassified tools must fail closed")
+        } catch (e: RuntimeException) {
+            assertTrue(e.message, e.message!!.contains("IRREVERSIBLE"))
+        }
+    }
+
+    @Test
+    fun `a classified read tool still works under untrusted provenance`() {
+        // resolve_ens is READ in the seed table.
+        val result = untrustedBridge().call("resolve_ens", mapOf("name" to "alice.eth"))
+        assertTrue(result.contains("alice.eth"))
+    }
+
+    @Test
+    fun `untrusted code can still read`() {
+        // memory_read is on the pre-existing read-only list.
+        registry.register(echoSkill("mem", tool("memory_read", "Read a memory")))
+        val untrusted = untrustedBridge()
+        val result = untrusted.call("memory_read", mapOf("path" to "a"))
+        assertTrue(result.contains("memory_read"))
+    }
+
+    @Test
+    fun `a bridge built without a provenance defaults closed`() {
+        val defaulted = ToolBridge(registry, Tier.OPEN, registry.getAll().map { it.id }.toSet())
+        try {
+            defaulted.call("agent_send_transaction", mapOf("to" to "0x1"))
+            fail("the default must be the restricted one")
+        } catch (_: RuntimeException) {}
+    }
+
+    @Test
+    fun `log-only mode does not refuse`() {
+        val logOnly = ToolBridge(
+            registry,
+            Tier.OPEN,
+            registry.getAll().map { it.id }.toSet(),
+            provenance = Provenance.UNTRUSTED,
+            enforceProvenance = false,
+        )
+        val result = logOnly.call("agent_send_transaction", mapOf("to" to "0x1"))
+        assertTrue(result.contains("agent_send_transaction"))
     }
 
     // ── Mixed sequential + parallel ──────────────────────────────────

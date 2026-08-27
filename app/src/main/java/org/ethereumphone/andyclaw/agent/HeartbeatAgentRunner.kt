@@ -4,6 +4,7 @@ import android.content.pm.PackageManager
 import android.util.Log
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.CompletableDeferred
+import org.ethereumphone.andyclaw.ExecutionEngine.Provenance
 import org.ethereumphone.andyclaw.NodeApp
 import org.ethereumphone.andyclaw.heartbeat.HeartbeatLogEntry
 import org.ethereumphone.andyclaw.heartbeat.HeartbeatLogStore
@@ -19,9 +20,15 @@ import kotlinx.coroutines.launch
  * An [AgentRunner] that bridges the heartbeat's text-in/text-out interface
  * to the full [AgentLoop] with tool_use capabilities.
  *
- * Runs headlessly: auto-approves all tools (dangerous ones like send_transaction
- * will fail gracefully via their own permission checks) and skips Android
- * runtime permission requests (no UI available in background).
+ * Runs headlessly: it auto-approves tools and skips Android runtime permission
+ * requests, because there is no UI in the background to ask.
+ *
+ * That auto-approval is exactly why provenance matters here. This one runner serves
+ * both the trusted triggers (HEARTBEAT.md, reminders, cron jobs) and the untrusted
+ * ones (an XMTP body relayed in as context), so it takes its provenance per [run]
+ * rather than holding one. Under [Provenance.UNTRUSTED] an approval request is a
+ * **hard block**, not an auto-yes — otherwise the gate would be a no-op on the one
+ * path it exists for — and the request is queued for the user instead.
  */
 class HeartbeatAgentRunner(
     private val app: NodeApp,
@@ -36,8 +43,10 @@ class HeartbeatAgentRunner(
         prompt: String,
         systemPrompt: String?,
         skillsPrompt: String?,
+        provenance: Provenance,
+        conversationId: String?,
     ): AgentResponse {
-        Log.i(TAG, "=== HEARTBEAT RUN STARTING ===")
+        Log.i(TAG, "=== HEARTBEAT RUN STARTING (provenance=$provenance) ===")
         Log.i(TAG, "Prompt: ${prompt.take(500)}")
 
         val client = app.getHeartbeatLlmClient()
@@ -71,6 +80,9 @@ class HeartbeatAgentRunner(
             smartRouter = if (app.securePrefs.smartRoutingEnabled.value && !app.securePrefs.toolSearchEnabled.value) app.smartRouter else null,
             toolSearchService = app.createToolSearchService(tier, enabledSkillIds),
             budgetConfig = app.createBudgetConfig(),
+            provenance = provenance,
+            triggerConversationId = conversationId,
+            enforceProvenance = app.securePrefs.provenanceEnforcementEnabled.value,
         )
 
         val ledController = app.ledController
@@ -124,6 +136,30 @@ class HeartbeatAgentRunner(
                 toolName: String?,
                 toolInput: kotlinx.serialization.json.JsonObject?,
             ): Boolean {
+                // Nobody is watching a background run, so "ask the user" can only
+                // mean yes or no here. Under untrusted provenance it means no: an
+                // auto-yes would hand a stranger's message the very tools the gate
+                // raised the prompt about. Queue it for the user instead.
+                if (provenance == Provenance.UNTRUSTED) {
+                    Log.w(TAG, "Refusing approval under UNTRUSTED provenance: ${toolName ?: "?"} — $description")
+                    collectedToolCalls.add(HeartbeatToolCall(
+                        toolName = toolName ?: "unknown",
+                        result = "BLOCKED_UNTRUSTED: needs your approval, queued as a pending card",
+                    ))
+                    try {
+                        app.pendingApprovalStore.add(
+                            source = "heartbeat",
+                            provenance = provenance.name,
+                            toolName = toolName ?: "unknown",
+                            description = description,
+                            conversationId = conversationId,
+                            inputPreview = toolInput?.toString(),
+                        )
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Could not queue pending approval: ${e.message}")
+                    }
+                    return false
+                }
                 Log.i(TAG, "Auto-approving: $description")
                 return true
             }
@@ -203,6 +239,7 @@ class HeartbeatAgentRunner(
             conversationHistory = emptyList(),
             callbacks = callbacks,
         )
+
 
         return completion.await()
     }

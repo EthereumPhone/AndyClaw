@@ -255,6 +255,9 @@ class ClawHubTermuxSkillAdapter(
                 description = buildToolDescription(toolSpec),
                 inputSchema = buildInputSchema(toolSpec),
                 requiresApproval = true,
+                // Honours an `effect:` in the skill's frontmatter; undeclared stays
+                // null and resolves to IRREVERSIBLE.
+                effect = toolSpec.effect,
             )
         }
     }

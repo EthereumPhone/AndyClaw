@@ -1,6 +1,7 @@
 package org.ethereumphone.andyclaw.agent
 
 import android.util.Log
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonPrimitive
@@ -8,10 +9,13 @@ import org.ethereumphone.andyclaw.ExecutionEngine.*
 import org.ethereumphone.andyclaw.llm.ContentBlock
 import org.ethereumphone.andyclaw.llm.ImageSource
 import org.ethereumphone.andyclaw.llm.ToolResultContent
+import org.ethereumphone.andyclaw.safety.ProvenanceGate
 import org.ethereumphone.andyclaw.safety.SafetyLayer
+import org.ethereumphone.andyclaw.safety.ToolEffects
 import org.ethereumphone.andyclaw.skills.NativeSkillRegistry
 import org.ethereumphone.andyclaw.skills.SkillResult
 import org.ethereumphone.andyclaw.skills.Tier
+import org.ethereumphone.andyclaw.skills.ToolDefinition
 
 /**
  * Builds a [ParallelExecutionEngine] from AgentLoop's existing dependencies.
@@ -24,6 +28,12 @@ object ExecutionEngineFactory {
 
     /**
      * Create an engine wired to the given skill registry, safety layer, and agent callbacks.
+     *
+     * [provenance] is where the content that triggered this run came from, and
+     * [triggerConversationId] is the conversation it arrived on (an XMTP sender
+     * address, a Telegram chat id) so an untrusted run can be confined to replying
+     * there. [enforceProvenance] false runs the gate in log-only mode: every verdict
+     * is logged, none is applied.
      */
     fun create(
         skillRegistry: NativeSkillRegistry,
@@ -32,18 +42,38 @@ object ExecutionEngineFactory {
         safetyLayer: SafetyLayer?,
         agentCallbacks: AgentLoop.Callbacks,
         budgetConfig: BudgetConfig?,
+        provenance: Provenance = Provenance.USER,
+        triggerConversationId: String? = null,
+        enforceProvenance: Boolean = true,
     ): ParallelExecutionEngine {
+        // `create` is called once per tool call inside the hot loop, and every check
+        // that needs a tool definition used to re-walk the whole registry. Resolve
+        // the tool list at most once per engine and share it.
+        val toolsByName: Map<String, ToolDefinition> by lazy {
+            // First-wins, matching the `getTools(tier).find { it.name == ... }` this
+            // replaces: a skill that declares the same tool in both its base and its
+            // privileged manifest still resolves to the base one.
+            val byName = LinkedHashMap<String, ToolDefinition>()
+            for (tool in skillRegistry.getTools(tier)) byName.putIfAbsent(tool.name, tool)
+            byName
+        }
+
         val builder = EngineBuilder()
-            .executor(createExecutor(skillRegistry, tier))
+            .executor(createExecutor(skillRegistry, tier, provenance, triggerConversationId))
             .callbacks(createCallbacks(agentCallbacks, safetyLayer))
 
-        // Pre-flight checks (order matters — matches original AgentLoop order)
+        // Pre-flight checks (order matters — matches original AgentLoop order).
+        // The provenance gate runs FIRST, before a rate-limit slot is spent or an
+        // approval prompt is raised, so an untrusted run is stopped at the door.
+        builder.addPreflightCheck(
+            provenanceCheck(provenance, triggerConversationId, enforceProvenance) { toolsByName }
+        )
         if (safetyLayer != null) {
             builder.addPreflightCheck(rateLimitCheck(safetyLayer))
             builder.addPreflightCheck(paramValidationCheck(safetyLayer))
         }
-        builder.addPreflightCheck(permissionsCheck(skillRegistry, tier))
-        builder.addPreflightCheck(approvalCheck(skillRegistry, tier))
+        builder.addPreflightCheck(permissionsCheck { toolsByName })
+        builder.addPreflightCheck(approvalCheck { toolsByName })
         builder.addPreflightCheck(skillEnabledCheck(skillRegistry, tier, enabledSkillIds))
 
         // Post-processors
@@ -61,14 +91,23 @@ object ExecutionEngineFactory {
     // ToolExecutor
     // ═══════════════════════════════════════════
 
-    private fun createExecutor(registry: NativeSkillRegistry, tier: Tier): ToolExecutor =
+    private fun createExecutor(
+        registry: NativeSkillRegistry,
+        tier: Tier,
+        provenance: Provenance,
+        triggerConversationId: String?,
+    ): ToolExecutor =
         ToolExecutor { toolName, params ->
-            val result = registry.executeTool(toolName, params, tier)
-            when (result) {
-                is SkillResult.Success -> ToolExecResult.Success(result.data)
-                is SkillResult.ImageSuccess -> ToolExecResult.ImageSuccess(result.text, result.base64, result.mediaType)
-                is SkillResult.Error -> ToolExecResult.Error(result.message)
-                is SkillResult.RequiresApproval -> ToolExecResult.RequiresApproval(result.description)
+            // Publish the provenance into the coroutine context so code the engine
+            // cannot see applies the same gate — `execute_code` runs BeanShell whose
+            // `tools.call(name, params)` bridge reaches the registry directly.
+            withContext(ProvenanceContext(provenance, triggerConversationId)) {
+                when (val result = registry.executeTool(toolName, params, tier)) {
+                    is SkillResult.Success -> ToolExecResult.Success(result.data)
+                    is SkillResult.ImageSuccess -> ToolExecResult.ImageSuccess(result.text, result.base64, result.mediaType)
+                    is SkillResult.Error -> ToolExecResult.Error(result.message)
+                    is SkillResult.RequiresApproval -> ToolExecResult.RequiresApproval(result.description)
+                }
             }
         }
 
@@ -95,8 +134,38 @@ object ExecutionEngineFactory {
         }
     }
 
-    private fun permissionsCheck(registry: NativeSkillRegistry, tier: Tier) = PreflightCheck { call ->
-        val toolDef = registry.getTools(tier).find { it.name == call.name }
+    /**
+     * The trust boundary. Runs before every other check so an untrusted trigger
+     * cannot spend a rate-limit slot or raise an approval prompt on its way to a
+     * tool it was never allowed to reach.
+     */
+    private fun provenanceCheck(
+        provenance: Provenance,
+        triggerConversationId: String?,
+        enforce: Boolean,
+        tools: () -> Map<String, ToolDefinition>,
+    ) = PreflightCheck { call ->
+        val toolDef = tools()[call.name]
+        val effect = ToolEffects.of(call.name, toolDef)
+        val verdict = ProvenanceGate.evaluate(call, provenance, triggerConversationId, toolDef)
+
+        if (verdict is PreflightVerdict.Pass) {
+            PreflightVerdict.Pass
+        } else {
+            val outcome = when (verdict) {
+                is PreflightVerdict.Block -> "BLOCK"
+                is PreflightVerdict.NeedsApproval -> "NEEDS_APPROVAL"
+                else -> verdict::class.simpleName ?: "?"
+            }
+            val unclassified = if (ToolEffects.isClassified(call.name, toolDef)) "" else " (unclassified -> fail-closed)"
+            val mode = if (enforce) "" else " [LOG-ONLY, not enforced]"
+            Log.w(TAG, "provenance $provenance + $effect on '${call.name}' -> $outcome$unclassified$mode")
+            if (enforce) verdict else PreflightVerdict.Pass
+        }
+    }
+
+    private fun permissionsCheck(tools: () -> Map<String, ToolDefinition>) = PreflightCheck { call ->
+        val toolDef = tools()[call.name]
         if (toolDef != null && toolDef.requiredPermissions.isNotEmpty()) {
             PreflightVerdict.NeedsPermissions(toolDef.requiredPermissions)
         } else {
@@ -104,8 +173,8 @@ object ExecutionEngineFactory {
         }
     }
 
-    private fun approvalCheck(registry: NativeSkillRegistry, tier: Tier) = PreflightCheck { call ->
-        val toolDef = registry.getTools(tier).find { it.name == call.name }
+    private fun approvalCheck(tools: () -> Map<String, ToolDefinition>) = PreflightCheck { call ->
+        val toolDef = tools()[call.name]
         if (toolDef?.requiresApproval == true) {
             PreflightVerdict.NeedsApproval("Tool '${call.name}' requires your approval to execute.")
         } else {

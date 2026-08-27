@@ -26,6 +26,7 @@ import org.ethereumphone.andyclaw.llm.MessagesRequest
 import org.ethereumphone.andyclaw.llm.MessagesResponse
 import org.ethereumphone.andyclaw.llm.StreamingCallback
 import org.ethereumphone.andyclaw.llm.Verbosity
+import org.ethereumphone.andyclaw.ExecutionEngine.Provenance
 import org.ethereumphone.andyclaw.memory.MemoryManager
 import org.ethereumphone.andyclaw.safety.SafetyLayer
 import org.ethereumphone.andyclaw.skills.MessageClassifier
@@ -75,6 +76,26 @@ class AgentLoop(
      *  provider hitting a self-hosted Ollama/LM Studio backend whose model
      *  ids — `gpt-oss:20b`, `llama3.2:latest`, … — aren't enum-resolvable). */
     private val customModelIdOverride: String? = null,
+    /**
+     * Where the content that triggered this run came from. Decides, in the engine's
+     * pre-flight chain, what this run is allowed to do — see
+     * [org.ethereumphone.andyclaw.safety.ProvenanceGate].
+     *
+     * Defaulted to [Provenance.USER] because the in-app paths are the user talking;
+     * every background trigger passes its own value explicitly. Sub-agents run on
+     * this same instance, so they inherit it and can never widen it.
+     */
+    private val provenance: Provenance = Provenance.USER,
+    /**
+     * The conversation the trigger arrived on — an XMTP sender address, a Telegram
+     * chat id. Under [Provenance.UNTRUSTED] outbound messaging is confined to it.
+     */
+    private val triggerConversationId: String? = null,
+    /**
+     * false runs the provenance gate in log-only mode: every verdict is logged, none
+     * is applied. Kept so the gate can be watched on real traffic before it bites.
+     */
+    private val enforceProvenance: Boolean = true,
 ) {
     companion object {
         private const val TAG = "AgentLoop"
@@ -551,6 +572,9 @@ class AgentLoop(
                             safetyLayer = safety,
                             agentCallbacks = callbacks,
                             budgetConfig = budget,
+                            provenance = provenance,
+                            triggerConversationId = triggerConversationId,
+                            enforceProvenance = enforceProvenance,
                         )
                         val calls = ExecutionEngineFactory.toToolCalls(listOf(block))
                         val batchResult = engine.executeBatch(calls)
@@ -767,6 +791,9 @@ class AgentLoop(
                             safetyLayer = safety,
                             agentCallbacks = callbacks,
                             budgetConfig = budget,
+                            provenance = provenance,
+                            triggerConversationId = triggerConversationId,
+                            enforceProvenance = enforceProvenance,
                         )
                         val engineCalls = ExecutionEngineFactory.toToolCalls(regularNotInExecutor)
                         val batchResult = engine.executeBatch(engineCalls)
@@ -1010,6 +1037,9 @@ class AgentLoop(
                     safetyLayer = safetyLayer,
                     agentCallbacks = callbacks,
                     budgetConfig = budgetConfig,
+                    provenance = provenance,
+                    triggerConversationId = triggerConversationId,
+                    enforceProvenance = enforceProvenance,
                 )
                 val engineCalls = ExecutionEngineFactory.toToolCalls(execCalls)
                 val batchResult = engine.executeBatch(engineCalls)

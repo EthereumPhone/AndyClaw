@@ -11,8 +11,10 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.File
 import org.ethereumphone.andyclaw.BuildConfig
 import org.ethereumphone.andyclaw.NodeApp
+import org.ethereumphone.andyclaw.heartbeat.HeartbeatInstructions
 import org.ethereumphone.andyclaw.llm.AnthropicModels
 import org.ethereumphone.andyclaw.llm.ContentBlock
 import org.ethereumphone.andyclaw.llm.LlmProvider
@@ -70,6 +72,22 @@ class OnboardingViewModel(application: Application) : AndroidViewModel(applicati
     private val _selectedSkills = MutableStateFlow<Set<String>>(emptySet())
     val selectedSkills: StateFlow<Set<String>> = _selectedSkills.asStateFlow()
 
+    /**
+     * Whether the AI should check in on its own on a schedule.
+     *
+     * Off by default: the heartbeat costs tokens out of the same balance that pays
+     * for sponsored gas, so it is the user's call, made here rather than buried in
+     * Settings. Either way [submit] sets the interval explicitly and leaves a real
+     * task list behind — without both, turning the heartbeat on later still did
+     * nothing, because HEARTBEAT.md was seeded with a bare header the runner reads
+     * as "no tasks".
+     */
+    private val _proactiveEnabled = MutableStateFlow(false)
+    val proactiveEnabled: StateFlow<Boolean> = _proactiveEnabled.asStateFlow()
+
+    private val _proactiveIntervalMinutes = MutableStateFlow(DEFAULT_PROACTIVE_INTERVAL_MINUTES)
+    val proactiveIntervalMinutes: StateFlow<Int> = _proactiveIntervalMinutes.asStateFlow()
+
     val registeredSkills: List<AndyClawSkill>
         get() = app.nativeSkillRegistry.getAll()
 
@@ -87,6 +105,14 @@ class OnboardingViewModel(application: Application) : AndroidViewModel(applicati
 
     fun setSmartRoutingEnabled(enabled: Boolean) {
         _smartRoutingEnabled.value = enabled
+    }
+
+    fun setProactiveEnabled(enabled: Boolean) {
+        _proactiveEnabled.value = enabled
+    }
+
+    fun setProactiveIntervalMinutes(minutes: Int) {
+        _proactiveIntervalMinutes.value = minutes.coerceIn(MIN_PROACTIVE_INTERVAL_MINUTES, 1440)
     }
 
     fun toggleSkill(skillId: String, enabled: Boolean) {
@@ -226,6 +252,11 @@ class OnboardingViewModel(application: Application) : AndroidViewModel(applicati
                     app.securePrefs.setAllSkillsEnabled(_selectedSkills.value)
                 }
 
+                // Leave the proactive agent in a state that actually works.
+                // Both halves matter: an interval with an empty HEARTBEAT.md does
+                // nothing, and a task list with the interval at -1 never runs.
+                configureProactiveAgent()
+
                 // Request all runtime permissions the app may need
                 requestAllPermissions()
 
@@ -243,7 +274,31 @@ class OnboardingViewModel(application: Application) : AndroidViewModel(applicati
         _error.value = null
     }
 
+    /**
+     * Seed HEARTBEAT.md and set the heartbeat interval explicitly.
+     *
+     * The task list is written whichever way the user chose, so that enabling the
+     * heartbeat later in Settings has something to run. The interval is set either
+     * way too: to the chosen cadence, or explicitly to disabled.
+     */
+    private suspend fun configureProactiveAgent() = withContext(Dispatchers.IO) {
+        try {
+            HeartbeatInstructions.seedStarterTasks(File(app.filesDir, "HEARTBEAT.md"))
+        } catch (e: Exception) {
+            Log.w("OnboardingViewModel", "Could not seed HEARTBEAT.md: ${e.message}")
+        }
+        val minutes = if (_proactiveEnabled.value) _proactiveIntervalMinutes.value else -1
+        app.securePrefs.setHeartbeatIntervalMinutes(minutes)
+        Log.i("OnboardingViewModel", "Proactive agent: enabled=${_proactiveEnabled.value}, interval=${minutes}m")
+    }
+
     companion object {
+        /** Matches the OS heartbeat service's own default cadence. */
+        const val DEFAULT_PROACTIVE_INTERVAL_MINUTES = 30
+
+        /** The OS clamps anything below this. */
+        const val MIN_PROACTIVE_INTERVAL_MINUTES = 5
+
         private val ADJECTIVES = listOf(
             "Cosmic", "Turbo", "Mega", "Pixel", "Neon", "Quantum", "Glitch",
             "Fuzzy", "Hyper", "Mighty", "Sneaky", "Spicy", "Chill", "Zippy",

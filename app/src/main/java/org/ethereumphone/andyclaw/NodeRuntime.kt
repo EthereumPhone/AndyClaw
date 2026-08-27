@@ -6,6 +6,7 @@ import java.io.File
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import org.ethereumphone.andyclaw.ExecutionEngine.Provenance
 import org.ethereumphone.andyclaw.agent.AgentLoop
 import org.ethereumphone.andyclaw.agent.AgentRunner
 import org.ethereumphone.andyclaw.agent.AgentResponse
@@ -133,9 +134,17 @@ class NodeRuntime(private val context: Context) {
     /**
      * Trigger an immediate heartbeat run with extra context injected into the prompt.
      * Used when external events (e.g. new XMTP messages) should be provided to the agent.
+     *
+     * [provenance] describes the injected [context], not HEARTBEAT.md — a body
+     * written by whoever messaged the device is [Provenance.UNTRUSTED] however
+     * trusted the surrounding heartbeat prompt is. Defaulted closed.
      */
-    fun requestHeartbeatNowWithContext(context: String) {
-        heartbeatRunner?.requestNowWithContext(context)
+    fun requestHeartbeatNowWithContext(
+        context: String,
+        provenance: Provenance = Provenance.UNTRUSTED,
+        conversationId: String? = null,
+    ) {
+        heartbeatRunner?.requestNowWithContext(context, provenance, conversationId)
     }
 
     /**
@@ -212,6 +221,7 @@ class NodeRuntime(private val context: Context) {
             return agentRunner.run(
                 prompt = prompt,
                 skillsPrompt = skillRegistry.buildPrompt(),
+                provenance = Provenance.USER,
             )
         }
 
@@ -219,6 +229,7 @@ class NodeRuntime(private val context: Context) {
         return agentRunner.run(
             prompt = message,
             skillsPrompt = skillRegistry.buildPrompt(),
+            provenance = Provenance.USER,
         )
     }
 
@@ -288,6 +299,8 @@ private class NoOpAgentRunner : AgentRunner {
         prompt: String,
         systemPrompt: String?,
         skillsPrompt: String?,
+        provenance: Provenance,
+        conversationId: String?,
     ): AgentResponse {
         return AgentResponse(
             text = "HEARTBEAT_OK",

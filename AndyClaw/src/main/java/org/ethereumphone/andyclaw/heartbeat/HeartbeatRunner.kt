@@ -8,6 +8,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import org.ethereumphone.andyclaw.ExecutionEngine.Provenance
 import org.ethereumphone.andyclaw.agent.AgentRunner
 
 /**
@@ -110,7 +111,8 @@ class HeartbeatRunner(
             Log.i(TAG, "runOnce: calling agentRunner.run(), prompt=${prompt.take(200)}")
 
             val startMs = System.currentTimeMillis()
-            val response = agentRunner.run(prompt = prompt)
+            // HEARTBEAT.md is the user's own task list — trusted content.
+            val response = agentRunner.run(prompt = prompt, provenance = Provenance.TRUSTED)
             val elapsedMs = System.currentTimeMillis() - startMs
             Log.i(TAG, "runOnce: agentRunner.run() returned in ${elapsedMs}ms, isError=${response.isError}, textLen=${response.text.length}")
 
@@ -161,10 +163,17 @@ class HeartbeatRunner(
      * Request an immediate heartbeat run with extra context injected into the prompt.
      * The [extraContext] is appended after HEARTBEAT.md content so the agent can
      * act on it (e.g. new incoming XMTP messages).
+     *
+     * [provenance] classifies [extraContext], which is usually written by whoever
+     * messaged the device — hence the closed default.
      */
-    fun requestNowWithContext(extraContext: String) {
+    fun requestNowWithContext(
+        extraContext: String,
+        provenance: Provenance = Provenance.UNTRUSTED,
+        conversationId: String? = null,
+    ) {
         scope.launch {
-            val result = runOnceWithContext(extraContext)
+            val result = runOnceWithContext(extraContext, provenance, conversationId)
             onResult(result)
         }
     }
@@ -220,8 +229,14 @@ class HeartbeatRunner(
      * Run a single heartbeat cycle with extra context appended to the prompt.
      * Skips the empty-file and quiet-hours checks since the caller is providing
      * explicit trigger context (e.g. new XMTP messages).
+     *
+     * The run carries the caller's [provenance], not the heartbeat's.
      */
-    private suspend fun runOnceWithContext(extraContext: String): HeartbeatResult {
+    private suspend fun runOnceWithContext(
+        extraContext: String,
+        provenance: Provenance,
+        conversationId: String?,
+    ): HeartbeatResult {
         if (!config.enabled) {
             Log.i(TAG, "runOnceWithContext: heartbeat disabled, skipping")
             return HeartbeatResult(HeartbeatOutcome.SKIPPED, skipReason = HeartbeatSkipReason.DISABLED)
@@ -233,9 +248,15 @@ class HeartbeatRunner(
             val basePrompt = buildPrompt(heartbeatFile)
             val prompt = "$basePrompt\n\n--- INCOMING CONTEXT ---\n$extraContext"
 
-            Log.i(TAG, "runOnceWithContext: calling agentRunner.run()")
+            Log.i(TAG, "runOnceWithContext: calling agentRunner.run() as $provenance")
             val startMs = System.currentTimeMillis()
-            val response = agentRunner.run(prompt = prompt)
+            // The injected context is somebody else's words even though the
+            // surrounding heartbeat prompt is the user's — the caller classifies it.
+            val response = agentRunner.run(
+                prompt = prompt,
+                provenance = provenance,
+                conversationId = conversationId,
+            )
             val elapsedMs = System.currentTimeMillis() - startMs
             Log.i(TAG, "runOnceWithContext: agentRunner returned in ${elapsedMs}ms, isError=${response.isError}, textLen=${response.text.length}")
 

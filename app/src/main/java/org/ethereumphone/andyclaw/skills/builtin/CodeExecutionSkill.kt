@@ -10,11 +10,14 @@ import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
+import org.ethereumphone.andyclaw.ExecutionEngine.Provenance
+import org.ethereumphone.andyclaw.ExecutionEngine.currentProvenance
 import org.ethereumphone.andyclaw.skills.AndyClawSkill
 import org.ethereumphone.andyclaw.skills.SkillManifest
 import org.ethereumphone.andyclaw.skills.SkillResult
 import org.ethereumphone.andyclaw.skills.Tier
 import org.ethereumphone.andyclaw.skills.ToolDefinition
+import org.ethereumphone.andyclaw.skills.ToolEffect
 import java.io.ByteArrayOutputStream
 import java.io.PrintStream
 import java.util.concurrent.Executors
@@ -26,6 +29,8 @@ class CodeExecutionSkill(
     private val registryProvider: (() -> org.ethereumphone.andyclaw.skills.NativeSkillRegistry)? = null,
     private val tierProvider: (() -> Tier)? = null,
     private val enabledSkillIdsProvider: (() -> Set<String>)? = null,
+    /** Reads the provenance-enforcement setting; log-only when it returns false. */
+    private val enforceProvenanceProvider: (() -> Boolean)? = null,
 ) : AndyClawSkill {
     override val id = "code_execution"
     override val name = "Code Execution"
@@ -101,6 +106,8 @@ class CodeExecutionSkill(
                     "required" to kotlinx.serialization.json.JsonArray(listOf(JsonPrimitive("code"))),
                 )),
                 requiresApproval = true,
+                // Also reaches every other tool through ToolBridge — see ToolBridge.call().
+                effect = ToolEffect.IRREVERSIBLE,
             ),
         ),
     )
@@ -109,12 +116,15 @@ class CodeExecutionSkill(
 
     override suspend fun execute(tool: String, params: JsonObject, tier: Tier): SkillResult {
         return when (tool) {
-            "execute_code" -> executeCode(params)
+            // Capture provenance here, while still on the agent's coroutine. Below
+            // this point execution moves to a BeanShell executor thread and
+            // `runBlocking`, neither of which inherits the coroutine context.
+            "execute_code" -> executeCode(params, currentProvenance())
             else -> SkillResult.Error("Unknown tool: $tool")
         }
     }
 
-    private fun executeCode(params: JsonObject): SkillResult {
+    private fun executeCode(params: JsonObject, provenance: Provenance): SkillResult {
         val code = params["code"]?.jsonPrimitive?.contentOrNull
             ?: return SkillResult.Error("Missing required parameter: code")
         val timeoutMs = params["timeout_ms"]?.jsonPrimitive?.intOrNull?.toLong()
@@ -131,6 +141,8 @@ class CodeExecutionSkill(
                 registry = registryProvider.invoke(),
                 tier = tierProvider.invoke(),
                 enabledSkillIds = enabledSkillIdsProvider.invoke(),
+                provenance = provenance,
+                enforceProvenance = enforceProvenanceProvider?.invoke() ?: true,
             )
         } else null
 

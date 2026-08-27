@@ -112,6 +112,15 @@ class NodeApp : Application() {
     val sessionManager: SessionManager by lazy { SessionManager(this) }
     val agentTxRepository: AgentTxRepository by lazy { AgentTxRepository(this) }
     val heartbeatLogStore: HeartbeatLogStore by lazy { HeartbeatLogStore(filesDir) }
+
+    /**
+     * Irreversible requests that a run triggered by untrusted content asked for and
+     * that no headless runner could legitimately approve. Rendered as approval cards
+     * by the ambient surface.
+     */
+    val pendingApprovalStore: org.ethereumphone.andyclaw.safety.PendingApprovalStore by lazy {
+        org.ethereumphone.andyclaw.safety.PendingApprovalStore(this)
+    }
     val whisperTranscriber: WhisperTranscriber by lazy { WhisperTranscriber(this) }
     val executiveSummaryManager: org.ethereumphone.andyclaw.summary.ExecutiveSummaryManager by lazy {
         org.ethereumphone.andyclaw.summary.ExecutiveSummaryManager(this)
@@ -368,6 +377,7 @@ class NodeApp : Application() {
                         securePrefs.enabledSkills.value
                     }
                 },
+                enforceProvenanceProvider = { securePrefs.provenanceEnforcementEnabled.value },
             ))
             // Soul — AI can read and update its own personality
             register(SoulSkill(soulManager))

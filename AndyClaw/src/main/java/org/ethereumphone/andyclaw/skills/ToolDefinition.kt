@@ -16,4 +16,13 @@ data class ToolDefinition(
      * tool named `notebook_edit`. Indexed with higher weight than [description].
      */
     val searchHint: String? = null,
+    /**
+     * What running this tool does to the world — see [ToolEffect].
+     *
+     * `null` means "not declared". It is **not** a synonym for [ToolEffect.READ]:
+     * `ToolEffects.of()` resolves an undeclared tool through the seed table and then
+     * falls back to [ToolEffect.IRREVERSIBLE], so forgetting to classify a tool makes
+     * it more restricted, never less.
+     */
+    val effect: ToolEffect? = null,
 )

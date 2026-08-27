@@ -22,6 +22,7 @@ import org.ethereumphone.andyclaw.skills.SkillManifest
 import org.ethereumphone.andyclaw.skills.SkillResult
 import org.ethereumphone.andyclaw.skills.Tier
 import org.ethereumphone.andyclaw.skills.ToolDefinition
+import org.ethereumphone.andyclaw.skills.ToolEffect
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.ethereumphone.subwalletsdk.SubWalletSDK
@@ -566,6 +567,8 @@ class WalletSkill(
                         JsonPrimitive("chain_id"),
                     )),
                 )),
+                // Promptless by design: the agent sub-account signs with no confirmation.
+                effect = ToolEffect.IRREVERSIBLE,
             ),
             ToolDefinition(
                 name = "agent_transfer_token",
@@ -610,6 +613,7 @@ class WalletSkill(
                         JsonPrimitive("chain_id"),
                     )),
                 )),
+                effect = ToolEffect.IRREVERSIBLE,
             ),
             // ── High-level helper tools ───────────────────────────────
             ToolDefinition(
@@ -771,6 +775,7 @@ class WalletSkill(
                         JsonPrimitive("chain_id"),
                     )),
                 )),
+                effect = ToolEffect.IRREVERSIBLE,
             ),
             ToolDefinition(
                 name = "agent_send_token",
@@ -828,6 +833,7 @@ class WalletSkill(
                         JsonPrimitive("chain_id"),
                     )),
                 )),
+                effect = ToolEffect.IRREVERSIBLE,
             ),
             // ── Agent swap ────────────────────────────────────────────
             ToolDefinition(
@@ -900,6 +906,7 @@ class WalletSkill(
                         JsonPrimitive("chain_id"),
                     )),
                 )),
+                effect = ToolEffect.IRREVERSIBLE,
             ),
             // ── Balance queries ───────────────────────────────────────
             ToolDefinition(

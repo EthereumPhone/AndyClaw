@@ -14,6 +14,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
+import org.ethereumphone.andyclaw.ExecutionEngine.Provenance
 import org.ethereumphone.andyclaw.agent.HeartbeatAgentRunner
 import org.ethereumphone.andyclaw.heartbeat.HeartbeatConfig
 import org.ethereumphone.andyclaw.heartbeat.HeartbeatInstructions
@@ -239,7 +240,8 @@ class NodeForegroundService : Service() {
                 "You received $messageCount new XMTP message(s). " +
                     "Use list_conversations and read_messages to check them."
             }
-            runtime.requestHeartbeatNowWithContext(context)
+            // The context is other people's XMTP message bodies.
+            runtime.requestHeartbeatNowWithContext(context, Provenance.UNTRUSTED)
         }
     }
 
@@ -274,7 +276,8 @@ class NodeForegroundService : Service() {
                         "You received $count new XMTP message(s). Use list_conversations and read_messages to check them."
                     }
 
-                    runtime.requestHeartbeatNowWithContext(context)
+                    // The context is other people's XMTP message bodies.
+                    runtime.requestHeartbeatNowWithContext(context, Provenance.UNTRUSTED)
                 }
             } catch (e: SdkException) {
                 Log.w(TAG, "MessengerSDK not available for XMTP message listening: ${e.message}")

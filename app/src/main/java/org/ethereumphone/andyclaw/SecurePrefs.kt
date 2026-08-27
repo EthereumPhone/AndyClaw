@@ -103,6 +103,15 @@ class SecurePrefs(context: Context) : KeyValueStore {
   private val _safetyEnabled = MutableStateFlow(prefs.getBoolean("agent.safetyEnabled", false))
   val safetyEnabled: StateFlow<Boolean> = _safetyEnabled
 
+  // The provenance gate — what a run triggered by somebody else's content may do.
+  // Defaults to ENFORCING: this is the boundary that keeps a stranger's XMTP or
+  // Telegram message away from the promptless agent sub-account. Turning it off
+  // makes the gate log-only, which is the shape to run a build in while watching
+  // real traffic for over-blocking, and is not a state to leave a device in.
+  private val _provenanceEnforcementEnabled =
+    MutableStateFlow(prefs.getBoolean("agent.provenanceEnforcement", true))
+  val provenanceEnforcementEnabled: StateFlow<Boolean> = _provenanceEnforcementEnabled
+
   private val _notificationReplyEnabled = MutableStateFlow(prefs.getBoolean("agent.notificationReplyEnabled", false))
   val notificationReplyEnabled: StateFlow<Boolean> = _notificationReplyEnabled
 
@@ -594,6 +603,18 @@ class SecurePrefs(context: Context) : KeyValueStore {
     if (provider == _memoryAiProvider.value) {
       _memoryAiModel.value = trimmed
     }
+  }
+
+  /**
+   * Enforce the provenance gate, or run it in log-only mode.
+   *
+   * Log-only still evaluates and logs every verdict (`adb logcat -s ExecEngineFactory`),
+   * it just does not apply them — the way to see what a real device's traffic would
+   * hit before the gate bites.
+   */
+  fun setProvenanceEnforcementEnabled(value: Boolean) {
+    prefs.edit { putBoolean("agent.provenanceEnforcement", value) }
+    _provenanceEnforcementEnabled.value = value
   }
 
   fun setHeartbeatIntervalMinutes(value: Int) {
@@ -1163,6 +1184,7 @@ class SecurePrefs(context: Context) : KeyValueStore {
     _talkEnabled.value = prefs.getBoolean("talk.enabled", false)
     _yoloMode.value = prefs.getBoolean("agent.yoloMode", false)
     _safetyEnabled.value = prefs.getBoolean("agent.safetyEnabled", false)
+    _provenanceEnforcementEnabled.value = prefs.getBoolean("agent.provenanceEnforcement", true)
     _notificationReplyEnabled.value = prefs.getBoolean("agent.notificationReplyEnabled", false)
     _executiveSummaryEnabled.value = prefs.getBoolean("agent.executiveSummaryEnabled", false)
     _heartbeatOnNotificationEnabled.value = prefs.getBoolean("agent.heartbeatOnNotification", false)

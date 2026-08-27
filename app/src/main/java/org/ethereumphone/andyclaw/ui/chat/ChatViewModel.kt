@@ -405,6 +405,9 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     MemoryReranker(app.getMemoryAiLlmClient(), app.getMemoryAiModelId())
                 } else null,
                 customModelIdOverride = customModelIdOverride,
+                // The in-app chat is the user typing.
+                provenance = org.ethereumphone.andyclaw.ExecutionEngine.Provenance.USER,
+                enforceProvenance = app.securePrefs.provenanceEnforcementEnabled.value,
             )
 
             // Initialize background memory extractor for this run (opt-in)

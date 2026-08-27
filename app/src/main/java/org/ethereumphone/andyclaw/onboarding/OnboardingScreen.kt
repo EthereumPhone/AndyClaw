@@ -92,6 +92,7 @@ fun OnboardingScreen(
     val customName by viewModel.customName.collectAsState()
     val values by viewModel.values.collectAsState()
     val yoloMode by viewModel.yoloMode.collectAsState()
+    val proactiveEnabled by viewModel.proactiveEnabled.collectAsState()
     val selectedSkills by viewModel.selectedSkills.collectAsState()
 
     val totalSteps = viewModel.totalSteps
@@ -214,7 +215,10 @@ fun OnboardingScreen(
                             skills = viewModel.registeredSkills,
                             yoloMode = yoloMode,
                             selectedSkills = selectedSkills,
+                            proactiveEnabled = proactiveEnabled,
+                            proactiveIntervalMinutes = viewModel.proactiveIntervalMinutes.value,
                             onYoloModeChange = { viewModel.setYoloMode(it) },
+                            onProactiveChange = { viewModel.setProactiveEnabled(it) },
                             onToggleSkill = { id, enabled -> viewModel.toggleSkill(id, enabled) },
                         )
                     }
@@ -634,7 +638,10 @@ private fun StepPermissions(
     skills: List<AndyClawSkill>,
     yoloMode: Boolean,
     selectedSkills: Set<String>,
+    proactiveEnabled: Boolean,
+    proactiveIntervalMinutes: Int,
     onYoloModeChange: (Boolean) -> Unit,
+    onProactiveChange: (Boolean) -> Unit,
     onToggleSkill: (String, Boolean) -> Unit,
 ) {
     val tier = OsCapabilities.currentTier()
@@ -707,6 +714,58 @@ private fun StepPermissions(
                 DgenSquareSwitch(
                     checked = yoloMode,
                     onCheckedChange = onYoloModeChange,
+                    activeColor = primaryColor,
+                )
+            }
+        }
+
+        Spacer(Modifier.height(16.dp))
+
+        // Proactive agent card — the heartbeat opt-in.
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(4.dp))
+                .background(if (proactiveEnabled) primaryColor.copy(alpha = 0.15f) else Color.Transparent)
+                .border(
+                    width = if (proactiveEnabled) 2.dp else 1.dp,
+                    color = if (proactiveEnabled) primaryColor else primaryColor.copy(alpha = 0.3f),
+                    shape = RoundedCornerShape(4.dp),
+                )
+                .padding(16.dp),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "CHECK IN ON ITS OWN",
+                        fontFamily = SpaceMono,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = label_fontSize,
+                        color = primaryColor,
+                        style = MaterialTheme.typography.labelMedium.copy(
+                            shadow = GlowStyle.subtitle(primaryColor),
+                        ),
+                    )
+                    Text(
+                        text = "Every $proactiveIntervalMinutes minutes your AI looks at its task list " +
+                            "and tells you if something needs you. Starts with a short read-only list " +
+                            "you can edit. Uses your balance — change it any time in Settings.",
+                        fontFamily = SpaceMono,
+                        fontSize = 14.sp,
+                        color = dgenWhite,
+                        lineHeight = 18.sp,
+                        style = MaterialTheme.typography.bodySmall.copy(
+                            shadow = GlowStyle.body(dgenWhite),
+                        ),
+                    )
+                }
+                DgenSquareSwitch(
+                    checked = proactiveEnabled,
+                    onCheckedChange = onProactiveChange,
                     activeColor = primaryColor,
                 )
             }

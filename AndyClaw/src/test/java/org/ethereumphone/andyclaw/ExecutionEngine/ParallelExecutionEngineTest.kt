@@ -507,6 +507,64 @@ class ParallelExecutionEngineTest {
         assertEquals(listOf("processor_1", "processor_2"), processorOrder)
     }
 
+    @Test
+    fun `post-processor chain feeds each processor the previous one's output`() = runTest {
+        val seenByProcessor2 = mutableListOf<String>()
+        val engine = buildEngine(
+            executor = successExecutor("raw"),
+            postProcessors = listOf(
+                PostProcessor { _, result ->
+                    PostProcessedResult(
+                        content = "[sanitized]" + (result as ToolExecResult.Success).data,
+                        isError = false,
+                    )
+                },
+                PostProcessor { _, result ->
+                    val incoming = (result as ToolExecResult.Success).data
+                    seenByProcessor2.add(incoming)
+                    PostProcessedResult(content = incoming.take(11), isError = false)
+                },
+            ),
+        )
+
+        val result = engine.executeBatch(listOf(toolCall()))
+
+        // The second processor must see the first's output, not the executor's.
+        // Feeding the raw result to every processor let the last one silently
+        // discard the sanitization the first one applied.
+        assertEquals(listOf("[sanitized]raw"), seenByProcessor2)
+        assertEquals("[sanitized]", result.results[0].content)
+    }
+
+    @Test
+    fun `post-processor chain preserves an image across a text-only processor`() = runTest {
+        val engine = buildEngine(
+            executor = ToolExecutor { _, _ -> ToolExecResult.ImageSuccess("shot", "b64", "image/png") },
+            postProcessors = listOf(
+                PostProcessor { _, result ->
+                    val img = result as ToolExecResult.ImageSuccess
+                    PostProcessedResult(
+                        content = img.text.uppercase(),
+                        isError = false,
+                        imageData = ToolCallResult.ImageData(img.base64, img.mediaType),
+                    )
+                },
+                PostProcessor { _, result ->
+                    val img = result as ToolExecResult.ImageSuccess
+                    PostProcessedResult(
+                        content = img.text + "!",
+                        isError = false,
+                        imageData = ToolCallResult.ImageData(img.base64, img.mediaType),
+                    )
+                },
+            ),
+        )
+
+        val result = engine.executeBatch(listOf(toolCall()))
+        assertEquals("SHOT!", result.results[0].content)
+        assertEquals("b64", result.results[0].imageData?.base64)
+    }
+
     // ═══════════════════════════════════════════
     // Callbacks
     // ═══════════════════════════════════════════

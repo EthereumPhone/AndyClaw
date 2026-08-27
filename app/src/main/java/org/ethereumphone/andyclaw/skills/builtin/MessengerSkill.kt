@@ -21,6 +21,7 @@ import org.ethereumphone.andyclaw.skills.SkillManifest
 import org.ethereumphone.andyclaw.skills.SkillResult
 import org.ethereumphone.andyclaw.skills.Tier
 import org.ethereumphone.andyclaw.skills.ToolDefinition
+import org.ethereumphone.andyclaw.skills.ToolEffect
 import org.ethereumphone.contactssdk.ContactsSDK
 import org.ethereumphone.walletsdk.WalletSDK
 import org.ethereumhpone.messengersdk.MessengerSDK
@@ -124,6 +125,7 @@ class MessengerSkill(private val context: Context) : AndyClawSkill {
                     "android.permission.READ_CONTACTS",
                     "android.permission.WRITE_CONTACTS",
                 ),
+                effect = ToolEffect.IRREVERSIBLE,
             ),
             ToolDefinition(
                 name = "list_conversations",

@@ -11,6 +11,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import org.ethereumphone.andyclaw.ExecutionEngine.Provenance
 import org.ethereumphone.andyclaw.NodeApp
 import org.ethereumphone.andyclaw.agent.AgentLoop
 import org.ethereumphone.andyclaw.agent.AskUserRequest
@@ -33,6 +34,16 @@ import java.util.concurrent.ConcurrentHashMap
  * Modeled after [org.ethereumphone.andyclaw.agent.HeartbeatAgentRunner]
  * but maintains per-chat conversation history so multi-turn context
  * is preserved within a service lifecycle.
+ *
+ * Every inbound Telegram message is [Provenance.UNTRUSTED]: the bot answers whoever
+ * messages it, and [TelegramChatStore.getOwnerChatId] is only "the first chat that
+ * ever wrote to this bot", so a sender is not the device owner by default.
+ *
+ * This runner does have a real approval affordance — inline Approve/Decline buttons.
+ * It is only a *genuine* one when the buttons reach the owner: sending them to an
+ * arbitrary sender would let that sender approve their own irreversible request,
+ * which is the hole this whole gate exists to close. So approval prompts are offered
+ * in the owner's chat and refused everywhere else.
  */
 class TelegramAgentRunner(
     private val app: NodeApp,
@@ -91,10 +102,14 @@ class TelegramAgentRunner(
             smartRouter = if (app.securePrefs.smartRoutingEnabled.value && !app.securePrefs.toolSearchEnabled.value) app.smartRouter else null,
             toolSearchService = app.createToolSearchService(tier, enabledSkillIds),
             budgetConfig = app.createBudgetConfig(),
+            provenance = Provenance.UNTRUSTED,
+            triggerConversationId = chatId.toString(),
+            enforceProvenance = app.securePrefs.provenanceEnforcementEnabled.value,
         )
 
         val ledController = app.ledController
         val history = chatHistories.getOrPut(chatId) { mutableListOf() }
+        val isOwnerChat = app.telegramChatStore.getOwnerChatId() == chatId
 
         val collectedText = StringBuilder()
         val completion = CompletableDeferred<String>()
@@ -154,6 +169,35 @@ class TelegramAgentRunner(
                 toolName: String?,
                 toolInput: JsonObject?,
             ): Boolean {
+                // Buttons sent to a stranger are not an approval, they are the
+                // attacker signing their own request. Only the owner's chat gets to
+                // decide; anything else is refused and queued for the user.
+                if (!isOwnerChat) {
+                    Log.w(TAG, "Refusing approval from non-owner chat $chatId: ${toolName ?: "?"} — $description")
+                    try {
+                        app.pendingApprovalStore.add(
+                            source = "telegram",
+                            provenance = Provenance.UNTRUSTED.name,
+                            toolName = toolName ?: "unknown",
+                            description = description,
+                            conversationId = chatId.toString(),
+                            inputPreview = toolInput?.toString(),
+                        )
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Could not queue pending approval: ${e.message}")
+                    }
+                    memoryScope.launch {
+                        botClient.sendMessage(
+                            chatId,
+                            "That needs the phone owner's approval. I've queued it for them.",
+                        )
+                    }
+                    return false
+                }
+
+                // Past the owner check the sender is the device owner, so their own
+                // YOLO setting applies as it does anywhere else. A non-owner chat
+                // never reaches this line, whatever YOLO says.
                 if (app.securePrefs.yoloMode.value) return true
 
                 var threatAssessment: ThreatAssessment? = null

@@ -16,6 +16,7 @@ import org.ethereumphone.andyclaw.skills.SkillManifest
 import org.ethereumphone.andyclaw.skills.SkillResult
 import org.ethereumphone.andyclaw.skills.Tier
 import org.ethereumphone.andyclaw.skills.ToolDefinition
+import org.ethereumphone.andyclaw.skills.ToolEffect
 
 class SMSSkill(private val context: Context) : AndyClawSkill {
     override val id = "sms"
@@ -56,6 +57,7 @@ class SMSSkill(private val context: Context) : AndyClawSkill {
                 )),
                 requiresApproval = true,
                 requiredPermissions = listOf("android.permission.SEND_SMS"),
+                effect = ToolEffect.IRREVERSIBLE,
             ),
             ToolDefinition(
                 name = "auto_reply_sms",

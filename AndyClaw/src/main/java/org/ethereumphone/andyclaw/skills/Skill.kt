@@ -90,6 +90,13 @@ data class SkillToolSpec(
     /** Per-tool entrypoint override; falls back to [SkillExecutionSpec.entrypoint]. */
     val entrypoint: String? = null,
     val args: Map<String, SkillArgSpec> = emptyMap(),
+    /**
+     * Optional `effect:` declaration from the skill's frontmatter
+     * (`read` | `reversible` | `irreversible` | `sensitive`).
+     * Undeclared stays `null` and resolves to [ToolEffect.IRREVERSIBLE] — a skill
+     * downloaded from ClawHub does not get to be trusted by omission.
+     */
+    val effect: ToolEffect? = null,
 )
 
 /**
