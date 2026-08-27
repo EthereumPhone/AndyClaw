@@ -1272,6 +1272,12 @@ class LauncherBindingService : Service() {
 
         if (frameIds.isEmpty()) return
         val app = application as? NodeApp ?: return
+        // The frames are the user's either way, but the ledger is a thing they can switch
+        // off — and writing into it anyway would make the switch a lie.
+        if (!app.securePrefs.ledgerEnabled.value) {
+            Log.i(TAG, "kept ${frameIds.size} frame(s) for session $sessionId (ledger off)")
+            return
+        }
         runCatching {
             app.ledgerRecorder.record(
                 LedgerDraft(

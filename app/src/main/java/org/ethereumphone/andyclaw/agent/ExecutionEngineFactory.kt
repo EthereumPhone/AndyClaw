@@ -81,7 +81,11 @@ object ExecutionEngineFactory {
 
         val builder = EngineBuilder()
             .executor(createExecutor(skillRegistry, tier, provenance, triggerConversationId, toolDurations))
-            .callbacks(createCallbacks(agentCallbacks, safetyLayer, ledger, provenance, intent, toolDurations))
+            .callbacks(
+                createCallbacks(
+                    agentCallbacks, safetyLayer, ledger, provenance, intent, toolDurations,
+                ) { name -> rungOf(name, toolsByName) },
+            )
 
         // Pre-flight checks (order matters — matches original AgentLoop order).
         // The provenance gate runs FIRST, before a rate-limit slot is spent or an
@@ -501,6 +505,7 @@ object ExecutionEngineFactory {
         provenance: Provenance,
         intent: String,
         durations: Map<String, Long>,
+        rungOf: (String) -> Int?,
     ) = object : ExecutionCallbacks {
 
         override fun onToolStarted(toolName: String) {
@@ -535,6 +540,10 @@ object ExecutionEngineFactory {
                             intent = intent,
                             provenance = provenance.name,
                             outcome = LedgerOutcome.BLOCKED,
+                            // The rung matters most on a block: "the display was refused
+                            // because rung 0 covers this app" is the whole story of the
+                            // row, and losing it would leave only the reason string.
+                            routeRung = rungOf(toolName),
                             actions = listOf(
                                 LedgerAction(
                                     tool = toolName,

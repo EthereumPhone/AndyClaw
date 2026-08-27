@@ -171,6 +171,9 @@ class LedgerWiringTest {
 
         val row = rows.single()
         assertEquals(LedgerOutcome.BLOCKED, row.outcome)
+        // The rung is the whole story of this row: the display was refused because
+        // something cheaper covers the app.
+        assertEquals(ToolRoutes.RUNG_DISPLAY, row.routeRung)
         assertTrue(row.actions.single().note!!.contains("[Route]"))
     }
 
