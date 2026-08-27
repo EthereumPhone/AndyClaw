@@ -84,6 +84,9 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
     val executiveSummaryEnabled = prefs.executiveSummaryEnabled
     val heartbeatOnNotificationEnabled = prefs.heartbeatOnNotificationEnabled
     val heartbeatOnXmtpMessageEnabled = prefs.heartbeatOnXmtpMessageEnabled
+    val ledgerEnabled = prefs.ledgerEnabled
+    val displayFrameCaptureEnabled = prefs.displayFrameCaptureEnabled
+    val ambientIngestEnabled = prefs.ambientIngestEnabled
     val heartbeatIntervalMinutes = prefs.heartbeatIntervalMinutes
     val heartbeatUseSameModel = prefs.heartbeatUseSameModel
     val heartbeatProvider = prefs.heartbeatProvider
@@ -821,6 +824,19 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
 
     fun setHeartbeatOnNotificationEnabled(enabled: Boolean) {
         prefs.setHeartbeatOnNotificationEnabled(enabled)
+    }
+
+    fun setLedgerEnabled(enabled: Boolean) {
+        prefs.setLedgerEnabled(enabled)
+    }
+
+    fun setDisplayFrameCaptureEnabled(enabled: Boolean) {
+        prefs.setDisplayFrameCaptureEnabled(enabled)
+    }
+
+    /** Goes through [NodeApp] rather than the prefs, so the receivers follow the switch. */
+    fun setAmbientIngestEnabled(enabled: Boolean) {
+        app.setAmbientIngestEnabled(enabled)
     }
 
     fun setHeartbeatOnXmtpMessageEnabled(enabled: Boolean) {

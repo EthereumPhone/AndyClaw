@@ -41,11 +41,18 @@ class AndyClawNotificationListener : NotificationListenerService() {
         // Never react to our own notifications (avoid infinite loops)
         if (sbn.packageName == applicationContext.packageName) return
 
+        val app = applicationContext as? NodeApp ?: return
+
+        // A mail or calendar app posting anything is the cheapest "something changed"
+        // signal on the device, and it is the one that makes the schedule a backstop
+        // rather than the loop. Only the posting package is used — never the notification's
+        // own title or text, which is content a stranger wrote.
+        app.onNotificationPosted(sbn.packageName)
+
         // Gate: privileged capability required
         if (!OsCapabilities.hasCapability(Capability.HEARTBEAT_ON_NOTIFICATION)) return
 
         // The master heartbeat switch is a kill switch for every automatic trigger.
-        val app = applicationContext as? NodeApp ?: return
         if (app.securePrefs.heartbeatIntervalMinutes.value <= 0) return
 
         // Gate: user must have the notification trigger enabled
@@ -57,7 +64,9 @@ class AndyClawNotificationListener : NotificationListenerService() {
         lastHeartbeatTriggerMs = now
 
         Log.d(TAG, "Notification from ${sbn.packageName} — triggering heartbeat")
-        app.runtime.requestHeartbeatNow()
+        // Event-driven: this run covers the next scheduled tick, which is the whole point
+        // of inverting the hierarchy.
+        app.runtime.requestHeartbeatNow(eventDriven = true)
     }
 
     override fun onNotificationRemoved(sbn: StatusBarNotification?) {

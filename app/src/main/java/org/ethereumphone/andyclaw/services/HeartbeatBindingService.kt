@@ -280,6 +280,7 @@ class HeartbeatBindingService : Service() {
 
         runtime.heartbeatConfig = HeartbeatConfig(
             heartbeatFilePath = File(filesDir, "HEARTBEAT.md").absolutePath,
+            backstopQuietMs = app.heartbeatBackstopQuietMs,
         )
 
         seedHeartbeatFile()
@@ -393,6 +394,9 @@ class HeartbeatBindingService : Service() {
                     appendLine("create a notification so they see it.")
                 }
                 // The reminder is one the user asked for — trusted content.
+                // It is also event-driven: something fired, the agent ran, and the next
+                // scheduled tick has nothing to add.
+                app.runtime.noteAmbientActivity()
                 val response = app.runtime.agentRunner.run(prompt, provenance = Provenance.TRUSTED)
                 Log.i(TAG, "Reminder agent response (error=${response.isError}): " +
                         "\"${response.text.take(100)}\"")
@@ -424,6 +428,7 @@ class HeartbeatBindingService : Service() {
                     appendLine("as needed. This cron job will fire again in ${intervalMs / 60000} minutes.")
                 }
                 // The cron job is one the user created — trusted content.
+                app.runtime.noteAmbientActivity()
                 val response = app.runtime.agentRunner.run(prompt, provenance = Provenance.TRUSTED)
                 Log.i(TAG, "Cronjob agent response (error=${response.isError}): " +
                         "\"${response.text.take(100)}\"")
@@ -476,6 +481,7 @@ class HeartbeatBindingService : Service() {
                 }
                 mutex.withLock {
                     client.sendChatAction(chatId)
+                    app.runtime.noteAmbientActivity()
                     val response = runner.run(chatId, text)
                     if (response.isNotBlank()) {
                         client.sendMessage(chatId, response)
@@ -579,6 +585,7 @@ class HeartbeatBindingService : Service() {
         // messages, so the whole run is UNTRUSTED and is confined to replying to
         // this sender.
         Log.i(TAG, "XMTP: running agent for $senderAddress (UNTRUSTED)...")
+        app.runtime.noteAmbientActivity()
         val response = app.runtime.agentRunner.run(
             prompt = prompt,
             provenance = Provenance.UNTRUSTED,

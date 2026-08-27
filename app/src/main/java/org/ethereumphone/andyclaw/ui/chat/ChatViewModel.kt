@@ -410,6 +410,9 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 enforceProvenance = app.securePrefs.provenanceEnforcementEnabled.value,
                 flowRecorder = app.flowRecorder,
                 flowRepository = app.flowRepositoryOrNull,
+                // `sid` rather than the flow: the session was created above, and reading
+                // it back through a nullable would make a recorded chat depend on ordering.
+                ledger = app.agentLedger(sid),
             )
 
             // Initialize background memory extractor for this run (opt-in)

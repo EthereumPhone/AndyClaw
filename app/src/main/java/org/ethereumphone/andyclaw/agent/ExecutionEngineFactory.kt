@@ -6,6 +6,10 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonPrimitive
 import org.ethereumphone.andyclaw.ExecutionEngine.*
+import org.ethereumphone.andyclaw.ledger.LedgerAction
+import org.ethereumphone.andyclaw.ledger.LedgerDraft
+import org.ethereumphone.andyclaw.ledger.LedgerKind
+import org.ethereumphone.andyclaw.ledger.LedgerOutcome
 import org.ethereumphone.andyclaw.llm.ContentBlock
 import org.ethereumphone.andyclaw.llm.ImageSource
 import org.ethereumphone.andyclaw.llm.ToolResultContent
@@ -46,6 +50,17 @@ object ExecutionEngineFactory {
         provenance: Provenance = Provenance.USER,
         triggerConversationId: String? = null,
         enforceProvenance: Boolean = true,
+        /**
+         * Where this run writes its steps down, or null when nothing is recording.
+         *
+         * Defaulted and trailing so every existing call site compiles unchanged, which is
+         * the same rule `ToolDefinition.rung` followed in Phase 2 and for the same reason:
+         * this is called once per tool call from three places and a required parameter here
+         * is a required parameter in all of them.
+         */
+        ledger: AgentLedger? = null,
+        /** What the run was asked to do. Carried onto every step so a row reads on its own. */
+        intent: String = "",
     ): ParallelExecutionEngine {
         // `create` is called once per tool call inside the hot loop, and every check
         // that needs a tool definition used to re-walk the whole registry. Resolve
@@ -59,9 +74,14 @@ object ExecutionEngineFactory {
             byName
         }
 
+        // How long each tool actually took, so a ledger row can say. Name-keyed, matching
+        // `ExecutionMetrics.perToolMs`, which resolves the same way for the same reason: the
+        // executor is handed a name and parameters, never the call id.
+        val toolDurations = java.util.concurrent.ConcurrentHashMap<String, Long>()
+
         val builder = EngineBuilder()
-            .executor(createExecutor(skillRegistry, tier, provenance, triggerConversationId))
-            .callbacks(createCallbacks(agentCallbacks, safetyLayer))
+            .executor(createExecutor(skillRegistry, tier, provenance, triggerConversationId, toolDurations))
+            .callbacks(createCallbacks(agentCallbacks, safetyLayer, ledger, provenance, intent, toolDurations))
 
         // Pre-flight checks (order matters — matches original AgentLoop order).
         // The provenance gate runs FIRST, before a rate-limit slot is spent or an
@@ -87,6 +107,15 @@ object ExecutionEngineFactory {
         if (budgetConfig != null) {
             builder.addPostProcessor(truncationProcessor(budgetConfig))
         }
+        // Last in the chain, and it must stay last. A processor that blocks breaks the
+        // chain, so anything after it never runs — which is exactly right here: a blocked
+        // call is recorded by `onToolBlocked` instead, and running both would write the
+        // step twice. Exactly one row per tool call, whichever way the call ends.
+        if (ledger != null) {
+            builder.addPostProcessor(
+                ledgerProcessor(ledger, provenance, intent, toolDurations) { toolsByName }
+            )
+        }
 
         return builder.build()
     }
@@ -100,18 +129,24 @@ object ExecutionEngineFactory {
         tier: Tier,
         provenance: Provenance,
         triggerConversationId: String?,
+        durations: MutableMap<String, Long>,
     ): ToolExecutor =
         ToolExecutor { toolName, params ->
             // Publish the provenance into the coroutine context so code the engine
             // cannot see applies the same gate — `execute_code` runs BeanShell whose
             // `tools.call(name, params)` bridge reaches the registry directly.
-            withContext(ProvenanceContext(provenance, triggerConversationId)) {
-                when (val result = registry.executeTool(toolName, params, tier)) {
-                    is SkillResult.Success -> ToolExecResult.Success(result.data)
-                    is SkillResult.ImageSuccess -> ToolExecResult.ImageSuccess(result.text, result.base64, result.mediaType)
-                    is SkillResult.Error -> ToolExecResult.Error(result.message)
-                    is SkillResult.RequiresApproval -> ToolExecResult.RequiresApproval(result.description)
+            val startedMs = System.currentTimeMillis()
+            try {
+                withContext(ProvenanceContext(provenance, triggerConversationId)) {
+                    when (val result = registry.executeTool(toolName, params, tier)) {
+                        is SkillResult.Success -> ToolExecResult.Success(result.data)
+                        is SkillResult.ImageSuccess -> ToolExecResult.ImageSuccess(result.text, result.base64, result.mediaType)
+                        is SkillResult.Error -> ToolExecResult.Error(result.message)
+                        is SkillResult.RequiresApproval -> ToolExecResult.RequiresApproval(result.description)
+                    }
                 }
+            } finally {
+                durations[toolName] = System.currentTimeMillis() - startedMs
             }
         }
 
@@ -286,6 +321,9 @@ object ExecutionEngineFactory {
 
     private const val MAX_ROUTED_PACKAGES = 64
 
+    /** Enough to say which gate fired and why; not enough to be a second copy of the prompt. */
+    private const val MAX_BLOCK_NOTE_CHARS = 240
+
     /** Tests drive the gate repeatedly against the same package; they start from clean. */
     internal fun clearRouteMemory() = recentlyRouted.clear()
 
@@ -384,12 +422,85 @@ object ExecutionEngineFactory {
     }
 
     // ═══════════════════════════════════════════
+    // The ledger
+    // ═══════════════════════════════════════════
+
+    /**
+     * One row per tool that ran.
+     *
+     * A `PostProcessor` is the right hook because it is the last thing that sees a call
+     * before the result goes back to the model, so it sees what the model will see — the
+     * sanitised, truncated content, and whether the whole thing counted as an error. It is
+     * also, since Phase 1.1 fixed the chain, a hook that can be added without silently
+     * discarding the work of the processors before it.
+     *
+     * The row carries the four things `agent-first-plan.md` Phase 3.1 asks for — provenance,
+     * rung, outcome, cost — and nothing else. Tool inputs and outputs are deliberately
+     * absent: they routinely contain message bodies, addresses and file contents, and this
+     * is a store the user is invited to read and export.
+     */
+    private fun ledgerProcessor(
+        ledger: AgentLedger,
+        provenance: Provenance,
+        intent: String,
+        durations: Map<String, Long>,
+        tools: () -> Map<String, ToolDefinition>,
+    ) = PostProcessor { call, result ->
+        val isError = result is ToolExecResult.Error || result is ToolExecResult.RequiresApproval
+        runCatching {
+            ledger.sink.record(
+                LedgerDraft(
+                    sessionId = ledger.sessionId,
+                    kind = LedgerKind.TOOL,
+                    intent = intent,
+                    provenance = provenance.name,
+                    outcome = if (isError) LedgerOutcome.ERROR else LedgerOutcome.OK,
+                    routeRung = rungOf(call.name, tools()),
+                    flowRef = ledger.flowRef(call.name),
+                    actions = listOf(
+                        LedgerAction(
+                            tool = call.name,
+                            ok = !isError,
+                            durationMs = durations[call.name] ?: 0L,
+                        )
+                    ),
+                    durationMs = durations[call.name] ?: 0L,
+                )
+            )
+        }
+
+        // Pass the result through untouched. This processor observes; it must never be the
+        // reason a tool result changes, or turning the ledger on would change what the model
+        // sees.
+        passthrough(result)
+    }
+
+    /** The identity transform, in the shape the chain expects. */
+    private fun passthrough(result: ToolExecResult): PostProcessedResult = when (result) {
+        is ToolExecResult.Success -> PostProcessedResult(content = result.data, isError = false)
+        is ToolExecResult.ImageSuccess -> PostProcessedResult(
+            content = result.text,
+            isError = false,
+            imageData = ToolCallResult.ImageData(result.base64, result.mediaType),
+        )
+        is ToolExecResult.Error -> PostProcessedResult(content = result.message, isError = true)
+        is ToolExecResult.RequiresApproval -> PostProcessedResult(content = result.description, isError = true)
+    }
+
+    private fun rungOf(toolName: String, tools: Map<String, ToolDefinition>): Int? =
+        tools[toolName]?.rung ?: ToolRoutes.rungOf(toolName)
+
+    // ═══════════════════════════════════════════
     // Callbacks bridge
     // ═══════════════════════════════════════════
 
     private fun createCallbacks(
         agentCallbacks: AgentLoop.Callbacks,
         safety: SafetyLayer?,
+        ledger: AgentLedger?,
+        provenance: Provenance,
+        intent: String,
+        durations: Map<String, Long>,
     ) = object : ExecutionCallbacks {
 
         override fun onToolStarted(toolName: String) {
@@ -410,6 +521,32 @@ object ExecutionEngineFactory {
         }
 
         override fun onToolBlocked(toolName: String, reason: String) {
+            // The most interesting row in the ledger. A pre-flight block never reaches a
+            // post-processor — the engine turns it into a result before execution — so
+            // without this the record would show only the tools that were allowed to run,
+            // which is precisely the half that needs no defending. The block reason is
+            // written verbatim because it is this app's own text, not tool output.
+            ledger?.let { l ->
+                runCatching {
+                    l.sink.record(
+                        LedgerDraft(
+                            sessionId = l.sessionId,
+                            kind = LedgerKind.TOOL,
+                            intent = intent,
+                            provenance = provenance.name,
+                            outcome = LedgerOutcome.BLOCKED,
+                            actions = listOf(
+                                LedgerAction(
+                                    tool = toolName,
+                                    ok = false,
+                                    durationMs = durations[toolName] ?: 0L,
+                                    note = reason.take(MAX_BLOCK_NOTE_CHARS),
+                                )
+                            ),
+                        )
+                    )
+                }
+            }
             if (reason.startsWith("[Safety]")) {
                 agentCallbacks.onSecurityBlock(toolName, reason)
             }

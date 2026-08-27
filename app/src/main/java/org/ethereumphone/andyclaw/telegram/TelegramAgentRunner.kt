@@ -107,6 +107,7 @@ class TelegramAgentRunner(
             enforceProvenance = app.securePrefs.provenanceEnforcementEnabled.value,
             flowRecorder = app.flowRecorder,
             flowRepository = app.flowRepositoryOrNull,
+            ledger = app.agentLedger("telegram:$chatId"),
         )
 
         val ledController = app.ledController

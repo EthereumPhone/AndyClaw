@@ -28,6 +28,11 @@ import org.json.JSONArray
 import org.json.JSONObject
 import org.ethereumphone.andyclaw.ExecutionEngine.Provenance
 import org.ethereumphone.andyclaw.NodeApp
+import org.ethereumphone.andyclaw.frames.SessionFrameStore
+import org.ethereumphone.andyclaw.ledger.LedgerAction
+import org.ethereumphone.andyclaw.ledger.LedgerDraft
+import org.ethereumphone.andyclaw.ledger.LedgerKind
+import org.ethereumphone.andyclaw.ledger.LedgerOutcome
 import org.ethereumphone.andyclaw.agent.AgentLoop
 import org.ethereumphone.andyclaw.ipc.IExecSummaryCallback
 import org.ethereumphone.andyclaw.ipc.ILauncherCallback
@@ -73,6 +78,28 @@ class LauncherBindingService : Service() {
             "org.ethosmobile.ethoslauncher",
             "com.android.systemui"
         )
+
+        /**
+         * How often a frame is pulled off the agent display.
+         *
+         * One a second, which is what this loop has always done. It is now also the replay
+         * frame rate and the unit the per-session cap counts in, so it is a named constant
+         * rather than a literal inside the loop.
+         */
+        private const val DISPLAY_FRAME_INTERVAL_MS = 1000L
+
+        /**
+         * JPEG quality for those frames.
+         *
+         * The stream feeds a preview pane and a replay, neither of which is a screenshot the
+         * model has to read — that path calls `captureFrame` itself at full quality. 60 is
+         * where a phone screenshot stops looking different and the file stops being large,
+         * which matters at one a second against a retention cap in megabytes.
+         */
+        private const val DISPLAY_FRAME_QUALITY = 60
+
+        /** `agent-os-design.md` §3's rung 4: driving a UI. What a display session is. */
+        private const val RUNG_DISPLAY = 4
     }
 
     /**
@@ -102,8 +129,22 @@ class LauncherBindingService : Service() {
         }
     )
 
-    /** Active display capture job for streaming frames to the launcher. */
-    private var displayCaptureJob: Job? = null
+    /**
+     * Display capture streams, one per launcher session.
+     *
+     * This was a single field, which meant a second session silently inherited the first
+     * one's stream: `startDisplayCapture` returned early because a job was already active,
+     * and whichever session stopped first cancelled it for both. One agent display at a time
+     * is a property of the OS service, not of this one — two launcher sessions can each be
+     * mid-turn, and each is entitled to its own frames and its own recording.
+     */
+    private val displayCaptures = java.util.concurrent.ConcurrentHashMap<String, DisplayCapture>()
+
+    /** A running capture: the loop, and the recording it is writing. */
+    private class DisplayCapture(
+        val job: Job,
+        val frames: SessionFrameStore.FrameSession?,
+    )
 
     /** Active prompt jobs keyed by launcher sessionId, so we can cancel inference. */
     private val activePromptJobs = mutableMapOf<String, Job>()
@@ -277,6 +318,9 @@ class LauncherBindingService : Service() {
                 put("notificationReplyEnabled", prefs.notificationReplyEnabled.value)
                 put("executiveSummaryEnabled", prefs.executiveSummaryEnabled.value)
                 put("heartbeatOnNotification", prefs.heartbeatOnNotificationEnabled.value)
+                put("ledgerEnabled", prefs.ledgerEnabled.value)
+                put("displayFrameCapture", prefs.displayFrameCaptureEnabled.value)
+                put("ambientIngest", prefs.ambientIngestEnabled.value)
                 put("heartbeatOnXmtpMessage", prefs.heartbeatOnXmtpMessageEnabled.value)
                 put("heartbeatIntervalMinutes", prefs.heartbeatIntervalMinutes.value)
                 put("heartbeatUseSameModel", prefs.heartbeatUseSameModel.value)
@@ -346,6 +390,11 @@ class LauncherBindingService : Service() {
                     "notificationReplyEnabled" -> prefs.setNotificationReplyEnabled(value.toBooleanStrict())
                     "executiveSummaryEnabled" -> prefs.setExecutiveSummaryEnabled(value.toBooleanStrict())
                     "heartbeatOnNotification" -> prefs.setHeartbeatOnNotificationEnabled(value.toBooleanStrict())
+                    "ledgerEnabled" -> prefs.setLedgerEnabled(value.toBooleanStrict())
+                    "displayFrameCapture" -> prefs.setDisplayFrameCaptureEnabled(value.toBooleanStrict())
+                    // Through the app, not the prefs: the receivers have to follow the
+                    // switch, or nothing happens until the next boot.
+                    "ambientIngest" -> app.setAmbientIngestEnabled(value.toBooleanStrict())
                     "heartbeatOnXmtpMessage" -> prefs.setHeartbeatOnXmtpMessageEnabled(value.toBooleanStrict())
                     "heartbeatIntervalMinutes" -> prefs.setHeartbeatIntervalMinutes(value.toInt())
                     "heartbeatUseSameModel" -> prefs.setHeartbeatUseSameModel(value.toBooleanStrict())
@@ -503,9 +552,9 @@ class LauncherBindingService : Service() {
             } else {
                 Log.d(TAG, "No active inference to stop for session: $sessionId")
             }
-            // Also stop display capture if running
-            displayCaptureJob?.cancel()
-            displayCaptureJob = null
+            // Also stop display capture if running. Only this session's — cancelling every
+            // stream because one session was stopped is what the single-field version did.
+            finishDisplayCapture(sessionId)
         }
 
         // ── Telegram ──────────────────────────────────────────────────────
@@ -1126,21 +1175,43 @@ class LauncherBindingService : Service() {
 
     override fun onDestroy() {
         super.onDestroy()
+        // Close every recording before the scope dies, or the last session's frames are on
+        // disk with nothing in the ledger naming them.
+        for (sessionId in displayCaptures.keys.toList()) finishDisplayCapture(sessionId)
         scope.cancel()
         Log.i(TAG, "Service destroyed")
     }
 
     /**
-     * Starts capturing frames from the agent virtual display and streaming them
-     * to the launcher via [ILauncherCallback.onDisplayFrame].
+     * Stream frames from the agent display to the launcher, and — this is the new half —
+     * keep them.
+     *
+     * The frames were already being pulled once a second and handed straight to the
+     * launcher, which drew them and dropped them. Writing the same bytes to
+     * [SessionFrameStore] on the way past turns "the agent did something on your behalf"
+     * into "watch exactly what I did as you", which is the trust artifact the ledger exists
+     * to support, for the cost of a file write per frame.
+     *
+     * Two fixes come with it. The capture now uses `captureFrameWithQuality`, which has
+     * existed on the AIDL unused all along — the bare `captureFrame()` encodes at the
+     * service's default quality, and a preview thumbnail plus a replay recording do not
+     * need a maximum-quality JPEG once a second. And the loop is keyed by session, so a
+     * second session gets its own stream instead of silently sharing the first one's.
      */
-    private fun startDisplayCapture(callback: ILauncherCallback) {
-        if (displayCaptureJob?.isActive == true) return
+    private fun startDisplayCapture(sessionId: String, callback: ILauncherCallback) {
+        if (displayCaptures[sessionId]?.job?.isActive == true) return
         try {
             callback.onDisplayCreated()
         } catch (_: RemoteException) {}
 
-        displayCaptureJob = scope.launch {
+        val app = application as? NodeApp
+        val recording = if (app?.securePrefs?.displayFrameCaptureEnabled?.value == true) {
+            runCatching { app.sessionFrameStore.beginSession(sessionId) }.getOrNull()
+        } else {
+            null
+        }
+
+        val job = scope.launch {
             val svc = try {
                 val smClass = Class.forName("android.os.ServiceManager")
                 val getService = smClass.getMethod("getService", String::class.java)
@@ -1153,8 +1224,11 @@ class LauncherBindingService : Service() {
 
             while (isActive) {
                 try {
-                    val frame = svc.captureFrame()
-                    if (frame != null) {
+                    val frame = svc.captureFrameWithQuality(DISPLAY_FRAME_QUALITY)
+                    if (frame != null && frame.isNotEmpty()) {
+                        // Persist first. The launcher may have gone away — a dead client
+                        // must not be the reason the recording has a hole in it.
+                        recording?.write(frame)
                         callback.onDisplayFrame(frame)
                     }
                 } catch (e: RemoteException) {
@@ -1163,20 +1237,67 @@ class LauncherBindingService : Service() {
                 } catch (e: Exception) {
                     Log.e(TAG, "Display capture failed", e)
                 }
-                delay(1000)
+                delay(DISPLAY_FRAME_INTERVAL_MS)
             }
         }
+        displayCaptures[sessionId] = DisplayCapture(job, recording)
     }
 
     /**
      * Stops the display capture loop and notifies the launcher.
      */
-    private fun stopDisplayCapture(callback: ILauncherCallback) {
-        displayCaptureJob?.cancel()
-        displayCaptureJob = null
+    private fun stopDisplayCapture(sessionId: String, callback: ILauncherCallback) {
+        finishDisplayCapture(sessionId)
         try {
             callback.onDisplayDestroyed()
         } catch (_: RemoteException) {}
+    }
+
+    /**
+     * End a session's capture: stop the loop, close the recording, and write down what was
+     * kept.
+     *
+     * The ledger row is written here rather than by the agent loop because this is the only
+     * place that knows which frames belong to the session — and a row that names frames it
+     * cannot produce would be worse than no row. It is the same session id the turn row
+     * carries, so the two join without either side knowing about the other.
+     */
+    private fun finishDisplayCapture(sessionId: String) {
+        val capture = displayCaptures.remove(sessionId) ?: return
+        capture.job.cancel()
+
+        val recording = capture.frames ?: return
+        val frameIds = recording.frameIds
+        runCatching { recording.close() }
+
+        if (frameIds.isEmpty()) return
+        val app = application as? NodeApp ?: return
+        runCatching {
+            app.ledgerRecorder.record(
+                LedgerDraft(
+                    sessionId = sessionId,
+                    kind = LedgerKind.TOOL,
+                    intent = "agent display session",
+                    provenance = Provenance.USER.name,
+                    outcome = LedgerOutcome.OK,
+                    routeRung = RUNG_DISPLAY,
+                    actions = listOf(
+                        LedgerAction(
+                            tool = "agent_display_capture",
+                            ok = true,
+                            durationMs = frameIds.size * DISPLAY_FRAME_INTERVAL_MS,
+                            note = if (recording.truncated) {
+                                "${frameIds.size} frame(s); recording hit the per-session cap"
+                            } else {
+                                "${frameIds.size} frame(s)"
+                            },
+                        )
+                    ),
+                    frames = frameIds,
+                )
+            )
+        }
+        Log.i(TAG, "kept ${frameIds.size} frame(s) for session $sessionId")
     }
 
     /**
@@ -1224,6 +1345,10 @@ class LauncherBindingService : Service() {
             enforceProvenance = app.securePrefs.provenanceEnforcementEnabled.value,
             flowRecorder = app.flowRecorder,
             flowRepository = app.flowRepositoryOrNull,
+            // The launcher's session id, so the turn row, its step rows and the display
+            // frames all land under one key without any of the three knowing about the
+            // others.
+            ledger = app.agentLedger(sessionId),
         )
 
         // Get or create conversation history for this session
@@ -1261,9 +1386,9 @@ class LauncherBindingService : Service() {
 
                 // Agent display preview lifecycle
                 if (toolName == "agent_display_create" && result !is SkillResult.Error) {
-                    startDisplayCapture(callback)
+                    startDisplayCapture(sessionId, callback)
                 } else if (toolName == "agent_display_destroy" || toolName == "agent_display_destroy_and_promote") {
-                    stopDisplayCapture(callback)
+                    stopDisplayCapture(sessionId, callback)
                 }
             }
 
@@ -1293,9 +1418,9 @@ class LauncherBindingService : Service() {
             }
 
             override fun onComplete(fullText: String, tokenUsage: org.ethereumphone.andyclaw.agent.TokenUsageSnapshot?) {
-                // Stop display capture if still running
-                if (displayCaptureJob?.isActive == true) {
-                    stopDisplayCapture(callback)
+                // Stop this session's display capture if the agent left it running.
+                if (displayCaptures.containsKey(sessionId)) {
+                    stopDisplayCapture(sessionId, callback)
                 }
                 try {
                     callback.onComplete(fullText)
@@ -1303,9 +1428,8 @@ class LauncherBindingService : Service() {
             }
 
             override fun onError(error: Throwable) {
-                // Stop display capture if still running
-                if (displayCaptureJob?.isActive == true) {
-                    stopDisplayCapture(callback)
+                if (displayCaptures.containsKey(sessionId)) {
+                    stopDisplayCapture(sessionId, callback)
                 }
                 try {
                     callback.onError(error.message ?: "Unknown error")

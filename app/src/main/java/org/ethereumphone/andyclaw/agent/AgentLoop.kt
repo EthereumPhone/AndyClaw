@@ -33,6 +33,11 @@ import org.ethereumphone.andyclaw.flows.FlowInstallResult
 import org.ethereumphone.andyclaw.flows.FlowMetrics
 import org.ethereumphone.andyclaw.flows.FlowRecorder
 import org.ethereumphone.andyclaw.flows.FlowRepository
+import org.ethereumphone.andyclaw.ExecutionEngine.ExecutionMetrics
+import org.ethereumphone.andyclaw.ledger.LedgerAction
+import org.ethereumphone.andyclaw.ledger.LedgerDraft
+import org.ethereumphone.andyclaw.ledger.LedgerKind
+import org.ethereumphone.andyclaw.ledger.LedgerOutcome
 import org.ethereumphone.andyclaw.safety.SafetyLayer
 import org.ethereumphone.andyclaw.skills.MessageClassifier
 import org.ethereumphone.andyclaw.skills.NativeSkillRegistry
@@ -108,6 +113,14 @@ class AgentLoop(
     private val flowRecorder: FlowRecorder? = null,
     /** Where a compiled flow is installed and published as a tool. */
     private val flowRepository: FlowRepository? = null,
+    /**
+     * Where this run writes itself down, or null when nothing is recording.
+     *
+     * Trailing and defaulted, like [flowRecorder] and [flowRepository] before it: this
+     * class is constructed from four places and a required parameter is a change to all of
+     * them for the sake of a feature any one of them may not want.
+     */
+    private val ledger: AgentLedger? = null,
 ) {
     /**
      * Model calls made by this run, sub-agents included.
@@ -118,6 +131,23 @@ class AgentLoop(
      * `AgentRunMetrics`.
      */
     private val modelCalls = java.util.concurrent.atomic.AtomicInteger(0)
+
+    /**
+     * What the execution engine reported, rolled up across the whole run.
+     *
+     * `ExecutionMetrics` was already computed per batch and then thrown away — three call
+     * sites logged a line and dropped it. The ledger's turn row wants exactly what it
+     * already contains, so it is accumulated rather than recomputed.
+     */
+    private val toolsExecuted = java.util.concurrent.atomic.AtomicInteger(0)
+    private val toolsBlocked = java.util.concurrent.atomic.AtomicInteger(0)
+    private val toolErrors = java.util.concurrent.atomic.AtomicInteger(0)
+    private val toolTimeMs = java.util.concurrent.atomic.AtomicLong(0)
+
+    /** Every model id this run actually used, sub-agents and the flow compiler included. */
+    private val modelIdsUsed = java.util.Collections.newSetFromMap(
+        java.util.concurrent.ConcurrentHashMap<String, Boolean>()
+    )
 
     @Volatile
     private var runStartedMs: Long = 0L
@@ -325,6 +355,9 @@ class AgentLoop(
     suspend fun run(userMessage: String, conversationHistory: List<Message>, callbacks: Callbacks) {
         runStartedMs = System.currentTimeMillis()
         modelCalls.set(0)
+        toolsExecuted.set(0); toolsBlocked.set(0); toolErrors.set(0); toolTimeMs.set(0)
+        modelIdsUsed.clear()
+        var runOutcome = LedgerOutcome.OK
         val safety = safetyLayer
 
         // Scan inbound message for secrets when safety is enabled
@@ -606,9 +639,12 @@ class AgentLoop(
                             provenance = provenance,
                             triggerConversationId = triggerConversationId,
                             enforceProvenance = enforceProvenance,
+                            ledger = ledger,
+                            intent = userMessage,
                         )
                         val calls = ExecutionEngineFactory.toToolCalls(listOf(block))
                         val batchResult = engine.executeBatch(calls)
+                        noteBatch(batchResult.metrics)
                         ExecutionEngineFactory.toContentBlocks(batchResult.results).firstOrNull()
                             ?: ContentBlock.ToolResult(block.id, "No result", isError = true)
                     },
@@ -661,6 +697,7 @@ class AgentLoop(
                             streamText.clear()
                         }
                         modelCalls.incrementAndGet()
+                        modelIdsUsed.add(effectiveModelId)
                         client.streamMessage(request, streamCallback)
                     }
                 } catch (e: CannotRetryException) {
@@ -826,10 +863,13 @@ class AgentLoop(
                             provenance = provenance,
                             triggerConversationId = triggerConversationId,
                             enforceProvenance = enforceProvenance,
+                            ledger = ledger,
+                            intent = userMessage,
                         )
                         val engineCalls = ExecutionEngineFactory.toToolCalls(regularNotInExecutor)
                         val batchResult = engine.executeBatch(engineCalls)
                         val engineMetrics = batchResult.metrics
+                        noteBatch(engineMetrics)
                         Log.i(TAG, "ExecutionEngine (fallback) | ${engineMetrics.executedCount} executed, " +
                             "${engineMetrics.blockedCount} blocked, ${engineMetrics.errorCount} errors, " +
                             "${engineMetrics.totalDurationMs}ms total")
@@ -906,10 +946,17 @@ class AgentLoop(
                 cacheWriteTokens = totalCacheWriteTokens,
             ))
         } catch (e: CancellationException) {
+            runOutcome = LedgerOutcome.ERROR
             throw e
         } catch (e: Exception) {
+            runOutcome = LedgerOutcome.ERROR
             callbacks.onError(e)
         } finally {
+            // The turn row goes in `finally` so there is exactly one per run however the
+            // run ended — completed, thrown, or cancelled mid-tool. A record that only
+            // covers the runs that finished cleanly is not a record of what the agent did.
+            recordTurn(runOutcome, userMessage, iterations, totalInputTokens, totalOutputTokens)
+
             // Release any resources skills may still hold (e.g. a virtual display
             // that the LLM never destroyed because of a crash or cancellation).
             try {
@@ -918,6 +965,61 @@ class AgentLoop(
                 Log.w(TAG, "cleanupAll failed: ${e.message}", e)
             }
         }
+    }
+
+    // ── The ledger ────────────────────────────────────────────────
+
+    /** Roll one batch's [ExecutionMetrics] into the run totals. */
+    private fun noteBatch(metrics: ExecutionMetrics) {
+        toolsExecuted.addAndGet(metrics.executedCount)
+        toolsBlocked.addAndGet(metrics.blockedCount)
+        toolErrors.addAndGet(metrics.errorCount)
+        toolTimeMs.addAndGet(metrics.totalDurationMs)
+    }
+
+    /**
+     * The turn row: what was asked, how it ended, what it cost.
+     *
+     * The step rows are written by the engine as they happen; this is the one that ties them
+     * together and is the only place a *cost* is known, because cost is a property of the
+     * whole run's token usage and not of any individual tool call. An unpriced model gives
+     * null rather than zero — see [AgentLedger.costOf].
+     */
+    private fun recordTurn(
+        outcome: LedgerOutcome,
+        intent: String,
+        iterations: Int,
+        inputTokens: Int,
+        outputTokens: Int,
+    ) {
+        val l = ledger ?: return
+        val models = modelIdsUsed.toList()
+        runCatching {
+            l.sink.record(
+                LedgerDraft(
+                    sessionId = l.sessionId,
+                    kind = LedgerKind.TURN,
+                    intent = intent,
+                    provenance = provenance.name,
+                    outcome = outcome,
+                    actions = listOf(
+                        LedgerAction(
+                            tool = "agent_turn",
+                            ok = outcome == LedgerOutcome.OK,
+                            durationMs = toolTimeMs.get(),
+                            note = "$iterations iteration(s), ${modelCalls.get()} model call(s), " +
+                                "${toolsExecuted.get()} tool(s) run, ${toolsBlocked.get()} blocked, " +
+                                "${toolErrors.get()} error(s)",
+                        )
+                    ),
+                    modelIds = models,
+                    costUsd = l.costOf(models, inputTokens, outputTokens),
+                    inputTokens = inputTokens,
+                    outputTokens = outputTokens,
+                    durationMs = System.currentTimeMillis() - runStartedMs,
+                )
+            )
+        }.onFailure { Log.w(TAG, "ledger turn row failed: ${it.message}") }
     }
 
     // ── Sub-agent execution (model-driven delegation) ──────────────
@@ -1022,6 +1124,7 @@ class AgentLoop(
             val responseBlocks = mutableListOf<ContentBlock>()
             var streamError: Throwable? = null
             modelCalls.incrementAndGet()
+            modelIdsUsed.add(effectiveModelId)
             client.streamMessage(request, object : StreamingCallback {
                 override fun onToken(text: String) { /* buffered, not streamed to user */ }
                 override fun onToolUse(id: String, name: String, input: JsonObject) {}
@@ -1077,9 +1180,15 @@ class AgentLoop(
                     provenance = provenance,
                     triggerConversationId = triggerConversationId,
                     enforceProvenance = enforceProvenance,
+                    ledger = ledger,
+                    // A sub-agent's steps belong to the turn that spawned it — same
+                    // session, same chain — but the intent is the delegated task, because
+                    // that is what those particular steps were for.
+                    intent = taskDescription,
                 )
                 val engineCalls = ExecutionEngineFactory.toToolCalls(execCalls)
                 val batchResult = engine.executeBatch(engineCalls)
+                noteBatch(batchResult.metrics)
                 toolResults.addAll(ExecutionEngineFactory.toContentBlocks(batchResult.results))
             }
 
@@ -1192,6 +1301,7 @@ class AgentLoop(
         val text = StringBuilder()
         var streamError: Throwable? = null
         modelCalls.incrementAndGet()
+        modelIdsUsed.add(modelId)
         client.streamMessage(request, object : StreamingCallback {
             override fun onToken(token: String) { /* buffered */ }
             override fun onToolUse(id: String, name: String, input: JsonObject) {}

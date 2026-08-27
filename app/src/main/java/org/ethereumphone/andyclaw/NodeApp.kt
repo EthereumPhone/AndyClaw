@@ -7,7 +7,20 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
+import org.ethereumphone.andyclaw.agent.AgentLedger
+import org.ethereumphone.andyclaw.agent.ModelPrice
+import org.ethereumphone.andyclaw.ambient.PredictedContextRepository
+import org.ethereumphone.andyclaw.ambient.db.PredictedContextDatabase
+import org.ethereumphone.andyclaw.frames.FrameRetention
+import org.ethereumphone.andyclaw.frames.SessionFrameStore
 import org.ethereumphone.andyclaw.heartbeat.HeartbeatLogStore
+import org.ethereumphone.andyclaw.ingest.AmbientIngestManager
+import org.ethereumphone.andyclaw.ingest.AmbientIngestor
+import org.ethereumphone.andyclaw.ingest.CalendarIngestSource
+import org.ethereumphone.andyclaw.ingest.GmailIngestSource
+import org.ethereumphone.andyclaw.ledger.LedgerRecorder
+import org.ethereumphone.andyclaw.ledger.LedgerRepository
+import org.ethereumphone.andyclaw.ledger.db.LedgerDatabase
 import org.ethereumphone.andyclaw.extensions.ExtensionEngine
 import org.ethereumphone.andyclaw.extensions.clawhub.ClawHubManager
 import org.ethereumphone.andyclaw.extensions.clawhub.ClawHubSkillAdapter
@@ -326,6 +339,130 @@ class NodeApp : Application() {
             },
             autoLoadSiblings = securePrefs.getString("toolSearch.autoLoadSiblings") == "true",
         )
+    }
+
+    // ── The ledger (what the agent did, hash-chained) ─────────────────
+
+    /**
+     * The append-only record. See `agent-os-design.md` §6.
+     *
+     * A repository and a recorder rather than one object: the repository is the single
+     * writer and suspends, the recorder is the non-suspending front door the execution
+     * engine hands rows to from inside the tool loop. Nothing on the hot path waits for a
+     * disk write.
+     */
+    val ledgerRepository: LedgerRepository by lazy {
+        LedgerRepository(LedgerDatabase.getInstance(this).ledgerDao())
+    }
+
+    val ledgerRecorder: LedgerRecorder by lazy {
+        LedgerRecorder(appScope, ledgerRepository)
+    }
+
+    /**
+     * The ledger context for one conversation, or null when the user has it switched off.
+     *
+     * Prices come from the OpenRouter registry, which is refreshed in the background and
+     * knows nothing about most of the models this device runs — so most rows carry a null
+     * cost, which is the honest answer rather than a zero.
+     */
+    fun agentLedger(sessionId: String): AgentLedger? {
+        if (!securePrefs.ledgerEnabled.value) return null
+        return AgentLedger(
+            sink = ledgerRecorder,
+            sessionId = sessionId,
+            priceOf = { modelId ->
+                openRouterModelRegistry.getModelById(modelId)
+                    ?.let { ModelPrice(it.promptPricePerToken, it.completionPricePerToken) }
+            },
+            flowRefOf = { toolName ->
+                flowRepositoryOrNull?.byToolName(toolName)
+                    ?.flow
+                    ?.let { "${it.flow}@${it.version}" }
+            },
+        )
+    }
+
+    /**
+     * The frames the agent display produced, kept per session.
+     *
+     * Bounded before it is enabled — `agent-first-plan.md` Phase 3.2 makes the retention cap
+     * the precondition, and the defaults here are it: twenty sessions, 64 MB, ten minutes of
+     * frames in any one session.
+     */
+    val sessionFrameStore: SessionFrameStore by lazy {
+        SessionFrameStore(
+            root = java.io.File(filesDir, SessionFrameStore.DIR_NAME),
+            retention = FrameRetention(),
+        )
+    }
+
+    // ── Anticipatory context (mail and calendar, parsed deterministically) ──
+
+    val predictedContextRepository: PredictedContextRepository by lazy {
+        PredictedContextRepository(PredictedContextDatabase.getInstance(this).predictedContextDao())
+    }
+
+    val ambientIngestor: AmbientIngestor by lazy {
+        val token: suspend () -> String = { googleAuthManager.getAccessToken() }
+        AmbientIngestor(
+            mail = GmailIngestSource(token),
+            calendar = CalendarIngestSource(token),
+            contexts = predictedContextRepository,
+            enabled = {
+                securePrefs.ambientIngestEnabled.value && googleAuthManager.isAuthenticated
+            },
+        )
+    }
+
+    private val ambientIngestManager: AmbientIngestManager by lazy {
+        AmbientIngestManager(this, appScope, ambientIngestor)
+    }
+
+    /**
+     * Turn ambient ingestion on or off, receivers and all.
+     *
+     * The pref alone is not the feature: the receivers are registered once at startup, so
+     * flipping it in Settings has to start them there and then or nothing happens until the
+     * next boot — which is exactly the shape of dead-on-arrival bug `CLAUDE.md` §7 is about.
+     */
+    fun setAmbientIngestEnabled(enabled: Boolean) {
+        securePrefs.setAmbientIngestEnabled(enabled)
+        try {
+            if (enabled) ambientIngestManager.start() else ambientIngestManager.stop()
+        } catch (e: Exception) {
+            Log.w(TAG, "ambient ingest toggle failed: ${e.message}", e)
+        }
+    }
+
+    /**
+     * How long after an event-driven run a scheduled heartbeat is redundant.
+     *
+     * Zero — the old behaviour, every tick runs — unless something event-driven is actually
+     * live. A device with no notification trigger and no ingestion has nothing but the
+     * clock, and suppressing its ticks would leave it with nothing at all.
+     */
+    val heartbeatBackstopQuietMs: Long
+        get() = if (
+            securePrefs.heartbeatOnNotificationEnabled.value ||
+            securePrefs.ambientIngestEnabled.value
+        ) {
+            org.ethereumphone.andyclaw.heartbeat.HeartbeatConfig.DEFAULT_BACKSTOP_QUIET_MS
+        } else {
+            0L
+        }
+
+    /**
+     * A notification arrived from [packageName].
+     *
+     * Called by `AndyClawNotificationListener`, which sees every notification on the device
+     * and is therefore the cheapest event-driven signal there is. Only the package is
+     * passed on — the notification's own text is content written by a stranger, and reading
+     * it to decide anything is the channel Phase 1 closed.
+     */
+    fun onNotificationPosted(packageName: String) {
+        if (!securePrefs.ambientIngestEnabled.value) return
+        runCatching { ambientIngestManager.onNotificationFrom(packageName) }
     }
 
     // ── Compiled flows (execution-ladder rung 3) ───────────────────────
@@ -810,6 +947,16 @@ class NodeApp : Application() {
 
         // One-time backfill of agent tx history from existing session messages
         backfillAgentTxHistory()
+
+        // Event-driven ingestion of mail and calendar. Registers its receivers and does one
+        // sweep; everything after that is a signal, not a timer.
+        if (securePrefs.ambientIngestEnabled.value) {
+            try {
+                ambientIngestManager.start()
+            } catch (e: Exception) {
+                Log.w(TAG, "ambient ingest start failed: ${e.message}", e)
+            }
+        }
     }
 
     /**

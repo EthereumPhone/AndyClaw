@@ -126,9 +126,23 @@ class NodeRuntime(private val context: Context) {
 
     /**
      * Trigger an immediate heartbeat run outside the normal schedule.
+     *
+     * [eventDriven] distinguishes "something happened" from "the user asked". Only the
+     * former opens the backstop window that suppresses the next scheduled tick — a user
+     * pressing the button must never quietly turn the schedule off.
      */
-    fun requestHeartbeatNow() {
-        heartbeatRunner?.requestNow()
+    fun requestHeartbeatNow(eventDriven: Boolean = false) {
+        heartbeatRunner?.requestNow(eventDriven)
+    }
+
+    /**
+     * Something event-driven woke the agent — an ingest, a notification, an inbound message.
+     *
+     * Recorded even when no heartbeat is run, because the point of the backstop window is
+     * that the agent has recently looked at the world, not that it did so via this class.
+     */
+    fun noteAmbientActivity() {
+        heartbeatRunner?.noteEventTrigger()
     }
 
     /**
@@ -278,6 +292,8 @@ class NodeRuntime(private val context: Context) {
                 "Skipped: outside the configured active hours."
             HeartbeatSkipReason.EMPTY_HEARTBEAT_FILE ->
                 "Skipped: HEARTBEAT.md has no actionable content."
+            HeartbeatSkipReason.RECENT_EVENT_TRIGGER ->
+                "Skipped: an event-driven run already covered this tick. The schedule is the backstop."
             null ->
                 "Skipped."
         }

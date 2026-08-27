@@ -121,6 +121,27 @@ class SecurePrefs(context: Context) : KeyValueStore {
   private val _heartbeatOnNotificationEnabled = MutableStateFlow(prefs.getBoolean("agent.heartbeatOnNotification", false))
   val heartbeatOnNotificationEnabled: StateFlow<Boolean> = _heartbeatOnNotificationEnabled
 
+  // The append-only record of what the agent did. On by default: it is a headline trust
+  // feature, not a debug view, and a ledger that most devices have switched off answers no
+  // questions. Rows are small and capped; the setting exists for a user who wants nothing
+  // written down at all.
+  private val _ledgerEnabled = MutableStateFlow(prefs.getBoolean("agent.ledgerEnabled", true))
+  val ledgerEnabled: StateFlow<Boolean> = _ledgerEnabled
+
+  // Keeping the agent-display frames that were already being captured and thrown away.
+  // Default-on because the retention cap ships with it — `agent-first-plan.md` Phase 3.2
+  // makes the cap the precondition for enabling this, and without one a frame a second
+  // would fill the disk.
+  private val _displayFrameCaptureEnabled = MutableStateFlow(prefs.getBoolean("agent.displayFrameCapture", true))
+  val displayFrameCaptureEnabled: StateFlow<Boolean> = _displayFrameCaptureEnabled
+
+  // Mail and calendar ingestion, and with it the event-driven triggers that let the
+  // heartbeat drop to a backstop. Default-off, and deliberately: it reads the user's mail
+  // on a schedule they did not set, over an OAuth grant they gave for something else. It is
+  // enabled from Settings, next to the Google connection it depends on.
+  private val _ambientIngestEnabled = MutableStateFlow(prefs.getBoolean("agent.ambientIngest", false))
+  val ambientIngestEnabled: StateFlow<Boolean> = _ambientIngestEnabled
+
   private val _heartbeatOnXmtpMessageEnabled = MutableStateFlow(prefs.getBoolean("agent.heartbeatOnXmtpMessage", false))
   val heartbeatOnXmtpMessageEnabled: StateFlow<Boolean> = _heartbeatOnXmtpMessageEnabled
 
@@ -527,6 +548,21 @@ class SecurePrefs(context: Context) : KeyValueStore {
     val stored = value && _heartbeatIntervalMinutes.value > 0
     prefs.edit { putBoolean("agent.heartbeatOnNotification", stored) }
     _heartbeatOnNotificationEnabled.value = stored
+  }
+
+  fun setLedgerEnabled(value: Boolean) {
+    prefs.edit { putBoolean("agent.ledgerEnabled", value) }
+    _ledgerEnabled.value = value
+  }
+
+  fun setDisplayFrameCaptureEnabled(value: Boolean) {
+    prefs.edit { putBoolean("agent.displayFrameCapture", value) }
+    _displayFrameCaptureEnabled.value = value
+  }
+
+  fun setAmbientIngestEnabled(value: Boolean) {
+    prefs.edit { putBoolean("agent.ambientIngest", value) }
+    _ambientIngestEnabled.value = value
   }
 
   fun setHeartbeatOnXmtpMessageEnabled(value: Boolean) {
@@ -1188,6 +1224,9 @@ class SecurePrefs(context: Context) : KeyValueStore {
     _notificationReplyEnabled.value = prefs.getBoolean("agent.notificationReplyEnabled", false)
     _executiveSummaryEnabled.value = prefs.getBoolean("agent.executiveSummaryEnabled", false)
     _heartbeatOnNotificationEnabled.value = prefs.getBoolean("agent.heartbeatOnNotification", false)
+    _ledgerEnabled.value = prefs.getBoolean("agent.ledgerEnabled", true)
+    _displayFrameCaptureEnabled.value = prefs.getBoolean("agent.displayFrameCapture", true)
+    _ambientIngestEnabled.value = prefs.getBoolean("agent.ambientIngest", false)
     _heartbeatOnXmtpMessageEnabled.value = prefs.getBoolean("agent.heartbeatOnXmtpMessage", false)
     _heartbeatIntervalMinutes.value = prefs.getInt("agent.heartbeatIntervalMinutes", -1)
     _heartbeatUseSameModel.value = prefs.getBoolean("agent.heartbeatUseSameModel", true)

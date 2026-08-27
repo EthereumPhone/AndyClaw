@@ -24,8 +24,8 @@ unzip -p packages/apps/AndyClaw/app-release.apk META-INF/version-control-info.te
 
 | Module | What belongs in it |
 |---|---|
-| `:AndyClaw` | The reusable engine. Abstractions and cross-cutting types: `ExecutionEngine/*`, `agent/AgentRunner`, `heartbeat/*`, `flows/*` (the Flow IR, validator, store and interpreter — §8), `skills/` interfaces (`AndyClawSkill`, `SkillManifest`, `ToolDefinition`, `ToolEffect`, `Tier`), `memory/`, `sessions/`, `extensions/`. No concrete skills, no Android UI. |
-| `:app` | The wiring. `NodeApp` (the object graph), `NodeRuntime`, the binder services, `agent/AgentLoop`, `llm/*` transports, ~50 `skills/builtin/*` skills, `safety/*`, Compose UI. |
+| `:AndyClaw` | The reusable engine. Abstractions and cross-cutting types: `ExecutionEngine/*`, `agent/AgentRunner`, `heartbeat/*`, `flows/*` (the Flow IR, validator, store and interpreter — §8), `ledger/*` and `frames/*` (the record of what the agent did — §9), `ambient/*` (what is about to matter — §9), `skills/` interfaces (`AndyClawSkill`, `SkillManifest`, `ToolDefinition`, `ToolEffect`, `Tier`), `memory/`, `sessions/`, `extensions/`. No concrete skills, no Android UI. |
+| `:app` | The wiring. `NodeApp` (the object graph), `NodeRuntime`, the binder services, `agent/AgentLoop`, `llm/*` transports, ~50 `skills/builtin/*` skills, `ingest/*` (mail and calendar parsers and their sources — §9), `safety/*`, Compose UI. |
 | `:ExtensionExample` | A sample out-of-process extension. Reference, not shipped. |
 
 **A new cross-cutting interface goes in `:AndyClaw`; its implementation goes in `:app`.**
@@ -69,7 +69,8 @@ Prefer a new method over a versioned payload.
 ## 4. Storage: `filesDir` and nothing else
 
 The APK's writable state is its own sandbox — `HEARTBEAT.md`, `pending_approvals.json`,
-`telegram_chats.json`, heartbeat logs, skills, memory DBs, and `flows/` (§8).
+`telegram_chats.json`, heartbeat logs, skills, memory DBs, `flows/` (§8), the ledger and
+predicted-context databases, and `session_frames/` (§9).
 
 `/data/andyclaw_files/` is **not** available to this app. It is `0771 system system`, labelled
 `andyclaw_data_file`, and sepolicy grants it to `system_server` only; the APK has no rule and no
@@ -128,6 +129,12 @@ New background trigger? It states its `Provenance` explicitly. The defaults are 
   provenance, tier and skill set. It must never widen them.
 - The messenger package is `org.ethereumhpone.messenger` (transposed "hp"); the agent is
   `org.ethereumphone.andyclaw`. Both spellings are load-bearing. Do not "fix" either.
+- **A new pref is not a new feature.** Three switches ship default-off or need receivers
+  started (`agent.ambientIngest`); a pref that nothing reads at runtime and no screen can
+  reach is the same dead-on-arrival shape as an unseeded skill. Wire it into
+  `SettingsScreen`, `SettingsViewModel` **and** `LauncherBindingService.getSettings` /
+  `setSetting` — that last pair is a JSON blob and a string switch, so adding a key there
+  costs no binder ordinal.
 - `AGENTDISPLAYDEBUGKEY` in logcat dumps the assembled system prompt, the tool list and every
   tool result — the fastest way to see what the model actually saw.
   `adb shell am broadcast -a com.android.server.andyclaw.HEARTBEAT_NOW` forces a heartbeat.
@@ -184,3 +191,93 @@ trusted on sight — a flow whose hash or MAC does not verify is ignored, not re
 `tools/measure_warm_path.sh` reads the `AgentRunMetrics` line every run logs — turn latency and
 model-call count — which is how the "< 1.5 s, zero model calls" criterion is checked rather
 than argued about.
+
+## 9. The ledger, the frames, and anticipatory context
+
+Three subsystems that exist for one claim: the device can say what it did on your behalf, and
+know what is about to matter to you, without a model being the source of either.
+
+### The ledger — `:AndyClaw` `ledger/`
+
+`agent-os-design.md` §6: append-only, hash-chained, on-device. One row per **turn** (what was
+asked, what it cost) and one per **tool** (which tool, which rung, how it ended). Both in one
+chain: `hash = sha256(prev_hash || canonical(row))`, so editing any field of any row breaks
+its own hash and every hash after it.
+
+- **`LedgerChain` is pure and separately tested.** The canonical form is length-prefixed
+  rather than delimited — under a bare separator `a|b` and `ab|` hash the same, which would
+  let a forged row pass. Field order is part of the format: appending is safe, reordering or
+  removing invalidates every chain already on a device.
+- **`LedgerRepository` is the only writer**, under a `Mutex`. Agent runs overlap routinely
+  here (a heartbeat fires mid-chat), and two appends reading the same tail produce two rows
+  claiming one position — indistinguishable from tampering later.
+- **`LedgerRecorder` is the non-suspending front door**, one writer coroutine behind a bounded
+  channel: the hot path never touches disk, and rows keep the order they were handed in
+  because the order *is* the chain. Overflow is counted and written down, never swallowed.
+- **Rows carry no tool input and no tool output.** Provenance, rung, outcome, duration, cost —
+  and nothing that could be a message body. This is a store the user is invited to export.
+- **Cost is nullable and null means unknown.** Most models this device runs are not in the
+  OpenRouter price registry; rendering that as free would be a lie in the one screen whose job
+  is being trustworthy.
+- Fed by a `PostProcessor` in `ExecutionEngineFactory` (executions) **and** by
+  `ExecutionCallbacks.onToolBlocked` (blocks, which never reach a post-processor). Exactly one
+  row per call, whichever way the call ends — the ledger processor runs last, and a chain that
+  a previous processor blocked never reaches it.
+- Retention drops **prefixes only**. What is left still verifies; a hole in the middle would
+  not, and that is the property the store exists to have.
+
+### Frames — `:AndyClaw` `frames/`
+
+`LauncherBindingService` was already pulling a JPEG a second off the agent display and
+throwing it away. `SessionFrameStore` keeps them, and `ledger/SessionReplay` joins them to the
+ledger rows on the session id, which is the whole of "watch exactly what I did as you".
+
+The retention cap is the precondition, not a follow-up: 20 sessions, 64 MB, 600 frames per
+session, evicted **whole sessions** oldest-first — half a recording replays as a jump cut and
+misrepresents what happened. `SessionReplay` reports frames the ledger names but storage has
+evicted, rather than quietly playing a shorter version.
+
+### Anticipatory context — `:app` `ingest/`, `:AndyClaw` `ambient/`
+
+**HARD RULE: never LLM-extract what is already structured.** The model decides *when to
+surface*; it never decides what the gate number is.
+
+`ingest/` is split so that rule is a property of the code rather than a promise:
+
+- **Parsers are pure, non-suspend, dependency-free** — `JsonLdReservationParser` (schema.org
+  in mail bodies), `BcbpParser` (IATA Resolution 792 in a boarding-pass barcode),
+  `PkPassParser`, `PdfTextExtractor` (streams and string literals, *not* a renderer),
+  `ICalParser`, `GoogleCalendarEventParser`. `IngestNoModelCallTest` scans their compiled
+  bytes — synthetic lambda classes included — for any reference to an LLM client or an HTTP
+  stack, and fails if one appears.
+- **Sources fetch and decide nothing** — `GmailIngestSource`, `CalendarIngestSource`. They
+  suspend, they hold OkHttp, and they are deliberately outside the scanned set.
+- Decode base64 with **`java.util.Base64`**. `android.util.Base64` is a no-op stub under this
+  project's unit tests and would make every ingestion test pass against nothing.
+- Everything ingested is `UNTRUSTED` and is stored as **typed data**. It is never turned back
+  into prose and fed to a model: mail bodies are the injection channel §6 is about.
+
+`ambient/PredictedContext` is the store the Phase 4 card stack reads. Deduplication is on the
+real-world thing (`flight:LH400:2026-09-01`), never on the message, so a confirmation, a
+schedule change and the boarding pass converge on one card. `PredictedContextScorer` is a pure
+per-kind relevance curve — SQL narrows the window, Kotlin ranks — so a flight two hours out
+outranks a standup in twenty minutes, which is the intended answer and not an accident.
+
+### The trigger inversion
+
+The notification listener is event-driven and already existed; mail and calendar joined it via
+`AmbientIngestManager`, and the 5–60 minute heartbeat became a **backstop**:
+`HeartbeatConfig.backstopQuietMs` makes a scheduled tick within ten minutes of an event-driven
+run skip with `HeartbeatSkipReason.RECENT_EVENT_TRIGGER`.
+
+- Only paths that actually **ran the agent** open that window (`requestHeartbeatNow(eventDriven
+  = true)`, `requestNowWithContext`, `NodeRuntime.noteAmbientActivity` from the reminder, cron,
+  Telegram and XMTP paths). Ingesting updates what the device knows; it is not thinking, and it
+  must not stand the schedule down.
+- A user pressing the heartbeat button is **not** event-driven. Otherwise the manual control
+  would quietly turn the schedule off.
+- Zero disables the window, which is the right state for a device where the clock genuinely is
+  the only thing that wakes the agent.
+- `AmbientTriggerPolicy` decides how often a signal becomes a round trip, and the cooldown
+  counts *any* ingest — an unlock two seconds after a mail notification has nothing to fetch.
+  It looks only at which app posted a notification, never at its text.

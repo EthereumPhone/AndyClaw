@@ -37,6 +37,12 @@ enum class HeartbeatSkipReason {
     DISABLED,
     QUIET_HOURS,
     EMPTY_HEARTBEAT_FILE,
+
+    /**
+     * An event-driven trigger already ran inside
+     * [HeartbeatConfig.backstopQuietMs]. The clock is the backstop, not the loop.
+     */
+    RECENT_EVENT_TRIGGER,
 }
 
 /**
@@ -51,6 +57,7 @@ class HeartbeatRunner(
     private val agentRunner: AgentRunner,
     private val workspaceDir: String,
     private val onResult: (HeartbeatResult) -> Unit,
+    private val clock: () -> Long = System::currentTimeMillis,
 ) {
     companion object {
         private const val TAG = "HeartbeatRunner"
@@ -59,6 +66,16 @@ class HeartbeatRunner(
     private var job: Job? = null
     private var lastHeartbeatText: String? = null
     private var lastHeartbeatSentAt: Long = 0
+
+    /**
+     * When something that actually happened last woke the agent.
+     *
+     * Written by every event-driven path — a notification, an inbound message, a fresh
+     * reservation parsed out of mail — and read by [shouldSkip]. `@Volatile` because those
+     * paths are threads the scheduler's own coroutine has never met.
+     */
+    @Volatile
+    private var lastEventTriggerMs: Long = 0L
 
     /** De-duplication window: suppress identical heartbeats within this period. */
     private val dedupeWindowMs = 24L * 60 * 60 * 1000 // 24 hours
@@ -148,10 +165,25 @@ class HeartbeatRunner(
     }
 
     /**
-     * Request an immediate heartbeat run outside the normal schedule.
+     * Something happened that the agent should know about, and it was not the clock.
+     *
+     * Marks the backstop window so the next scheduled tick inside it is skipped. Safe to
+     * call from anywhere and from any thread; it is one write.
      */
-    fun requestNow() {
-        Log.i(TAG, "requestNow: launching immediate heartbeat")
+    fun noteEventTrigger() {
+        lastEventTriggerMs = clock()
+    }
+
+    /**
+     * Request an immediate heartbeat run outside the normal schedule.
+     *
+     * [eventDriven] says whether something happened or the user asked. A user pressing the
+     * button must not suppress the next scheduled tick — that would make the manual control
+     * quietly turn the schedule off.
+     */
+    fun requestNow(eventDriven: Boolean = false) {
+        Log.i(TAG, "requestNow: launching immediate heartbeat (eventDriven=$eventDriven)")
+        if (eventDriven) noteEventTrigger()
         scope.launch {
             val result = runOnce()
             Log.i(TAG, "requestNow: result=${result.outcome}, text=${result.text?.take(100)}, error=${result.error?.take(100)}")
@@ -172,6 +204,9 @@ class HeartbeatRunner(
         provenance: Provenance = Provenance.UNTRUSTED,
         conversationId: String? = null,
     ) {
+        // Context only ever arrives because something happened, so this path is always
+        // event-driven — an inbound message, a notification, a fired reminder.
+        noteEventTrigger()
         scope.launch {
             val result = runOnceWithContext(extraContext, provenance, conversationId)
             onResult(result)
@@ -181,6 +216,7 @@ class HeartbeatRunner(
     private fun shouldSkip(): HeartbeatSkipReason? {
         if (!config.enabled) return HeartbeatSkipReason.DISABLED
         if (!isWithinActiveHours()) return HeartbeatSkipReason.QUIET_HOURS
+        if (isInsideBackstopWindow()) return HeartbeatSkipReason.RECENT_EVENT_TRIGGER
 
         // Check if heartbeat file is effectively empty
         val file = resolveHeartbeatFile()
@@ -192,6 +228,22 @@ class HeartbeatRunner(
         }
 
         return null
+    }
+
+    /**
+     * True when an event-driven run has already covered this tick.
+     *
+     * Deliberately checked *before* the file-content check and after the quiet-hours one:
+     * a suppressed tick is a real outcome the user can see in the heartbeat log, and it
+     * should say the reason that actually applies rather than the first one that happens to
+     * match.
+     */
+    private fun isInsideBackstopWindow(): Boolean {
+        val window = config.backstopQuietMs
+        if (window <= 0L) return false
+        val last = lastEventTriggerMs
+        if (last <= 0L) return false
+        return clock() - last < window
     }
 
     private fun isWithinActiveHours(): Boolean {

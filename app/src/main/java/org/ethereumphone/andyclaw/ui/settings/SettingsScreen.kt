@@ -120,6 +120,9 @@ fun SettingsScreen(
     val notificationReplyEnabled by viewModel.notificationReplyEnabled.collectAsState()
     val executiveSummaryEnabled by viewModel.executiveSummaryEnabled.collectAsState()
     val heartbeatOnNotificationEnabled by viewModel.heartbeatOnNotificationEnabled.collectAsState()
+    val ledgerEnabled by viewModel.ledgerEnabled.collectAsState()
+    val displayFrameCaptureEnabled by viewModel.displayFrameCaptureEnabled.collectAsState()
+    val ambientIngestEnabled by viewModel.ambientIngestEnabled.collectAsState()
     val heartbeatOnXmtpMessageEnabled by viewModel.heartbeatOnXmtpMessageEnabled.collectAsState()
     val heartbeatIntervalMinutes by viewModel.heartbeatIntervalMinutes.collectAsState()
     val syncProviderToAll by viewModel.syncProviderToAll.collectAsState()
@@ -1587,6 +1590,99 @@ fun SettingsScreen(
                         },
                     )
                 }
+            }
+
+            Spacer(Modifier.height(24.dp))
+            GlowingDivider(primaryColor)
+            Spacer(Modifier.height(16.dp))
+
+            // Record & anticipate — the ledger, the display recording, and the mail and
+            // calendar ingestion that lets the schedule drop to a backstop. Placed after
+            // Google Workspace because ingestion needs that connection to do anything.
+            Text(
+                text = "RECORD & ANTICIPATE",
+                color = primaryColor,
+                style = sectionTitleStyle,
+            )
+            Spacer(Modifier.height(8.dp))
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 16.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "KEEP A RECORD OF WHAT THE AI DID",
+                        style = contentTitleStyle,
+                        color = primaryColor,
+                    )
+                    Text(
+                        text = "Every tool the AI runs is written to an append-only, tamper-evident log on this device: what was asked, which route was taken, how it ended, and what it cost. Nothing leaves the phone",
+                        style = contentBodyStyle,
+                        color = dgenWhite,
+                    )
+                }
+                Spacer(Modifier.width(rowControlSpacing))
+                DgenSquareSwitch(
+                    checked = ledgerEnabled,
+                    onCheckedChange = { viewModel.setLedgerEnabled(it) },
+                    activeColor = primaryColor,
+                )
+            }
+
+            if (viewModel.isPrivileged) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 16.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "RECORD THE AGENT DISPLAY",
+                            style = contentTitleStyle,
+                            color = primaryColor,
+                        )
+                        Text(
+                            text = "Keep the frames the AI sees while it drives an app, so you can watch back exactly what it did as you. Capped at 20 sessions and 64 MB, oldest first",
+                            style = contentBodyStyle,
+                            color = dgenWhite,
+                        )
+                    }
+                    Spacer(Modifier.width(rowControlSpacing))
+                    DgenSquareSwitch(
+                        checked = displayFrameCaptureEnabled,
+                        onCheckedChange = { viewModel.setDisplayFrameCaptureEnabled(it) },
+                        activeColor = primaryColor,
+                    )
+                }
+            }
+
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 16.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "READ FLIGHTS AND BOOKINGS FROM MAIL",
+                        style = contentTitleStyle,
+                        color = primaryColor,
+                    )
+                    Text(
+                        text = "Parse flight, hotel and event confirmations, boarding passes and calendar invites out of your Gmail and calendar, so the AI knows what is coming up. Parsed on-device from the structured data those mails already carry — no AI reads your mail to do it. Requires a connected Google account",
+                        style = contentBodyStyle,
+                        color = dgenWhite,
+                    )
+                }
+                Spacer(Modifier.width(rowControlSpacing))
+                DgenSquareSwitch(
+                    checked = ambientIngestEnabled,
+                    onCheckedChange = { viewModel.setAmbientIngestEnabled(it) },
+                    activeColor = primaryColor,
+                )
             }
 
             Spacer(Modifier.height(24.dp))

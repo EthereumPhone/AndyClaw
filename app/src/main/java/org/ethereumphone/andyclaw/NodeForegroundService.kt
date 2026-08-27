@@ -87,6 +87,7 @@ class NodeForegroundService : Service() {
             runtime.heartbeatConfig = HeartbeatConfig(
                 intervalMs = intervalMinutes.toLong().coerceAtLeast(1L) * 60 * 1000,
                 heartbeatFilePath = File(filesDir, "HEARTBEAT.md").absolutePath,
+                backstopQuietMs = app.heartbeatBackstopQuietMs,
             )
 
             // Seed HEARTBEAT.md if it doesn't exist
@@ -147,6 +148,7 @@ class NodeForegroundService : Service() {
                         runtime.heartbeatConfig = HeartbeatConfig(
                             intervalMs = minutes.toLong() * 60 * 1000,
                             heartbeatFilePath = File(filesDir, "HEARTBEAT.md").absolutePath,
+                            backstopQuietMs = app.heartbeatBackstopQuietMs,
                         )
                         runtime.startHeartbeat()
                         Log.i(TAG, "Heartbeat started (interval=${minutes}m)")

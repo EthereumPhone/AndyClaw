@@ -85,6 +85,10 @@ class HeartbeatAgentRunner(
             enforceProvenance = app.securePrefs.provenanceEnforcementEnabled.value,
             flowRecorder = app.flowRecorder,
             flowRepository = app.flowRepositoryOrNull,
+            // A background run has no conversation to belong to, so each one is its own
+            // session. That is what it is: one turn, start to finish, with nothing before
+            // or after it.
+            ledger = app.agentLedger("background:${java.util.UUID.randomUUID()}"),
         )
 
         val ledController = app.ledController
