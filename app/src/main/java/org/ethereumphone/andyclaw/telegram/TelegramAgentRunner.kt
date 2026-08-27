@@ -105,6 +105,8 @@ class TelegramAgentRunner(
             provenance = Provenance.UNTRUSTED,
             triggerConversationId = chatId.toString(),
             enforceProvenance = app.securePrefs.provenanceEnforcementEnabled.value,
+            flowRecorder = app.flowRecorder,
+            flowRepository = app.flowRepositoryOrNull,
         )
 
         val ledController = app.ledController

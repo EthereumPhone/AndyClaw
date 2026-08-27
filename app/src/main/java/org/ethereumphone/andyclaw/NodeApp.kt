@@ -68,7 +68,11 @@ import org.ethereumphone.andyclaw.skills.builtin.ClawHubSkill
 import org.ethereumphone.andyclaw.skills.builtin.clitool.CliToolManagerSkill
 import org.ethereumphone.andyclaw.skills.builtin.SkillCreatorSkill
 import org.ethereumphone.andyclaw.skills.builtin.SkillRefinementSkill
+import org.ethereumphone.andyclaw.flows.FlowRecorder
+import org.ethereumphone.andyclaw.flows.FlowRepository
 import org.ethereumphone.andyclaw.skills.builtin.AgentDisplaySkill
+import org.ethereumphone.andyclaw.skills.builtin.FlowSkill
+import org.ethereumphone.andyclaw.skills.builtin.RecordingDisplaySkill
 import org.ethereumphone.andyclaw.skills.builtin.LedSkill
 import org.ethereumphone.andyclaw.skills.builtin.TelegramSkill
 import org.ethereumphone.andyclaw.skills.builtin.WebSearchSkill
@@ -99,6 +103,8 @@ class NodeApp : Application() {
 
     companion object {
         private const val TAG = "NodeApp"
+        /** One-shot marker for [seedFlowSkillEnabled]. */
+        private const val FLOWS_SEEDED_KEY = "flows.skillSeeded"
         private const val DEFAULT_AGENT_ID = "default"
     }
 
@@ -322,6 +328,29 @@ class NodeApp : Application() {
         )
     }
 
+    // ── Compiled flows (execution-ladder rung 3) ───────────────────────
+
+    /** Watches display sessions so a successful one can become a flow. */
+    val flowRecorder: FlowRecorder by lazy { FlowRecorder() }
+
+    /**
+     * Flows on disk, published as named tools.
+     *
+     * Not touched from inside [nativeSkillRegistry]'s initialiser — it registers into
+     * that registry, so reaching it from there would be a cycle. It is loaded from
+     * [onUserUnlocked] instead, which is also the first moment `filesDir` and the
+     * keystore are readable.
+     */
+    val flowRepository: FlowRepository by lazy { FlowRepository(this, nativeSkillRegistry) }
+
+    /**
+     * The flow registry, or null on the open tier. Rung 3 replays through the agent
+     * display, which is an ethOS-only service — off ethOS there is nothing for a flow
+     * to drive, and touching this would create an empty store for no reason.
+     */
+    val flowRepositoryOrNull: FlowRepository?
+        get() = if (OsCapabilities.hasPrivilegedAccess) flowRepository else null
+
     // ── Skills ─────────────────────────────────────────────────────────
 
     val nativeSkillRegistry: NativeSkillRegistry by lazy {
@@ -420,8 +449,11 @@ class NodeApp : Application() {
             register(DriveSkill(googleTokenProvider))
             register(GoogleCalendarSkill(googleTokenProvider))
             register(SheetsSkill(googleTokenProvider))
-            // Agent Display — operate a virtual display (ethOS privileged only)
-            register(AgentDisplaySkill())
+            // Agent Display — operate a virtual display (ethOS privileged only).
+            // Wrapped in the recorder so a successful discovery session can be compiled
+            // into a flow: the decorator changes nothing about what runs, it only
+            // watches, so there stays exactly one code path that drives the device.
+            register(RecordingDisplaySkill(AgentDisplaySkill(), flowRecorder))
             // LED Matrix — control the 3×3 LED matrix on dGEN1 devices
             if (OsCapabilities.hasPrivilegedAccess) {
                 register(LedSkill(ledController))
@@ -718,6 +750,20 @@ class NodeApp : Application() {
         // Load any previously created custom executable tools on startup
         syncCustomTools()
 
+        // Publish compiled flows as tools, and keep them pinned to the app versions
+        // they were compiled against.
+        if (OsCapabilities.hasPrivilegedAccess) {
+            appScope.launch {
+                try {
+                    seedFlowSkillEnabled()
+                    flowRepository.reload()
+                    registerFlowPackageReceiver()
+                } catch (e: Exception) {
+                    Log.w(TAG, "Flow registry init failed: ${e.message}", e)
+                }
+            }
+        }
+
         // Pre-load the Whisper model into RAM so voice transcription is instant.
         // The Q5_1 model (~60 MB on disk, ~388 MB in RAM) stays resident for the process lifetime.
         whisperTranscriber.warmUp(appScope)
@@ -856,6 +902,61 @@ class NodeApp : Application() {
                 securePrefs.putString(key, "true")
             }
         }
+    }
+
+    /**
+     * Turn the flows skill on for a device that onboarded before it existed.
+     *
+     * `agent.enabledSkills` is written **once**, at onboarding, from the skill ids that
+     * were registered at that moment — so on every phone already in the field the set
+     * can never contain `flows`, and `skillEnabledCheck` would block every flow tool
+     * forever. This is the shape of bug ethOS `CLAUDE.md` §0.2 is about: shipping a new
+     * skill by OTA is not enough, the persisted state has to be migrated to know about
+     * it.
+     *
+     * Seeded once and recorded, so a user who later turns flows off in Settings does not
+     * find them back on after a reboot.
+     */
+    private fun seedFlowSkillEnabled() {
+        if (securePrefs.getString(FLOWS_SEEDED_KEY) == "true") return
+        val enabled = securePrefs.enabledSkills.value
+        // An empty set means onboarding has not run yet; it will include flows itself.
+        if (enabled.isNotEmpty() && FlowSkill.SKILL_ID !in enabled) {
+            Log.i(TAG, "enabling the '${FlowSkill.SKILL_ID}' skill for a pre-existing install")
+            securePrefs.setSkillEnabled(FlowSkill.SKILL_ID, true)
+        }
+        securePrefs.putString(FLOWS_SEEDED_KEY, "true")
+    }
+
+    /**
+     * An app was replaced — every flow compiled against it is suspect until it proves
+     * otherwise.
+     *
+     * Registered at runtime rather than in the manifest: `ACTION_PACKAGE_REPLACED` is
+     * an implicit broadcast, and a manifest receiver for it is not guaranteed delivery
+     * on modern Android. The broadcast is the fast path, not the mechanism — the real
+     * check is the version pin the interpreter applies on every replay, so a missed
+     * broadcast costs one aborted flow, never a blind replay into a changed UI.
+     */
+    private fun registerFlowPackageReceiver() {
+        val filter = android.content.IntentFilter(android.content.Intent.ACTION_PACKAGE_REPLACED)
+            .apply { addDataScheme("package") }
+        registerReceiver(
+            object : android.content.BroadcastReceiver() {
+                override fun onReceive(context: android.content.Context, intent: android.content.Intent) {
+                    val pkg = intent.data?.schemeSpecificPart ?: return
+                    appScope.launch {
+                        try {
+                            flowRepository.onPackageReplaced(pkg)
+                        } catch (e: Exception) {
+                            Log.w(TAG, "flow staleness update for $pkg failed: ${e.message}")
+                        }
+                    }
+                }
+            },
+            filter,
+            android.content.Context.RECEIVER_NOT_EXPORTED,
+        )
     }
 
     /**

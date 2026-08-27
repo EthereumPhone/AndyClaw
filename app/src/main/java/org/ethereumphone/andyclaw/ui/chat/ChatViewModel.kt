@@ -408,6 +408,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 // The in-app chat is the user typing.
                 provenance = org.ethereumphone.andyclaw.ExecutionEngine.Provenance.USER,
                 enforceProvenance = app.securePrefs.provenanceEnforcementEnabled.value,
+                flowRecorder = app.flowRecorder,
+                flowRepository = app.flowRepositoryOrNull,
             )
 
             // Initialize background memory extractor for this run (opt-in)

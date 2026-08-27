@@ -1222,6 +1222,8 @@ class LauncherBindingService : Service() {
             // sendPrompt / sendLockscreenPrompt are the user typing or speaking.
             provenance = Provenance.USER,
             enforceProvenance = app.securePrefs.provenanceEnforcementEnabled.value,
+            flowRecorder = app.flowRecorder,
+            flowRepository = app.flowRepositoryOrNull,
         )
 
         // Get or create conversation history for this session

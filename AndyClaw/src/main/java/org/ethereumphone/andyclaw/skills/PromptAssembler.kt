@@ -273,11 +273,42 @@ object PromptAssembler {
         return JsonArray(assembleTools(skills, tier, effectiveNameOf))
     }
 
-    private fun toolToJson(tool: ToolDefinition, effectiveName: String = tool.name): JsonObject {
+    /**
+     * The tool as the model sees it.
+     *
+     * Only `name`, `description` and `input_schema` may appear: every provider adapter
+     * forwards this object as-is and the Anthropic API rejects a tool carrying keys it
+     * does not know. So the two things the model genuinely needs to reason about —
+     * that an action cannot be undone, and that a cheaper route exists — are folded
+     * into the description rather than added as fields.
+     *
+     * [ToolDefinition.requiresApproval], [ToolDefinition.requiredPermissions] and
+     * [ToolDefinition.searchHint] stay out on purpose. They are inputs to the engine
+     * and to tool search, not to the model, and the gates that act on them are
+     * pre-flight checks — telling the model about them would change nothing it is
+     * allowed to do.
+     */
+    fun toolToJson(tool: ToolDefinition, effectiveName: String = tool.name): JsonObject {
         return buildJsonObject {
             put("name", effectiveName)
-            put("description", tool.description)
+            put("description", tool.description + annotate(tool))
             put("input_schema", tool.inputSchema)
         }
+    }
+
+    /** The short suffix appended to a description. Empty for the great majority of tools. */
+    internal fun annotate(tool: ToolDefinition): String {
+        val parts = mutableListOf<String>()
+        when (tool.effect) {
+            ToolEffect.IRREVERSIBLE -> parts += "This action cannot be undone."
+            ToolEffect.SENSITIVE ->
+                parts += "This touches payment or authentication and is never completed automatically."
+            else -> Unit
+        }
+        if (tool.rung != null && tool.rung < 4 && tool.targetPackages.isNotEmpty()) {
+            parts += "Preferred route for ${tool.targetPackages.joinToString()} — " +
+                "use it instead of driving the app's UI."
+        }
+        return if (parts.isEmpty()) "" else parts.joinToString(" ", prefix = " ")
     }
 }

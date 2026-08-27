@@ -25,4 +25,22 @@ data class ToolDefinition(
      * it more restricted, never less.
      */
     val effect: ToolEffect? = null,
+    /**
+     * Which rung of `agent-os-design.md` §3's execution ladder this tool sits on.
+     *
+     * 0 native API · 1 intents/AppFunctions · 2 notification RemoteInput ·
+     * 3 compiled flow · 4 VLM discovery on the shadow display.
+     *
+     * "Never skip a rung to reach a lower one" is enforced, not advised: the engine's
+     * `routeGateCheck` blocks the display when a lower-numbered route exists for the
+     * same app. `null` means the tool is not part of the ladder — most tools are not,
+     * because they are not another way of doing the same thing.
+     */
+    val rung: Int? = null,
+    /**
+     * Android packages this tool is a route *into*, when it is one. Only meaningful
+     * alongside [rung]: it is what lets the engine say "there is a rung-0 way to do
+     * this in that app" without asking a model.
+     */
+    val targetPackages: List<String> = emptyList(),
 )

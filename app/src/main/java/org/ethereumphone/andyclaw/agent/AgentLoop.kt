@@ -28,6 +28,11 @@ import org.ethereumphone.andyclaw.llm.StreamingCallback
 import org.ethereumphone.andyclaw.llm.Verbosity
 import org.ethereumphone.andyclaw.ExecutionEngine.Provenance
 import org.ethereumphone.andyclaw.memory.MemoryManager
+import org.ethereumphone.andyclaw.flows.FlowCodec
+import org.ethereumphone.andyclaw.flows.FlowInstallResult
+import org.ethereumphone.andyclaw.flows.FlowMetrics
+import org.ethereumphone.andyclaw.flows.FlowRecorder
+import org.ethereumphone.andyclaw.flows.FlowRepository
 import org.ethereumphone.andyclaw.safety.SafetyLayer
 import org.ethereumphone.andyclaw.skills.MessageClassifier
 import org.ethereumphone.andyclaw.skills.NativeSkillRegistry
@@ -96,12 +101,36 @@ class AgentLoop(
      * is applied. Kept so the gate can be watched on real traffic before it bites.
      */
     private val enforceProvenance: Boolean = true,
+    /**
+     * Watches display sessions so a successful one can be compiled into a flow. Null
+     * where the ladder's rung 3 does not exist — the open tier has no agent display.
+     */
+    private val flowRecorder: FlowRecorder? = null,
+    /** Where a compiled flow is installed and published as a tool. */
+    private val flowRepository: FlowRepository? = null,
 ) {
+    /**
+     * Model calls made by this run, sub-agents included.
+     *
+     * `agent-first-plan.md` Phase 2's exit criterion is a latency *and* a call count —
+     * a warm path that still asks a model has not replaced anything. This is what makes
+     * that readable off a device rather than argued about: every run logs it under
+     * `AgentRunMetrics`.
+     */
+    private val modelCalls = java.util.concurrent.atomic.AtomicInteger(0)
+
+    @Volatile
+    private var runStartedMs: Long = 0L
+
     companion object {
         private const val TAG = "AgentLoop"
+        /** Tag for the one line per run that the warm-path measurement reads. */
+        private const val METRICS_TAG = "AgentRunMetrics"
         private const val MAX_ITERATIONS = 100
         private const val DEFAULT_SUBAGENT_ITERATIONS = 30
         private const val MAX_SUBAGENT_ITERATIONS = 50
+        /** One compile reply is a few hundred tokens of JSON; this is headroom, not a target. */
+        private const val COMPILE_MAX_TOKENS = 4096
         private const val KEEP_RECENT_IMAGES = 2
         private const val MEMORY_CONTEXT_MAX_RESULTS = 3
         /** When AI reranking is enabled, fetch more candidates for the LLM to filter. */
@@ -294,6 +323,8 @@ class AgentLoop(
     }
 
     suspend fun run(userMessage: String, conversationHistory: List<Message>, callbacks: Callbacks) {
+        runStartedMs = System.currentTimeMillis()
+        modelCalls.set(0)
         val safety = safetyLayer
 
         // Scan inbound message for secrets when safety is enabled
@@ -629,6 +660,7 @@ class AgentLoop(
                             responseBlocks.clear()
                             streamText.clear()
                         }
+                        modelCalls.incrementAndGet()
                         client.streamMessage(request, streamCallback)
                     }
                 } catch (e: CannotRetryException) {
@@ -908,6 +940,10 @@ class AgentLoop(
             skillRegistry.getEffectiveName(skillId, name)
         }
 
+        // Which display session, if any, was already in progress when this sub-agent
+        // started. Only a session it caused itself is a session it may compile.
+        val recorderSessionAtEntry = flowRecorder?.sessionId
+
         val effectiveModelId: String
         val baseMaxTokens: Int
         val subagentSkills: List<org.ethereumphone.andyclaw.skills.AndyClawSkill>
@@ -985,6 +1021,7 @@ class AgentLoop(
 
             val responseBlocks = mutableListOf<ContentBlock>()
             var streamError: Throwable? = null
+            modelCalls.incrementAndGet()
             client.streamMessage(request, object : StreamingCallback {
                 override fun onToken(text: String) { /* buffered, not streamed to user */ }
                 override fun onToolUse(id: String, name: String, input: JsonObject) {}
@@ -1050,7 +1087,191 @@ class AgentLoop(
         }
 
         Log.i(TAG, "Subagent complete for '${taskDescription.take(60)}': ${fullText.length} chars")
-        return fullText.toString()
+
+        // Discovery is an investment, not an action: if this sub-agent drove the
+        // display, turn what it did into a flow so the next time costs nothing.
+        val compiled = try {
+            compileDiscoveredFlow(taskDescription, effectiveModelId, recorderSessionAtEntry)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "flow compilation failed: ${e.message}", e)
+            null
+        }
+
+        return if (compiled != null) "${fullText}\n\n$compiled" else fullText.toString()
+    }
+
+    // ── Compile-on-discovery (execution ladder, rung 4 -> rung 3) ───
+
+    /**
+     * Turns a completed display session into a compiled flow.
+     *
+     * `agent-os-design.md` §3: "discovery produces artifacts, artifacts serve traffic."
+     * The sub-agent has already paid for the expensive part — a screenshot or a node
+     * tree per step, twenty round trips, real money against a balance that is shared
+     * with the user's gas. One more model call at the end of that turns the whole
+     * session into something that never needs a model again.
+     *
+     * The model's job here is narrow and it is the part no mechanical recorder can do:
+     * name the parameters, say what success looked like, and place the checkpoint. The
+     * mechanical part — which nodes were touched, in what order, against which screen
+     * shape — comes from the recording, so the model cannot invent a step that never
+     * happened. Whatever it returns still has to pass [FlowValidator] before it is
+     * installed; a flow that fails validation is dropped, not repaired.
+     */
+    private suspend fun compileDiscoveredFlow(
+        taskDescription: String,
+        modelId: String,
+        recorderSessionAtEntry: Long?,
+    ): String? {
+        val recorder = flowRecorder ?: return null
+        val repository = flowRepository ?: return null
+
+        // A flow is installed once and replayed later, so what compiles one has to be
+        // the user's own activity. An untrusted trigger cannot reach the display at all
+        // today (the display tools are IRREVERSIBLE and headless runners hard-block),
+        // but this is the invariant, not a consequence of that one.
+        if (provenance == Provenance.UNTRUSTED) return null
+
+        // No display session started inside this sub-agent -> nothing of ours to compile.
+        if (recorderSessionAtEntry == null || recorder.sessionId == recorderSessionAtEntry) return null
+
+        val packageName = recorder.packageName ?: return null
+        val versionRange = repository.suggestedRangeFor(packageName) ?: return null
+        val flowId = flowIdFor(packageName, taskDescription)
+
+        val draft = recorder.draft(flowId, versionRange, packageName) ?: return null
+        if (draft.flow.steps.isEmpty()) {
+            Log.i(TAG, "flow compilation skipped: nothing replayable in the recording")
+            return null
+        }
+
+        val system = buildString {
+            appendLine("You compile a recorded Android UI session into Flow IR: a deterministic script")
+            appendLine("that replays the same task later with no model and no screenshots.")
+            appendLine()
+            appendLine("Rules, all enforced by a validator that will reject your output:")
+            appendLine("- Selectors are view_id only. Never text, never coordinates.")
+            appendLine("- params lists every value that varies between runs; substitute it as {{name}}.")
+            appendLine("- preconditions and postconditions are required. Preconditions say which screen")
+            appendLine("  the flow starts on; postconditions say what proves it worked.")
+            appendLine("- Put {\"checkpoint\": \"<name>\"} before any step that cannot be undone (a send,")
+            appendLine("  a post, a delete). A flow with none before such a step will not compile.")
+            appendLine("- Never include a step that touches payment or authentication. Those are never")
+            appendLine("  automated; stop the flow before them.")
+            appendLine("- Keep every expect_checksum exactly as the draft has it. They are the recorded")
+            appendLine("  screen shapes and the replay aborts on a mismatch.")
+            appendLine()
+            appendLine("Answer with the JSON object and nothing else.")
+        }
+
+        val prompt = buildString {
+            appendLine("Task that was carried out: $taskDescription")
+            appendLine()
+            appendLine(recorder.describeForCompiler())
+            appendLine("Mechanical draft (steps and checksums are correct; params, conditions and")
+            appendLine("checkpoints are missing and are your job):")
+            appendLine(FlowCodec.prettyJson.encodeToString(org.ethereumphone.andyclaw.flows.Flow.serializer(), draft.flow))
+            if (draft.unsupportedActions.isNotEmpty()) {
+                appendLine()
+                appendLine("These actions have no opcode and were dropped: ${draft.unsupportedActions.joinToString()}.")
+                appendLine("If the task cannot be reproduced without them, answer exactly: NOT_COMPILABLE")
+            }
+        }
+
+        val request = MessagesRequest(
+            model = modelId,
+            maxTokens = COMPILE_MAX_TOKENS,
+            system = system,
+            messages = listOf(Message.user(prompt)),
+            tools = null,
+            stream = true,
+        )
+
+        val text = StringBuilder()
+        var streamError: Throwable? = null
+        modelCalls.incrementAndGet()
+        client.streamMessage(request, object : StreamingCallback {
+            override fun onToken(token: String) { /* buffered */ }
+            override fun onToolUse(id: String, name: String, input: JsonObject) {}
+            override fun onComplete(response: MessagesResponse) {
+                response.content.filterIsInstance<ContentBlock.TextBlock>().forEach { text.append(it.text) }
+            }
+            override fun onError(error: Throwable) { streamError = error }
+        })
+        streamError?.let {
+            Log.w(TAG, "flow compilation model call failed: ${it.message}")
+            return null
+        }
+
+        val body = extractJsonObject(text.toString()) ?: run {
+            Log.i(TAG, "flow compilation: model returned no JSON (${text.take(80)})")
+            return null
+        }
+        val flow = FlowCodec.parseOrNull(body) ?: run {
+            Log.w(TAG, "flow compilation: unparseable IR")
+            return null
+        }
+
+        return when (val result = repository.install(flow)) {
+            is FlowInstallResult.Installed -> {
+                Log.i(TAG, "compiled flow '${flow.flow}' -> tool '${flow.toolName}' (${flow.steps.size} steps)")
+                "Compiled this into the reusable flow `${flow.toolName}`. Next time, call that tool " +
+                    "instead of the agent display — it replays the same steps with no screenshots."
+            }
+            is FlowInstallResult.Rejected -> {
+                Log.i(TAG, "compiled flow rejected: ${result.errors.joinToString()}")
+                null
+            }
+            is FlowInstallResult.Failed -> {
+                Log.w(TAG, "compiled flow could not be stored: ${result.message}")
+                null
+            }
+        }
+    }
+
+    /** `com.foo.signal` + "text Anna hello" -> `signal.text_anna_hello`. */
+    private fun flowIdFor(packageName: String, task: String): String {
+        // Must satisfy FlowValidator's id shape (lowercase ASCII, dot/underscore
+        // separated) or the compiled flow is refused for its name rather than its
+        // content — so this is deliberately narrower than "letters and digits".
+        fun ascii(text: String) = text.lowercase().map { if (it in 'a'..'z' || it in '0'..'9') it else ' ' }
+            .joinToString("")
+
+        val app = ascii(packageName.substringAfterLast('.')).replace(" ", "").ifEmpty { "app" }
+        val action = ascii(task)
+            .split(" ").filter { it.isNotBlank() }
+            .take(5)
+            .joinToString("_")
+            .take(48)
+            .trim('_')
+            .ifEmpty { "task" }
+        return "$app.$action"
+    }
+
+    /** The first balanced JSON object in a reply, fences and prose tolerated. */
+    private fun extractJsonObject(text: String): String? {
+        val start = text.indexOf('{')
+        if (start < 0) return null
+        var depth = 0
+        var inString = false
+        var escaped = false
+        for (i in start until text.length) {
+            val c = text[i]
+            when {
+                escaped -> escaped = false
+                c == '\\' && inString -> escaped = true
+                c == '"' -> inString = !inString
+                inString -> Unit
+                c == '{' -> depth++
+                c == '}' -> {
+                    depth--
+                    if (depth == 0) return text.substring(start, i + 1)
+                }
+            }
+        }
+        return null
     }
 
     private fun logRunSummary(
@@ -1066,6 +1287,14 @@ class AgentLoop(
     ) {
         val total = totalInput + totalOutput
         Log.i(TAG, "=== AgentLoop SUMMARY === iterations=$iterations | input=$totalInput output=$totalOutput total=$total")
+        // One line, one grep, both halves of the Phase 2 exit criterion: how long the
+        // whole turn took and how many times a model was asked anything.
+        Log.i(
+            METRICS_TAG,
+            "durationMs=${System.currentTimeMillis() - runStartedMs} " +
+                "modelCalls=${modelCalls.get()} iterations=$iterations " +
+                FlowMetrics.snapshot(),
+        )
         if (cacheRead > 0 || cacheWrite > 0) {
             Log.i(TAG, "  cache: read=$cacheRead write=$cacheWrite (saved ~${(cacheRead * 0.9f).toInt()} input tokens at 90% discount)")
         }

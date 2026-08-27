@@ -16,6 +16,7 @@ import org.ethereumphone.andyclaw.skills.NativeSkillRegistry
 import org.ethereumphone.andyclaw.skills.SkillResult
 import org.ethereumphone.andyclaw.skills.Tier
 import org.ethereumphone.andyclaw.skills.ToolDefinition
+import org.ethereumphone.andyclaw.skills.ToolRoutes
 
 /**
  * Builds a [ParallelExecutionEngine] from AgentLoop's existing dependencies.
@@ -75,6 +76,9 @@ object ExecutionEngineFactory {
         builder.addPreflightCheck(permissionsCheck { toolsByName })
         builder.addPreflightCheck(approvalCheck { toolsByName })
         builder.addPreflightCheck(skillEnabledCheck(skillRegistry, tier, enabledSkillIds))
+        // Last, because a route only matters for a call that was going to happen: no
+        // point telling the model about a cheaper route to a tool it may not use.
+        builder.addPreflightCheck(routeGateCheck { toolsByName })
 
         // Post-processors
         if (safetyLayer != null) {
@@ -181,6 +185,109 @@ object ExecutionEngineFactory {
             PreflightVerdict.Pass
         }
     }
+
+    /**
+     * The execution ladder, made structural.
+     *
+     * `agent-os-design.md` §3: "Every intent resolves down this ladder. **Never** skip a
+     * rung to reach a lower one." Until now that was a line in the system prompt, and a
+     * line in the prompt is advice — the model picks, and it will sometimes pick the
+     * shadow display when a native call or a compiled flow would have done the same
+     * thing in milliseconds for nothing.
+     *
+     * So the block *is* the mechanism, and the message is the interesting half: it names
+     * the better tool, as a tool result, which is the one channel the model cannot skim
+     * past. It only ever fires when a lower-numbered rung is registered **for the same
+     * package**, and a stale flow drops its `targetPackages` precisely so that a route
+     * nobody is sure about stops standing in front of the fallback.
+     */
+    private fun routeGateCheck(tools: () -> Map<String, ToolDefinition>) = PreflightCheck { call ->
+        val byName = tools()
+        val rung = byName[call.name]?.rung ?: ToolRoutes.rungOf(call.name)
+        if (rung == null || rung < ToolRoutes.RUNG_DISPLAY) {
+            return@PreflightCheck PreflightVerdict.Pass
+        }
+
+        // Only a call that names the app it is about can be routed. `launch_intent`
+        // carries a URI, and a bare tap carries nothing — those are mid-session steps,
+        // not the door.
+        val target = call.input["package_name"]?.jsonPrimitive?.contentOrNull
+            ?.takeIf { it.isNotBlank() }
+            ?: return@PreflightCheck PreflightVerdict.Pass
+
+        val better = byName.values
+            .mapNotNull { def ->
+                val defRung = def.rung ?: return@mapNotNull null
+                if (defRung < rung && target in def.targetPackages) def.name to defRung else null
+            }
+            .plus(
+                ToolRoutes.routesInto(target)
+                    .filter { it in byName }
+                    .mapNotNull { name -> ToolRoutes.rungOf(name)?.let { name to it } }
+            )
+            .distinctBy { it.first }
+            .sortedBy { it.second }
+
+        when {
+            better.isEmpty() -> PreflightVerdict.Pass
+
+            // Already said once, recently. A better route existing does not mean it
+            // covers *this* task — `gmail_send` is no help to someone changing a
+            // setting inside Gmail — so the gate tells the model once and then gets out
+            // of the way. Blocking forever would make a legitimate UI task impossible,
+            // which is a worse failure than an occasional unnecessary display session.
+            alreadyRouted(target) -> {
+                Log.i(TAG, "route gate: ${call.name} -> $target allowed (already advised)")
+                PreflightVerdict.Pass
+            }
+
+            else -> {
+                noteRouted(target)
+                val named = better.joinToString(", ") { "`${it.first}` (rung ${it.second})" }
+                Log.i(TAG, "route gate: ${call.name} -> $target blocked in favour of $named")
+                PreflightVerdict.Block(
+                    "[Route] There is a cheaper, more reliable way into $target than driving its " +
+                        "UI: $named. Rung 0 is a real API, rung 2 is a notification reply, rung 3 " +
+                        "is a compiled flow — none of them costs a screenshot or a model call. Use " +
+                        "one of those instead of '${call.name}'. If none of them actually covers " +
+                        "this task, call '${call.name}' again and it will run."
+                )
+            }
+        }
+    }
+
+    // ── Route-gate memory ─────────────────────────────────────────────
+
+    /**
+     * Packages the gate has already named a better route for, and when.
+     *
+     * Object-level because the engine is rebuilt for every tool call — there is nowhere
+     * else for "I have already said this" to live. Bounded by the window rather than by
+     * size: it holds one small entry per app the agent has tried to drive.
+     */
+    private val recentlyRouted = java.util.concurrent.ConcurrentHashMap<String, Long>()
+
+    private const val ROUTE_ADVICE_WINDOW_MS = 5 * 60_000L
+
+    private fun alreadyRouted(packageName: String): Boolean {
+        val at = recentlyRouted[packageName] ?: return false
+        if (System.currentTimeMillis() - at <= ROUTE_ADVICE_WINDOW_MS) return true
+        recentlyRouted.remove(packageName)
+        return false
+    }
+
+    private fun noteRouted(packageName: String) {
+        val now = System.currentTimeMillis()
+        recentlyRouted[packageName] = now
+        if (recentlyRouted.size > MAX_ROUTED_PACKAGES) {
+            recentlyRouted.entries.removeIf { now - it.value > ROUTE_ADVICE_WINDOW_MS }
+        }
+    }
+
+    private const val MAX_ROUTED_PACKAGES = 64
+
+    /** Tests drive the gate repeatedly against the same package; they start from clean. */
+    internal fun clearRouteMemory() = recentlyRouted.clear()
 
     private fun skillEnabledCheck(
         registry: NativeSkillRegistry,

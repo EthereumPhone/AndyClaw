@@ -83,6 +83,8 @@ class HeartbeatAgentRunner(
             provenance = provenance,
             triggerConversationId = conversationId,
             enforceProvenance = app.securePrefs.provenanceEnforcementEnabled.value,
+            flowRecorder = app.flowRecorder,
+            flowRepository = app.flowRepositoryOrNull,
         )
 
         val ledController = app.ledController

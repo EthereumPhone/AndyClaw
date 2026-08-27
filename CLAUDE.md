@@ -24,7 +24,7 @@ unzip -p packages/apps/AndyClaw/app-release.apk META-INF/version-control-info.te
 
 | Module | What belongs in it |
 |---|---|
-| `:AndyClaw` | The reusable engine. Abstractions and cross-cutting types: `ExecutionEngine/*`, `agent/AgentRunner`, `heartbeat/*`, `skills/` interfaces (`AndyClawSkill`, `SkillManifest`, `ToolDefinition`, `ToolEffect`, `Tier`), `memory/`, `sessions/`, `extensions/`. No concrete skills, no Android UI. |
+| `:AndyClaw` | The reusable engine. Abstractions and cross-cutting types: `ExecutionEngine/*`, `agent/AgentRunner`, `heartbeat/*`, `flows/*` (the Flow IR, validator, store and interpreter — §8), `skills/` interfaces (`AndyClawSkill`, `SkillManifest`, `ToolDefinition`, `ToolEffect`, `Tier`), `memory/`, `sessions/`, `extensions/`. No concrete skills, no Android UI. |
 | `:app` | The wiring. `NodeApp` (the object graph), `NodeRuntime`, the binder services, `agent/AgentLoop`, `llm/*` transports, ~50 `skills/builtin/*` skills, `safety/*`, Compose UI. |
 | `:ExtensionExample` | A sample out-of-process extension. Reference, not shipped. |
 
@@ -69,7 +69,7 @@ Prefer a new method over a versioned payload.
 ## 4. Storage: `filesDir` and nothing else
 
 The APK's writable state is its own sandbox — `HEARTBEAT.md`, `pending_approvals.json`,
-`telegram_chats.json`, heartbeat logs, skills, memory DBs.
+`telegram_chats.json`, heartbeat logs, skills, memory DBs, and `flows/` (§8).
 
 `/data/andyclaw_files/` is **not** available to this app. It is `0771 system system`, labelled
 `andyclaw_data_file`, and sepolicy grants it to `system_server` only; the APK has no rule and no
@@ -116,6 +116,11 @@ New background trigger? It states its `Provenance` explicitly. The defaults are 
 
 ## 7. Things that will bite you
 
+- **A new skill is not enabled by adding it.** `agent.enabledSkills` is written once, at
+  onboarding, from the ids registered at that moment, and `skillEnabledCheck` blocks anything
+  outside it. Every device already in the field therefore has a set that will never contain a
+  skill you add today — ship a one-shot seed alongside it (`NodeApp.seedFlowSkillEnabled` is the
+  pattern) or the tools are dead on arrival.
 - `ExecutionEngineFactory.create` is called **once per tool call** inside the hot loop
   (`AgentLoop.kt:547`, `:763`) and again per sub-agent batch. Anything it does per call is in
   the latency path — the tool-definition map is memoized per engine for exactly this reason.
@@ -131,3 +136,51 @@ New background trigger? It states its `Provenance` explicitly. The defaults are 
 - `HeartbeatPrompt.isContentEffectivelyEmpty` treats a header-only `HEARTBEAT.md` as "nothing to
   do", so seeding the file and setting an interval are two halves of one change — one without
   the other leaves the proactive agent silently doing nothing.
+
+## 8. The execution ladder and compiled flows
+
+`agent-os-design.md` §3 (in the ethOS tree): every intent resolves down a ladder, and
+**never skips a rung to reach a lower one**.
+
+| Rung | Here |
+|---|---|
+| 0 — native API | `WalletSkill`, `MessengerSkill`, `GmailSkill`, `GoogleCalendarSkill`, `TelegramSkill` |
+| 1 — intents / AppFunctions | absent; `agent_display_launch_intent` is the nearest thing |
+| 2 — notification RemoteInput | `NotificationSkill.reply_to_notification` |
+| 3 — compiled flow | `flows/` + `FlowSkill` |
+| 4 — VLM discovery | `AgentDisplaySkill` |
+
+A tool says where it sits with `ToolDefinition.rung` and `targetPackages`; `skills/ToolRoutes`
+seeds both for the built-ins that predate the ladder, the way `safety/ToolEffects` seeds
+effects. `ExecutionEngineFactory.routeGateCheck` blocks a rung-4 call that names a package a
+lower rung already covers, and **the block message names the better tool** — a tool result,
+not a prompt line, for the same reason the provenance gate is a `PreflightCheck` (§6).
+
+### Flows
+
+A flow is a recorded UI task replayed with **no model in the loop**: `filesDir/flows/`,
+content-addressed by sha256 of the canonical IR, HMAC'd with an AndroidKeyStore key
+(`KeystoreFlowSigner`). It is executable code carrying the user's authority, so nothing is
+trusted on sight — a flow whose hash or MAC does not verify is ignored, not replayed.
+
+- **`FlowValidator` is a gate, not a linter.** Selectors are `view_id` only (text breaks on a
+  locale change, coordinates on everything); pre- and postconditions are required; a
+  `checkpoint:` must precede any irreversible step; a step touching payment or authentication
+  makes the flow uncompilable outright. The IR can *express* the invalid forms so a recorder
+  can record what really happened — refusal happens here, not by pretending.
+- **`FlowInterpreter` never guesses.** Version pin, per-step perceptual checksum, bounded
+  waits, postconditions, a wall-clock budget. Any mismatch aborts and the VLM path takes over.
+- **Two effect questions, deliberately different.** `FlowStepEffects` classifies a *step* from
+  its target, and only decides where the checkpoint must sit (a declaration can raise it, never
+  lower it). `FlowToolEffect` classifies the *tool*: anything that actuates is `IRREVERSIBLE`
+  and needs the user's approval before the replay starts. No heuristic guards the gate.
+- **Staleness.** `PACKAGE_REPLACED` marks a package's flows stale; a stale flow keeps its tool
+  so it can revalidate on next use but drops its `targetPackages`, so it stops standing in front
+  of the display. Three consecutive aborts retire it and discovery recompiles.
+- **Discovery pays for itself.** `AgentLoop.runSubagent` compiles the session it just drove
+  (`RecordingDisplaySkill` → `FlowRecorder` → one model call → `FlowValidator` → install), so
+  the expensive path runs once. Only under `USER`/`TRUSTED` provenance.
+
+`tools/measure_warm_path.sh` reads the `AgentRunMetrics` line every run logs — turn latency and
+model-call count — which is how the "< 1.5 s, zero model calls" criterion is checked rather
+than argued about.

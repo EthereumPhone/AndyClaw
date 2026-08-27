@@ -197,7 +197,9 @@ class NodeRuntime(private val context: Context) {
         val app = context as? NodeApp
         return AgentLoop(client, registry, tier, enabledSkillIds, model, aiName, userStory,
             soulContent = soulContent,
-            safetyLayer = app?.createSafetyLayer())
+            safetyLayer = app?.createSafetyLayer(),
+            flowRecorder = app?.flowRecorder,
+            flowRepository = app?.flowRepositoryOrNull)
     }
 
     /**

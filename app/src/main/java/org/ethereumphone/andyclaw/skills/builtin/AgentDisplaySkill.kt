@@ -1,6 +1,5 @@
 package org.ethereumphone.andyclaw.skills.builtin
 
-import android.os.IBinder
 import android.os.IAgentDisplayService
 import android.util.Base64
 import android.util.Log
@@ -19,6 +18,7 @@ import org.ethereumphone.andyclaw.skills.SkillManifest
 import org.ethereumphone.andyclaw.skills.SkillResult
 import org.ethereumphone.andyclaw.skills.Tier
 import org.ethereumphone.andyclaw.skills.ToolDefinition
+import org.ethereumphone.andyclaw.skills.ToolRoutes
 
 class AgentDisplaySkill : AndyClawSkill {
 
@@ -333,27 +333,13 @@ class AgentDisplaySkill : AndyClawSkill {
         ),
     )
 
-    private var service: IAgentDisplayService? = null
     @Volatile private var displayActive = false
 
-    private fun getService(): IAgentDisplayService {
-        service?.let { svc ->
-            if (svc.asBinder().isBinderAlive) return svc
-            Log.w(TAG, "AgentDisplayService binder died, reconnecting")
-            service = null
-        }
-        val svc = try {
-            val smClass = Class.forName("android.os.ServiceManager")
-            val getService = smClass.getMethod("getService", String::class.java)
-            val binder = getService.invoke(null, "agentdisplay") as? IBinder
-            binder?.let { IAgentDisplayService.Stub.asInterface(it) }
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to get AgentDisplayService", e)
-            null
-        } ?: throw IllegalStateException("AgentDisplayService not available")
-        service = svc
-        return svc
-    }
+    /**
+     * The lookup and the reconnect-on-binder-death live in [AgentDisplayBinder] so the
+     * flow interpreter's driver shares exactly one connection path with this skill.
+     */
+    private fun getService(): IAgentDisplayService = AgentDisplayBinder.service()
 
     override suspend fun execute(tool: String, params: JsonObject, tier: Tier): SkillResult {
         Log.i(LTAG, "execute START tool=$tool params=$params tier=$tier")
@@ -1029,6 +1015,10 @@ class AgentDisplaySkill : AndyClawSkill {
                 put("required", JsonArray(required.map { JsonPrimitive(it) }))
             }
         }),
+        // Rung 4 of the execution ladder: a model in the loop, a screenshot or a tree
+        // per step, and full latency every time. Everything here is the last resort,
+        // which is what `routeGateCheck` enforces when a lower rung exists.
+        rung = ToolRoutes.RUNG_DISPLAY,
     )
 
     private fun propString(description: String) = JsonObject(mapOf(

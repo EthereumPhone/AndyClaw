@@ -4,10 +4,20 @@ import android.util.Log
 import kotlinx.serialization.json.JsonObject
 import org.ethereumphone.andyclaw.safety.ToolAttenuation
 
+/**
+ * The live tool set.
+ *
+ * Mutated from more than one thread and read from the hot path: ClawHub and extension
+ * discovery register from background coroutines, and compiled flows re-register from
+ * *inside* a tool execution — a flow that aborts has to stop advertising its package
+ * before the model's next call, or the fallback to the agent display stays blocked. So
+ * the backing list is copy-on-write (readers iterate a snapshot, writers are cheap and
+ * rare) and the name maps are concurrent. Writes are serialised on the registry.
+ */
 class NativeSkillRegistry {
 
-    private val skills = mutableListOf<AndyClawSkill>()
-    private val builtinToolNames = mutableSetOf<String>()
+    private val skills = java.util.concurrent.CopyOnWriteArrayList<AndyClawSkill>()
+    private val builtinToolNames = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
 
     /**
      * Monotonically increasing version counter. Bumped on every [register] and
@@ -22,21 +32,22 @@ class NativeSkillRegistry {
      * For each original tool name, the set of external skill IDs that claim it.
      * Tracks multi-way collisions so we know when to namespace and when to revert.
      */
-    private val externalClaims = mutableMapOf<String, MutableSet<String>>()
+    private val externalClaims = java.util.concurrent.ConcurrentHashMap<String, MutableSet<String>>()
 
     /**
      * (skillId, originalToolName) → effectiveName.
      * Builtin tools are always identity-mapped; external tools are namespaced
      * when their name collides with another external skill's tool.
      */
-    private val effectiveNames = mutableMapOf<Pair<String, String>, String>()
+    private val effectiveNames = java.util.concurrent.ConcurrentHashMap<Pair<String, String>, String>()
 
     /**
      * effectiveName → (skillId, originalToolName).
      * Used to resolve LLM tool calls back to the owning skill + original name.
      */
-    private val toolResolution = mutableMapOf<String, Pair<String, String>>()
+    private val toolResolution = java.util.concurrent.ConcurrentHashMap<String, Pair<String, String>>()
 
+    @Synchronized
     fun register(skill: AndyClawSkill) {
         val isExternal = skill.id.startsWith("clawhub:") ||
                 skill.id.startsWith("ai:") ||
@@ -65,7 +76,7 @@ class NativeSkillRegistry {
             skill.privilegedManifest?.tools?.forEach { builtinToolNames.add(it.name) }
         }
 
-        skills.removeAll { it.id == skill.id }
+        skills.removeIf { it.id == skill.id }
         unclaimTools(skill.id)
         skills.add(skill)
 
@@ -84,7 +95,7 @@ class NativeSkillRegistry {
             return
         }
 
-        externalClaims.getOrPut(toolName) { mutableSetOf() }.add(skillId)
+        externalClaims.getOrPut(toolName) { java.util.concurrent.ConcurrentHashMap.newKeySet() }.add(skillId)
         val claimants = externalClaims[toolName]!!
 
         when {
@@ -134,7 +145,7 @@ class NativeSkillRegistry {
                 val remainingId = claimantIds.first()
                 val currentEffective = effectiveNames[remainingId to originalName]
                 if (currentEffective != null && currentEffective != originalName
-                    && originalName !in toolResolution) {
+                    && !toolResolution.containsKey(originalName)) {
                     toolResolution.remove(currentEffective)
                     toolResolution[originalName] = remainingId to originalName
                     effectiveNames[remainingId to originalName] = originalName
@@ -154,7 +165,7 @@ class NativeSkillRegistry {
     private fun makeEffectiveName(skillId: String, toolName: String): String {
         val slug = skillId.substringAfter(":")
         val candidate = "$slug/$toolName"
-        if (candidate in toolResolution) {
+        if (toolResolution.containsKey(candidate)) {
             return "${skillId.replace(':', '.')}/$toolName"
         }
         return candidate
@@ -178,8 +189,9 @@ class NativeSkillRegistry {
         private const val TAG = "NativeSkillRegistry"
     }
 
+    @Synchronized
     fun unregister(skillId: String) {
-        skills.removeAll { it.id == skillId }
+        skills.removeIf { it.id == skillId }
         unclaimTools(skillId)
         version++
     }

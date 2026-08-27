@@ -501,11 +501,7 @@ class ToolSearchService(
                     if (tool.name in allowedTools) {
                         val effectiveName = nameResolver(skill.id, tool.name)
                         if (effectiveName !in includedToolNames) {
-                            tools.add(buildJsonObject {
-                                put("name", effectiveName)
-                                put("description", tool.description)
-                                put("input_schema", tool.inputSchema)
-                            })
+                            tools.add(PromptAssembler.toolToJson(tool, effectiveName))
                             includedToolNames.add(effectiveName)
                             alwaysOnCount++
                         }
@@ -516,11 +512,7 @@ class ToolSearchService(
                         if (tool.name in allowedTools) {
                             val effectiveName = nameResolver(skill.id, tool.name)
                             if (effectiveName !in includedToolNames) {
-                                tools.add(buildJsonObject {
-                                    put("name", effectiveName)
-                                    put("description", tool.description)
-                                    put("input_schema", tool.inputSchema)
-                                })
+                                tools.add(PromptAssembler.toolToJson(tool, effectiveName))
                                 includedToolNames.add(effectiveName)
                                 alwaysOnCount++
                             }
@@ -576,21 +568,13 @@ class ToolSearchService(
         for (skill in skillRegistry.getEnabled(enabledSkillIds)) {
             for (tool in skill.baseManifest.tools) {
                 if (tool.name in discoveredToolNames) {
-                    tools.add(buildJsonObject {
-                        put("name", nameResolver(skill.id, tool.name))
-                        put("description", tool.description)
-                        put("input_schema", tool.inputSchema)
-                    })
+                    tools.add(PromptAssembler.toolToJson(tool, nameResolver(skill.id, tool.name)))
                 }
             }
             if (tier == Tier.PRIVILEGED) {
                 skill.privilegedManifest?.tools?.forEach { tool ->
                     if (tool.name in discoveredToolNames) {
-                        tools.add(buildJsonObject {
-                            put("name", nameResolver(skill.id, tool.name))
-                            put("description", tool.description)
-                            put("input_schema", tool.inputSchema)
-                        })
+                        tools.add(PromptAssembler.toolToJson(tool, nameResolver(skill.id, tool.name)))
                     }
                 }
             }
