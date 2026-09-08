@@ -28,6 +28,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.dgenlibrary.SystemColorManager
 import com.example.dgenlibrary.ui.theme.dgenWhite
 import org.ethereumphone.andyclaw.agenttx.db.entity.AgentTxEntity
+import org.ethereumphone.andyclaw.agentwallet.AgentWalletChains
 import org.ethereumphone.andyclaw.ui.components.AppTextStyles
 import org.ethereumphone.andyclaw.ui.components.DgenBackNavigationBackground
 import org.ethereumphone.andyclaw.ui.components.DgenSmallPrimaryButton
@@ -35,16 +36,6 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-private val CHAIN_NAMES = mapOf(
-    1 to "Ethereum",
-    10 to "Optimism",
-    137 to "Polygon",
-    42161 to "Arbitrum",
-    8453 to "Base",
-    7777777 to "Zora",
-    56 to "BNB",
-    43114 to "Avalanche",
-)
 
 @Composable
 fun AgentTxHistoryScreen(
@@ -140,7 +131,7 @@ private fun AgentTxRow(
     val timeText = remember(tx.timestamp) {
         SimpleDateFormat("MMM d, HH:mm", Locale.getDefault()).format(Date(tx.timestamp))
     }
-    val chainName = CHAIN_NAMES[tx.chainId] ?: "Chain ${tx.chainId}"
+    val chainName = AgentWalletChains.chainDisplayName(tx.chainId)
 
     Column(
         modifier = Modifier
