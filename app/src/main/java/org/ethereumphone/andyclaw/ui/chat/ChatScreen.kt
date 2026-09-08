@@ -230,6 +230,16 @@ fun ChatScreen(
                 }
             }
 
+            // Agent wallet cue — only rendered when the sub-account actually holds funds.
+            org.ethereumphone.andyclaw.ui.agentwallet.AgentWalletBalanceBanner(
+                primaryColor = primaryColor,
+                onClick = {
+                    onNavigateToRoute(
+                        org.ethereumphone.andyclaw.navigation.Routes.AGENT_WALLET_SEND
+                    )
+                },
+            )
+
             // Context window usage indicator
             if (contextWindow.isAvailable) {
                 ContextWindowIndicator(

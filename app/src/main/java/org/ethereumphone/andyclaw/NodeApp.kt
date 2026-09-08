@@ -111,6 +111,9 @@ class NodeApp : Application() {
     val soulManager: org.ethereumphone.andyclaw.soul.SoulManager by lazy { org.ethereumphone.andyclaw.soul.SoulManager(this) }
     val sessionManager: SessionManager by lazy { SessionManager(this) }
     val agentTxRepository: AgentTxRepository by lazy { AgentTxRepository(this) }
+    val agentWalletRepository: org.ethereumphone.andyclaw.agentwallet.AgentWalletRepository by lazy {
+        org.ethereumphone.andyclaw.agentwallet.AgentWalletRepository(this, securePrefs)
+    }
     val heartbeatLogStore: HeartbeatLogStore by lazy { HeartbeatLogStore(filesDir) }
     val whisperTranscriber: WhisperTranscriber by lazy { WhisperTranscriber(this) }
     val executiveSummaryManager: org.ethereumphone.andyclaw.summary.ExecutiveSummaryManager by lazy {

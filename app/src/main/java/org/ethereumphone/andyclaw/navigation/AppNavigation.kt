@@ -32,6 +32,7 @@ object Routes {
     const val HEARTBEAT_LOGS = "heartbeat_logs"
     const val AGENT_DISPLAY_TEST = "agent_display_test"
     const val AGENT_TX_HISTORY = "agent_tx_history"
+    const val AGENT_WALLET_SEND = "agent_wallet_send"
 }
 
 @Composable
@@ -119,6 +120,7 @@ fun AppNavigation() {
                 onNavigateToHeartbeatLogs = { navController.navigate(Routes.HEARTBEAT_LOGS) },
                 onNavigateToAgentDisplayTest = { navController.navigate(Routes.AGENT_DISPLAY_TEST) },
                 onNavigateToAgentTxHistory = { navController.navigate(Routes.AGENT_TX_HISTORY) },
+                onNavigateToAgentWalletSend = { navController.navigate(Routes.AGENT_WALLET_SEND) },
             )
         }
 
@@ -129,6 +131,7 @@ fun AppNavigation() {
                 onNavigateToHeartbeatLogs = { navController.navigate(Routes.HEARTBEAT_LOGS) },
                 onNavigateToAgentDisplayTest = { navController.navigate(Routes.AGENT_DISPLAY_TEST) },
                 onNavigateToAgentTxHistory = { navController.navigate(Routes.AGENT_TX_HISTORY) },
+                onNavigateToAgentWalletSend = { navController.navigate(Routes.AGENT_WALLET_SEND) },
                 initialSubScreen = SettingsSubScreen.ModelSelection,
             )
         }
@@ -153,6 +156,12 @@ fun AppNavigation() {
 
         composable(Routes.AGENT_TX_HISTORY) {
             org.ethereumphone.andyclaw.ui.agenttx.AgentTxHistoryScreen(
+                onNavigateBack = { navController.popBackStack() },
+            )
+        }
+
+        composable(Routes.AGENT_WALLET_SEND) {
+            org.ethereumphone.andyclaw.ui.agentwallet.AgentWalletSendScreen(
                 onNavigateBack = { navController.popBackStack() },
             )
         }

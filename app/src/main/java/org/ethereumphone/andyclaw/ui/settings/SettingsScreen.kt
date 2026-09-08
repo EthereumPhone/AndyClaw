@@ -95,6 +95,7 @@ fun SettingsScreen(
     onNavigateToHeartbeatLogs: () -> Unit = {},
     onNavigateToAgentDisplayTest: () -> Unit = {},
     onNavigateToAgentTxHistory: () -> Unit = {},
+    onNavigateToAgentWalletSend: () -> Unit = {},
     initialSubScreen: SettingsSubScreen = SettingsSubScreen.Main,
     viewModel: SettingsViewModel = viewModel(),
 ) {
@@ -337,6 +338,7 @@ fun SettingsScreen(
                     contentTitleStyle = contentTitleStyle,
                     contentBodyStyle = contentBodyStyle,
                     onNavigateToTxHistory = onNavigateToAgentTxHistory,
+                    onNavigateToSend = onNavigateToAgentWalletSend,
                 )
             }
 
@@ -2559,29 +2561,25 @@ private fun AgentWalletSection(
     contentTitleStyle: TextStyle,
     contentBodyStyle: TextStyle,
     onNavigateToTxHistory: () -> Unit,
+    onNavigateToSend: () -> Unit,
 ) {
     val context = LocalContext.current
     val app = context.applicationContext as org.ethereumphone.andyclaw.NodeApp
     val uriHandler = androidx.compose.ui.platform.LocalUriHandler.current
 
     var agentAddress by remember { mutableStateOf<String?>(null) }
+    var agentLoading by remember { mutableStateOf(true) }
+    var agentHoldings by remember {
+        mutableStateOf<List<org.ethereumphone.andyclaw.agentwallet.ChainBalances>>(emptyList())
+    }
 
+    // Goes through the shared repository so this agrees with the send screen and the
+    // agent's own tools about which chains exist. It used to build a mainnet-only SDK here.
     LaunchedEffect(Unit) {
-        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-            try {
-                val sdk = org.ethereumphone.subwalletsdk.SubWalletSDK(
-                    context = context,
-                    web3jInstance = org.web3j.protocol.Web3j.build(
-                        org.web3j.protocol.http.HttpService(
-                            "https://eth-mainnet.g.alchemy.com/v2/${org.ethereumphone.andyclaw.BuildConfig.ALCHEMY_API}"
-                        )
-                    ),
-                    bundlerRPCUrl = "https://api.pimlico.io/v2/1/rpc?apikey=${org.ethereumphone.andyclaw.BuildConfig.BUNDLER_API}",
-                )
-                agentAddress = sdk.getAddress()
-            } catch (_: Exception) {
-                // SubWallet not available
-            }
+        agentAddress = app.agentWalletRepository.getAddress()
+        agentLoading = false
+        if (agentAddress != null) {
+            agentHoldings = app.agentWalletRepository.scanAll().filter { it.hasFunds }
         }
     }
 
@@ -2592,7 +2590,7 @@ private fun AgentWalletSection(
     )
     Spacer(Modifier.height(4.dp))
     Text(
-        text = "A dedicated wallet for your agent, separate from your dGEN1 wallet. Fund it if you want the agent to execute transactions autonomously.",
+        text = "A dedicated wallet for your agent, separate from your dGEN1 wallet. Fund it if you want the agent to execute transactions autonomously. You can send funds back out at any time with Send below.",
         style = contentBodyStyle,
         color = dgenWhite.copy(alpha = 0.7f),
     )
@@ -2653,11 +2651,69 @@ private fun AgentWalletSection(
                 color = primaryColor,
             )
         }
+        if (agentHoldings.isNotEmpty()) {
+            Spacer(Modifier.height(12.dp))
+            Text(
+                text = "HOLDINGS",
+                style = contentTitleStyle,
+                color = primaryColor,
+            )
+            Spacer(Modifier.height(2.dp))
+            agentHoldings.forEach { chain ->
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 2.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                ) {
+                    Text(
+                        text = chain.chainName,
+                        style = contentBodyStyle,
+                        color = dgenWhite,
+                    )
+                    Text(
+                        text = chain.all
+                            .filter { it.raw.signum() > 0 }
+                            .joinToString("  ") { "${it.display()} ${it.symbol}" },
+                        style = contentBodyStyle,
+                        color = dgenWhite.copy(alpha = 0.7f),
+                    )
+                }
+            }
+        }
     } else {
         Text(
-            text = "Agent wallet not available",
+            text = if (agentLoading) "Loading agent wallet…" else "Agent wallet not available",
             style = contentBodyStyle,
             color = dgenWhite.copy(alpha = 0.5f),
+        )
+    }
+
+    Spacer(Modifier.height(4.dp))
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onNavigateToSend)
+            .padding(vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = "SEND",
+                style = contentTitleStyle,
+                color = primaryColor,
+            )
+            Text(
+                text = "Move funds out of the agent wallet yourself",
+                style = contentBodyStyle,
+                color = dgenWhite,
+            )
+        }
+        Spacer(Modifier.width(20.dp))
+        DgenSmallPrimaryButton(
+            text = "Send",
+            primaryColor = primaryColor,
+            onClick = onNavigateToSend,
         )
     }
 
