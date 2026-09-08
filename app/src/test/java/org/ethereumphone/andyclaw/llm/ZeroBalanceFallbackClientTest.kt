@@ -166,14 +166,15 @@ class ZeroBalanceFallbackClientTest {
     @Test
     fun `a stream refused before its first token is restarted locally`() = runBlocking {
         val primary = Fake("cloud", failWith = outOfFunds(), tokensBeforeFailure = 0)
-        val local = Fake("local")
+        val local = Fake("local", tokensBeforeFailure = 2)
         val collector = Collector()
 
         client(primary, local).streamMessage(request, collector)
 
         assertEquals(1, local.streamCalls)
         assertEquals("local", collector.completed?.id)
-        assertEquals(listOf("local0"), collector.tokens.take(1).ifEmpty { listOf("local0") })
+        // The caller sees the local model's answer and nothing of the refused attempt.
+        assertEquals(listOf("local0", "local1"), collector.tokens)
     }
 
     @Test
