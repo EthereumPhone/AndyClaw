@@ -227,7 +227,16 @@ class AnthropicClient(
             put("messages", kotlinx.serialization.json.JsonArray(messagesJson))
             request.tools?.let { tools ->
                 put("tools", kotlinx.serialization.json.JsonArray(tools))
-                put("parallel_tool_calls", kotlinx.serialization.json.JsonPrimitive(request.parallelToolCalls))
+                // The Anthropic Messages API has no `parallel_tool_calls` (that is an OpenAI Chat Completions
+                // field) and rejects unknown top-level fields with HTTP 400
+                // ("parallel_tool_calls: Extra inputs are not permitted"). Parallel tool use is Anthropic's
+                // default, so only the "disable" case needs expressing, via tool_choice.
+                if (!request.parallelToolCalls) {
+                    put("tool_choice", kotlinx.serialization.json.buildJsonObject {
+                        put("type", kotlinx.serialization.json.JsonPrimitive("auto"))
+                        put("disable_parallel_tool_use", kotlinx.serialization.json.JsonPrimitive(true))
+                    })
+                }
             }
             request.temperature?.let {
                 put("temperature", kotlinx.serialization.json.JsonPrimitive(it))
