@@ -10,7 +10,6 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import org.ethereumphone.andyclaw.skills.AndyClawSkill
 import org.ethereumphone.andyclaw.skills.Skill
-import org.ethereumphone.andyclaw.skills.SkillEntry
 import org.ethereumphone.andyclaw.skills.SkillExecutionSpec
 import org.ethereumphone.andyclaw.skills.SkillFrontmatter
 import org.ethereumphone.andyclaw.skills.SkillLoader
@@ -81,6 +80,12 @@ class ClawHubTermuxSkillAdapter(
                 ?.filter { it.isDirectory && File(it, "SKILL.md").isFile }
                 ?.mapNotNull { dir ->
                     val slugName = dir.name
+                    val safeSlug = runCatching { TermuxShell.validateSlug(slugName) }
+                        .getOrElse {
+                            Log.w(TAG, "Skipping skill with invalid slug '$slugName': ${it.message}")
+                            return@mapNotNull null
+                        }
+
                     val parsedSkill = SkillLoader.parseSkillFile(
                         File(dir, "SKILL.md"), dir,
                     ) ?: run {
@@ -99,7 +104,7 @@ class ClawHubTermuxSkillAdapter(
                     if (exec != null && exec.type == "termux") {
                         ClawHubTermuxSkillAdapter(
                             skill = parsedSkill,
-                            slug = slugName,
+                            slug = safeSlug,
                             installedVersion = version,
                             executionSpec = exec,
                             metadata = meta,
@@ -154,8 +159,18 @@ class ClawHubTermuxSkillAdapter(
             ?: return SkillResult.Error("Unknown tool: $tool")
 
         // Build and execute the command
-        val command = buildCommand(toolSpec, params)
-        val skillHome = sync.skillHomePath(slug)
+        val command = try {
+            buildCommand(toolSpec, params)
+        } catch (e: IllegalArgumentException) {
+            return SkillResult.Error("Invalid Termux execution spec: ${e.message}")
+        }
+
+        val skillHome = try {
+            sync.skillHomePath(slug)
+        } catch (e: IllegalArgumentException) {
+            return SkillResult.Error("Invalid Termux skill path for '$slug': ${e.message}")
+        }
+
         val result = runner.run(command, workdir = skillHome, timeoutMs = 60_000)
 
         if (result.internalError != null) {
@@ -214,8 +229,10 @@ class ClawHubTermuxSkillAdapter(
     // ── Command building ────────────────────────────────────────────
 
     private fun buildCommand(toolSpec: SkillToolSpec, params: JsonObject): String {
-        val entrypoint = toolSpec.entrypoint ?: executionSpec.entrypoint
+        val rawEntrypoint = toolSpec.entrypoint ?: executionSpec.entrypoint
+        val entrypoint = TermuxShell.validateRelativePath(rawEntrypoint, "entrypoint")
         val scriptPath = "${sync.skillHomePath(slug)}/$entrypoint"
+        val quotedScriptPath = TermuxShell.quote(scriptPath)
 
         val allSimpleStrings = toolSpec.args.values.all { it.type == "string" }
         val argCount = toolSpec.args.size
@@ -225,18 +242,12 @@ class ClawHubTermuxSkillAdapter(
             val positional = toolSpec.args.keys.mapNotNull { key ->
                 params[key]?.jsonPrimitive?.contentOrNull
             }
-            val escaped = positional.joinToString(" ") { shellEscape(it) }
-            "'$scriptPath' $escaped".trim()
+            val escaped = positional.joinToString(" ") { TermuxShell.quote(it) }
+            if (escaped.isBlank()) quotedScriptPath else "$quotedScriptPath $escaped"
         } else {
             // JSON mode: entrypoint <tool> '<json>'
-            val json = params.toString().replace("'", "'\\''")
-            "'$scriptPath' '${toolSpec.name}' '$json'"
+            "$quotedScriptPath ${TermuxShell.quote(toolSpec.name)} ${TermuxShell.quote(params.toString())}"
         }
-    }
-
-    private fun shellEscape(value: String): String {
-        // Wrap in single quotes, escaping embedded single quotes
-        return "'" + value.replace("'", "'\\''") + "'"
     }
 
     // ── Manifest / tool definition builders ─────────────────────────
