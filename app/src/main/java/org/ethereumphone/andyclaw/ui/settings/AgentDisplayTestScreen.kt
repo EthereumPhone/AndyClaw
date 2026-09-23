@@ -179,6 +179,12 @@ fun AgentDisplayTestScreen(
                         HorizontalDivider(color = primaryColor.copy(alpha = 0.2f))
                         Spacer(Modifier.height(16.dp))
 
+                        org.ethereumphone.andyclaw.bench.AndyBenchPanel(titleColor = primaryColor, textColor = dgenWhite)
+
+                        Spacer(Modifier.height(24.dp))
+                        HorizontalDivider(color = primaryColor.copy(alpha = 0.2f))
+                        Spacer(Modifier.height(16.dp))
+
                         // Display Control
                         Text(text = "DISPLAY CONTROL", style = sectionTitleStyle, color = primaryColor)
                         Spacer(Modifier.height(8.dp))

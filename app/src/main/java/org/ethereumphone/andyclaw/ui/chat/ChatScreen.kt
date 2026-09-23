@@ -100,6 +100,7 @@ fun ChatScreen(
     val approvalRequest by viewModel.approvalRequest.collectAsState()
     val askUserRequest by viewModel.askUserRequest.collectAsState()
     val displayBitmap by viewModel.agentDisplayBitmap.collectAsState()
+    val autopilot by viewModel.autopilot.collectAsState()
     val contextWindow by viewModel.contextWindow.collectAsState()
     val isCompacting by viewModel.isCompacting.collectAsState()
     val navigationEvent by viewModel.navigationEvent.collectAsState()
@@ -296,8 +297,22 @@ fun ChatScreen(
                     item { Spacer(Modifier.height(8.dp)) }
                 }
 
+                // Autopilot live view: bigger than the plain preview, because this is the show.
+                if (autopilot != null) {
+                    org.ethereumphone.andyclaw.ui.autopilot.AutopilotLiveView(
+                        state = autopilot,
+                        fallbackFrame = displayBitmap,
+                        onDismiss = { viewModel.dismissAutopilot() },
+                        onShare = { viewModel.shareAutopilotReplay() },
+                        modifier = Modifier
+                            .align(Alignment.TopCenter)
+                            .padding(8.dp)
+                            .width(300.dp),
+                    )
+                }
+
                 // Agent display live preview
-                displayBitmap?.let { bitmap ->
+                if (autopilot == null) displayBitmap?.let { bitmap ->
                     Card(
                         modifier = Modifier
                             .align(Alignment.TopEnd)

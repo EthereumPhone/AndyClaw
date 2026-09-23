@@ -243,6 +243,7 @@ object SearchHints {
         // (CORE on PRIVILEGED tier — hints for catalog summary)
 
         // ── Agent Display ──
+        "agent_display_autopilot" to "do task in app automatically open app tap type send navigate settings fast",
         "agent_display_create" to "virtual screen headless display",
         "agent_display_screenshot" to "capture virtual screen image",
         "agent_display_tap" to "click touch virtual screen UI",

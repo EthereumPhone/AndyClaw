@@ -73,6 +73,13 @@ data class Flow(
     val preconditions: List<Condition> = emptyList(),
     val steps: List<FlowStep> = emptyList(),
     val postconditions: List<Condition> = emptyList(),
+    /**
+     * The plan the flow was compiled from, when the autopilot compiled it. Lets a replay that
+     * no longer matches the app fall back to the autopilot and recompile, instead of handing
+     * the whole task back to the model. Trailing and nullable: `explicitNulls = false` keeps
+     * flows without it byte-identical, so their content hashes do not change.
+     */
+    val intent: FlowIntent? = null,
 ) {
     /**
      * The tool this flow is registered as:
@@ -91,6 +98,21 @@ data class Flow(
         const val TOOL_PREFIX = "flow_"
     }
 }
+
+/** The goal and sub-goals a flow achieves, with `{{param}}` placeholders for its values. */
+@Serializable
+data class FlowIntent(
+    val goal: String,
+    val steps: List<FlowIntentStep> = emptyList(),
+)
+
+@Serializable
+data class FlowIntentStep(
+    @SerialName("do") val doText: String,
+    @SerialName("done_when") val doneWhen: String? = null,
+    /** Param names this sub-goal types. */
+    val type: List<String> = emptyList(),
+)
 
 // ══════════════════════════════════════════════════════════════════════
 // Steps

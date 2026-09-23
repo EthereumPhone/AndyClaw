@@ -59,8 +59,9 @@ authority; the short version:
 |---|---|---|
 | `org.ethereumphone.andyclaw.ipc.IHeartbeatService` | `app/src/main/aidl/…` **and** hand-written `Parcel.transact` in `AndyClawHeartbeatService.java` | OS → app, ordinals `FIRST+0…+5` are the contract on both sides. Authentication is `Binder.getCallingUid() == SYSTEM_UID` (`HeartbeatBindingService.enforceSystemCaller`) — the service is exported with no permission because `system_server` must be able to bind it before first unlock. |
 | `com.android.server.IAndyClawHeartbeat` | raw `transact` on the `andyclawheartbeat` binder | app → OS, `FIRST+0…+3`. Gated OS-side by a package check on the calling UID. |
-| `ILauncherService` | `app/src/main/aidl/…/ILauncherService.aidl` (69 methods) | Three copies: this one, the launcher's, SystemUI's (the first 6 only). This copy and the launcher's now agree at **every** ordinal 1–69: the `clawHub*` block the launcher has always had sits at 50–60 and is declared here as stubs purely to hold those slots, and the ambient/approval/ledger methods are appended at 61–69. Anything new goes at 70+, in both copies, in the same release. |
-| `IAgentDisplayService` | `app/src/main/aidl/android/os/…` (47 methods) | AIDL-generated ordinals, mirrored by the framework's own copy. Append at 47. |
+| `ILauncherService` | `app/src/main/aidl/…/ILauncherService.aidl` (70 methods) | Three copies: this one, the launcher's, SystemUI's (the first 6 only). This copy and the launcher's agree at **every** ordinal 1–70: the `clawHub*` block the launcher has always had sits at 50–60 and is declared here as stubs purely to hold those slots, the ambient/approval/ledger methods are at 61–69, `stopAgent` at 70. Anything new goes at 71+, in both copies, in the same release. |
+| `ILauncherCallback` | `app/src/main/aidl/…/ILauncherCallback.aidl` (10 methods, oneway) | Launcher's copy must match. `onAgentStep(json)` is 10; an older launcher ignores it. |
+| `IAgentDisplayService` | `app/src/main/aidl/android/os/…` (59 methods) | AIDL-generated ordinals, mirrored by the framework's own copy (byte-identical order). 48–59 are the v2 autopilot block (`@hide` in the framework). Append at 60. Check `getAgentApiVersion() >= 2` before any v2 call — an older OS answers them with 0/null. Also `IAgentDisplayListener`/`IAgentHudListener`. |
 | On-disk state under `filesDir` | see §4 | Must survive an OTA from an arbitrary older build **and a rollback**. New fields are defaulted and trailing; new files are ignored by older code. |
 
 A payload-format change to an existing method fails *silently* against an older counterpart.
@@ -202,6 +203,31 @@ trusted on sight — a flow whose hash or MAC does not verify is ignored, not re
 `tools/measure_warm_path.sh` reads the `AgentRunMetrics` line every run logs — turn latency and
 model-call count — which is how the "< 1.5 s, zero model calls" criterion is checked rather
 than argued about.
+
+### The autopilot (JevPilot) — `:AndyClaw` `autopilot/`, `:app` `autopilot/`
+
+`agent_display_autopilot` takes a plan (sub-goals + every literal to type in `values`) and
+drives the app itself: per step one Jev call (`StepPromptBuilder`) answers all questions at
+once, `StepPolicy` acts only above calibrated thresholds (higher for commit-like actions),
+`LoopGuard` catches loops and no-ops, and anything unresolved goes to a small
+`LlmAutopilotPlanner` call or back to the main loop as `needs_planner`. It never taps
+payment/auth elements — the same hard rule as `FlowValidator`. Jev is reached through the
+backend's `/api/jev` with the wallet sign-in (`JevHttpClient`).
+
+- Always on for PRIVILEGED via `ToolSearchService.DGEN1_BUILTIN_ALWAYS_ON`; exempt from the
+  rung-3 route gate (it runs flows itself); `IRREVERSIBLE`, so UNTRUSTED cannot reach it.
+- A successful run whose steps all hit unique view ids compiles to a flow mechanically
+  (`AutopilotFlowCompiler`, no model call) with the plan stored as `Flow.intent`; a flow that
+  aborts on a changed UI re-runs the autopilot from that intent.
+- `agent.autopilot.noConfirm` (default on) runs irreversible flows without the approval card
+  for USER/TRUSTED only.
+- Screen reads are in-process (`AgentDisplayAccessibilityService.snapshot`, all windows);
+  settling is event-driven (`ScreenSettler`) plus the OS frame-quiet check.
+- `AgentLoop` ends a turn with the autopilot's `say` (no extra model call) and elides old UI
+  trees from history (`pruneOldUiTrees`).
+- UX: `ui/autopilot/` live view (mirror, focus ring, ticker, STOP, share replay), rear HUD via
+  `setHudState`, launcher `onAgentStep`. Replays black out editable/password fields.
+- Measure with AndyBench (Agent Display developer screen) and `adb logcat -s AutopilotStep AgentRunMetrics`.
 
 ## 9. The ledger, the frames, and anticipatory context
 

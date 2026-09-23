@@ -7,13 +7,17 @@ import android.os.Bundle
 import android.os.IBinder
 import android.os.IAgentAccessibilityProxy
 import android.os.IAgentDisplayService
+import android.os.SystemClock
 import android.util.Log
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import android.view.accessibility.AccessibilityWindowInfo
 import org.ethereumphone.andyclaw.analyzer.ScreenAnalyzer
+import org.ethereumphone.andyclaw.autopilot.ScreenElement
+import org.ethereumphone.andyclaw.autopilot.ScreenSnapshot
 import org.json.JSONArray
 import org.json.JSONObject
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * App-hosted accessibility service that provides UI tree queries for the
@@ -67,14 +71,35 @@ class AgentDisplayAccessibilityService : AccessibilityService() {
             AccessibilityServiceInfo.FLAG_INCLUDE_NOT_IMPORTANT_VIEWS
         info.eventTypes = AccessibilityEvent.TYPES_ALL_MASK
         info.feedbackType = AccessibilityServiceInfo.FEEDBACK_GENERIC
+        // The XML config throttles events to one per 100 ms per type. The autopilot's settle
+        // detection measures quiet periods between events, which that throttle would distort.
+        info.notificationTimeout = 0
         serviceInfo = info
+        instance = this
         Log.i(TAG, "flags=0x${Integer.toHexString(info.flags)}")
 
         registerProxyWithFramework()
     }
 
+    /**
+     * Only counts. The tree is still queried on demand; events just tell the autopilot when the
+     * agent display has stopped changing (see `ScreenSettler`). Runs on the main thread, so it
+     * must stay this cheap.
+     */
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
-        // Not needed — we query on demand
+        event ?: return
+        val watched = watchedDisplayId
+        if (watched == INVALID_DISPLAY || event.displayId != watched) return
+        val now = SystemClock.uptimeMillis()
+        lastEventUptime = now
+        when (event.eventType) {
+            AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED,
+            AccessibilityEvent.TYPE_WINDOWS_CHANGED -> {
+                lastWindowChangeUptime = now
+                event.packageName?.let { lastWindowChangePackage = it.toString() }
+            }
+        }
+        eventSeq.incrementAndGet()
     }
 
     override fun onInterrupt() {
@@ -83,6 +108,7 @@ class AgentDisplayAccessibilityService : AccessibilityService() {
 
     override fun onDestroy() {
         super.onDestroy()
+        if (instance === this) instance = null
         frameworkService = null
         Log.i(TAG, "onDestroy")
     }
@@ -111,7 +137,7 @@ class AgentDisplayAccessibilityService : AccessibilityService() {
     // Node actions — hybrid: try a11y performAction, fall back to input injection
     // ========================================================================
 
-    private fun doClickNode(displayId: Int, viewId: String): String {
+    internal fun doClickNode(displayId: Int, viewId: String): String {
         Log.i(DTAG, "A11Y_CLICK_NODE: viewId=$viewId displayId=$displayId")
         val node = findNodeByViewId(displayId, viewId)
             ?: run {
@@ -144,7 +170,7 @@ class AgentDisplayAccessibilityService : AccessibilityService() {
         }
     }
 
-    private fun doLongClickNode(displayId: Int, viewId: String): String {
+    internal fun doLongClickNode(displayId: Int, viewId: String): String {
         val node = findNodeByViewId(displayId, viewId)
             ?: return """{"ok":false,"error":"Node not found: $viewId"}"""
 
@@ -170,7 +196,7 @@ class AgentDisplayAccessibilityService : AccessibilityService() {
         }
     }
 
-    private fun doSetNodeText(displayId: Int, viewId: String, text: String): String {
+    internal fun doSetNodeText(displayId: Int, viewId: String, text: String): String {
         Log.i(DTAG, "A11Y_SET_TEXT: viewId=$viewId text=\"${text.take(50)}\" displayId=$displayId")
         val node = findNodeByViewId(displayId, viewId)
             ?: run {
@@ -210,7 +236,7 @@ class AgentDisplayAccessibilityService : AccessibilityService() {
         }
     }
 
-    private fun doScrollNode(displayId: Int, viewId: String, action: Int): String {
+    internal fun doScrollNode(displayId: Int, viewId: String, action: Int): String {
         val directionStr = if (action == AccessibilityNodeInfo.ACTION_SCROLL_FORWARD) "forward" else "backward"
         Log.i(DTAG, "A11Y_SCROLL_NODE: viewId=$viewId direction=$directionStr displayId=$displayId")
         val node = findNodeByViewId(displayId, viewId)
@@ -388,6 +414,89 @@ class AgentDisplayAccessibilityService : AccessibilityService() {
             Log.e(DTAG, "SMART_ANALYSIS_ERROR: ${e.message}", e)
             """{"error":"${e.message}"}"""
         }
+    }
+
+    // ========================================================================
+    // In-process snapshot for the autopilot
+    // ========================================================================
+
+    /**
+     * The whole agent display as the autopilot sees it, read without leaving this process.
+     *
+     * Unlike [buildSmartTreeForDisplay] — whose output feeds flow checksums and so must not
+     * change shape — this looks at every window on the display: an app dialog, a system prompt
+     * and the keyboard are all part of what the next action depends on. Elements are numbered
+     * across windows, topmost window first; `window` tells them apart.
+     */
+    fun snapshot(displayId: Int, width: Int, height: Int): ScreenSnapshot? {
+        val windows = windowsOnAllDisplays.get(displayId)
+        if (windows.isNullOrEmpty()) return null
+        val elements = ArrayList<ScreenElement>()
+        val others = ArrayList<String>()
+        var packageName: String? = null
+        var title: String? = null
+        var scrollable = false
+        var keyboardVisible = false
+        var windowIndex = 0
+        for (window in windows) {
+            when (window.type) {
+                AccessibilityWindowInfo.TYPE_INPUT_METHOD -> {
+                    keyboardVisible = true
+                    continue
+                }
+                AccessibilityWindowInfo.TYPE_APPLICATION, AccessibilityWindowInfo.TYPE_SYSTEM -> Unit
+                else -> continue
+            }
+            val root = window.root ?: continue
+            try {
+                val result = ScreenAnalyzer.analyze(root)
+                if (packageName == null && window.type == AccessibilityWindowInfo.TYPE_APPLICATION) {
+                    packageName = result.screen.packageName
+                    title = result.screen.title
+                    scrollable = result.scrollable
+                } else {
+                    others += if (window.type == AccessibilityWindowInfo.TYPE_SYSTEM) "system" else "dialog"
+                }
+                for (e in result.elements) {
+                    elements += ScreenElement(
+                        id = elements.size,
+                        type = e.type.jsonName,
+                        label = e.label,
+                        summary = e.summary,
+                        hint = e.hint,
+                        value = e.value,
+                        checked = e.checked,
+                        enabled = e.enabled != false,
+                        selected = e.selected == true,
+                        password = e.password == true,
+                        viewId = e.viewId,
+                        actions = e.actions,
+                        centerX = e.bounds.x + e.bounds.w / 2,
+                        centerY = e.bounds.y + e.bounds.h / 2,
+                        window = windowIndex,
+                        left = e.bounds.x,
+                        top = e.bounds.y,
+                        right = e.bounds.x + e.bounds.w,
+                        bottom = e.bounds.y + e.bounds.h,
+                    )
+                }
+                windowIndex++
+            } catch (e: Exception) {
+                Log.w(TAG, "snapshot: analysis failed for window ${window.id}", e)
+            } finally {
+                try { root.recycle() } catch (_: Exception) {}
+            }
+        }
+        return ScreenSnapshot(
+            packageName = packageName.orEmpty(),
+            title = title,
+            elements = elements,
+            scrollable = scrollable,
+            keyboardVisible = keyboardVisible,
+            windows = others,
+            width = width,
+            height = height,
+        )
     }
 
     // ========================================================================
@@ -604,5 +713,27 @@ class AgentDisplayAccessibilityService : AccessibilityService() {
     companion object {
         private const val TAG = "AgentDisplayA11y"
         private const val DTAG = "AGENTDISPLAYDEBUGKEY"
+        const val INVALID_DISPLAY = -1
+
+        /** The running service. It lives in this process, so the autopilot can call it directly. */
+        @Volatile
+        var instance: AgentDisplayAccessibilityService? = null
+            private set
+
+        /** Only events from this display are counted. Set by the autopilot while it runs. */
+        @Volatile
+        var watchedDisplayId: Int = INVALID_DISPLAY
+
+        /** Bumped on every event from [watchedDisplayId]. */
+        val eventSeq = AtomicLong()
+
+        @Volatile
+        var lastEventUptime: Long = 0
+
+        @Volatile
+        var lastWindowChangeUptime: Long = 0
+
+        @Volatile
+        var lastWindowChangePackage: String? = null
     }
 }

@@ -87,6 +87,9 @@ class LauncherBindingService : Service() {
          * rather than a literal inside the loop.
          */
         private const val DISPLAY_FRAME_INTERVAL_MS = 1000L
+        /** While the autopilot runs the preview is the show: ~5 fps instead of 1. */
+        private const val AUTOPILOT_FRAME_INTERVAL_MS = 200L
+        private const val DISPLAY_FRAME_MAX_WIDTH = 480
 
         /**
          * JPEG quality for those frames.
@@ -1309,6 +1312,11 @@ class LauncherBindingService : Service() {
          * hashes run. The temp file is unlinked as soon as it is open: the fd keeps it
          * alive for the reader and nothing is left in cacheDir afterwards.
          */
+        override fun stopAgent() {
+            enforceCallerIsLauncher()
+            org.ethereumphone.andyclaw.autopilot.AgentDisplayCapabilities.requestStop()
+        }
+
         override fun exportLedger(): ParcelFileDescriptor? {
             enforceCallerIsLauncher()
             val app = application as? NodeApp ?: return null
@@ -1505,7 +1513,38 @@ class LauncherBindingService : Service() {
      * need a maximum-quality JPEG once a second. And the loop is keyed by session, so a
      * second session gets its own stream instead of silently sharing the first one's.
      */
-    private fun startDisplayCapture(sessionId: String, callback: ILauncherCallback) {
+    /** One autopilot event, in the shape `ILauncherCallback.onAgentStep` documents. */
+    private fun agentStepJson(e: org.ethereumphone.andyclaw.autopilot.AutopilotEvent): String {
+        val o = org.json.JSONObject()
+            .put("v", 1)
+            .put("run", e.runId)
+            .put("kind", e.kind.name)
+            .put("step", e.step)
+            .put("subgoal", e.subgoalIndex)
+            .put("subgoals", org.json.JSONArray(e.subgoals))
+            .put("plannerCalls", e.plannerCalls)
+        e.action?.let { o.put("action", it) }
+        e.target?.let { t ->
+            o.put("target", org.json.JSONObject()
+                .put("label", t.name ?: org.json.JSONObject.NULL)
+                .put("type", t.type)
+                .put("x", t.centerX)
+                .put("y", t.centerY))
+        }
+        e.confidence?.let { o.put("confidence", it) }
+        e.source?.let { o.put("source", it.name) }
+        e.reason?.let { o.put("reason", it) }
+        val ms = org.json.JSONObject().put("elapsed", e.elapsedMs)
+        e.timings?.let { t -> ms.put("jev", t.jevMs).put("act", t.actMs).put("settle", t.settleMs).put("step", t.stepMs) }
+        o.put("ms", ms)
+        return o.toString()
+    }
+
+    private fun startDisplayCapture(
+        sessionId: String,
+        callback: ILauncherCallback,
+        intervalMs: Long = DISPLAY_FRAME_INTERVAL_MS,
+    ) {
         if (displayCaptures[sessionId]?.job?.isActive == true) return
         try {
             callback.onDisplayCreated()
@@ -1531,7 +1570,12 @@ class LauncherBindingService : Service() {
 
             while (isActive) {
                 try {
-                    val frame = svc.captureFrameWithQuality(DISPLAY_FRAME_QUALITY)
+                    // On an OS that encodes on demand, a downscaled frame is cheaper on both ends.
+                    val frame = if (org.ethereumphone.andyclaw.autopilot.AgentDisplayCapabilities.hasV2) {
+                        svc.captureFrameScaled(DISPLAY_FRAME_MAX_WIDTH, DISPLAY_FRAME_QUALITY)
+                    } else {
+                        svc.captureFrameWithQuality(DISPLAY_FRAME_QUALITY)
+                    }
                     if (frame != null && frame.isNotEmpty()) {
                         // Persist first. The launcher may have gone away — a dead client
                         // must not be the reason the recording has a hole in it.
@@ -1544,7 +1588,7 @@ class LauncherBindingService : Service() {
                 } catch (e: Exception) {
                     Log.e(TAG, "Display capture failed", e)
                 }
-                delay(DISPLAY_FRAME_INTERVAL_MS)
+                delay(intervalMs)
             }
         }
         displayCaptures[sessionId] = DisplayCapture(job, recording)
@@ -1709,6 +1753,19 @@ class LauncherBindingService : Service() {
                 Log.i(TAG, "ask_user (launcher): ${request.questions.size} question(s)")
             }
 
+            override fun onAgentStep(event: org.ethereumphone.andyclaw.autopilot.AutopilotEvent) {
+                if (event.kind == org.ethereumphone.andyclaw.autopilot.AutopilotEvent.Kind.STARTED) {
+                    // The autopilot creates the display itself; show it, and faster.
+                    startDisplayCapture(sessionId, callback, AUTOPILOT_FRAME_INTERVAL_MS)
+                }
+                try {
+                    callback.onAgentStep(agentStepJson(event))
+                } catch (_: RemoteException) {
+                } catch (_: AbstractMethodError) {
+                    // Built against an older AIDL; nothing to deliver to.
+                }
+            }
+
             override suspend fun onApprovalNeeded(
                 description: String,
                 toolName: String?,
@@ -1780,6 +1837,7 @@ class LauncherBindingService : Service() {
             }
         }
 
+        app.jevTurnRouter?.prewarm(prompt)
         agentLoop.run(prompt, history, wrappedCallbacks)
 
         // Add both user and assistant messages to history so the next call

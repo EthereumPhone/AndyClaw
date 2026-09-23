@@ -404,5 +404,7 @@ object ToolEffects {
         "agent_display_focus_node" eff ToolEffect.IRREVERSIBLE,
         "agent_display_scroll_node" eff ToolEffect.IRREVERSIBLE,
         "agent_display_set_node_text" eff ToolEffect.IRREVERSIBLE,
+        // Drives an app end to end, so it is everything above at once.
+        "agent_display_autopilot" eff ToolEffect.IRREVERSIBLE,
     )
 }

@@ -15,6 +15,14 @@ import org.ethereumphone.andyclaw.flows.FlowRepository
 import org.ethereumphone.andyclaw.flows.FlowRunResult
 import org.ethereumphone.andyclaw.flows.FlowToolEffect
 import org.ethereumphone.andyclaw.flows.StoredFlow
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
+import kotlinx.serialization.json.putJsonArray
+import kotlinx.serialization.json.putJsonObject
+import kotlinx.serialization.json.addJsonObject
+import org.ethereumphone.andyclaw.ExecutionEngine.Provenance
+import org.ethereumphone.andyclaw.ExecutionEngine.currentProvenance
+import org.ethereumphone.andyclaw.autopilot.AutopilotToolHandler
 import org.ethereumphone.andyclaw.skills.AndyClawSkill
 import org.ethereumphone.andyclaw.skills.SkillManifest
 import org.ethereumphone.andyclaw.skills.SkillResult
@@ -37,6 +45,13 @@ import org.ethereumphone.andyclaw.skills.ToolDefinition
 class FlowSkill(
     private val repository: FlowRepository,
     private val driver: AgentDisplayFlowDriver,
+    /** Re-drives a flow whose screens changed, from the intent it was compiled with. */
+    private val autopilot: () -> AutopilotToolHandler? = { null },
+    /**
+     * The user's "no confirmation" setting: irreversible flows run without an approval card.
+     * Untrusted triggers are still stopped by the provenance gate before a flow is reached.
+     */
+    private val noConfirm: () -> Boolean = { false },
 ) : AndyClawSkill {
 
     override val id = SKILL_ID
@@ -109,6 +124,7 @@ class FlowSkill(
 
             is FlowRunResult.Aborted -> {
                 Log.w(TAG, "flow '${flow.flow}' aborted: ${result.reason} ${result.message}")
+                autopilotFallback(flow, arguments)?.let { return it }
                 SkillResult.Error(
                     "Flow '${flow.flow}' aborted at step ${result.stepIndex ?: "-"} " +
                         "(${result.reason}): ${result.message}. The screen is not the one this flow " +
@@ -137,7 +153,7 @@ class FlowSkill(
             // than by the interpreter mid-run — one card for the whole action, which is
             // what `agent-os-design.md` §6 asks for and what keeps the warm path free of
             // a second round trip.
-            requiresApproval = FlowToolEffect.requiresApproval(flow),
+            requiresApproval = FlowToolEffect.requiresApproval(flow) && !noConfirm(),
             searchHint = searchHintFor(flow),
             effect = effect,
             rung = RUNG,
@@ -203,10 +219,40 @@ class FlowSkill(
      */
     private fun checkpointHandler(toolName: String) = FlowCheckpointHandler { flow, name, _ ->
         val gated = FlowToolEffect.requiresApproval(flow)
-        if (!gated) {
-            Log.w(TAG, "checkpoint '$name' in '$toolName' refused — flow was not approval-gated")
+        if (gated && !noConfirm()) return@FlowCheckpointHandler true // the approval card ran
+        // No card was shown, by the user's choice. That choice covers the user's own requests
+        // only: anything a message or a webhook set off still stops here.
+        val provenance = currentProvenance()
+        val ok = noConfirm() && (provenance == Provenance.USER || provenance == Provenance.TRUSTED)
+        if (!ok) Log.w(TAG, "checkpoint '$name' in '$toolName' refused (gated=$gated, provenance=$provenance)")
+        ok
+    }
+
+    /**
+     * The screens no longer match what the flow recorded. If the flow knows what it was for,
+     * let the autopilot do the task again — it recompiles the flow when it succeeds — instead
+     * of handing the whole task back to the model.
+     */
+    private suspend fun autopilotFallback(flow: Flow, arguments: Map<String, String>): SkillResult? {
+        val intent = flow.intent ?: return null
+        val handler = autopilot() ?: return null
+        fun fill(t: String) = arguments.entries.fold(t) { acc, (k, v) -> acc.replace("{{$k}}", v) }
+        val params = buildJsonObject {
+            put("package_name", flow.app)
+            put("goal", fill(intent.goal))
+            putJsonArray("steps") {
+                intent.steps.forEach { step ->
+                    addJsonObject {
+                        put("do", fill(step.doText))
+                        step.doneWhen?.let { put("done_when", fill(it)) }
+                        step.type.firstOrNull()?.let { put("type", it) }
+                    }
+                }
+            }
+            putJsonObject("values") { arguments.forEach { (k, v) -> put(k, v) } }
         }
-        gated
+        Log.i(TAG, "flow '${flow.flow}' falling back to the autopilot")
+        return handler.handle(params) {}
     }
 
     companion object {

@@ -30,6 +30,8 @@ import org.ethereumphone.andyclaw.skills.ToolRoutes
 object ExecutionEngineFactory {
 
     private const val TAG = "ExecEngineFactory"
+    private const val AUTOPILOT_TOOL = "agent_display_autopilot"
+    private const val FLOW_RUNG = 3
 
     /**
      * Create an engine wired to the given skill registry, safety layer, and agent callbacks.
@@ -61,6 +63,11 @@ object ExecutionEngineFactory {
         ledger: AgentLedger? = null,
         /** What the run was asked to do. Carried onto every step so a row reads on its own. */
         intent: String = "",
+        /**
+         * Extra coroutine context for tool execution — the autopilot's handle on the run's model
+         * client and event sink. Defaulted and trailing for the same reason as [ledger].
+         */
+        runContext: kotlin.coroutines.CoroutineContext = kotlin.coroutines.EmptyCoroutineContext,
     ): ParallelExecutionEngine {
         // `create` is called once per tool call inside the hot loop, and every check
         // that needs a tool definition used to re-walk the whole registry. Resolve
@@ -80,7 +87,7 @@ object ExecutionEngineFactory {
         val toolDurations = java.util.concurrent.ConcurrentHashMap<String, Long>()
 
         val builder = EngineBuilder()
-            .executor(createExecutor(skillRegistry, tier, provenance, triggerConversationId, toolDurations))
+            .executor(createExecutor(skillRegistry, tier, provenance, triggerConversationId, toolDurations, runContext))
             .callbacks(
                 createCallbacks(
                     agentCallbacks, safetyLayer, ledger, provenance, intent, toolDurations,
@@ -134,6 +141,7 @@ object ExecutionEngineFactory {
         provenance: Provenance,
         triggerConversationId: String?,
         durations: MutableMap<String, Long>,
+        runContext: kotlin.coroutines.CoroutineContext,
     ): ToolExecutor =
         ToolExecutor { toolName, params ->
             // Publish the provenance into the coroutine context so code the engine
@@ -141,7 +149,7 @@ object ExecutionEngineFactory {
             // `tools.call(name, params)` bridge reaches the registry directly.
             val startedMs = System.currentTimeMillis()
             try {
-                withContext(ProvenanceContext(provenance, triggerConversationId)) {
+                withContext(ProvenanceContext(provenance, triggerConversationId) + runContext) {
                     when (val result = registry.executeTool(toolName, params, tier)) {
                         is SkillResult.Success -> ToolExecResult.Success(result.data)
                         is SkillResult.ImageSuccess -> ToolExecResult.ImageSuccess(result.text, result.base64, result.mediaType)
@@ -254,15 +262,19 @@ object ExecutionEngineFactory {
             ?.takeIf { it.isNotBlank() }
             ?: return@PreflightCheck PreflightVerdict.Pass
 
+        // The autopilot runs a compiled flow itself when one fits, so only a real API, an
+        // intent or a notification reply (rungs 0-2) is worth stopping it for.
+        val ceiling = if (call.name == AUTOPILOT_TOOL) FLOW_RUNG else rung
         val better = byName.values
             .mapNotNull { def ->
                 val defRung = def.rung ?: return@mapNotNull null
-                if (defRung < rung && target in def.targetPackages) def.name to defRung else null
+                if (defRung < ceiling && target in def.targetPackages) def.name to defRung else null
             }
             .plus(
                 ToolRoutes.routesInto(target)
                     .filter { it in byName }
                     .mapNotNull { name -> ToolRoutes.rungOf(name)?.let { name to it } }
+                    .filter { it.second < ceiling }
             )
             .distinctBy { it.first }
             .sortedBy { it.second }

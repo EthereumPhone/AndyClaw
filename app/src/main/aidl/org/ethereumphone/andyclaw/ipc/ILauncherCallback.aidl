@@ -30,4 +30,14 @@ oneway interface ILauncherCallback {
 
     // Called when the agent destroys its virtual display.
     void onDisplayDestroyed();
+
+    // ---- APPEND ONLY: the launcher compiles its own copy; order is the transaction code ----
+
+    // Autopilot progress, one JSON object per event:
+    // { "v":1, "run", "kind": STARTED|ACTING|SETTLED|SUBGOAL_DONE|ESCALATED|DONE|FAILED,
+    //   "step", "subgoal", "subgoals":[...], "action", "target":{"label","type","x","y"},
+    //   "confidence", "source": JEV|PLANNER, "ms":{"jev","act","settle","step","elapsed"},
+    //   "plannerCalls", "reason" }. Coordinates are agent-display pixels (720x720).
+    // An older launcher never receives it: the call is oneway and simply ignored.
+    void onAgentStep(String json);
 }

@@ -2,6 +2,7 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
+    <uses-permission android:name="android.permission.VIBRATE" />
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.READ_CONTACTS" />
     <uses-permission android:name="android.permission.WRITE_CONTACTS" />
@@ -150,6 +151,17 @@
 
         <!-- Accessibility service for virtual display UI tree queries.
              Auto-enabled by the framework's AgentDisplayService. -->
+        <!-- Shares autopilot replay videos (cacheDir/replays only). -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.replays"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/replay_paths" />
+        </provider>
+
         <service
             android:name=".services.AgentDisplayAccessibilityService"
             android:exported="true"

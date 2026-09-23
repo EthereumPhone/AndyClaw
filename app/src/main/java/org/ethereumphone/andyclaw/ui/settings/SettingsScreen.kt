@@ -2068,6 +2068,8 @@ fun SettingsScreen(
                     )
                 }
 
+                AutopilotSettingsRows(primaryColor, contentTitleStyle, contentBodyStyle, rowControlSpacing)
+
                 Spacer(Modifier.height(8.dp))
 
                 // Test screen
@@ -2958,4 +2960,75 @@ enum class SettingsSubScreen {
     ModelRoutingStandardSelection,
     ModelRoutingPowerfulSelection,
     LocalLlmSettings,
+}
+
+
+/** Kept out of [SettingsScreen], whose body is at the JVM's method-size limit. */
+@Composable
+private fun AutopilotSettingsRows(
+    primaryColor: androidx.compose.ui.graphics.Color,
+    contentTitleStyle: androidx.compose.ui.text.TextStyle,
+    contentBodyStyle: androidx.compose.ui.text.TextStyle,
+    rowControlSpacing: androidx.compose.ui.unit.Dp,
+) {
+    Column {
+        // Autopilot (Jev)
+        val autopilotPrefs = (androidx.compose.ui.platform.LocalContext.current.applicationContext
+            as org.ethereumphone.andyclaw.NodeApp).securePrefs
+        val autopilotOn by autopilotPrefs.autopilotEnabled.collectAsState()
+        val noConfirmOn by autopilotPrefs.autopilotNoConfirm.collectAsState()
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "AUTOPILOT",
+                    style = contentTitleStyle,
+                    color = primaryColor,
+                )
+                Text(
+                    text = "Drive apps several steps a second. The screen contents of the app being " +
+                        "operated, and requests that name an app, are sent to TypeSafe's Jev model " +
+                            "(via OpenRouter) to choose each tap.",
+                    style = contentBodyStyle,
+                    color = dgenWhite,
+                )
+            }
+            Spacer(Modifier.width(rowControlSpacing))
+            DgenSquareSwitch(
+                checked = autopilotOn,
+                onCheckedChange = { autopilotPrefs.setAutopilotEnabled(it) },
+                activeColor = primaryColor,
+            )
+        }
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "RUN SAVED TASKS WITHOUT ASKING",
+                    style = contentTitleStyle,
+                    color = primaryColor,
+                )
+                Text(
+                    text = "Replay learned app tasks (including sends) without a confirmation card, " +
+                        "for your own requests. Messages and webhooks still cannot trigger them.",
+                    style = contentBodyStyle,
+                    color = dgenWhite,
+                )
+            }
+            Spacer(Modifier.width(rowControlSpacing))
+            DgenSquareSwitch(
+                checked = noConfirmOn,
+                onCheckedChange = { autopilotPrefs.setAutopilotNoConfirm(it) },
+                activeColor = primaryColor,
+            )
+        }
+    }
 }

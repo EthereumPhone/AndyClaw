@@ -297,6 +297,14 @@ class SecurePrefs(context: Context) : KeyValueStore {
   private val _toolSearchEnabled = MutableStateFlow(prefs.getBoolean("routing.toolSearchEnabled", true))
   val toolSearchEnabled: StateFlow<Boolean> = _toolSearchEnabled
 
+  /** Jev-driven autopilot for app tasks on the agent display. Sends screen contents to Jev. */
+  private val _autopilotEnabled = MutableStateFlow(prefs.getBoolean("agent.autopilot.enabled", true))
+  val autopilotEnabled: StateFlow<Boolean> = _autopilotEnabled
+
+  /** Irreversible compiled flows run without an approval card (the user's own requests only). */
+  private val _autopilotNoConfirm = MutableStateFlow(prefs.getBoolean("agent.autopilot.noConfirm", true))
+  val autopilotNoConfirm: StateFlow<Boolean> = _autopilotNoConfirm
+
   private val _selectedRoutingPresetId = MutableStateFlow(prefs.getString("routing.presetId", "stock_minimal") ?: "stock_minimal")
   val selectedRoutingPresetId: StateFlow<String> = _selectedRoutingPresetId
 
@@ -914,6 +922,16 @@ class SecurePrefs(context: Context) : KeyValueStore {
     _toolSearchEnabled.value = enabled
   }
 
+  fun setAutopilotNoConfirm(enabled: Boolean) {
+    prefs.edit { putBoolean("agent.autopilot.noConfirm", enabled) }
+    _autopilotNoConfirm.value = enabled
+  }
+
+  fun setAutopilotEnabled(enabled: Boolean) {
+    prefs.edit { putBoolean("agent.autopilot.enabled", enabled) }
+    _autopilotEnabled.value = enabled
+  }
+
   fun setSelectedRoutingPresetId(id: String) {
     val trimmed = id.trim()
     prefs.edit { putString("routing.presetId", trimmed) }
@@ -1277,6 +1295,8 @@ class SecurePrefs(context: Context) : KeyValueStore {
     _budgetPresets.value = loadBudgetPresets()
     _smartRoutingEnabled.value = prefs.getBoolean("routing.enabled", false)
     _toolSearchEnabled.value = prefs.getBoolean("routing.toolSearchEnabled", true)
+    _autopilotEnabled.value = prefs.getBoolean("agent.autopilot.enabled", true)
+    _autopilotNoConfirm.value = prefs.getBoolean("agent.autopilot.noConfirm", true)
     _selectedRoutingPresetId.value = prefs.getString("routing.presetId", "stock_minimal") ?: "stock_minimal"
     _routingPresets.value = loadRoutingPresets()
     _routingMode.value = org.ethereumphone.andyclaw.skills.RoutingMode.fromString(prefs.getString("routing.mode", "moderate"))

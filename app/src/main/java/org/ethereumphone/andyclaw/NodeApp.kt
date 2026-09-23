@@ -494,7 +494,13 @@ class NodeApp : Application() {
      * [onUserUnlocked] instead, which is also the first moment `filesDir` and the
      * keystore are readable.
      */
-    val flowRepository: FlowRepository by lazy { FlowRepository(this, nativeSkillRegistry) }
+    val flowRepository: FlowRepository by lazy {
+        FlowRepository(
+            this, nativeSkillRegistry,
+            autopilot = { autopilotToolHandler },
+            noConfirm = { securePrefs.autopilotNoConfirm.value },
+        )
+    }
 
     /**
      * The flow registry, or null on the open tier. Rung 3 replays through the agent
@@ -606,7 +612,7 @@ class NodeApp : Application() {
             // Wrapped in the recorder so a successful discovery session can be compiled
             // into a flow: the decorator changes nothing about what runs, it only
             // watches, so there stays exactly one code path that drives the device.
-            register(RecordingDisplaySkill(AgentDisplaySkill(), flowRecorder))
+            register(RecordingDisplaySkill(AgentDisplaySkill(autopilotToolHandler), flowRecorder))
             // LED Matrix — control the 3×3 LED matrix on dGEN1 devices
             if (OsCapabilities.hasPrivilegedAccess) {
                 register(LedSkill(ledController))
@@ -678,6 +684,37 @@ class NodeApp : Application() {
                 provider = "ethOS Premium",
             )
         }
+    }
+
+    /**
+     * Jev for the autopilot, through our backend and the same wallet sign-in as the premium
+     * route. Privileged devices only: the open tier has no agent display to drive.
+     */
+    val jevClient: org.ethereumphone.andyclaw.autopilot.JevHttpClient? by lazy {
+        if (!OsCapabilities.hasPrivilegedAccess) null
+        else org.ethereumphone.andyclaw.autopilot.JevHttpClient(
+            userId = { securePrefs.walletAddress.value },
+            signature = { securePrefs.walletSignature.value },
+        )
+    }
+
+    /** Launches the likely app while the planner is still thinking. Privileged only. */
+    val jevTurnRouter: org.ethereumphone.andyclaw.autopilot.JevTurnRouter? by lazy {
+        if (!OsCapabilities.hasPrivilegedAccess) null
+        else org.ethereumphone.andyclaw.autopilot.JevTurnRouter(
+            context = this,
+            jev = { jevClient },
+            enabled = { securePrefs.autopilotEnabled.value && securePrefs.enabledSkills.value.contains("agent_display") },
+        )
+    }
+
+    val autopilotToolHandler: org.ethereumphone.andyclaw.autopilot.AutopilotToolHandler? by lazy {
+        if (!OsCapabilities.hasPrivilegedAccess) null
+        else org.ethereumphone.andyclaw.autopilot.AutopilotToolHandler(
+            jev = { jevClient },
+            enabled = { securePrefs.autopilotEnabled.value },
+            flows = { flowRepositoryOrNull },
+        )
     }
 
     /** BYOK OpenRouter client — always uses the user's own API key. */

@@ -13,6 +13,8 @@ import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.longOrNull
+import org.ethereumphone.andyclaw.autopilot.AutopilotToolHandler
+import org.ethereumphone.andyclaw.autopilot.SensitiveApps
 import org.ethereumphone.andyclaw.skills.AndyClawSkill
 import org.ethereumphone.andyclaw.skills.SkillManifest
 import org.ethereumphone.andyclaw.skills.SkillResult
@@ -20,7 +22,10 @@ import org.ethereumphone.andyclaw.skills.Tier
 import org.ethereumphone.andyclaw.skills.ToolDefinition
 import org.ethereumphone.andyclaw.skills.ToolRoutes
 
-class AgentDisplaySkill : AndyClawSkill {
+class AgentDisplaySkill(
+    /** Runs `agent_display_autopilot`; null leaves the tool out entirely. */
+    private val autopilot: AutopilotToolHandler? = null,
+) : AndyClawSkill {
 
     companion object {
         private const val TAG = "AgentDisplaySkill"
@@ -58,13 +63,20 @@ class AgentDisplaySkill : AndyClawSkill {
     override val privilegedManifest = SkillManifest(
         description = buildString {
             append("Operate a virtual Android display to perform tasks in apps on behalf of the user. ")
+            if (autopilot != null) {
+                append("FASTEST WAY: for any task in an app, call agent_display_autopilot ONCE with a short plan ")
+                append("(sub-goals + the exact text values to type). It drives the app itself in a fraction of a second per step, ")
+                append("and only returns to you if it gets stuck. Use the individual tools below only when the autopilot ")
+                append("returns status needs_planner, or for one-off inspection. ")
+            }
             append("CRITICAL — every action (create, tap, click_node, press_back, etc.) automatically returns the full UI state as structured text listing every visible element with its id, type, label, actions, viewId, and center coordinates. ")
             append("You NEVER need to call agent_display_screenshot to see the screen — the UI state IS the screen. Read it. ")
             append("To interact: use click_node(viewId) when a viewId is shown, or tap(center_x, center_y) when there is no viewId. ")
             append("NEVER call agent_display_screenshot unless the UI state says 'No elements found' (rare — only custom-drawn apps like games). ")
             append("NEVER call agent_display_look right after agent_display_create — create already returns the UI state.")
         },
-        tools = listOf(
+        tools = listOfNotNull(
+            autopilot?.let { autopilotTool() },
             // ── Display Lifecycle ───────────────────────────────────────
             tool(
                 name = "agent_display_create",
@@ -341,13 +353,26 @@ class AgentDisplaySkill : AndyClawSkill {
      */
     private fun getService(): IAgentDisplayService = AgentDisplayBinder.service()
 
+    /** Thrown instead of returning a private app's screen; [execute] turns it into a refusal. */
+    private class SensitiveScreenException(val packageName: String) : Exception("private app on the agent display")
+
+    /** The agent display's UI tree. Never returns one that shows a [SensitiveApps] package. */
+    private fun readTree(svc: IAgentDisplayService = getService()): String {
+        val tree = svc.accessibilityTree ?: "{}"
+        SensitiveApps.sensitivePackageIn(tree)?.let { throw SensitiveScreenException(it) }
+        return tree
+    }
+
     override suspend fun execute(tool: String, params: JsonObject, tier: Tier): SkillResult {
         Log.i(LTAG, "execute START tool=$tool params=$params tier=$tier")
         Log.i(DTAG, "TOOL_EXECUTE: $tool | params=$params")
         val startMs = System.currentTimeMillis()
+        org.ethereumphone.andyclaw.autopilot.AgentDisplayCapabilities.noteDisplayUse()
         return try {
             val result = when (tool) {
                 // Display lifecycle
+                "agent_display_autopilot" -> autopilot?.handle(params) { displayActive = true }
+                    ?: SkillResult.Error("Unknown tool: $tool")
                 "agent_display_create" -> doCreate(params)
                 "agent_display_destroy" -> doDestroy()
                 "agent_display_destroy_and_promote" -> doDestroyAndPromote()
@@ -416,6 +441,9 @@ class AgentDisplaySkill : AndyClawSkill {
                 }
             }
             result
+        } catch (e: SensitiveScreenException) {
+            Log.w(DTAG, "TOOL_RESULT: $tool -> REFUSED, private app ${e.packageName} on the agent display")
+            SkillResult.Error(SensitiveApps.refusal(e.packageName))
         } catch (e: Exception) {
             val elapsed = System.currentTimeMillis() - startMs
             Log.e(LTAG, "execute EXCEPTION tool=$tool elapsed=${elapsed}ms", e)
@@ -440,6 +468,8 @@ class AgentDisplaySkill : AndyClawSkill {
 
     private fun captureScreenshot(): SkillResult {
         Log.w(DTAG, "⚠️ SCREENSHOT_REQUESTED — LLM chose agent_display_screenshot instead of using a11y tree!")
+        // FLAG_SECURE covers only the secret screen itself; the rest of a private app is still drawn.
+        readTree()
         Log.d(LTAG, "captureScreenshot: requesting frame from service")
         val frame = getService().captureFrame()
         if (frame == null) {
@@ -493,7 +523,7 @@ class AgentDisplaySkill : AndyClawSkill {
         action()
         delay(delayMs)
         Log.d(LTAG, "actionWithUiTree: delay done, fetching UI tree")
-        val tree = getService().accessibilityTree ?: "{}"
+        val tree = readTree()
         Log.i(DTAG, "ACTION_WITH_TREE: got tree (${tree.length} chars) for: $description")
         return SkillResult.Success(formatTreeResponse(description, tree))
     }
@@ -648,13 +678,14 @@ class AgentDisplaySkill : AndyClawSkill {
     private suspend fun doCreate(params: JsonObject): SkillResult {
         val pkg = params["package_name"]?.jsonPrimitive?.contentOrNull
             ?: return SkillResult.Error("Missing required parameter: package_name")
+        if (SensitiveApps.isSensitive(pkg)) return SkillResult.Error(SensitiveApps.refusal(pkg))
         val svc = getService()
         svc.createAgentDisplay(DISPLAY_WIDTH, DISPLAY_HEIGHT, DISPLAY_DPI)
         displayActive = true
         val displayId = svc.displayId
         svc.launchApp(pkg)
         delay(DELAY_LAUNCH)
-        val tree = svc.accessibilityTree ?: "{}"
+        val tree = readTree(svc)
         return SkillResult.Success(
             formatTreeResponse(
                 "Virtual display created (ID: $displayId, ${DISPLAY_WIDTH}x${DISPLAY_HEIGHT} @ ${DISPLAY_DPI}dpi) and launched $pkg.",
@@ -907,7 +938,7 @@ class AgentDisplaySkill : AndyClawSkill {
     private fun doGetUiTree(): SkillResult {
         // The accessibility service now uses ScreenAnalyzer (smart analysis) automatically
         // via buildTreeForDisplay -> buildSmartTreeForDisplay, with legacy fallback
-        val tree = getService().accessibilityTree ?: "{}"
+        val tree = readTree()
         return SkillResult.Success(formatTreeResponse("Current UI state:", tree))
     }
 
@@ -932,7 +963,7 @@ class AgentDisplaySkill : AndyClawSkill {
         val method = json.optString("method", "")
         Log.i(DTAG, "NODE_ACTION_OK: $description viewId=$viewId method=$method")
         delay(delayMs)
-        val tree = getService().accessibilityTree ?: "{}"
+        val tree = readTree()
         Log.i(DTAG, "NODE_ACTION_TREE: got tree (${tree.length} chars) after: $description")
         val desc = if (method.isNotEmpty()) "$description (via $method)" else description
         return SkillResult.Success(formatTreeResponse(desc, tree))
@@ -979,7 +1010,7 @@ class AgentDisplaySkill : AndyClawSkill {
             return SkillResult.Error("Scroll $direction on $viewId failed: ${json.optString("error")}")
         }
         delay(DELAY_SWIPE)
-        val tree = getService().accessibilityTree ?: "{}"
+        val tree = readTree()
         return SkillResult.Success(formatTreeResponse("Scrolled $direction on node: $viewId.", tree))
     }
 
@@ -999,6 +1030,47 @@ class AgentDisplaySkill : AndyClawSkill {
     }
 
     // ── Schema helpers ──────────────────────────────────────────────────
+
+    private fun autopilotTool(): ToolDefinition {
+        val step = JsonObject(mapOf(
+            "type" to JsonPrimitive("object"),
+            "properties" to JsonObject(mapOf(
+                "do" to propString("What to do, in words: \"Open the conversation with Anna\""),
+                "done_when" to propString("How to tell it is done: \"Anna's conversation is open\""),
+                "type" to propString("Key in `values` whose text this step types, if any"),
+                "needs" to propEnum("Set to planner if this step needs counting, comparing or arithmetic", listOf("planner")),
+            )),
+            "required" to JsonArray(listOf(JsonPrimitive("do"))),
+        ))
+        return tool(
+            name = "agent_display_autopilot",
+            description = "Carry out a task in an app on the virtual display, fast. Give the goal as 2-6 short sub-goals and " +
+                "put every piece of text that must be typed in `values` (the autopilot never invents text). It opens the app, " +
+                "then picks and performs each tap/type/scroll itself (~0.3-0.6 s per step), asking you only if it is unsure. " +
+                "Returns {status: success|needs_planner|failed, steps, ms, say, trace, screen?}. On success, reply to the user " +
+                "with `say`. On needs_planner, continue with the individual agent_display tools from the `screen` it describes. " +
+                "Never plan a payment, password or login step — it will not perform those.",
+            props = mapOf(
+                "package_name" to propString("The app to operate, e.g. org.ethereumhpone.messenger"),
+                "goal" to propString("The whole task in one sentence"),
+                "steps" to JsonObject(mapOf(
+                    "type" to JsonPrimitive("array"),
+                    "items" to step,
+                    "description" to JsonPrimitive("Ordered sub-goals"),
+                )),
+                "values" to JsonObject(mapOf(
+                    "type" to JsonPrimitive("object"),
+                    "description" to JsonPrimitive("Literal text to type, by key, e.g. {\"body\": \"hi\"}"),
+                    "additionalProperties" to JsonObject(mapOf("type" to JsonPrimitive("string"))),
+                )),
+                "say" to propString("What to tell the user when it succeeds, e.g. \"Sent 'hi' to Anna.\""),
+                "finish" to propEnum("What to do with the display afterwards: keep (default), destroy, or promote the app to the main screen",
+                    listOf("keep", "destroy", "promote")),
+                "max_steps" to propNumber("Step budget, default 25"),
+            ),
+            required = listOf("package_name", "goal", "steps"),
+        )
+    }
 
     private fun tool(
         name: String,

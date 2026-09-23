@@ -36,6 +36,13 @@ class ToolSearchService(
         private const val MAX_AUTO_LOAD_SIBLINGS = 5
         private val DEFAULT_CORE_SKILL_IDS = setOf("code_execution", "memory")
         private val DEFAULT_DGEN1_CORE_SKILL_IDS = emptySet<String>()
+
+        /**
+         * Always on for the PRIVILEGED tier whatever the preset says. The autopilot is the fast
+         * path into any app, and a search round trip to discover it would cost the model call
+         * it exists to save.
+         */
+        private val DGEN1_BUILTIN_ALWAYS_ON = mapOf("agent_display" to setOf("agent_display_autopilot"))
     }
 
     /** Skills always included regardless of search. */
@@ -48,7 +55,11 @@ class ToolSearchService(
 
     /** Per-skill tools that are always included (user-configured "always on" tools). */
     private val alwaysIncludeTools: Map<String, Set<String>>
-        get() = presetProvider?.invoke()?.alwaysIncludeTools ?: emptyMap()
+        get() {
+            val preset = presetProvider?.invoke()?.alwaysIncludeTools ?: emptyMap()
+            if (tier != Tier.PRIVILEGED) return preset
+            return preset + DGEN1_BUILTIN_ALWAYS_ON.mapValues { (skill, tools) -> tools + preset[skill].orEmpty() }
+        }
 
     // ── Catalog ──────────────────────────────────────────────────────
 

@@ -86,6 +86,7 @@ class RouteGateTest {
                 "agent_display",
                 tool("agent_display_create", rung = ToolRoutes.RUNG_DISPLAY),
                 tool("agent_display_click_node", rung = ToolRoutes.RUNG_DISPLAY),
+                tool("agent_display_autopilot", rung = ToolRoutes.RUNG_DISPLAY),
             )
         )
     }
@@ -105,6 +106,30 @@ class RouteGateTest {
         name = "agent_display_create",
         input = JsonObject(mapOf("package_name" to JsonPrimitive(pkg))),
     )
+
+    private fun autopilot(pkg: String) = ToolCall(
+        id = "ap",
+        name = "agent_display_autopilot",
+        input = JsonObject(mapOf("package_name" to JsonPrimitive(pkg))),
+    )
+
+    @Test
+    fun `a compiled flow does not stop the autopilot, which runs flows itself`() = runBlocking {
+        registry.register(
+            skill("flows", tool("signal_send_to_thread", rung = 3, targets = listOf("org.thoughtcrime.securesms")))
+        )
+        val result = engine().executeBatch(listOf(autopilot("org.thoughtcrime.securesms")))
+        assertFalse(result.results[0].isError)
+        assertEquals(listOf("agent_display_autopilot"), executed)
+    }
+
+    @Test
+    fun `a native API still stops the autopilot`() = runBlocking {
+        registry.register(skill("sms", tool("send_sms", rung = 0, targets = listOf("com.android.messaging"))))
+        val result = engine().executeBatch(listOf(autopilot("com.android.messaging")))
+        assertTrue(result.results[0].isError)
+        assertTrue(result.results[0].content.contains("send_sms"))
+    }
 
     @Test
     fun `the display is available when nothing else covers the app`() = runBlocking {

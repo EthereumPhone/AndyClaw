@@ -244,4 +244,8 @@ interface ILauncherService {
     ParcelFileDescriptor openLedgerFrame(String frameId);
     // The whole ledger as JSONL, one row per line, for "exportable and verifiable".
     ParcelFileDescriptor exportLedger();
+
+    // ---- APPEND ONLY ----
+    // Stop whatever the agent is doing on its display (the launcher's STOP button).
+    void stopAgent();
 }

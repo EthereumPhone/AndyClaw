@@ -132,6 +132,40 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private val _agentDisplayBitmap = MutableStateFlow<Bitmap?>(null)
     val agentDisplayBitmap: StateFlow<Bitmap?> = _agentDisplayBitmap.asStateFlow()
 
+    /** The autopilot run on screen, or null. Kept after it ends for the end card. */
+    private val _autopilot = MutableStateFlow<org.ethereumphone.andyclaw.ui.autopilot.AutopilotUiState?>(null)
+    val autopilot: StateFlow<org.ethereumphone.andyclaw.ui.autopilot.AutopilotUiState?> = _autopilot.asStateFlow()
+    private val autopilotHaptics by lazy { org.ethereumphone.andyclaw.ui.autopilot.AutopilotHaptics(getApplication()) }
+
+    fun dismissAutopilot() {
+        _autopilot.value = null
+    }
+
+    /** Renders the last run as a video and opens the share sheet. Only on the user's tap. */
+    fun shareAutopilotReplay() {
+        val recording = org.ethereumphone.andyclaw.autopilot.replay.ReplayRecorder.latest() ?: return
+        viewModelScope.launch {
+            val file = try {
+                withContext(Dispatchers.Default) {
+                    org.ethereumphone.andyclaw.autopilot.replay.ReplayVideoExporter.export(getApplication(), recording)
+                }
+            } catch (e: Exception) {
+                Log.w("ChatViewModel", "replay export failed", e)
+                return@launch
+            }
+            val context = getApplication<Application>()
+            val uri = androidx.core.content.FileProvider.getUriForFile(context, "${context.packageName}.replays", file)
+            val send = android.content.Intent(android.content.Intent.ACTION_SEND)
+                .setType("video/mp4")
+                .putExtra(android.content.Intent.EXTRA_STREAM, uri)
+                .addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            context.startActivity(
+                android.content.Intent.createChooser(send, "Share autopilot replay")
+                    .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK or android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            )
+        }
+    }
+
     private var agentDisplayJob: Job? = null
     private val _isCompacting = MutableStateFlow(false)
     val isCompacting: StateFlow<Boolean> = _isCompacting.asStateFlow()
@@ -423,6 +457,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 BackgroundMemoryExtractor(memoryAiClient, memoryManager, memoryAiModelId)
             } else null
 
+            // Start the likely app while the model plans; costs nothing if the turn needs no app.
+            app.jevTurnRouter?.prewarm(text)
             agentLoop.run(text, conversationHistory, object : AgentLoop.Callbacks {
                 override fun onToken(text: String) {
                     _streamingText.value += text
@@ -459,7 +495,10 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     _messages.value = _messages.value + toolMsg
 
                     // Agent display preview lifecycle
-                    if (toolName == "agent_display_create" && result !is SkillResult.Error) {
+                    if (toolName == "agent_display_autopilot") {
+                        // The live view keeps its end card; the frame poller can stop.
+                        stopDisplayCapture(clearFrame = false)
+                    } else if (toolName == "agent_display_create" && result !is SkillResult.Error) {
                         startDisplayCapture()
                     } else if (toolName == "agent_display_destroy" || toolName == "agent_display_destroy_and_promote") {
                         stopDisplayCapture()
@@ -476,6 +515,10 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                         isSecurityBlock = true,
                     )
                     _messages.value = _messages.value + securityMsg
+                }
+
+                override fun onAgentStep(event: org.ethereumphone.andyclaw.autopilot.AutopilotEvent) {
+                    onAutopilotEvent(event)
                 }
 
                 override fun onAskUserDisplayed(request: org.ethereumphone.andyclaw.agent.AskUserRequest) {
@@ -639,7 +682,19 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         _insufficientBalance.value = false
     }
 
-    private fun startDisplayCapture() {
+    private fun onAutopilotEvent(event: org.ethereumphone.andyclaw.autopilot.AutopilotEvent) {
+        val current = _autopilot.value
+        val base = if (current == null || current.runId != event.runId) {
+            org.ethereumphone.andyclaw.ui.autopilot.AutopilotUiState(runId = event.runId)
+        } else current
+        _autopilot.value = base.reduce(event)
+        autopilotHaptics.on(event)
+        if (event.kind == org.ethereumphone.andyclaw.autopilot.AutopilotEvent.Kind.STARTED) {
+            startDisplayCapture(intervalMs = AUTOPILOT_FRAME_INTERVAL_MS)
+        }
+    }
+
+    private fun startDisplayCapture(intervalMs: Long = 1000) {
         if (agentDisplayJob?.isActive == true) return
         agentDisplayJob = viewModelScope.launch(Dispatchers.IO) {
             val svc = try {
@@ -652,9 +707,11 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 null
             } ?: return@launch
 
+            val scaled = org.ethereumphone.andyclaw.autopilot.AgentDisplayCapabilities.hasV2
             while (isActive) {
                 try {
-                    val frame = svc.captureFrame()
+                    // The OS encodes on demand now; a smaller frame is cheaper on both sides.
+                    val frame = if (scaled) svc.captureFrameScaled(480, 70) else svc.captureFrame()
                     if (frame != null) {
                         val bitmap = BitmapFactory.decodeByteArray(frame, 0, frame.size)
                         if (bitmap != null) {
@@ -664,15 +721,15 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 } catch (e: Exception) {
                     Log.e("ChatViewModel", "Display capture failed", e)
                 }
-                delay(1000)
+                delay(intervalMs)
             }
         }
     }
 
-    private fun stopDisplayCapture() {
+    private fun stopDisplayCapture(clearFrame: Boolean = true) {
         agentDisplayJob?.cancel()
         agentDisplayJob = null
-        _agentDisplayBitmap.value = null
+        if (clearFrame) _agentDisplayBitmap.value = null
     }
 
     private fun flushStreamingText(sessionId: String) {
@@ -835,6 +892,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     companion object {
+        /** Without the OS mirror, the live view falls back to frames at this rate. */
+        private const val AUTOPILOT_FRAME_INTERVAL_MS = 200L
         /** Matches trivial user messages that aren't worth remembering. */
         private val TRIVIAL_PATTERN = Regex(
             "^(yes|no|ok|okay|sure|thanks|thank you|yep|nope|got it|do it|go ahead|looks good|perfect|great|nice|cool|lgtm|\\+1|👍|k|y|n)\\s*[.!?]*$",

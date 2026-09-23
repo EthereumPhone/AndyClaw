@@ -12,6 +12,10 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
 import kotlinx.serialization.json.putJsonObject
+import org.ethereumphone.andyclaw.autopilot.AutopilotEvent
+import org.ethereumphone.andyclaw.autopilot.AutopilotEventSink
+import org.ethereumphone.andyclaw.autopilot.AutopilotMetrics
+import org.ethereumphone.andyclaw.autopilot.AutopilotRunContext
 import org.ethereumphone.andyclaw.llm.AnthropicApiException
 import org.ethereumphone.andyclaw.llm.AnthropicModels
 import org.ethereumphone.andyclaw.llm.CannotRetryException
@@ -131,6 +135,9 @@ class AgentLoop(
      * `AgentRunMetrics`.
      */
     private val modelCalls = java.util.concurrent.atomic.AtomicInteger(0)
+
+    /** Model calls made by the most recent [run] — AndyBench's count. */
+    val lastRunModelCalls: Int get() = modelCalls.get()
 
     /**
      * What the execution engine reported, rolled up across the whole run.
@@ -329,6 +336,50 @@ class AgentLoop(
             }
             Log.d(TAG, "pruneOldImages: stripped ${toStrip.size} old image(s), kept $keep most recent")
         }
+
+        /**
+         * Replace every agent-display UI tree in the history except the newest [keep] with a
+         * one-line stub. Each display action returns the whole screen, and without this every
+         * later model call re-sends every screen the session has seen. Stubs never change once
+         * written, so a provider's prompt cache still covers everything before the tail.
+         */
+        fun pruneOldUiTrees(messages: MutableList<Message>, keep: Int = 1) {
+            val displayCallIds = HashSet<String>()
+            for (msg in messages) {
+                val blocks = (msg.content as? MessageContent.Blocks)?.blocks ?: continue
+                for (b in blocks) {
+                    if (b is ContentBlock.ToolUseBlock && b.name.startsWith(DISPLAY_TOOL_PREFIX) &&
+                        b.name != AUTOPILOT_TOOL_NAME) displayCallIds += b.id
+                }
+            }
+            if (displayCallIds.isEmpty()) return
+            data class Loc(val mi: Int, val bi: Int)
+            val trees = ArrayList<Loc>()
+            for ((mi, msg) in messages.withIndex()) {
+                val blocks = (msg.content as? MessageContent.Blocks)?.blocks ?: continue
+                for ((bi, b) in blocks.withIndex()) {
+                    if (b is ContentBlock.ToolResult && b.toolUseId in displayCallIds &&
+                        b.content.length > UI_TREE_MIN_CHARS && !b.content.endsWith(UI_TREE_ELIDED)) {
+                        trees += Loc(mi, bi)
+                    }
+                }
+            }
+            if (trees.size <= keep) return
+            for ((mi, locs) in trees.dropLast(keep).groupBy { it.mi }) {
+                val msg = messages[mi]
+                val blocks = (msg.content as MessageContent.Blocks).blocks.toMutableList()
+                for (loc in locs) {
+                    val tr = blocks[loc.bi] as ContentBlock.ToolResult
+                    blocks[loc.bi] = tr.copy(content = tr.content.lineSequence().first().take(200) + UI_TREE_ELIDED)
+                }
+                messages[mi] = msg.copy(content = MessageContent.Blocks(blocks))
+            }
+        }
+
+        private const val DISPLAY_TOOL_PREFIX = "agent_display_"
+        private const val AUTOPILOT_TOOL_NAME = "agent_display_autopilot"
+        private const val UI_TREE_MIN_CHARS = 400
+        private const val UI_TREE_ELIDED = " [older screen elided; the newest UI state is further down]"
     }
 
     interface Callbacks {
@@ -348,6 +399,8 @@ class AgentLoop(
          * arrives as the next user message in a new turn.
          */
         fun onAskUserDisplayed(request: AskUserRequest) {}
+        /** Autopilot progress, for a live view. Default: ignored. */
+        fun onAgentStep(event: AutopilotEvent) {}
         fun onComplete(fullText: String, tokenUsage: TokenUsageSnapshot? = null)
         fun onError(error: Throwable)
     }
@@ -596,6 +649,7 @@ class AgentLoop(
                 Log.i(TAG, "--- AgentLoop iteration $iterations/$MAX_ITERATIONS ---")
 
                 pruneOldImages(messages)
+                pruneOldUiTrees(messages)
 
                 val effectiveMaxTokens = budget?.effectiveMaxTokens(
                     modelDefault = baseMaxTokens,
@@ -624,6 +678,7 @@ class AgentLoop(
 
                 val responseBlocks = mutableListOf<ContentBlock>()
                 val streamText = StringBuilder()
+                val runContext = autopilotRunContext(effectiveModelId, callbacks)
 
                 // Streaming tool executor: starts executing tools as they arrive from the stream
                 val streamingExecutor = StreamingToolExecutor(
@@ -641,6 +696,7 @@ class AgentLoop(
                             enforceProvenance = enforceProvenance,
                             ledger = ledger,
                             intent = userMessage,
+                            runContext = runContext,
                         )
                         val calls = ExecutionEngineFactory.toToolCalls(listOf(block))
                         val batchResult = engine.executeBatch(calls)
@@ -865,6 +921,7 @@ class AgentLoop(
                             enforceProvenance = enforceProvenance,
                             ledger = ledger,
                             intent = userMessage,
+                            runContext = runContext,
                         )
                         val engineCalls = ExecutionEngineFactory.toToolCalls(regularNotInExecutor)
                         val batchResult = engine.executeBatch(engineCalls)
@@ -934,6 +991,23 @@ class AgentLoop(
                 }
                 Log.i("AGENT_VIRTUAL_SCREEN", "AgentLoop: adding ${allToolResults.size} tool results as user message, imageCount=$imageCount, totalBase64Chars=$totalBase64")
                 messages.add(Message("user", MessageContent.Blocks(allToolResults)))
+
+                // The autopilot finished the task and wrote the reply: asking the model to
+                // restate it would be a whole extra round trip for one sentence.
+                autopilotReply(toolUseBlocks, allToolResults)?.let { say ->
+                    Log.i(TAG, "Autopilot succeeded; ending the turn with its reply (no extra model call)")
+                    fullText.append(say)
+                    callbacks.onToken(say)
+                    logRunSummary(iterations, totalInputTokens, totalOutputTokens, totalCacheReadTokens, totalCacheWriteTokens, totalTokensSavedByMaxTokens, totalCharsTruncated, truncationCount, budget)
+                    callbacks.onComplete(fullText.toString(), TokenUsageSnapshot(
+                        lastInputTokens = lastInputTokens,
+                        totalInputTokens = totalInputTokens,
+                        totalOutputTokens = totalOutputTokens,
+                        cacheReadTokens = totalCacheReadTokens,
+                        cacheWriteTokens = totalCacheWriteTokens,
+                    ))
+                    return
+                }
             }
 
             // Max iterations reached
@@ -965,6 +1039,35 @@ class AgentLoop(
                 Log.w(TAG, "cleanupAll failed: ${e.message}", e)
             }
         }
+    }
+
+    // ── Autopilot ─────────────────────────────────────────────────
+
+    private fun autopilotRunContext(modelId: String, callbacks: Callbacks) = AutopilotRunContext(
+        client = client,
+        modelId = modelId,
+        onModelCall = {
+            modelCalls.incrementAndGet()
+            modelIdsUsed.add(modelId)
+        },
+        events = AutopilotEventSink { callbacks.onAgentStep(it) },
+    )
+
+    /**
+     * The reply to end the turn with, when every tool this iteration was the autopilot and
+     * every run succeeded with something to say. Anything else goes back to the model.
+     */
+    private fun autopilotReply(calls: List<ContentBlock.ToolUseBlock>, results: List<ContentBlock>): String? {
+        if (calls.isEmpty() || calls.any { it.name != AUTOPILOT_TOOL_NAME }) return null
+        val byId = results.filterIsInstance<ContentBlock.ToolResult>().associateBy { it.toolUseId }
+        val replies = calls.map { call ->
+            val result = byId[call.id]?.takeIf { !it.isError } ?: return null
+            val obj = runCatching { kotlinx.serialization.json.Json.parseToJsonElement(result.content) as? JsonObject }
+                .getOrNull() ?: return null
+            if (obj["status"]?.jsonPrimitive?.contentOrNull != "success") return null
+            obj["say"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() } ?: return null
+        }
+        return replies.joinToString(" ")
     }
 
     // ── The ledger ────────────────────────────────────────────────
@@ -1185,6 +1288,7 @@ class AgentLoop(
                     // session, same chain — but the intent is the delegated task, because
                     // that is what those particular steps were for.
                     intent = taskDescription,
+                    runContext = autopilotRunContext(effectiveModelId, callbacks),
                 )
                 val engineCalls = ExecutionEngineFactory.toToolCalls(execCalls)
                 val batchResult = engine.executeBatch(engineCalls)
@@ -1403,7 +1507,7 @@ class AgentLoop(
             METRICS_TAG,
             "durationMs=${System.currentTimeMillis() - runStartedMs} " +
                 "modelCalls=${modelCalls.get()} iterations=$iterations " +
-                FlowMetrics.snapshot(),
+                FlowMetrics.snapshot() + " " + AutopilotMetrics.snapshotAndReset(),
         )
         if (cacheRead > 0 || cacheWrite > 0) {
             Log.i(TAG, "  cache: read=$cacheRead write=$cacheWrite (saved ~${(cacheRead * 0.9f).toInt()} input tokens at 90% discount)")

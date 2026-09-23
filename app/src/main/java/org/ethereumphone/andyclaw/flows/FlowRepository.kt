@@ -32,12 +32,14 @@ class FlowRepository(
     private val registry: NativeSkillRegistry,
     signer: FlowSigner = KeystoreFlowSigner(),
     root: File = File(appContext.filesDir, FlowStore.DIR_NAME),
+    autopilot: () -> org.ethereumphone.andyclaw.autopilot.AutopilotToolHandler? = { null },
+    noConfirm: () -> Boolean = { false },
 ) {
 
     val store: FlowStore = FlowStore(root, signer)
 
     /** The skill the flows are published through. Registered once, rebuilt on change. */
-    val skill: FlowSkill = FlowSkill(this, AgentDisplayFlowDriver(appContext))
+    val skill: FlowSkill = FlowSkill(this, AgentDisplayFlowDriver(appContext), autopilot, noConfirm)
 
     @Volatile
     private var published: List<StoredFlow> = emptyList()
