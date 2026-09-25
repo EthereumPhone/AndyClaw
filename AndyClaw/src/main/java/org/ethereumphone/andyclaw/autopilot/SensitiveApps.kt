@@ -51,6 +51,13 @@ object SensitiveApps {
         return PACKAGE_KEY.findAll(treeJson).map { it.groupValues[1] }.firstOrNull(::isSensitive)
     }
 
+    /**
+     * The first private package among the app windows on a display, top first, or null. Every
+     * window counts, not only the top one: a private app under another app's dialog is still on
+     * the screen that would be read.
+     */
+    fun sensitiveAmong(windowPackages: List<String?>): String? = windowPackages.firstOrNull(::isSensitive)
+
     /** What the model is told instead of the screen. Names the package, never its content. */
     fun refusal(packageName: String): String =
         "$packageName is a private app (wallet, recovery or passwords). The agent does not open " +

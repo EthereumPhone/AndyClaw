@@ -1612,25 +1612,41 @@ class LauncherBindingService : Service() {
                 null
             } ?: return@launch
 
+            var clientAlive = true
             while (isActive) {
                 try {
-                    // On an OS that encodes on demand, a downscaled frame is cheaper on both ends.
-                    val frame = if (org.ethereumphone.andyclaw.autopilot.AgentDisplayCapabilities.hasV2) {
-                        svc.captureFrameScaled(DISPLAY_FRAME_MAX_WIDTH, DISPLAY_FRAME_QUALITY)
-                    } else {
-                        svc.captureFrameWithQuality(DISPLAY_FRAME_QUALITY)
+                    val displayId = svc.displayId
+                    // No display yet (the run has not created it) or parked: nothing to show,
+                    // and nothing worth a stack trace five times a second.
+                    val privateApp = if (displayId < 0) null
+                    else org.ethereumphone.andyclaw.services.AgentDisplayAccessibilityService.instance
+                        ?.sensitivePackageOnDisplay(displayId)
+                    if (displayId >= 0 && privateApp == null) {
+                        // On an OS that encodes on demand, a downscaled frame is cheaper on both ends.
+                        val frame = if (org.ethereumphone.andyclaw.autopilot.AgentDisplayCapabilities.hasV2) {
+                            svc.captureFrameScaled(DISPLAY_FRAME_MAX_WIDTH, DISPLAY_FRAME_QUALITY)
+                        } else {
+                            svc.captureFrameWithQuality(DISPLAY_FRAME_QUALITY)
+                        }
+                        if (frame != null && frame.isNotEmpty()) {
+                            // Persist first, and keep persisting if the launcher goes away: a dead
+                            // client must not be the reason the recording has a hole in it.
+                            recording?.write(frame)
+                            if (clientAlive) {
+                                try {
+                                    callback.onDisplayFrame(frame)
+                                } catch (e: RemoteException) {
+                                    Log.w(TAG, "Launcher went away during display capture; still recording")
+                                    clientAlive = false
+                                }
+                            }
+                        }
                     }
-                    if (frame != null && frame.isNotEmpty()) {
-                        // Persist first. The launcher may have gone away — a dead client
-                        // must not be the reason the recording has a hole in it.
-                        recording?.write(frame)
-                        callback.onDisplayFrame(frame)
-                    }
-                } catch (e: RemoteException) {
-                    Log.w(TAG, "Client disconnected during display capture")
-                    break
+                    // A private app's screen is neither streamed nor kept.
+                } catch (e: IllegalStateException) {
+                    // The display went away between the check and the capture.
                 } catch (e: Exception) {
-                    Log.e(TAG, "Display capture failed", e)
+                    Log.w(TAG, "Display capture failed: ${e.message}")
                 }
                 delay(intervalMs)
             }

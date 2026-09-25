@@ -30,6 +30,8 @@ import org.ethereumphone.andyclaw.ExecutionEngine.rethrowIfCancelled
 class AgentDisplaySkill(
     /** Runs `agent_display_autopilot`; null leaves the tool out entirely. */
     private val autopilot: AutopilotToolHandler? = null,
+    /** For resolving where a launch intent leads, so a private app is refused before it opens. */
+    private val context: android.content.Context? = null,
 ) : AndyClawSkill {
 
     companion object {
@@ -737,6 +739,7 @@ class AgentDisplaySkill(
             ?: return SkillResult.Error("Missing required parameter: package_name")
         val activity = params["activity_name"]?.jsonPrimitive?.contentOrNull
             ?: return SkillResult.Error("Missing required parameter: activity_name")
+        if (SensitiveApps.isSensitive(pkg)) return SkillResult.Error(SensitiveApps.refusal(pkg))
         return actionWithUiTree(DELAY_LAUNCH, "Launched $pkg/$activity.") {
             getService().launchActivity(pkg, activity)
         }
@@ -745,9 +748,22 @@ class AgentDisplaySkill(
     private suspend fun doLaunchIntent(params: JsonObject): SkillResult {
         val uri = params["uri"]?.jsonPrimitive?.contentOrNull
             ?: return SkillResult.Error("Missing required parameter: uri")
+        // Where the intent leads, not what it says: a view URI or an implicit action can open a
+        // private app as surely as its package name can.
+        targetPackageOf(uri)?.takeIf(SensitiveApps::isSensitive)?.let { return SkillResult.Error(SensitiveApps.refusal(it)) }
         return actionWithUiTree(DELAY_LAUNCH, "Launched intent: $uri.") {
             getService().launchIntentUri(uri)
         }
+    }
+
+    /** The package [uri] would open, or null when that cannot be told here (the OS checks too). */
+    private fun targetPackageOf(uri: String): String? = try {
+        val intent = android.content.Intent.parseUri(uri, 0)
+        intent.`package` ?: intent.component?.packageName ?: context?.packageManager
+            ?.resolveActivity(intent, android.content.pm.PackageManager.MATCH_DEFAULT_ONLY)
+            ?.activityInfo?.packageName
+    } catch (e: Exception) {
+        null
     }
 
     private fun doCurrentActivity(): SkillResult {

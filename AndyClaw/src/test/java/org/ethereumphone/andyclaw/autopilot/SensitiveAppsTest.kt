@@ -81,4 +81,11 @@ class SensitiveAppsTest {
         assertTrue(text.contains("org.ethereumphone.walletmanager"))
         assertTrue(text.contains("user"))
     }
+
+    @Test
+    fun `a private app under another window still counts`() {
+        assertEquals("org.ethereumphone.walletmanager",
+            SensitiveApps.sensitiveAmong(listOf("com.android.chrome", "org.ethereumphone.walletmanager")))
+        assertEquals(null, SensitiveApps.sensitiveAmong(listOf("com.android.chrome", null)))
+    }
 }

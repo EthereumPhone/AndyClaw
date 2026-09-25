@@ -15,6 +15,7 @@ import android.view.accessibility.AccessibilityWindowInfo
 import org.ethereumphone.andyclaw.analyzer.ScreenAnalyzer
 import org.ethereumphone.andyclaw.autopilot.ScreenElement
 import org.ethereumphone.andyclaw.autopilot.ScreenSnapshot
+import org.ethereumphone.andyclaw.autopilot.SensitiveApps
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.concurrent.atomic.AtomicLong
@@ -139,7 +140,11 @@ class AgentDisplayAccessibilityService : AccessibilityService() {
 
     internal fun doClickNode(displayId: Int, viewId: String): String {
         Log.i(DTAG, "A11Y_CLICK_NODE: viewId=$viewId displayId=$displayId")
-        val node = findNodeByViewId(displayId, viewId)
+        val node = try {
+            findNodeByViewId(displayId, viewId)
+        } catch (e: PrivateNodeException) {
+            return privateRefusal(e)
+        }
             ?: run {
                 Log.e(DTAG, "A11Y_CLICK_NODE: node NOT FOUND: $viewId")
                 return """{"ok":false,"error":"Node not found: $viewId"}"""
@@ -171,7 +176,11 @@ class AgentDisplayAccessibilityService : AccessibilityService() {
     }
 
     internal fun doLongClickNode(displayId: Int, viewId: String): String {
-        val node = findNodeByViewId(displayId, viewId)
+        val node = try {
+            findNodeByViewId(displayId, viewId)
+        } catch (e: PrivateNodeException) {
+            return privateRefusal(e)
+        }
             ?: return """{"ok":false,"error":"Node not found: $viewId"}"""
 
         if (node.performAction(AccessibilityNodeInfo.ACTION_LONG_CLICK)) {
@@ -198,7 +207,11 @@ class AgentDisplayAccessibilityService : AccessibilityService() {
 
     internal fun doSetNodeText(displayId: Int, viewId: String, text: String): String {
         Log.i(DTAG, "A11Y_SET_TEXT: viewId=$viewId text=\"${text.take(50)}\" displayId=$displayId")
-        val node = findNodeByViewId(displayId, viewId)
+        val node = try {
+            findNodeByViewId(displayId, viewId)
+        } catch (e: PrivateNodeException) {
+            return privateRefusal(e)
+        }
             ?: run {
                 Log.e(DTAG, "A11Y_SET_TEXT: node NOT FOUND: $viewId")
                 return """{"ok":false,"error":"Node not found: $viewId"}"""
@@ -239,7 +252,11 @@ class AgentDisplayAccessibilityService : AccessibilityService() {
     internal fun doScrollNode(displayId: Int, viewId: String, action: Int): String {
         val directionStr = if (action == AccessibilityNodeInfo.ACTION_SCROLL_FORWARD) "forward" else "backward"
         Log.i(DTAG, "A11Y_SCROLL_NODE: viewId=$viewId direction=$directionStr displayId=$displayId")
-        val node = findNodeByViewId(displayId, viewId)
+        val node = try {
+            findNodeByViewId(displayId, viewId)
+        } catch (e: PrivateNodeException) {
+            return privateRefusal(e)
+        }
             ?: run {
                 Log.e(DTAG, "A11Y_SCROLL_NODE: node NOT FOUND: $viewId")
                 return """{"ok":false,"error":"Node not found: $viewId"}"""
@@ -276,7 +293,11 @@ class AgentDisplayAccessibilityService : AccessibilityService() {
     }
 
     private fun doFocusNode(displayId: Int, viewId: String): String {
-        val node = findNodeByViewId(displayId, viewId)
+        val node = try {
+            findNodeByViewId(displayId, viewId)
+        } catch (e: PrivateNodeException) {
+            return privateRefusal(e)
+        }
             ?: return """{"ok":false,"error":"Node not found: $viewId"}"""
 
         if (node.performAction(AccessibilityNodeInfo.ACTION_ACCESSIBILITY_FOCUS)) {
@@ -303,7 +324,11 @@ class AgentDisplayAccessibilityService : AccessibilityService() {
     }
 
     private fun doGetNodeInfo(displayId: Int, viewId: String): String {
-        val node = findNodeByViewId(displayId, viewId)
+        val node = try {
+            findNodeByViewId(displayId, viewId)
+        } catch (e: PrivateNodeException) {
+            return privateRefusal(e, key = "error")
+        }
             ?: return """{"error":"Node not found: $viewId"}"""
         return try {
             val bounds = Rect()
@@ -340,6 +365,36 @@ class AgentDisplayAccessibilityService : AccessibilityService() {
     // Node lookup — strict display targeting, safe recycling
     // ========================================================================
 
+    /** Thrown by [findNodeByViewId] instead of handing out a private app's node. */
+    private class PrivateNodeException(val packageName: String) : Exception("private app")
+
+    /** A private app's package among [windows] of [type] (or all app and system windows). */
+    private fun windowPackages(windows: List<AccessibilityWindowInfo>, type: Int? = null): List<String> =
+        windows.filter { type == null || it.type == type }.mapNotNull { w ->
+            val root = w.root ?: return@mapNotNull null
+            try { root.packageName?.toString() } finally { try { root.recycle() } catch (_: Exception) {} }
+        }
+
+    /**
+     * The private app ([SensitiveApps]) open among the agent display's app windows, or null.
+     * For the frame capture: a private app's screen is neither streamed nor recorded.
+     */
+    fun sensitivePackageOnDisplay(displayId: Int): String? {
+        val windows = windowsOnAllDisplays.get(displayId) ?: return null
+        return SensitiveApps.sensitiveAmong(windowPackages(windows, AccessibilityWindowInfo.TYPE_APPLICATION))
+    }
+
+    /** The refusal a node action or a node read answers with for a private app. */
+    private fun privateRefusal(e: PrivateNodeException, key: String = "ok"): String =
+        JSONObject().apply {
+            if (key == "ok") put("ok", false)
+            put("error", "${e.packageName} is a private app; the agent does not operate or read it")
+        }.toString()
+
+    /**
+     * The node with [viewId] on [displayId]. Never a private app's: FLAG_SECURE hides a window from
+     * frame captures, not from the tree, and one node read at a time is still the whole screen.
+     */
     private fun findNodeByViewId(displayId: Int, viewId: String): AccessibilityNodeInfo? {
         val allWindows = windowsOnAllDisplays
         val windows = allWindows.get(displayId)
@@ -352,6 +407,10 @@ class AgentDisplayAccessibilityService : AccessibilityService() {
 
         for (window in windows) {
             val root = window.getRoot() ?: continue
+            root.packageName?.toString()?.takeIf(SensitiveApps::isSensitive)?.let { pkg ->
+                try { root.recycle() } catch (_: Exception) {}
+                throw PrivateNodeException(pkg)
+            }
             val found = root.findAccessibilityNodeInfosByViewId(viewId)
             // Don't recycle root before using found nodes — found nodes may
             // reference internal state tied to the root's connection.
@@ -380,13 +439,12 @@ class AgentDisplayAccessibilityService : AccessibilityService() {
         return try {
             val allWindows = windowsOnAllDisplays
 
-            var windows: List<AccessibilityWindowInfo>? = allWindows.get(displayId)
+            // Only ever the agent display's own windows. Falling back to getWindows() when it had
+            // none handed the model the *main* screen — whatever the user had open.
+            val windows: List<AccessibilityWindowInfo> = allWindows.get(displayId)
             if (windows.isNullOrEmpty()) {
-                windows = getWindows()
-                if (windows.isNullOrEmpty()) {
-                    Log.w(DTAG, "SMART_ANALYSIS: no windows found for displayId=$displayId")
-                    return """{"screen":{},"elements":[],"scrollable":false}"""
-                }
+                Log.w(DTAG, "SMART_ANALYSIS: no windows found for displayId=$displayId")
+                return """{"screen":{},"elements":[],"scrollable":false}"""
             }
             Log.i(DTAG, "SMART_ANALYSIS: found ${windows.size} window(s) on displayId=$displayId")
 
@@ -431,6 +489,13 @@ class AgentDisplayAccessibilityService : AccessibilityService() {
     fun snapshot(displayId: Int, width: Int, height: Int): ScreenSnapshot? {
         val windows = windowsOnAllDisplays.get(displayId)
         if (windows.isNullOrEmpty()) return null
+        // A private app anywhere among the app windows — under a dialog, beside another app —
+        // means none of the screen is read: its package is reported and nothing else, and the
+        // autopilot stops there. System windows are left out of the check because SystemUI,
+        // itself on the private list, draws the text toasts every app shows.
+        SensitiveApps.sensitiveAmong(windowPackages(windows, AccessibilityWindowInfo.TYPE_APPLICATION))?.let { pkg ->
+            return ScreenSnapshot(packageName = pkg, title = null, elements = emptyList(), width = width, height = height)
+        }
         val elements = ArrayList<ScreenElement>()
         val others = ArrayList<String>()
         var packageName: String? = null
@@ -523,12 +588,10 @@ class AgentDisplayAccessibilityService : AccessibilityService() {
         return try {
             val allWindows = windowsOnAllDisplays
 
-            var windows: List<AccessibilityWindowInfo>? = allWindows.get(displayId)
+            // The agent display's windows only; see buildSmartTreeForDisplay.
+            val windows: List<AccessibilityWindowInfo> = allWindows.get(displayId)
             if (windows.isNullOrEmpty()) {
-                windows = getWindows()
-                if (windows.isNullOrEmpty()) {
-                    return """{"windows":[]}"""
-                }
+                return """{"windows":[]}"""
             }
 
             val interactiveElements = mutableListOf<JSONObject>()

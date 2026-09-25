@@ -712,7 +712,7 @@ class NodeApp : Application() {
             // Wrapped in the recorder so a successful discovery session can be compiled
             // into a flow: the decorator changes nothing about what runs, it only
             // watches, so there stays exactly one code path that drives the device.
-            register(RecordingDisplaySkill(AgentDisplaySkill(autopilotToolHandler), flowRecorder))
+            register(RecordingDisplaySkill(AgentDisplaySkill(autopilotToolHandler, this@NodeApp), flowRecorder))
             // LED Matrix — control the 3×3 LED matrix on dGEN1 devices
             if (OsCapabilities.hasPrivilegedAccess) {
                 register(LedSkill(ledController))
