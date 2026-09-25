@@ -206,7 +206,8 @@ interface ILauncherService {
     // newest-relevant first. Nothing here was written by a model: every field was parsed
     // deterministically out of something that was already structured. JSON array:
     //   [{ "id", "kind", "title", "subtitle", "startMs", "endMs", "location",
-    //      "payload": {...}, "score", "untilStartMs", "source" }]
+    //      "payload": {...}, "score", "untilStartMs", "source", "updatedMs" }]
+    // Payload keys are snake_case (flight_number, reservation_number, date_only, ...).
     String getPredictedCards(int limit);
     // Waves a card away. It comes back only if the underlying thing actually changes --
     // a moved departure time is exactly when it should.
@@ -217,11 +218,13 @@ interface ILauncherService {
     // for the user. This is what an ActionConfirmCard renders. JSON array:
     //   [{ "id", "timestampMs", "source", "provenance", "toolName", "description",
     //      "conversationId", "inputPreview" }]
+    // v2 rows add: "v", "title", "summary", "params": [{ "key", "label", "value",
+    //   "truncated", "length" }], "effect", "requiresDeviceAuth", "sourceLabel", "expiresMs",
+    //   "count", "executable", "toolReason".
     String getPendingApprovals();
-    // Resolves one, either way, and writes the decision to the ledger. Approving does not
-    // replay the refused call -- the store deliberately keeps only a truncated preview of
-    // its arguments -- so the launcher follows an approval with a normal sendPrompt() from
-    // the user, which is USER-provenance and passes the gate honestly. True if it existed.
+    // Resolves one, either way, and writes the decision to the ledger. It never runs the
+    // refused call: an approval through here is only acknowledged. This launcher uses it to
+    // decline, and approves through resolvePendingApprovalWithResult. True if it existed.
     boolean resolvePendingApproval(String id, boolean approved);
 
     // ── Ledger ────────────────────────────────────────────────────────
@@ -232,13 +235,17 @@ interface ILauncherService {
     //     "flowRef", "actions": [{ "tool", "ok", "durationMs", "note" }], "frames": [],
     //     "outcome", "modelIds": [], "costUsd" (null when unknown -- not zero),
     //     "inputTokens", "outputTokens", "durationMs", "prevHash", "hash" }
+    // Derived, never exported: "displayIntent", "trigger", and on TURN rows "actedOnBehalf"
+    // and "summary": { "toolsRun", "toolsBlocked", "toolErrors", "sideEffects",
+    // "sideEffectTools": [], "frames" }.
     String getLedgerEntries(int limit);
     // One session assembled for playback: its rows, the frames still on disk, and the
     // frames the rows name that retention has since evicted. JSON:
     //   { "sessionId", "intent", "startedMs", "endedMs", "entries": [...],
     //     "frames": [{ "id", "index", "timestampMs", "sizeBytes" }], "missingFrames": [] }
     String getLedgerSession(String sessionId);
-    // Re-hashes the whole chain. JSON: { "ok", "checked", "brokenAtSeq" (null when ok) }.
+    // Re-hashes the whole chain. JSON: { "ok", "checked", "brokenAtSeq" (null when ok),
+    // "reason" }. Not ok with no brokenAtSeq means the check itself failed, not the chain.
     String verifyLedger();
     // One captured frame, by the id the ledger names, as a read-only fd. Null if evicted.
     ParcelFileDescriptor openLedgerFrame(String frameId);
@@ -248,4 +255,11 @@ interface ILauncherService {
     // ---- APPEND ONLY ----
     // Stop whatever the agent is doing on its display (the launcher's STOP button).
     void stopAgent();
+
+    // Executes exactly the blocked call a pending approval stored, after the user confirmed it
+    // (device credential first when requiresDeviceAuth). Never re-derives it with a model.
+    // Returns JSON {"state":"DONE|FAILED|BLOCKED|STOPPED|RUNNING|ALREADY_HANDLED|EXPIRED|NOT_EXECUTABLE|DECLINED|LOCKED",
+    //   "message":"<AndyClaw-written, user-facing>","ledgerSessionId":"...","requestId":"..."}.
+    // Refused (LOCKED) while the keyguard is locked. Older agents answer null.
+    String resolvePendingApprovalWithResult(String id, boolean approved);
 }

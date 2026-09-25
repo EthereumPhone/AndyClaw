@@ -39,11 +39,28 @@ class ToolEffectsTest {
     }
 
     @Test
-    fun `the pre-existing read-only list is honoured`() {
-        // memory_read is in ToolAttenuation.READ_ONLY_TOOLS but not in the seed table.
-        assertFalse("test premise", "memory_read" in ToolEffects.BUILTIN)
-        assertTrue("test premise", "memory_read" in ToolAttenuation.READ_ONLY_TOOLS)
-        assertEquals(ToolEffect.READ, ToolEffects.of("memory_read"))
+    fun `a name on the old read-only list is not read-only by its name alone`() {
+        // get_clipboard is on ToolAttenuation.READ_ONLY_TOOLS but no builtin tool has that name:
+        // an extension that called itself get_clipboard used to pass the gate as READ.
+        assertFalse("test premise", "get_clipboard" in ToolEffects.BUILTIN)
+        assertTrue("test premise", "get_clipboard" in ToolAttenuation.READ_ONLY_TOOLS)
+        assertEquals(ToolEffect.IRREVERSIBLE, ToolEffects.of("get_clipboard"))
+        assertEquals(ToolEffect.IRREVERSIBLE, ToolEffects.of("memory_read"))
+    }
+
+    @Test
+    fun `scheduling and standing instructions need approval from an untrusted run`() {
+        for (tool in listOf(
+            "create_cronjob", "cancel_cronjob", "create_reminder", "cancel_reminder",
+            "memory_store", "refinement_create", "cli_tools_add", "cli_tools_configure",
+        )) {
+            assertEquals(tool, ToolEffect.IRREVERSIBLE, ToolEffects.of(tool))
+        }
+    }
+
+    @Test
+    fun `every clipboard read is private data`() {
+        assertTrue(ToolEffects.PRIVATE_DATA_TOOLS.containsAll(ToolEffects.CLIPBOARD_READS))
     }
 
     @Test
@@ -93,7 +110,7 @@ class ToolEffectsTest {
     @Test
     fun `isClassified reports whether anything actually named the effect`() {
         assertTrue(ToolEffects.isClassified("get_device_info"))
-        assertTrue(ToolEffects.isClassified("memory_read"))
+        assertFalse(ToolEffects.isClassified("memory_read"))
         assertTrue(ToolEffects.isClassified("brand_new", toolDef("brand_new", ToolEffect.READ)))
         assertFalse(ToolEffects.isClassified("brand_new"))
     }

@@ -145,6 +145,106 @@ class NodeApp : Application() {
     val pendingApprovalStore: org.ethereumphone.andyclaw.safety.PendingApprovalStore by lazy {
         org.ethereumphone.andyclaw.safety.PendingApprovalStore(this)
     }
+
+    /** APPROVE on a pending card: runs exactly the stored call, once. */
+    val pendingApprovalExecutor: org.ethereumphone.andyclaw.safety.PendingApprovalExecutor by lazy {
+        org.ethereumphone.andyclaw.safety.PendingApprovalExecutor(
+            store = pendingApprovalStore,
+            scope = appScope,
+            runCall = { entry, input, token -> runApprovedCall(entry, input, token) },
+            onRunFinished = { runId, end -> nativeSkillRegistry.onRunFinished(runId, end) },
+            recordDecision = { entry, state, title -> recordApprovalDecision(entry, state, title) },
+        )
+    }
+
+    /**
+     * One approved call through the engine, with every gate intact: the provenance it was refused
+     * under, callbacks that approve that exact call and nothing else, and the ledger session of
+     * the run that asked for it.
+     */
+    private suspend fun runApprovedCall(
+        entry: org.ethereumphone.andyclaw.safety.PendingApprovalStore.Entry,
+        input: kotlinx.serialization.json.JsonObject,
+        token: org.ethereumphone.andyclaw.agent.AgentRunToken,
+    ): org.ethereumphone.andyclaw.ExecutionEngine.ToolCallResult {
+        val tier = OsCapabilities.currentTier()
+        val enabled = if (securePrefs.yoloMode.value) {
+            nativeSkillRegistry.getAll().map { it.id }.toSet()
+        } else {
+            securePrefs.enabledSkills.value
+        }
+        val provenance = org.ethereumphone.andyclaw.ExecutionEngine.Provenance.entries
+            .firstOrNull { it.name == entry.provenance }
+            ?: org.ethereumphone.andyclaw.ExecutionEngine.Provenance.UNTRUSTED
+        // Queued from a stranger's chat: whatever it does still answers to that audience.
+        val audience = if (entry.source == "telegram" || entry.source == "xmtp") {
+            org.ethereumphone.andyclaw.safety.ReplyAudience.STRANGER
+        } else null
+        val engine = org.ethereumphone.andyclaw.agent.ExecutionEngineFactory.create(
+            skillRegistry = nativeSkillRegistry,
+            tier = tier,
+            enabledSkillIds = enabled,
+            safetyLayer = createSafetyLayer(),
+            agentCallbacks = org.ethereumphone.andyclaw.safety.ExactCallCallbacks(entry.toolName, input) { perm ->
+                androidx.core.content.ContextCompat.checkSelfPermission(this, perm) ==
+                    android.content.pm.PackageManager.PERMISSION_GRANTED
+            },
+            budgetConfig = null,
+            provenance = provenance,
+            triggerConversationId = entry.conversationId,
+            enforceProvenance = securePrefs.provenanceEnforcementEnabled.value,
+            ledger = agentLedger(entry.ledgerSessionId ?: "approval:${entry.id}"),
+            intent = "Approved: ${org.ethereumphone.andyclaw.safety.ApprovalSummaries.of(entry.toolName, input).title}",
+            runContext = token + (audience ?: kotlin.coroutines.EmptyCoroutineContext),
+        )
+        val call = org.ethereumphone.andyclaw.ExecutionEngine.ToolCall(
+            id = "approval-${entry.id}", name = entry.toolName, input = input,
+        )
+        return engine.executeBatch(listOf(call)).results.single()
+    }
+
+    /** The owner's decision on a card, as its own ledger row next to the refusal that raised it. */
+    fun recordApprovalDecision(
+        entry: org.ethereumphone.andyclaw.safety.PendingApprovalStore.Entry,
+        state: String,
+        title: String,
+    ) {
+        if (!securePrefs.ledgerEnabled.value) return
+        val approved = state == "APPROVED"
+        runCatching {
+            ledgerRecorder.record(
+                org.ethereumphone.andyclaw.ledger.LedgerDraft(
+                    sessionId = entry.ledgerSessionId ?: entry.conversationId ?: "approval:${entry.id}",
+                    kind = org.ethereumphone.andyclaw.ledger.LedgerKind.TURN,
+                    intent = when (state) {
+                        "APPROVED" -> "Approved: $title"
+                        "DECLINED" -> "Declined: $title"
+                        else -> "Acknowledged, not run: $title"
+                    },
+                    provenance = org.ethereumphone.andyclaw.ExecutionEngine.Provenance.USER.name,
+                    outcome = if (approved) org.ethereumphone.andyclaw.ledger.LedgerOutcome.OK
+                    else org.ethereumphone.andyclaw.ledger.LedgerOutcome.BLOCKED,
+                    actions = listOf(
+                        org.ethereumphone.andyclaw.ledger.LedgerAction(
+                            tool = entry.toolName,
+                            ok = approved,
+                            durationMs = 0L,
+                            note = when (state) {
+                                "APPROVED" -> "approved by user"
+                                "DECLINED" -> "declined by user"
+                                else -> "acknowledged by user, not run"
+                            },
+                        )
+                    ),
+                )
+            )
+        }.onFailure { Log.w(TAG, "could not record approval decision", it) }
+    }
+
+    /** Who created each cron job and reminder; a fired one runs with that provenance. */
+    val triggerProvenanceStore: org.ethereumphone.andyclaw.safety.TriggerProvenanceStore by lazy {
+        org.ethereumphone.andyclaw.safety.TriggerProvenanceStore(this)
+    }
     val whisperTranscriber: WhisperTranscriber by lazy { WhisperTranscriber(this) }
     val executiveSummaryManager: org.ethereumphone.andyclaw.summary.ExecutiveSummaryManager by lazy {
         org.ethereumphone.andyclaw.summary.ExecutiveSummaryManager(this)

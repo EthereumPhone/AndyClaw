@@ -88,6 +88,7 @@ class TelegramAgentRunner(
         } else {
             app.securePrefs.enabledSkills.value
         }
+        val isOwnerChat = app.telegramChatStore.getOwnerChatId() == chatId
         val agentLoop = AgentLoop(
             client = client,
             skillRegistry = registry,
@@ -95,9 +96,11 @@ class TelegramAgentRunner(
             enabledSkillIds = enabledSkillIds,
             model = model,
             aiName = aiName,
-            userStory = userStory,
+            // The reply goes back to this chat. Anyone but the owner reading it must not get the
+            // owner's story or what the agent remembers about them.
+            userStory = if (isOwnerChat) userStory else null,
             soulContent = app.soulManager.read(),
-            memoryManager = app.memoryManager,
+            memoryManager = if (isOwnerChat) app.memoryManager else null,
             safetyLayer = app.createSafetyLayer(),
             smartRouter = if (app.securePrefs.smartRoutingEnabled.value && !app.securePrefs.toolSearchEnabled.value) app.smartRouter else null,
             toolSearchService = app.createToolSearchService(tier, enabledSkillIds),
@@ -108,11 +111,15 @@ class TelegramAgentRunner(
             flowRecorder = app.flowRecorder,
             flowRepository = app.flowRepositoryOrNull,
             ledger = app.agentLedger("telegram:$chatId"),
+            replyAudience = if (isOwnerChat) {
+                org.ethereumphone.andyclaw.safety.ReplyAudience.OWNER
+            } else {
+                org.ethereumphone.andyclaw.safety.ReplyAudience.STRANGER
+            },
         )
 
         val ledController = app.ledController
         val history = chatHistories.getOrPut(chatId) { mutableListOf() }
-        val isOwnerChat = app.telegramChatStore.getOwnerChatId() == chatId
 
         val collectedText = StringBuilder()
         val completion = CompletableDeferred<String>()
@@ -141,6 +148,8 @@ class TelegramAgentRunner(
 
             override fun onSecurityBlock(toolName: String, reason: String) {
                 Log.w(TAG, "SECURITY BLOCK (chat=$chatId, $toolName): $reason")
+                // The owner sees why; anyone else just gets the agent's answer.
+                if (!isOwnerChat) return
                 memoryScope.launch {
                     botClient.sendMessage(
                         chatId,
@@ -178,13 +187,21 @@ class TelegramAgentRunner(
                 if (!isOwnerChat) {
                     Log.w(TAG, "Refusing approval from non-owner chat $chatId: ${toolName ?: "?"} — $description")
                     try {
-                        app.pendingApprovalStore.add(
-                            source = "telegram",
-                            provenance = Provenance.UNTRUSTED.name,
-                            toolName = toolName ?: "unknown",
-                            description = description,
-                            conversationId = chatId.toString(),
-                            inputPreview = toolInput?.toString(),
+                        val name = toolName ?: "unknown"
+                        app.pendingApprovalStore.queue(
+                            org.ethereumphone.andyclaw.safety.PendingApprovalStore.Request(
+                                source = "telegram",
+                                provenance = Provenance.UNTRUSTED.name,
+                                toolName = name,
+                                input = toolInput,
+                                description = org.ethereumphone.andyclaw.safety.ApprovalSummaries.of(name, toolInput).title,
+                                conversationId = chatId.toString(),
+                                ledgerSessionId = "telegram:$chatId",
+                                effect = org.ethereumphone.andyclaw.safety.ToolEffects.of(
+                                    name, registry.getTools(tier).firstOrNull { it.name == name },
+                                ).name,
+                                toolReason = description,
+                            )
                         )
                     } catch (e: Exception) {
                         Log.w(TAG, "Could not queue pending approval: ${e.message}")
@@ -291,7 +308,9 @@ class TelegramAgentRunner(
                 history.add(Message.assistant(listOf(ContentBlock.TextBlock(fullText))))
                 trimHistory(chatId)
 
-                autoStoreConversationTurn(userMessage)
+                // Only the owner's own words become memories: a stranger's would be fed back into
+                // every later prompt as if the owner had said them.
+                if (isOwnerChat) autoStoreConversationTurn(userMessage)
 
                 completion.complete(fullText)
             }

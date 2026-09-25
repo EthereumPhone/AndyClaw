@@ -15,6 +15,7 @@ import org.ethereumphone.andyclaw.llm.ContentBlock
 import org.ethereumphone.andyclaw.llm.ImageSource
 import org.ethereumphone.andyclaw.llm.ToolResultContent
 import org.ethereumphone.andyclaw.safety.ProvenanceGate
+import org.ethereumphone.andyclaw.safety.ReplyAudience
 import org.ethereumphone.andyclaw.safety.SafetyLayer
 import org.ethereumphone.andyclaw.safety.ToolEffects
 import org.ethereumphone.andyclaw.skills.NativeSkillRegistry
@@ -95,22 +96,32 @@ object ExecutionEngineFactory {
                 ) { name -> rungOf(name, toolsByName) },
             )
 
-        // Pre-flight checks (order matters — matches original AgentLoop order).
-        // The provenance gate runs FIRST, before a rate-limit slot is spent or an
-        // approval prompt is raised, so an untrusted run is stopped at the door.
+        // Pre-flight checks. Order matters, in two ways:
+        //  - The provenance gate's blocks come FIRST, before a rate-limit slot is spent or
+        //    an approval prompt is raised, so an untrusted run is stopped at the door.
+        //  - Every other check that can only block runs before anything that asks the user.
+        //    The engine carries on through the chain after an approval, so a call that the
+        //    skill-enabled check or the route gate was going to refuse used to raise an
+        //    approval card first — and a headless run queued it for the user, who could then
+        //    approve something that was never going to run.
+        val runToken = runContext[AgentRunToken]
+        val audience = runContext[ReplyAudience]
         builder.addPreflightCheck(
-            provenanceCheck(provenance, triggerConversationId, enforceProvenance) { toolsByName }
+            provenanceCheck(provenance, triggerConversationId, enforceProvenance, blocksOnly = true,
+                runToken = runToken, audience = audience) { toolsByName }
         )
+        builder.addPreflightCheck(skillEnabledCheck(skillRegistry, tier, enabledSkillIds))
+        builder.addPreflightCheck(routeGateCheck { toolsByName })
         if (safetyLayer != null) {
             builder.addPreflightCheck(rateLimitCheck(safetyLayer))
             builder.addPreflightCheck(paramValidationCheck(safetyLayer))
         }
+        builder.addPreflightCheck(
+            provenanceCheck(provenance, triggerConversationId, enforceProvenance, blocksOnly = false,
+                runToken = runToken, audience = audience) { toolsByName }
+        )
         builder.addPreflightCheck(permissionsCheck { toolsByName })
         builder.addPreflightCheck(approvalCheck { toolsByName })
-        builder.addPreflightCheck(skillEnabledCheck(skillRegistry, tier, enabledSkillIds))
-        // Last, because a route only matters for a call that was going to happen: no
-        // point telling the model about a cheaper route to a tool it may not use.
-        builder.addPreflightCheck(routeGateCheck { toolsByName })
 
         // Post-processors
         if (safetyLayer != null) {
@@ -191,21 +202,36 @@ object ExecutionEngineFactory {
     }
 
     /**
-     * The trust boundary. Runs before every other check so an untrusted trigger
-     * cannot spend a rate-limit slot or raise an approval prompt on its way to a
-     * tool it was never allowed to reach.
+     * The trust boundary, in two passes: its blocks run before every other check, so an
+     * untrusted trigger cannot spend a rate-limit slot or raise an approval prompt on its way
+     * to a tool it was never allowed to reach; its approval requests run after every other
+     * check that can only block, so nobody is asked to approve a call that would not run.
      */
     private fun provenanceCheck(
         provenance: Provenance,
         triggerConversationId: String?,
         enforce: Boolean,
+        /** True: only this gate's blocks. False: only its approval requests. See [create]. */
+        blocksOnly: Boolean,
+        runToken: AgentRunToken?,
+        audience: ReplyAudience?,
         tools: () -> Map<String, ToolDefinition>,
     ) = PreflightCheck { call ->
         val toolDef = tools()[call.name]
         val effect = ToolEffects.of(call.name, toolDef)
-        val verdict = ProvenanceGate.evaluate(call, provenance, triggerConversationId, toolDef)
+        val verdict = ProvenanceGate.evaluate(
+            call, provenance, triggerConversationId, toolDef,
+            audience = audience,
+            readPrivateData = runToken?.readPrivateData == true,
+        )
+        val mine = if (blocksOnly) verdict is PreflightVerdict.Block else verdict is PreflightVerdict.NeedsApproval
 
-        if (verdict is PreflightVerdict.Pass) {
+        if (!mine) {
+            // Past the gate: note what an untrusted run is about to read, so it cannot then
+            // take it to the web.
+            if (blocksOnly && provenance == Provenance.UNTRUSTED && call.name in ToolEffects.PRIVATE_DATA_TOOLS) {
+                runToken?.readPrivateData = true
+            }
             PreflightVerdict.Pass
         } else {
             val outcome = when (verdict) {

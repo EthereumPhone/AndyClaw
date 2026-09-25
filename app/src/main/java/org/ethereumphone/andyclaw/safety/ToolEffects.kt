@@ -27,12 +27,14 @@ object ToolEffects {
     fun of(toolDef: ToolDefinition): ToolEffect =
         toolDef.effect ?: of(toolDef.name)
 
-    /** Resolve from a bare tool name, for paths that never see the definition. */
-    fun of(toolName: String): ToolEffect {
-        BUILTIN[toolName]?.let { return it }
-        if (toolName in ToolAttenuation.READ_ONLY_TOOLS) return ToolEffect.READ
-        return UNCLASSIFIED
-    }
+    /**
+     * Resolve from a bare tool name, for paths that never see the definition.
+     *
+     * Only the seed table counts. `ToolAttenuation.READ_ONLY_TOOLS` used to be consulted too,
+     * but it lists names no builtin tool has (`get_clipboard`, `fetch_url`, …) — so an extension
+     * that simply called itself `get_clipboard` was classified READ and walked through the gate.
+     */
+    fun of(toolName: String): ToolEffect = BUILTIN[toolName] ?: UNCLASSIFIED
 
     /** Resolve from whichever of the two is available; the definition wins. */
     fun of(toolName: String, toolDef: ToolDefinition?): ToolEffect =
@@ -44,9 +46,7 @@ object ToolEffects {
      * [UNCLASSIFIED], which is worth logging while the gate is being rolled out.
      */
     fun isClassified(toolName: String, toolDef: ToolDefinition? = null): Boolean =
-        toolDef?.effect != null ||
-            toolName in BUILTIN ||
-            toolName in ToolAttenuation.READ_ONLY_TOOLS
+        toolDef?.effect != null || toolName in BUILTIN
 
     // ══════════════════════════════════════════════════════════════════
     // Outbound messaging — the reply-to-sender rule
@@ -78,6 +78,56 @@ object ToolEffects {
     val OWNER_ONLY_MESSAGE_TOOLS: Set<String> = setOf(
         "send_message_to_user",   // XMTP to the device's own wallet address
         "send_telegram_message",  // Telegram to the verified bot owner
+    )
+
+    // ══════════════════════════════════════════════════════════════════
+    // What an untrusted run may read
+    // ══════════════════════════════════════════════════════════════════
+
+    /**
+     * The clipboard routinely holds a password, a seed phrase or a 2FA code the user just
+     * copied. No run set off by somebody else's content reads it, whoever hears the answer.
+     */
+    val CLIPBOARD_READS: Set<String> = setOf(
+        "read_clipboard",
+        "agent_display_get_clipboard",
+        "get_clipboard",
+    )
+
+    /**
+     * The owner's private data. An untrusted run that replies to a stranger may not read any of
+     * it, and an untrusted run with no reply channel that has read some may not then reach the
+     * web ([NETWORK_EGRESS]) — the two ways what was read could leave.
+     */
+    val PRIVATE_DATA_TOOLS: Set<String> = setOf(
+        // Messages, calls, contacts, mail, notifications.
+        "read_sms", "get_call_log", "list_conversations", "read_messages", "list_telegram_chats",
+        "search_contacts", "get_contact_details", "get_eth_contacts",
+        "gmail_read", "gmail_get", "list_notifications",
+        // What the agent remembers about the user, and who the agent is for them.
+        "memory_search", "memory_list", "memory_read", "memory_tree", "read_soul",
+        // Where they are, what they have, what they do.
+        "get_current_location", "search_nearby",
+        "list_events", "get_event", "gcal_list_events",
+        "list_directory", "read_file", "file_info",
+        "list_storage_directory", "read_storage_file", "search_files", "get_storage_info",
+        "drive_list", "drive_download", "sheets_read",
+        "list_installed_apps", "get_usage_stats", "get_app_usage", "read_screen",
+        "take_photo", "silent_capture", "analyze_image",
+        // Money.
+        "get_user_wallet_address", "get_agent_wallet_address", "get_owned_tokens",
+        "read_wallet_holdings", "read_agent_balance",
+        "get_bankr_wallet", "get_bankr_orders", "get_bankr_order_details",
+        // Whatever is on the agent display.
+        "agent_display_look", "agent_display_screenshot", "agent_display_get_ui_tree",
+        "agent_display_get_node_info", "agent_display_current_activity",
+    ) + CLIPBOARD_READS
+
+    /** Reads that put arbitrary text on the network — a URL, a search query. */
+    val NETWORK_EGRESS: Set<String> = setOf(
+        "fetch_webpage",
+        "web_search",
+        "fetch_url",
     )
 
     // ══════════════════════════════════════════════════════════════════
@@ -166,9 +216,12 @@ object ToolEffects {
         "set_eth_address" eff ToolEffect.IRREVERSIBLE,
 
         // ── CronjobSkill ─────────────────────────────────────────────
-        "create_cronjob" eff ToolEffect.REVERSIBLE,
+        // A job runs later with nobody watching, so creating one is granting that later run
+        // authority. It fires with its creator's provenance (TriggerProvenanceStore), and an
+        // untrusted run cannot create or cancel one without the user's approval.
+        "create_cronjob" eff ToolEffect.IRREVERSIBLE,
         "list_cronjobs" eff ToolEffect.READ,
-        "cancel_cronjob" eff ToolEffect.REVERSIBLE,
+        "cancel_cronjob" eff ToolEffect.IRREVERSIBLE,
 
         // ── CustomToolCreatorSkill ───────────────────────────────────
         // Authors BeanShell that later runs as a first-class tool.
@@ -227,7 +280,9 @@ object ToolEffects {
         // ── MemorySkill ──────────────────────────────────────────────
         "memory_search" eff ToolEffect.READ,
         "memory_list" eff ToolEffect.READ,
-        "memory_store" eff ToolEffect.REVERSIBLE,
+        // A stored memory is fed back into later prompts: from a stranger, a standing
+        // instruction the user never gave.
+        "memory_store" eff ToolEffect.IRREVERSIBLE,
         "memory_delete" eff ToolEffect.IRREVERSIBLE,
 
         // ── MessengerSkill ───────────────────────────────────────────
@@ -260,9 +315,10 @@ object ToolEffects {
         "remove_trigger" eff ToolEffect.REVERSIBLE,
 
         // ── ReminderSkill ────────────────────────────────────────────
-        "create_reminder" eff ToolEffect.REVERSIBLE,
+        // Same as a cron job: the reminder later runs the agent unattended.
+        "create_reminder" eff ToolEffect.IRREVERSIBLE,
         "list_reminders" eff ToolEffect.READ,
-        "cancel_reminder" eff ToolEffect.REVERSIBLE,
+        "cancel_reminder" eff ToolEffect.IRREVERSIBLE,
 
         // ── SMSSkill ─────────────────────────────────────────────────
         "read_sms" eff ToolEffect.READ,
@@ -302,7 +358,8 @@ object ToolEffects {
         "refinement_list_skills" eff ToolEffect.READ,
         "refinement_read" eff ToolEffect.READ,
         "refinement_list_all" eff ToolEffect.READ,
-        "refinement_create" eff ToolEffect.REVERSIBLE,
+        // Refinements are standing instructions for a skill.
+        "refinement_create" eff ToolEffect.IRREVERSIBLE,
         "refinement_remove" eff ToolEffect.IRREVERSIBLE,
 
         // ── SoulSkill ────────────────────────────────────────────────
@@ -357,9 +414,10 @@ object ToolEffects {
         // ── CliToolManagerSkill ──────────────────────────────────────
         "cli_tools_list" eff ToolEffect.READ,
         "cli_tools_info" eff ToolEffect.READ,
-        "cli_tools_add" eff ToolEffect.REVERSIBLE,
+        // Defines a command the agent will run later.
+        "cli_tools_add" eff ToolEffect.IRREVERSIBLE,
         "cli_tools_remove" eff ToolEffect.REVERSIBLE,
-        "cli_tools_configure" eff ToolEffect.REVERSIBLE,
+        "cli_tools_configure" eff ToolEffect.IRREVERSIBLE,
         "cli_tools_install" eff ToolEffect.IRREVERSIBLE,
         "cli_tools_run" eff ToolEffect.IRREVERSIBLE,
 

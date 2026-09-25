@@ -1148,14 +1148,24 @@ class LauncherBindingService : Service() {
             }
         }
 
-        // ── Pending approvals (ordinals 63-64) ───────────────────────────
+        // ── Pending approvals (ordinals 63-64, 71) ───────────────────────
 
+        /**
+         * The queue, with what each card needs to say exactly what will run: v1 keys for an
+         * older launcher, and the v2 ones — every parameter as it will be used, who asked, until
+         * when, and whether APPROVE can run it at all.
+         */
         override fun getPendingApprovals(): String {
             enforceCallerIsLauncher()
             val app = application as? NodeApp ?: return "[]"
             return try {
+                val store = app.pendingApprovalStore
                 val arr = JSONArray()
-                for (e in app.pendingApprovalStore.getAll()) {
+                for (e in store.getAll()) {
+                    val input = e.input?.let {
+                        runCatching { kotlinx.serialization.json.Json.parseToJsonElement(it) as? kotlinx.serialization.json.JsonObject }.getOrNull()
+                    }
+                    val summary = org.ethereumphone.andyclaw.safety.ApprovalSummaries.of(e.toolName, input)
                     arr.put(JSONObject().apply {
                         put("id", e.id)
                         put("timestampMs", e.timestampMs)
@@ -1165,6 +1175,28 @@ class LauncherBindingService : Service() {
                         put("description", e.description)
                         e.conversationId?.let { put("conversationId", it) }
                         e.inputPreview?.let { put("inputPreview", it) }
+                        put("v", 2)
+                        put("title", summary.title)
+                        put("summary", summary.summary)
+                        put("params", JSONArray().apply {
+                            for (p in summary.params) {
+                                put(JSONObject()
+                                    .put("key", p.key)
+                                    .put("label", p.label)
+                                    .put("value", p.value)
+                                    .put("truncated", p.truncated)
+                                    .put("length", p.length))
+                            }
+                        })
+                        e.effect?.let { put("effect", it) }
+                        // Every executable request acts with the owner's authority: always the
+                        // device credential first.
+                        put("requiresDeviceAuth", true)
+                        put("sourceLabel", org.ethereumphone.andyclaw.safety.ApprovalSummaries.sourceLabel(e.source, e.conversationId))
+                        e.expiresMs?.let { put("expiresMs", it) }
+                        put("count", e.count)
+                        put("executable", store.isExecutable(e))
+                        e.toolReason?.let { put("toolReason", it) }
                     })
                 }
                 arr.toString()
@@ -1175,48 +1207,50 @@ class LauncherBindingService : Service() {
         }
 
         /**
-         * Records the user's decision on a raised card and removes it.
-         *
-         * It deliberately does not run anything. The store keeps a truncated preview of the
-         * refused call's arguments and nothing more -- on purpose, since those arguments
-         * carry message bodies and addresses -- so there is nothing here to replay
-         * faithfully, and replaying an untrusted-triggered call because the user tapped yes
-         * would launder the provenance that stopped it. Approval is the launcher following
-         * this with an ordinary sendPrompt(), which is USER provenance and passes the gate
-         * on its own merits.
-         *
-         * The decision itself is worth a ledger row: a card the user declined is the
-         * boundary doing its job, and that belongs in the record beside the block that
-         * raised it.
+         * The older way to resolve a card. Declining declines. Approving is only acknowledged and
+         * recorded, never executed: an older launcher follows it with the request as an ordinary
+         * prompt, which is the user's own and runs as one — running the stored call here as well
+         * would do the thing twice. APPROVE that runs the call is [resolvePendingApprovalWithResult].
          */
         override fun resolvePendingApproval(id: String?, approved: Boolean): Boolean {
             enforceCallerIsLauncher()
             if (id.isNullOrBlank()) return false
             val app = application as? NodeApp ?: return false
-            val entry = app.pendingApprovalStore.getAll().firstOrNull { it.id == id }
-            val removed = app.pendingApprovalStore.remove(id)
-            if (removed && entry != null && app.securePrefs.ledgerEnabled.value) {
-                runCatching {
-                    app.ledgerRecorder.record(
-                        LedgerDraft(
-                            sessionId = entry.conversationId ?: "approval:${entry.id}",
-                            kind = LedgerKind.TURN,
-                            intent = (if (approved) "Approved: " else "Declined: ") + entry.description,
-                            provenance = Provenance.USER.name,
-                            outcome = if (approved) LedgerOutcome.OK else LedgerOutcome.BLOCKED,
-                            actions = listOf(
-                                LedgerAction(
-                                    tool = entry.toolName,
-                                    ok = approved,
-                                    durationMs = 0L,
-                                    note = if (approved) "approved by user" else "declined by user",
-                                )
-                            ),
-                        )
-                    )
-                }.onFailure { Log.w(TAG, "could not record approval decision", it) }
+            if (!approved) return app.pendingApprovalExecutor.decline(id).state == "DECLINED"
+            val entry = app.pendingApprovalStore.getAll().firstOrNull { it.id == id } ?: return false
+            if (entry.state != org.ethereumphone.andyclaw.safety.PendingApprovalStore.State.PENDING) return false
+            val done = app.pendingApprovalStore.finish(id, "ACKNOWLEDGED", "Acknowledged on the card; it was not run from there.")
+            if (done) app.recordApprovalDecision(entry, "ACKNOWLEDGED", entry.description)
+            return done
+        }
+
+        /**
+         * APPROVE: runs exactly the stored call, once, under the provenance it came with — or
+         * DECLINE. Never while the phone is locked: whoever holds a locked phone is not
+         * necessarily its owner. A call that runs long answers RUNNING and finishes on its own.
+         */
+        override fun resolvePendingApprovalWithResult(id: String?, approved: Boolean): String {
+            enforceCallerIsLauncher()
+            val app = application as? NodeApp
+                ?: return org.ethereumphone.andyclaw.safety.PendingApprovalExecutor.Resolution(
+                    "FAILED", "The agent isn't ready yet. Nothing was run.").toJson()
+            if (id.isNullOrBlank()) {
+                return org.ethereumphone.andyclaw.safety.PendingApprovalExecutor.Resolution(
+                    "ALREADY_HANDLED", "This request is no longer waiting.").toJson()
             }
-            return removed
+            if (approved && getSystemService(android.app.KeyguardManager::class.java)?.isKeyguardLocked != false) {
+                return org.ethereumphone.andyclaw.safety.PendingApprovalExecutor.Resolution(
+                    "LOCKED", "Unlock the phone and try again. Nothing was run.").toJson()
+            }
+            return try {
+                runBlocking { app.pendingApprovalExecutor.resolve(id, approved) }.toJson()
+            } catch (e: Exception) {
+                Log.w(TAG, "resolvePendingApprovalWithResult failed", e)
+                org.ethereumphone.andyclaw.safety.PendingApprovalExecutor.Resolution(
+                    org.ethereumphone.andyclaw.safety.PendingApprovalStore.UNKNOWN,
+                    "Something went wrong, so it may or may not have run. Check the ledger before trying again.",
+                ).toJson()
+            }
         }
 
         // ── Ledger (ordinals 65-69) ──────────────────────────────────────

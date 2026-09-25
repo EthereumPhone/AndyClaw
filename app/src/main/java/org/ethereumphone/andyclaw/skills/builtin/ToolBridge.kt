@@ -11,7 +11,9 @@ import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import org.ethereumphone.andyclaw.ExecutionEngine.Provenance
+import org.ethereumphone.andyclaw.agent.AgentRunToken
 import org.ethereumphone.andyclaw.safety.ProvenanceGate
+import org.ethereumphone.andyclaw.safety.ReplyAudience
 import org.ethereumphone.andyclaw.safety.ToolEffects
 import org.ethereumphone.andyclaw.skills.NativeSkillRegistry
 import org.ethereumphone.andyclaw.skills.SkillResult
@@ -77,16 +79,30 @@ class ToolBridge(
         val toolDef = skill?.baseManifest?.tools?.find { it.name == toolName }
             ?: skill?.privilegedManifest?.tools?.find { it.name == toolName }
         val effect = ToolEffects.of(toolName, toolDef)
-        if (ProvenanceGate.allowsUnattended(provenance, effect)) return
+        val token = runContext[AgentRunToken]
+        if (ProvenanceGate.allowsUnattended(
+                provenance, effect, toolName,
+                audience = runContext[ReplyAudience],
+                readPrivateData = token?.readPrivateData == true,
+            )
+        ) {
+            if (provenance == Provenance.UNTRUSTED && toolName in ToolEffects.PRIVATE_DATA_TOOLS) {
+                token?.readPrivateData = true
+            }
+            return
+        }
 
         Log.w(TAG, "Provenance gate: refusing '$toolName' ($effect) under $provenance" +
             if (enforceProvenance) "" else " [LOG-ONLY, not enforced]")
         if (!enforceProvenance) return
 
+        val privacy = if (provenance == Provenance.UNTRUSTED) {
+            ProvenanceGate.privacyVerdict(toolName, runContext[ReplyAudience], token?.readPrivateData == true)
+        } else null
         throw RuntimeException(
-            "Tool '$toolName' is $effect and this code is running for a request that " +
+            privacy?.reason ?: ("Tool '$toolName' is $effect and this code is running for a request that " +
                 "came from untrusted content, so it cannot be called from code. " +
-                "Call it as a direct tool call instead — that path can ask the user."
+                "Call it as a direct tool call instead — that path can ask the user.")
         )
     }
 

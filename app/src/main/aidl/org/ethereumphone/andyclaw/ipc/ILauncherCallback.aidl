@@ -38,6 +38,10 @@ oneway interface ILauncherCallback {
     //   "step", "subgoal", "subgoals":[...], "action", "target":{"label","type","x","y"},
     //   "confidence", "source": JEV|PLANNER, "ms":{"jev","act","settle","step","elapsed"},
     //   "plannerCalls", "reason" }. Coordinates are agent-display pixels (720x720).
+    // DONE/FAILED (and optionally ESCALATED) may add "outcome": success|handoff|failed|
+    // stopped|cancelled and "message", short text to show verbatim; a hand-over stays kind
+    // FAILED on the wire. SUBGOAL_DONE carries the index after the advance, and after a
+    // replan the new "subgoals". Without "outcome" the launcher words the reason itself.
     // An older launcher never receives it: the call is oneway and simply ignored.
     void onAgentStep(String json);
 }

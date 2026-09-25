@@ -10,6 +10,7 @@ import org.ethereumphone.andyclaw.ExecutionEngine.ToolCall
 import org.ethereumphone.andyclaw.skills.ToolDefinition
 import org.ethereumphone.andyclaw.skills.ToolEffect
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -154,12 +155,49 @@ class ProvenanceGateTest {
 
     @Test
     fun `reading and reasoning stay open to an untrusted run`() {
-        for (tool in listOf("read_messages", "list_conversations", "web_search", "get_device_info")) {
+        for (tool in listOf("web_search", "get_device_info", "resolve_ens")) {
             val verdict = ProvenanceGate.evaluate(
                 call(tool), Provenance.UNTRUSTED, triggerConversationId = "0xabc", toolDef = null,
+                audience = ReplyAudience.STRANGER,
             )
             assertTrue("$tool should pass under UNTRUSTED", verdict is PreflightVerdict.Pass)
         }
+    }
+
+    @Test
+    fun `a stranger's reply cannot read the owner's data, the owner's can`() {
+        for (tool in listOf("read_messages", "list_conversations", "read_sms", "memory_search", "get_current_location")) {
+            val stranger = ProvenanceGate.evaluate(call(tool), Provenance.UNTRUSTED, "0xabc", null, audience = ReplyAudience.STRANGER)
+            assertTrue("$tool must not reach a stranger", stranger is PreflightVerdict.Block)
+            val owner = ProvenanceGate.evaluate(call(tool), Provenance.UNTRUSTED, "42", null, audience = ReplyAudience.OWNER)
+            assertTrue("$tool stays open in the owner's chat", owner is PreflightVerdict.Pass)
+            val nobody = ProvenanceGate.evaluate(call(tool), Provenance.UNTRUSTED, null, null)
+            assertTrue("$tool stays open to a run with no reply", nobody is PreflightVerdict.Pass)
+        }
+    }
+
+    @Test
+    fun `the clipboard is closed to every untrusted run`() {
+        for (audience in listOf(null, ReplyAudience.OWNER, ReplyAudience.STRANGER)) {
+            val v = ProvenanceGate.evaluate(call("read_clipboard"), Provenance.UNTRUSTED, null, null, audience = audience)
+            assertTrue(v is PreflightVerdict.Block)
+        }
+        assertTrue(ProvenanceGate.evaluate(call("read_clipboard"), Provenance.USER, null, null) is PreflightVerdict.Pass)
+    }
+
+    @Test
+    fun `an untrusted run with private data in hand stays off the web`() {
+        val v = ProvenanceGate.evaluate(call("fetch_webpage"), Provenance.UNTRUSTED, null, null, readPrivateData = true)
+        assertTrue(v is PreflightVerdict.Block)
+        assertTrue(ProvenanceGate.evaluate(call("fetch_webpage"), Provenance.UNTRUSTED, null, null) is PreflightVerdict.Pass)
+        assertTrue(ProvenanceGate.evaluate(call("fetch_webpage"), Provenance.USER, null, null, readPrivateData = true) is PreflightVerdict.Pass)
+    }
+
+    @Test
+    fun `code cannot read what a direct call may not`() {
+        assertFalse(ProvenanceGate.allowsUnattended(Provenance.UNTRUSTED, ToolEffect.READ, "read_clipboard"))
+        assertFalse(ProvenanceGate.allowsUnattended(Provenance.UNTRUSTED, ToolEffect.READ, "read_sms", ReplyAudience.STRANGER))
+        assertTrue(ProvenanceGate.allowsUnattended(Provenance.UNTRUSTED, ToolEffect.READ, "read_sms"))
     }
 
     // ══════════════════════════════════════════════════════════════

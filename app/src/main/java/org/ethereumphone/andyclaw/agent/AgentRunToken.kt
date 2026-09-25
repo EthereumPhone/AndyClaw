@@ -31,6 +31,14 @@ class AgentRunToken(
     /** STOP was pressed — rear screen, launcher or live view — while this run held the display. */
     val stopRequested: Boolean get() = AgentDisplayLease.wasStopped(id)
 
+    /**
+     * An untrusted run has read the owner's private data. From then on it may not reach the web,
+     * which is how what it read could leave; see `ProvenanceGate.privacyVerdict`. Only ever set,
+     * never cleared, for the length of the run.
+     */
+    @Volatile
+    var readPrivateData: Boolean = false
+
     companion object Key : CoroutineContext.Key<AgentRunToken>
 }
 

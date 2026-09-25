@@ -25,6 +25,14 @@ class ParallelExecutionEngine(
 ) {
     companion object {
         private const val TAG = "ExecEngine"
+
+        /**
+         * What the model hears when an approval did not come through. Neutral on purpose: a
+         * headless run queues the request for the owner rather than asking anyone, and "the
+         * user denied it" would then be relayed to whoever sent the message as the owner's
+         * answer.
+         */
+        const val NOT_APPROVED = "Not approved, so it did not run. Do not try it again in this turn."
     }
 
     /**
@@ -141,7 +149,7 @@ class ParallelExecutionEngine(
                     )
                     if (!approved) {
                         Log.d(TAG, "Pre-flight DENIED approval [${call.name}]")
-                        return PreflightOutcome.Blocked("User denied approval.")
+                        return PreflightOutcome.Blocked(NOT_APPROVED)
                     }
                     Log.d(TAG, "Pre-flight APPROVED [${call.name}]")
                 }
@@ -212,7 +220,7 @@ class ParallelExecutionEngine(
         if (!approved) {
             return ExecutedTool(
                 call,
-                ToolExecResult.Error("User denied approval."),
+                ToolExecResult.Error(NOT_APPROVED),
                 ToolCallResult.Phase.BLOCKED_PREFLIGHT,
             )
         }

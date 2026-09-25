@@ -12,6 +12,8 @@ import kotlinx.serialization.json.int
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.long
 import kotlinx.serialization.json.put
+import org.ethereumphone.andyclaw.ExecutionEngine.currentProvenance
+import org.ethereumphone.andyclaw.safety.TriggerProvenanceStore
 import org.ethereumphone.andyclaw.skills.AndyClawSkill
 import org.ethereumphone.andyclaw.skills.SkillManifest
 import org.ethereumphone.andyclaw.skills.SkillResult
@@ -20,6 +22,12 @@ import org.ethereumphone.andyclaw.skills.ToolDefinition
 import org.ethereumphone.andyclaw.skills.tier.OsCapabilities
 
 class CronjobSkill(private val context: Context) : AndyClawSkill {
+
+    private val triggers = TriggerProvenanceStore(context)
+
+    private fun createdId(json: String): Int? = runCatching {
+        (kotlinx.serialization.json.Json.parseToJsonElement(json) as JsonObject)["cronjob_id"]?.jsonPrimitive?.int
+    }.getOrNull()
     override val id = "cronjobs"
     override val name = "Cron Jobs"
 
@@ -94,9 +102,22 @@ class CronjobSkill(private val context: Context) : AndyClawSkill {
 
     override suspend fun execute(tool: String, params: JsonObject, tier: Tier): SkillResult {
         return when (tool) {
-            "create_cronjob" -> createCronjob(params)
+            "create_cronjob" -> createCronjob(params).also { result ->
+                // The job will run later with nobody watching: remember whose authority it has.
+                if (result is SkillResult.Success) {
+                    createdId(result.data)?.let {
+                        triggers.record(TriggerProvenanceStore.cronKey(it), currentProvenance())
+                    }
+                }
+            }
             "list_cronjobs" -> listCronjobs()
-            "cancel_cronjob" -> cancelCronjob(params)
+            "cancel_cronjob" -> cancelCronjob(params).also { result ->
+                if (result is SkillResult.Success) {
+                    params["cronjob_id"]?.jsonPrimitive?.contentOrNull?.toIntOrNull()?.let {
+                        triggers.forget(TriggerProvenanceStore.cronKey(it))
+                    }
+                }
+            }
             else -> SkillResult.Error("Unknown tool: $tool")
         }
     }

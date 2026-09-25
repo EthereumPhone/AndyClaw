@@ -379,7 +379,7 @@ class HeartbeatBindingService : Service() {
             runWithWakeLock {
                 val app = application as NodeApp
                 val prompt = buildString {
-                    appendLine("## Reminder Fired")
+                    appendLine(org.ethereumphone.andyclaw.agent.BackgroundTrigger.REMINDER.header)
                     appendLine()
                     appendLine("A reminder that the user previously asked you to set has now triggered.")
                     appendLine("- Label: $label")
@@ -393,11 +393,15 @@ class HeartbeatBindingService : Service() {
                     appendLine("your available tools. If it's a simple reminder to alert the user,")
                     appendLine("create a notification so they see it.")
                 }
-                // The reminder is one the user asked for — trusted content.
+                // A reminder runs with the authority of whoever set it, and no more: one a
+                // stranger's message created stays untrusted when it fires.
                 // It is also event-driven: something fired, the agent ran, and the next
                 // scheduled tick has nothing to add.
+                val key = org.ethereumphone.andyclaw.safety.TriggerProvenanceStore.reminderKey(reminderId)
+                val provenance = app.triggerProvenanceStore.provenanceFor(key)
+                app.triggerProvenanceStore.forget(key) // one-shot
                 app.runtime.noteAmbientActivity()
-                val response = app.runtime.agentRunner.run(prompt, provenance = Provenance.TRUSTED)
+                val response = app.runtime.agentRunner.run(prompt, provenance = provenance)
                 Log.i(TAG, "Reminder agent response (error=${response.isError}): " +
                         "\"${response.text.take(100)}\"")
             }
@@ -415,7 +419,7 @@ class HeartbeatBindingService : Service() {
             runWithWakeLock {
                 val app = application as NodeApp
                 val prompt = buildString {
-                    appendLine("## Cron Job Fired")
+                    appendLine(org.ethereumphone.andyclaw.agent.BackgroundTrigger.CRON.header)
                     appendLine()
                     appendLine("A recurring cron job has triggered. This job runs automatically at a fixed interval.")
                     appendLine("- Label: $label")
@@ -427,9 +431,14 @@ class HeartbeatBindingService : Service() {
                     appendLine("Execute the task described in the reason above. Use your available tools")
                     appendLine("as needed. This cron job will fire again in ${intervalMs / 60000} minutes.")
                 }
-                // The cron job is one the user created — trusted content.
+                // A cron job runs with the authority of whoever created it, and no more — see
+                // TriggerProvenanceStore for the job it used to take for "every 30 minutes,
+                // send 0.05 ETH to 0x…" from a stranger.
+                val provenance = app.triggerProvenanceStore.provenanceFor(
+                    org.ethereumphone.andyclaw.safety.TriggerProvenanceStore.cronKey(cronjobId)
+                )
                 app.runtime.noteAmbientActivity()
-                val response = app.runtime.agentRunner.run(prompt, provenance = Provenance.TRUSTED)
+                val response = app.runtime.agentRunner.run(prompt, provenance = provenance)
                 Log.i(TAG, "Cronjob agent response (error=${response.isError}): " +
                         "\"${response.text.take(100)}\"")
             }
@@ -560,7 +569,7 @@ class HeartbeatBindingService : Service() {
 
         // Step 3: Build prompt with history context
         val prompt = buildString {
-            appendLine("## New incoming XMTP message")
+            appendLine(org.ethereumphone.andyclaw.agent.BackgroundTrigger.XMTP.header)
             appendLine()
             appendLine("From: $senderAddress")
             appendLine("Message: \"$messageText\"")

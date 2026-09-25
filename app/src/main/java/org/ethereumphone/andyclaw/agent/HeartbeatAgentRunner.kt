@@ -67,6 +67,14 @@ class HeartbeatAgentRunner(
         } else {
             app.securePrefs.enabledSkills.value
         }
+        val trigger = BackgroundTrigger.of(prompt)
+        // An untrusted run that names a conversation replies into it: an XMTP auto-reply goes
+        // back to whoever wrote. That reader is not the owner, so the owner's story stays out of
+        // the prompt and the owner's data out of reach (ProvenanceGate).
+        val repliesToStranger = provenance == Provenance.UNTRUSTED && conversationId != null
+        // A background run has no conversation to belong to, so each one is its own session.
+        // That is what it is: one turn, start to finish, with nothing before or after it.
+        val ledgerSessionId = "background:${java.util.UUID.randomUUID()}"
         val agentLoop = AgentLoop(
             client = client,
             skillRegistry = registry,
@@ -74,7 +82,7 @@ class HeartbeatAgentRunner(
             enabledSkillIds = enabledSkillIds,
             model = model,
             aiName = aiName,
-            userStory = userStory,
+            userStory = if (repliesToStranger) null else userStory,
             soulContent = app.soulManager.read(),
             safetyLayer = app.createSafetyLayer(),
             smartRouter = if (app.securePrefs.smartRoutingEnabled.value && !app.securePrefs.toolSearchEnabled.value) app.smartRouter else null,
@@ -85,10 +93,8 @@ class HeartbeatAgentRunner(
             enforceProvenance = app.securePrefs.provenanceEnforcementEnabled.value,
             flowRecorder = app.flowRecorder,
             flowRepository = app.flowRepositoryOrNull,
-            // A background run has no conversation to belong to, so each one is its own
-            // session. That is what it is: one turn, start to finish, with nothing before
-            // or after it.
-            ledger = app.agentLedger("background:${java.util.UUID.randomUUID()}"),
+            ledger = app.agentLedger(ledgerSessionId),
+            replyAudience = if (repliesToStranger) org.ethereumphone.andyclaw.safety.ReplyAudience.STRANGER else null,
         )
 
         val ledController = app.ledController
@@ -142,24 +148,36 @@ class HeartbeatAgentRunner(
                 toolName: String?,
                 toolInput: kotlinx.serialization.json.JsonObject?,
             ): Boolean {
-                // Nobody is watching a background run, so "ask the user" can only
-                // mean yes or no here. Under untrusted provenance it means no: an
-                // auto-yes would hand a stranger's message the very tools the gate
-                // raised the prompt about. Queue it for the user instead.
-                if (provenance == Provenance.UNTRUSTED) {
-                    Log.w(TAG, "Refusing approval under UNTRUSTED provenance: ${toolName ?: "?"} — $description")
+                // Nobody is watching a background run, so "ask the user" can only mean yes or
+                // no here. It means no — and the exact call is queued as a card for the owner to
+                // approve — when:
+                //  - the run is untrusted: an auto-yes would hand a stranger's message the very
+                //    tools the gate raised the prompt about;
+                //  - the tool touches payment, auth or the agent's own code (SENSITIVE), whoever
+                //    set the run off: a background run never completes one of those unattended.
+                val name = toolName ?: "unknown"
+                val effect = org.ethereumphone.andyclaw.safety.ToolEffects.of(
+                    name, registry.getTools(tier).firstOrNull { it.name == name },
+                )
+                if (provenance == Provenance.UNTRUSTED || effect == org.ethereumphone.andyclaw.skills.ToolEffect.SENSITIVE) {
+                    Log.w(TAG, "Not approving '$name' in a background run ($provenance, $effect); queueing it for the owner")
                     collectedToolCalls.add(HeartbeatToolCall(
-                        toolName = toolName ?: "unknown",
-                        result = "BLOCKED_UNTRUSTED: needs your approval, queued as a pending card",
+                        toolName = name,
+                        result = "QUEUED: needs the owner's approval, raised as a pending card",
                     ))
                     try {
-                        app.pendingApprovalStore.add(
-                            source = "heartbeat",
-                            provenance = provenance.name,
-                            toolName = toolName ?: "unknown",
-                            description = description,
-                            conversationId = conversationId,
-                            inputPreview = toolInput?.toString(),
+                        app.pendingApprovalStore.queue(
+                            org.ethereumphone.andyclaw.safety.PendingApprovalStore.Request(
+                                source = trigger.source,
+                                provenance = provenance.name,
+                                toolName = name,
+                                input = toolInput,
+                                description = org.ethereumphone.andyclaw.safety.ApprovalSummaries.of(name, toolInput).title,
+                                conversationId = conversationId,
+                                ledgerSessionId = ledgerSessionId,
+                                effect = effect.name,
+                                toolReason = description,
+                            )
                         )
                     } catch (e: Exception) {
                         Log.w(TAG, "Could not queue pending approval: ${e.message}")

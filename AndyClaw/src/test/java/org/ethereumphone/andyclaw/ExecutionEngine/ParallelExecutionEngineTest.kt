@@ -386,7 +386,7 @@ class ParallelExecutionEngineTest {
 
         val result = engine.executeBatch(listOf(toolCall()))
         assertTrue(result.results[0].isError)
-        assertEquals("User denied approval.", result.results[0].content)
+        assertEquals(ParallelExecutionEngine.NOT_APPROVED, result.results[0].content)
         assertTrue(tracker.executed.isEmpty())
     }
 
@@ -434,7 +434,7 @@ class ParallelExecutionEngineTest {
 
         val result = engine.executeBatch(listOf(toolCall()))
         assertTrue(result.results[0].isError)
-        assertEquals("User denied approval.", result.results[0].content)
+        assertEquals(ParallelExecutionEngine.NOT_APPROVED, result.results[0].content)
     }
 
     // ═══════════════════════════════════════════

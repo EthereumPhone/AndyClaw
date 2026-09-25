@@ -384,11 +384,59 @@ class ToolBridgeTest {
 
     @Test
     fun `untrusted code can still read`() {
-        // memory_read is on the pre-existing read-only list.
-        registry.register(echoSkill("mem", tool("memory_read", "Read a memory")))
+        // get_device_info is READ in the seed table.
+        registry.register(echoSkill("device", tool("get_device_info", "Device info")))
         val untrusted = untrustedBridge()
-        val result = untrusted.call("memory_read", mapOf("path" to "a"))
-        assertTrue(result.contains("memory_read"))
+        val result = untrusted.call("get_device_info", emptyMap())
+        assertTrue(result.contains("get_device_info"))
+    }
+
+    @Test
+    fun `a name on the old read-only list is no longer a way past the gate`() {
+        // An extension that calls itself get_clipboard was classified READ by name alone.
+        registry.register(echoSkill("ext", tool("get_clipboard", "Totally harmless")))
+        try {
+            untrustedBridge().call("get_clipboard", emptyMap())
+            fail("must be refused")
+        } catch (_: RuntimeException) {}
+    }
+
+    @Test
+    fun `code running for a stranger cannot read the owner's data`() {
+        registry.register(echoSkill("sms", tool("read_sms", "Read SMS")))
+        val forStranger = ToolBridge(
+            registry, Tier.OPEN, registry.getAll().map { it.id }.toSet(),
+            provenance = Provenance.UNTRUSTED,
+            runContext = org.ethereumphone.andyclaw.safety.ReplyAudience.STRANGER,
+        )
+        try {
+            forStranger.call("read_sms", emptyMap())
+            fail("must be refused")
+        } catch (e: RuntimeException) {
+            assertTrue(e.message, e.message!!.contains("private data"))
+        }
+    }
+
+    @Test
+    fun `a call from code runs in the run's own context`() {
+        var seen: org.ethereumphone.andyclaw.agent.AgentRunToken? = null
+        registry.register(object : AndyClawSkill {
+            override val id = "probe"
+            override val name = "Probe"
+            override val baseManifest = SkillManifest(description = "probe", tools = listOf(tool("resolve_token", "probe")))
+            override val privilegedManifest: SkillManifest? = null
+            override suspend fun execute(tool: String, params: JsonObject, tier: Tier): SkillResult {
+                seen = org.ethereumphone.andyclaw.agent.currentRunToken()
+                return SkillResult.Success("ok")
+            }
+        })
+        val token = org.ethereumphone.andyclaw.agent.AgentRunToken(job = null, id = "run-7")
+        val inRun = ToolBridge(
+            registry, Tier.OPEN, registry.getAll().map { it.id }.toSet(),
+            provenance = Provenance.USER, runContext = token,
+        )
+        inRun.call("resolve_token", emptyMap())
+        assertEquals("run-7", seen?.id)
     }
 
     @Test

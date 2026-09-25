@@ -173,7 +173,17 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private var turnsSinceLastCompaction = 0
 
     private var currentJob: Job? = null
-    private var approvalContinuation: kotlinx.coroutines.CancellableContinuation<Boolean>? = null
+
+    /**
+     * Approvals waiting for the user, oldest first; the dialog shows the head. One slot used to
+     * be shared by every caller, so when two sub-agents asked at once the first was overwritten
+     * and waited forever, and the answer went to whichever asked last.
+     */
+    private class PendingAsk(
+        val request: ApprovalRequest,
+        val cont: kotlinx.coroutines.CancellableContinuation<Boolean>,
+    )
+    private val approvalQueue = ArrayDeque<PendingAsk>()
     private val pendingExplorerUrls = mutableListOf<String>()
 
     private val httpClient = OkHttpClient()
@@ -551,14 +561,28 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                         }
                     }
 
+                    // Exactly what will run: the call's own parameters, then why it needs a yes.
+                    val details = org.ethereumphone.andyclaw.safety.ApprovalSummaries.asText(
+                        org.ethereumphone.andyclaw.safety.ApprovalSummaries.of(toolName ?: "this tool", toolInput)
+                    )
+                    val request = ApprovalRequest(
+                        description = "$details\n\n$description",
+                        toolName = toolName,
+                        slug = slug,
+                        threatAssessment = threatAssessment,
+                    )
                     return kotlinx.coroutines.suspendCancellableCoroutine { cont ->
-                        approvalContinuation = cont
-                        _approvalRequest.value = ApprovalRequest(
-                            description = description,
-                            toolName = toolName,
-                            slug = slug,
-                            threatAssessment = threatAssessment,
-                        )
+                        val ask = PendingAsk(request, cont)
+                        synchronized(approvalQueue) {
+                            approvalQueue.addLast(ask)
+                            publishApprovalHeadLocked()
+                        }
+                        cont.invokeOnCancellation {
+                            synchronized(approvalQueue) {
+                                approvalQueue.remove(ask)
+                                publishApprovalHeadLocked()
+                            }
+                        }
                     }
                 }
 
@@ -633,8 +657,11 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun respondToApproval(approved: Boolean) {
-        val request = _approvalRequest.value
-        if (!approved && request?.toolName == "clawhub_install" && request.slug != null) {
+        val ask = synchronized(approvalQueue) {
+            approvalQueue.removeFirstOrNull().also { publishApprovalHeadLocked() }
+        } ?: return
+        val request = ask.request
+        if (!approved && request.toolName == "clawhub_install" && request.slug != null) {
             viewModelScope.launch {
                 try {
                     app.clawHubManager.cancelPendingInstall(request.slug)
@@ -643,10 +670,31 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }
         }
-        @Suppress("DEPRECATION")
-        approvalContinuation?.resume(approved, null)
-        approvalContinuation = null
-        _approvalRequest.value = null
+        // A request the turn already dropped (cancelled) must not be revived by a late tap.
+        if (ask.cont.isActive) {
+            @Suppress("DEPRECATION")
+            ask.cont.resume(approved, null)
+        }
+    }
+
+    /** Every open approval answered no: the user stopped the turn, so nothing waiting may run. */
+    private fun denyAllApprovals() {
+        val all = synchronized(approvalQueue) {
+            approvalQueue.toList().also {
+                approvalQueue.clear()
+                publishApprovalHeadLocked()
+            }
+        }
+        for (ask in all) {
+            if (ask.cont.isActive) {
+                @Suppress("DEPRECATION")
+                ask.cont.resume(false, null)
+            }
+        }
+    }
+
+    private fun publishApprovalHeadLocked() {
+        _approvalRequest.value = approvalQueue.firstOrNull()?.request
     }
 
     /**
@@ -666,6 +714,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun cancel() {
+        denyAllApprovals()
         currentJob?.cancel()
         _isStreaming.value = false
         _streamingText.value = ""

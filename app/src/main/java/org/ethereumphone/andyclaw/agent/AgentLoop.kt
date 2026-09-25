@@ -133,6 +133,12 @@ class AgentLoop(
      * them for the sake of a feature any one of them may not want.
      */
     private val ledger: AgentLedger? = null,
+    /**
+     * Who hears this run's reply, when that is not simply the user of this app: a stranger on
+     * Telegram or XMTP, or the owner in their own Telegram chat. Null when nobody does (a
+     * background run). Decides what an untrusted run may read — see `ProvenanceGate`.
+     */
+    private val replyAudience: org.ethereumphone.andyclaw.safety.ReplyAudience? = null,
 ) {
     /**
      * Model calls made by this run, sub-agents included.
@@ -1126,7 +1132,7 @@ class AgentLoop(
             modelIdsUsed.add(modelId)
         },
         events = AutopilotEventSink { callbacks.onAgentStep(it) },
-    ) + runToken
+    ) + runToken + (replyAudience ?: kotlin.coroutines.EmptyCoroutineContext)
 
     /** Whether an autopilot run in this batch ended because the user pressed STOP. */
     private fun autopilotStopped(calls: List<ContentBlock.ToolUseBlock>, results: List<ContentBlock>): Boolean {

@@ -76,10 +76,16 @@ object ProvenanceGate {
         provenance: Provenance,
         triggerConversationId: String?,
         toolDef: ToolDefinition?,
+        /** Who hears this run's reply; null when nobody does. See [ReplyAudience]. */
+        audience: ReplyAudience? = null,
+        /** Whether this run has already read the owner's private data. */
+        readPrivateData: Boolean = false,
     ): PreflightVerdict {
         val effect = ToolEffects.of(call.name, toolDef)
 
         if (provenance == Provenance.UNTRUSTED) {
+            privacyVerdict(call.name, audience, readPrivateData)?.let { return it }
+
             // Fixed-recipient tools reach the device owner and nobody else. This is
             // the "it can raise a card for the user" leg of the model — keep it open
             // whatever the effect table says about them.
@@ -110,8 +116,49 @@ object ProvenanceGate {
      * the registry directly from a BeanShell thread, so "ask the user" is not
      * available there and anything short of Pass has to be a refusal.
      */
-    fun allowsUnattended(provenance: Provenance, effect: ToolEffect): Boolean =
-        matrix(provenance, effect) is PreflightVerdict.Pass
+    fun allowsUnattended(
+        provenance: Provenance,
+        effect: ToolEffect,
+        toolName: String = "",
+        audience: ReplyAudience? = null,
+        readPrivateData: Boolean = false,
+    ): Boolean =
+        matrix(provenance, effect) is PreflightVerdict.Pass &&
+            (provenance != Provenance.UNTRUSTED || privacyVerdict(toolName, audience, readPrivateData) == null)
+
+    // ── What an untrusted run may read, and what it may do after ──────
+
+    /**
+     * The privacy half of the gate, for [Provenance.UNTRUSTED] runs. Null when it has nothing
+     * to say.
+     *
+     * READ was open to every run on the grounds that reading changes nothing. It changes
+     * nothing *on the device*; what matters is where the answer goes. A stranger on Telegram
+     * asking "what's in the clipboard" got the clipboard back, and a notification carrying
+     * instructions could have a background run read the SMS inbox and put it in a URL.
+     */
+    fun privacyVerdict(toolName: String, audience: ReplyAudience?, readPrivateData: Boolean): PreflightVerdict.Block? {
+        if (toolName in ToolEffects.CLIPBOARD_READS) {
+            return PreflightVerdict.Block(
+                "[Provenance] The clipboard often holds a password or a code the owner just copied, " +
+                    "and this request came from content written by someone else. Reading it is blocked."
+            )
+        }
+        if (toolName in ToolEffects.PRIVATE_DATA_TOOLS && audience?.ownerOnly == false) {
+            return PreflightVerdict.Block(
+                "[Provenance] Your reply goes to someone other than the phone's owner, so " +
+                    "'$toolName' cannot be used here: it reads the owner's private data. Answer " +
+                    "without it."
+            )
+        }
+        if (toolName in ToolEffects.NETWORK_EGRESS && readPrivateData && audience == null) {
+            return PreflightVerdict.Block(
+                "[Provenance] This run was set off by content written by someone else and has read " +
+                    "the owner's private data, so it cannot send anything to the web. Finish without it."
+            )
+        }
+        return null
+    }
 
     // ── Reply-to-sender ──────────────────────────────────────────────
 
