@@ -155,6 +155,9 @@ object AndyBench {
         val text = StringBuilder()
         var apSteps: Int? = null
         var apHelps: Int? = null
+        // What the agent display showed when the run finished. Read in onComplete, before the
+        // run's end releases the display and parks it — read afterwards, it was never there.
+        var topAtEnd: String? = null
         val callbacks = object : AgentLoop.Callbacks {
             override fun onToken(token: String) { text.append(token) }
             override fun onToolExecution(toolName: String) {}
@@ -167,7 +170,12 @@ object AndyBench {
                     apHelps = (apHelps ?: 0) + event.plannerCalls
                 }
             }
-            override fun onComplete(fullText: String, tokenUsage: TokenUsageSnapshot?) { done.complete(null) }
+            override fun onComplete(fullText: String, tokenUsage: TokenUsageSnapshot?) {
+                if (task.check is Check.TopActivityContains) {
+                    topAtEnd = try { AgentDisplayBinder.serviceOrNull()?.currentActivity } catch (e: Exception) { null }
+                }
+                done.complete(null)
+            }
             override fun onError(error: Throwable) { done.complete(error.message ?: error.javaClass.simpleName) }
         }
 
@@ -177,16 +185,14 @@ object AndyBench {
             done.await()
         } ?: if (done.isCompleted) done.getCompleted() else "timeout"
         val duration = System.currentTimeMillis() - started
-        val ok = error == null && verify(app, task.check, text.toString())
+        val ok = error == null && verify(app, task.check, text.toString(), topAtEnd)
         return RunResult(task.id, mode, ok, duration, loop.lastRunModelCalls, apSteps, apHelps, error)
     }
 
-    private fun verify(app: Context, check: Check, reply: String): Boolean = when (check) {
+    private fun verify(app: Context, check: Check, reply: String, topAtEnd: String?): Boolean = when (check) {
         is Check.SettingEquals -> read(app, check) == check.value
         is Check.ReplyContains -> reply.contains(check.text, ignoreCase = true)
-        is Check.TopActivityContains -> try {
-            AgentDisplayBinder.serviceOrNull()?.currentActivity?.contains(check.text, ignoreCase = true) == true
-        } catch (e: Exception) { false }
+        is Check.TopActivityContains -> topAtEnd?.contains(check.text, ignoreCase = true) == true
         Check.Finished -> true
     }
 
