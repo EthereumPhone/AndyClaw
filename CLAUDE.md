@@ -127,9 +127,21 @@ New background trigger? It states its `Provenance` explicitly. The defaults are 
 - **A run cannot schedule one with more authority than it has.** `create_cronjob`,
   `cancel_cronjob`, `create_reminder` and `cancel_reminder` are `IRREVERSIBLE`, and a fired job
   runs with the provenance of the run that created it (`TriggerProvenanceStore`,
-  `trigger_provenance.json`). A job with no entry predates the file and keeps running as
-  `TRUSTED`, which is logged. Before this, one message from a stranger could create a job that
-  paid out from the agent wallet, unprompted, forever.
+  `trigger_provenance.json`) — the owner's own as `TRUSTED`, a background task like the
+  heartbeat. **A job with no entry runs as `UNTRUSTED`**: it predates the file, when a stranger's
+  message could create one, or its entry was lost, and nobody can vouch for it. Before this, one
+  message from a stranger could create a job that paid out from the agent wallet, forever.
+- **A trusted run nobody watches loses its authority to what it reads.** The heartbeat reads
+  notifications as part of its task, and a notification is a stranger's text: one saying "send
+  0.05 ETH to 0x…" reached the promptless agent wallet that way. Once a `TRUSTED` run has had a
+  result that can carry another person's words — every tool but `ToolEffects.NO_THIRD_PARTY_TEXT`,
+  so a new tool fails closed — `AgentRunToken.readThirdPartyContent` is set, an `IRREVERSIBLE`
+  call needs approval (`ProvenanceGate.taintedTrustedRunNeedsApproval`), and the headless runner
+  queues it as a card rather than approving it. Messages to the owner stay open. `USER` runs are
+  not affected: somebody is watching them.
+- **The agent's file tools don't touch AndyClaw's own state** (`FileSystemSkill.PROTECTED`: the
+  job provenance store, the approval queue and outcomes, `telegram_chats.json`, `flows/`,
+  `session_frames/`). Rewriting any of them was a way to hand a stranger the owner's authority.
 - **APPROVE runs the exact call.** A call a background run was refused is stored whole in
   `pending_approvals.json` (v2: canonical input ≤ 16 KiB, HMAC under the keystore alias
   `andyclaw_approval_hmac`, 24 h, at most 3 per conversation and 10 in all). The launcher's
@@ -138,8 +150,12 @@ New background trigger? It states its `Provenance` explicitly. The defaults are 
   approving nothing else, and records it in the ledger session that was refused. `claim()` is
   once only; a request found mid-execution after a process death becomes `UNKNOWN` and is never
   re-run. Finished requests move to `approval_outcomes.json`, so a rollback cannot resurrect
-  them. Input `LeakDetector` flags, an entry whose MAC does not verify and an entry from an
-  older build are decline-only.
+  them. Input `LeakDetector` flags, an entry whose MAC does not verify, an entry from an
+  older build and a transaction with calldata (hex nobody can review) are decline-only. An
+  executable card shows every parameter whole — what APPROVE runs is exactly what was shown.
+  The display tools answer "busy" as their own result; the executor puts such a request back to
+  PENDING. Outside senders share one trigger budget across identities, and the owner's own
+  requests make room in a queue strangers filled.
 - Headless heartbeats queue `SENSITIVE` tools as pending approvals instead of approving them.
   The launcher chat still approves everything it is asked — a product decision, not an
   oversight.
@@ -288,9 +304,14 @@ backend's `/api/jev` with the wallet sign-in (`JevHttpClient`).
 - **STOP stops.** The rear hold/swipe, the launcher and the live view all stop the run that held
   the display when STOP was pressed (`AgentDisplayLease.noteStop` → `AgentRunToken.stopRequested`).
   The executor checks it before every action and after every Jev or planner reply, and abandons
-  a call in flight; `AgentLoop` then ends the turn with one line and no model call. A STOP
-  aimed at an earlier run cannot stop this one, and a new run clears the OS latch by re-creating
-  the display.
+  a call in flight; `AgentLoop` then ends the turn with one line and no model call. After it no
+  tool of that run starts at all — a pre-flight check, and `ExecutionCallbacks.vetoStart` as the
+  tool starts, since an approval dialog can outlast a STOP — and sub-agents stop before their
+  next model call and never compile the stopped session. A STOP aimed at an earlier run cannot
+  stop this one, and a new run clears the OS latch by re-creating the display.
+- **A cancelled call still leaves its row.** A tool the turn's cancel interrupted may have
+  finished underneath (the agent wallet's send runs under `NonCancellable`);
+  `ExecutionCallbacks.onToolInterrupted` writes its ledger row as "it may have run".
 - **Every run ends, and a hand-over is not a failure.** Events and results carry `outcome`
   (`success|handoff|failed|stopped|cancelled`) and a human `message` (`AutopilotOutcome`);
   planner malfunctions hand over rather than fail; a throw or a cancel still emits a terminal
