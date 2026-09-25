@@ -59,9 +59,9 @@ authority; the short version:
 |---|---|---|
 | `org.ethereumphone.andyclaw.ipc.IHeartbeatService` | `app/src/main/aidl/…` **and** hand-written `Parcel.transact` in `AndyClawHeartbeatService.java` | OS → app, ordinals `FIRST+0…+5` are the contract on both sides. Authentication is `Binder.getCallingUid() == SYSTEM_UID` (`HeartbeatBindingService.enforceSystemCaller`) — the service is exported with no permission because `system_server` must be able to bind it before first unlock. |
 | `com.android.server.IAndyClawHeartbeat` | raw `transact` on the `andyclawheartbeat` binder | app → OS, `FIRST+0…+3`. Gated OS-side by a package check on the calling UID. |
-| `ILauncherService` | `app/src/main/aidl/…/ILauncherService.aidl` (70 methods) | Three copies: this one, the launcher's, SystemUI's (the first 6 only). This copy and the launcher's agree at **every** ordinal 1–70: the `clawHub*` block the launcher has always had sits at 50–60 and is declared here as stubs purely to hold those slots, the ambient/approval/ledger methods are at 61–69, `stopAgent` at 70. Anything new goes at 71+, in both copies, in the same release. |
-| `ILauncherCallback` | `app/src/main/aidl/…/ILauncherCallback.aidl` (10 methods, oneway) | Launcher's copy must match. `onAgentStep(json)` is 10; an older launcher ignores it. |
-| `IAgentDisplayService` | `app/src/main/aidl/android/os/…` (59 methods) | AIDL-generated ordinals, mirrored by the framework's own copy (byte-identical order). 48–59 are the v2 autopilot block (`@hide` in the framework). Append at 60. Check `getAgentApiVersion() >= 2` before any v2 call — an older OS answers them with 0/null. Also `IAgentDisplayListener`/`IAgentHudListener`. |
+| `ILauncherService` | `app/src/main/aidl/…/ILauncherService.aidl` (71 methods) | Three copies: this one, the launcher's, SystemUI's (the first 6 only). This copy and the launcher's agree at **every** ordinal 1–71: the `clawHub*` block the launcher has always had sits at 50–60 and is declared here as stubs purely to hold those slots, the ambient/approval/ledger methods are at 61–69, `stopAgent` at 70, `resolvePendingApprovalWithResult` at 71. Anything new goes at 72+, in both copies, in the same release. `resolvePendingApproval` (64) with `approved = true` only acknowledges now — it never runs anything, so no older caller can double-act. |
+| `ILauncherCallback` | `app/src/main/aidl/…/ILauncherCallback.aidl` (10 methods, oneway) | Launcher's copy must match. `onAgentStep(json)` is 10; an older launcher ignores it. Its JSON gained `outcome` and `message` (§8); `kind` stays `FAILED` for a hand-over so an older launcher still finishes its card. |
+| `IAgentDisplayService` | `app/src/main/aidl/android/os/…` (59 methods) | AIDL-generated ordinals, mirrored by the framework's own copy (byte-identical order). 48–59 are the v2 autopilot block (`@hide` in the framework). Append at 60. Check `getAgentApiVersion() >= 2` before any v2 call — an older OS answers them with 0/null. `>= 3` (`AgentDisplayCapabilities.hasV3`) adds the HUD's `HANDOFF` phase and `HOLD` action, and node actions and launches that honour the STOP latch. Also `IAgentDisplayListener`/`IAgentHudListener`. |
 | On-disk state under `filesDir` | see §4 | Must survive an OTA from an arbitrary older build **and a rollback**. New fields are defaulted and trailing; new files are ignored by older code. |
 
 A payload-format change to an existing method fails *silently* against an older counterpart.
@@ -69,9 +69,10 @@ Prefer a new method over a versioned payload.
 
 ## 4. Storage: `filesDir` and nothing else
 
-The APK's writable state is its own sandbox — `HEARTBEAT.md`, `pending_approvals.json`,
-`telegram_chats.json`, heartbeat logs, skills, memory DBs, `flows/` (§8), the ledger and
-predicted-context databases, and `session_frames/` (§9).
+The APK's writable state is its own sandbox — `HEARTBEAT.md`, `pending_approvals.json` and
+`approval_outcomes.json` (§6), `trigger_provenance.json` (§6), `telegram_chats.json`, heartbeat
+logs, skills, memory DBs, `flows/` (§8), the ledger and predicted-context databases, and
+`session_frames/` (§9).
 
 `/data/andyclaw_files/` is **not** available to this app. It is `0771 system system`, labelled
 `andyclaw_data_file`, and sepolicy grants it to `system_server` only; the APK has no rule and no
@@ -116,6 +117,33 @@ That is the lethal trifecta, and it is the central design problem, not a hardeni
 New background trigger? It states its `Provenance` explicitly. The defaults are closed
 (`AgentRunner.run` defaults to `UNTRUSTED`) so forgetting is safe, not silent.
 
+- **A stranger's run reads nothing private.** `ProvenanceGate.privacyVerdict`: the clipboard
+  readers (`ToolEffects.CLIPBOARD_READS`) are closed to every `UNTRUSTED` run; the private-data
+  tools (`PRIVATE_DATA_TOOLS` — messages, contacts, mail, memory, location, files, holdings, …)
+  are closed to a run whose reply goes to someone other than the owner (`ReplyAudience`, set by
+  the Telegram and XMTP runners); and an untrusted run that has read private data may not
+  reach the web afterwards (`AgentRunToken.readPrivateData`). Non-owner Telegram runs are built
+  without memory or the user story. `ToolBridge` applies the same gates.
+- **A run cannot schedule one with more authority than it has.** `create_cronjob`,
+  `cancel_cronjob`, `create_reminder` and `cancel_reminder` are `IRREVERSIBLE`, and a fired job
+  runs with the provenance of the run that created it (`TriggerProvenanceStore`,
+  `trigger_provenance.json`). A job with no entry predates the file and keeps running as
+  `TRUSTED`, which is logged. Before this, one message from a stranger could create a job that
+  paid out from the agent wallet, unprompted, forever.
+- **APPROVE runs the exact call.** A call a background run was refused is stored whole in
+  `pending_approvals.json` (v2: canonical input ≤ 16 KiB, HMAC under the keystore alias
+  `andyclaw_approval_hmac`, 24 h, at most 3 per conversation and 10 in all). The launcher's
+  APPROVE (ordinal 71) hands it to `PendingApprovalExecutor`, which runs that one tool with that
+  one input — no model — under the call's **original** provenance, with `ExactCallCallbacks`
+  approving nothing else, and records it in the ledger session that was refused. `claim()` is
+  once only; a request found mid-execution after a process death becomes `UNKNOWN` and is never
+  re-run. Finished requests move to `approval_outcomes.json`, so a rollback cannot resurrect
+  them. Input `LeakDetector` flags, an entry whose MAC does not verify and an entry from an
+  older build are decline-only.
+- Headless heartbeats queue `SENSITIVE` tools as pending approvals instead of approving them.
+  The launcher chat still approves everything it is asked — a product decision, not an
+  oversight.
+
 ## 7. Things that will bite you
 
 - **A new skill is not enabled by adding it.** `agent.enabledSkills` is written once, at
@@ -136,6 +164,15 @@ New background trigger? It states its `Provenance` explicitly. The defaults are 
   `SettingsScreen`, `SettingsViewModel` **and** `LauncherBindingService.getSettings` /
   `setSetting` — that last pair is a JSON blob and a string switch, so adding a key there
   costs no binder ordinal.
+- **Every run carries an `AgentRunToken`** (a coroutine-context element; sub-agents share it):
+  the display lease, STOP and the ledger session all hang off it. Tools run on `Dispatchers.IO`
+  as children of the run, so cancelling a turn reaches the tool that is running. A tool's
+  generic `catch (e: Exception)` must `rethrowIfCancelled(e)` first, or a cancel turns into an
+  ordinary error and the run carries on. `execute_code`'s `ToolBridge` passes the context
+  through to the tools it calls.
+- **Anything that moves money is not half-cancellable.** The agent wallet's submit and parse run
+  under `NonCancellable`: a cancel after submission used to report failure and skip the history
+  row, which invites a second send.
 - `AGENTDISPLAYDEBUGKEY` in logcat dumps the assembled system prompt, the tool list and every
   tool result — the fastest way to see what the model actually saw.
   `adb shell am broadcast -a com.android.server.andyclaw.HEARTBEAT_NOW` forces a heartbeat.
@@ -188,7 +225,22 @@ trusted on sight — a flow whose hash or MAC does not verify is ignored, not re
   makes the flow uncompilable outright. The IR can *express* the invalid forms so a recorder
   can record what really happened — refusal happens here, not by pretending.
 - **`FlowInterpreter` never guesses.** Version pin, per-step perceptual checksum, bounded
-  waits, postconditions, a wall-clock budget. Any mismatch aborts and the VLM path takes over.
+  waits, postconditions, a wall-clock budget. Any mismatch aborts and the VLM path takes over —
+  unless the flow has **committed**: once it has acted past its checkpoint, an abort is reported
+  as "performed X but could not confirm — do not repeat it" and nothing falls back
+  (`FlowRunAccounting.mayFallBack`). Postconditions are polled for up to 3 s, because a slow
+  app's "sent" bubble arriving late used to send the message twice.
+- **The right row, never a payment.** A target that matches more than one live node must be
+  followed by a passing identity assert before the checkpoint, or the replay aborts
+  `AMBIGUOUS_TARGET`. A live target that reads as payment, login or a password field, or a
+  private app on screen, aborts `SENSITIVE_TARGET`, which never falls back.
+- **STOP aborts a replay** (`STOPPED`, checked before every step and inside every wait). It is
+  never counted against the flow, never marks it stale and never falls back. Neither do
+  `MISSING_PARAM`, `CHECKPOINT_REFUSED`, `DISPLAY_UNAVAILABLE` or `APP_NOT_INSTALLED`: only
+  faults retire a flow.
+- **A checkpoint needs a real approval.** `FlowCheckpointPolicy.mayCross` wants the
+  `UserApproval` witness `ParallelExecutionEngine` sets for an approved call, unless
+  `noConfirm` is on for a `USER`/`TRUSTED` run; `noConfirm` is part of the manifest's memo key.
 - **Two effect questions, deliberately different.** `FlowStepEffects` classifies a *step* from
   its target, and only decides where the checkpoint must sit (a declaration can raise it, never
   lower it). `FlowToolEffect` classifies the *tool*: anything that actuates is `IRREVERSIBLE`
@@ -224,7 +276,27 @@ backend's `/api/jev` with the wallet sign-in (`JevHttpClient`).
 - Screen reads are in-process (`AgentDisplayAccessibilityService.snapshot`, all windows);
   settling is event-driven (`ScreenSettler`) plus the OS frame-quiet check.
 - `AgentLoop` ends a turn with the autopilot's `say` (no extra model call) and elides old UI
-  trees from history (`pruneOldUiTrees`).
+  trees from history (`pruneOldUiTrees`). A matching compiled flow is replayed first
+  (`FlowFirst.select`).
+- **One run owns the display.** `AgentDisplayLease.claim` on the first display tool call; only
+  the owner puts the display away, when its run ends (`AgentDisplaySkill.onRunFinished`); while
+  a live owner holds it, other runs' display tools answer "busy". Ownership follows the owner's
+  `Job`, so a cancelled or finished run never blocks the next. `cleanupAll()` no longer parks:
+  it used to, from the end of *any* run, under an autopilot still driving.
+- **STOP stops.** The rear hold/swipe, the launcher and the live view all stop the run that held
+  the display when STOP was pressed (`AgentDisplayLease.noteStop` → `AgentRunToken.stopRequested`).
+  The executor checks it before every action and after every Jev or planner reply, and abandons
+  a call in flight; `AgentLoop` then ends the turn with one line and no model call. A STOP
+  aimed at an earlier run cannot stop this one, and a new run clears the OS latch by re-creating
+  the display.
+- **Every run ends, and a hand-over is not a failure.** Events and results carry `outcome`
+  (`success|handoff|failed|stopped|cancelled`) and a human `message` (`AutopilotOutcome`);
+  planner malfunctions hand over rather than fail; a throw or a cancel still emits a terminal
+  event, so no UI is left on "running".
+- **Private apps stay private** (`SensitiveApps`): refused by both launch tools, every node
+  action, `get_node_info` and every tree read (any application window, not just the top one),
+  and their frames are dropped from replays and recordings. A display with no windows reads as
+  empty — never as the main screen's windows.
 - UX: `ui/autopilot/` live view (mirror, focus ring, ticker, STOP, share replay), rear HUD via
   `setHudState`, launcher `onAgentStep`. Replays black out editable/password fields.
 - Measure with AndyBench (Agent Display developer screen) and `adb logcat -s AutopilotStep AgentRunMetrics`.
@@ -253,6 +325,18 @@ its own hash and every hash after it.
   because the order *is* the chain. Overflow is counted and written down, never swallowed.
 - **Rows carry no tool input and no tool output.** Provenance, rung, outcome, duration, cost —
   and nothing that could be a message body. This is a store the user is invited to export.
+- **The `intent` column is never somebody else's text.** Background runners pass a label
+  (`BackgroundIntent`: "Heartbeat tasks", "Reminder: <label>", "XMTP message from 0x12…cd"),
+  the user's own requests are kept with pasted keys redacted, and sub-agent rows never carry the
+  delegated task.
+- **What the launcher shows is derived, never stored.** `LedgerDigest` adds `displayIntent`,
+  `trigger`, a TURN's `summary{toolsRun, toolsBlocked, toolErrors, sideEffects,
+  sideEffectTools, frames}` and `actedOnBehalf` to the binder JSON only. A step belongs to the
+  first TURN after it in its session, so a run gives back the display, and writes its
+  recording, before its own TURN row.
+- **The database is frozen at schema 1** (pinned by a test): new data goes in a sibling
+  database. A ledger from a newer build, met after a rollback, is left untouched and this build
+  records into memory, so the chain survives the roll-forward.
 - **Cost is nullable and null means unknown.** Most models this device runs are not in the
   OpenRouter price registry; rendering that as free would be a lie in the one screen whose job
   is being trustworthy.
@@ -273,6 +357,11 @@ The retention cap is the precondition, not a follow-up: 20 sessions, 64 MB, 600 
 session, evicted **whole sessions** oldest-first — half a recording replays as a jump cut and
 misrepresents what happened. `SessionReplay` reports frames the ledger names but storage has
 evicted, rather than quietly playing a shorter version.
+
+Recording follows the display lease (`AgentDisplayRecording`), not the launcher, so a heartbeat,
+Telegram or cron run that drives the display is recorded too. `DisplayRecorder` keeps a frame
+at most once a second and only when the screen changed, never a private app's (those are
+counted), and caps each recording rather than the conversation.
 
 ### Anticipatory context — `:app` `ingest/`, `:AndyClaw` `ambient/`
 
@@ -307,10 +396,20 @@ The notification listener is event-driven and already existed; mail and calendar
 `HeartbeatConfig.backstopQuietMs` makes a scheduled tick within ten minutes of an event-driven
 run skip with `HeartbeatSkipReason.RECENT_EVENT_TRIGGER`.
 
-- Only paths that actually **ran the agent** open that window (`requestHeartbeatNow(eventDriven
-  = true)`, `requestNowWithContext`, `NodeRuntime.noteAmbientActivity` from the reminder, cron,
-  Telegram and XMTP paths). Ingesting updates what the device knows; it is not thinking, and it
-  must not stand the schedule down.
+- Only a **successful event-driven run of HEARTBEAT.md** opens that window
+  (`HeartbeatRunner.runOnce(eventDriven = true)`). Reminders, cron jobs, Telegram and XMTP
+  messages and context runs never do: they did not work through the user's list, and when they
+  could, a stranger writing every nine minutes suppressed the user's own tasks for good. An
+  event-driven run is never stopped by the window. Ingesting updates what the device knows; it
+  is not thinking, and it must not stand the schedule down.
+- `NodeRuntime` builds the runner with its configuration and reaches the agent runner through a
+  delegate. Built bare, the runner that actually ran on every dGEN1 had a window of zero. The OS
+  tick re-reads the settings and awaits `runNow`, which is single-flight with one coalesced
+  trailing run.
+- `NotificationTriggerPolicy` decides which notifications wake the agent: new and alerting only,
+  not from an app the agent just acted in, and no sooner than max(window, 5 min) after the last.
+  `TriggerBudget` gives each outside sender (XMTP, a Telegram chat that is not the owner's)
+  three runs in a row, then one per ten minutes.
 - A user pressing the heartbeat button is **not** event-driven. Otherwise the manual control
   would quietly turn the schedule off.
 - Zero disables the window, which is the right state for a device where the clock genuinely is
