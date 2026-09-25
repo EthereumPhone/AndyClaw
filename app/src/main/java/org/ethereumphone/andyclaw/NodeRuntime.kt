@@ -6,6 +6,7 @@ import java.io.File
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
 import org.ethereumphone.andyclaw.ExecutionEngine.Provenance
 import org.ethereumphone.andyclaw.agent.AgentLoop
 import org.ethereumphone.andyclaw.agent.AgentRunner
@@ -253,10 +254,15 @@ class NodeRuntime(private val context: Context) {
 
     /**
      * Runs a heartbeat now and waits for it, so a caller holding a wake lock holds it for the
-     * whole run. Null when it was folded into one already running.
+     * run. Null when it was folded into one already running.
+     *
+     * The run belongs to the runtime, not the caller: the OS tick stops waiting when its wake
+     * lock runs out at 55 s, and a longer run must carry on rather than be cancelled halfway.
      */
-    suspend fun runHeartbeatNow(eventDriven: Boolean = false): org.ethereumphone.andyclaw.heartbeat.HeartbeatResult? =
-        heartbeatRunner?.runNow(eventDriven)
+    suspend fun runHeartbeatNow(eventDriven: Boolean = false): org.ethereumphone.andyclaw.heartbeat.HeartbeatResult? {
+        val runner = heartbeatRunner ?: return null
+        return scope.async { runner.runNow(eventDriven) }.await()
+    }
 
     private fun createHeartbeatRunner(): HeartbeatRunner {
         // With the configuration already set. Built bare, the runner that actually ran on every

@@ -127,22 +127,34 @@ class HeartbeatRunner(
 
     private val pending = java.util.concurrent.atomic.AtomicInteger(0)
 
+    /** Whether any request not yet answered by a run was event-driven. */
+    private val pendingEventDriven = java.util.concurrent.atomic.AtomicBoolean(false)
+
     /**
      * One heartbeat now — or, while one is already running, exactly one more right after it,
      * however many ask in the meantime. Returns this call's result, or null when the request
      * was folded into the trailing run of the one already going.
+     *
+     * The trailing run is event-driven only if something that asked was: a scheduled tick that
+     * arrives while an event-driven run is going is then covered by that run's window, instead of
+     * buying a second run of the same list a moment later.
      */
     suspend fun runNow(eventDriven: Boolean = false): HeartbeatResult? {
+        // Set before the count, so the run that picks this request up also sees what it was.
+        if (eventDriven) pendingEventDriven.set(true)
         if (pending.getAndIncrement() > 0) return null
         var last: HeartbeatResult? = null
-        var driven = eventDriven
-        do {
-            pending.set(1) // everything that asked until now is answered by this run
-            last = runOnce(driven)
-            onResult(last)
-            // A run somebody asked for while another was going answers that request.
-            driven = true
-        } while (pending.decrementAndGet() > 0)
+        try {
+            do {
+                pending.set(1) // everything that asked until now is answered by this run
+                last = runOnce(pendingEventDriven.getAndSet(false))
+                onResult(last)
+            } while (pending.decrementAndGet() > 0)
+        } catch (e: Throwable) {
+            // A cancelled run must not leave every later request folded into a run that is gone.
+            pending.set(0)
+            throw e
+        }
         return last
     }
 
@@ -190,6 +202,8 @@ class HeartbeatRunner(
             lastHeartbeatSentAt = now
             Log.i(TAG, "Heartbeat ALERT: ${stripped.text.take(200)}")
             HeartbeatResult(HeartbeatOutcome.ALERT, text = stripped.text)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
         } catch (e: Exception) {
             Log.e(TAG, "Heartbeat error: ${e.message}", e)
             HeartbeatResult(HeartbeatOutcome.ERROR, error = e.message)
@@ -361,6 +375,8 @@ class HeartbeatRunner(
             lastHeartbeatSentAt = System.currentTimeMillis()
             Log.i(TAG, "Heartbeat (with context) ALERT: ${stripped.text.take(200)}")
             HeartbeatResult(HeartbeatOutcome.ALERT, text = stripped.text)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
         } catch (e: Exception) {
             Log.e(TAG, "Heartbeat (with context) error: ${e.message}", e)
             HeartbeatResult(HeartbeatOutcome.ERROR, error = e.message)

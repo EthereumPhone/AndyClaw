@@ -191,7 +191,9 @@ New background trigger? It states its `Provenance` explicitly. The defaults are 
   an export the user can take off the device. Anything added to a row is added to both.
 - `HeartbeatPrompt.isContentEffectivelyEmpty` treats a header-only `HEARTBEAT.md` as "nothing to
   do", so seeding the file and setting an interval are two halves of one change — one without
-  the other leaves the proactive agent silently doing nothing.
+  the other leaves the proactive agent silently doing nothing. Onboarding seeds the starter list;
+  for phones onboarded before it did, `HeartbeatBindingService` seeds it once, the first time it
+  finds the heartbeat switched on with the list still empty (`heartbeat.seededDefaults`).
 
 ## 8. The execution ladder and compiled flows
 

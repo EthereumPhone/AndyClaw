@@ -243,4 +243,66 @@ class HeartbeatBackstopTest {
 
         assertNull(hb.runOnce().skipReason)
     }
+
+    @Test
+    fun `a tick that arrives during an event-driven run does not buy a second run`() = runTest {
+        val results = mutableListOf<HeartbeatResult>()
+        val gate = CompletableDeferred<Unit>()
+        val agent = object : AgentRunner {
+            var calls = 0
+            override suspend fun run(
+                prompt: String,
+                systemPrompt: String?,
+                skillsPrompt: String?,
+                provenance: Provenance,
+                conversationId: String?,
+            ): AgentResponse {
+                calls++
+                gate.await()
+                return AgentResponse("done")
+            }
+        }
+        val hb = runner(workspaceWithTasks(), HeartbeatConfig.DEFAULT_BACKSTOP_QUIET_MS, agent, results)
+
+        val event = async { hb.runNow(eventDriven = true) }
+        yield()
+        assertNull("the tick is folded into the run going", hb.runNow())
+        gate.complete(Unit)
+        event.await()
+
+        assertEquals(1, agent.calls)
+        assertEquals(HeartbeatSkipReason.RECENT_EVENT_TRIGGER, results.last().skipReason)
+    }
+
+    @Test
+    fun `a cancelled run does not leave the heartbeat folded for good`() = runTest {
+        val results = mutableListOf<HeartbeatResult>()
+        val never = CompletableDeferred<Unit>()
+        var block = true
+        val agent = object : AgentRunner {
+            var calls = 0
+            override suspend fun run(
+                prompt: String,
+                systemPrompt: String?,
+                skillsPrompt: String?,
+                provenance: Provenance,
+                conversationId: String?,
+            ): AgentResponse {
+                calls++
+                if (block) never.await()
+                return AgentResponse("done")
+            }
+        }
+        val hb = runner(workspaceWithTasks(), 0L, agent, results)
+
+        val stuck = async { hb.runNow() }
+        yield()
+        stuck.cancel()
+        yield()
+        block = false
+
+        val next = hb.runNow()
+        assertEquals("the next request runs rather than folding into a dead run", 2, agent.calls)
+        assertNull(next?.skipReason)
+    }
 }

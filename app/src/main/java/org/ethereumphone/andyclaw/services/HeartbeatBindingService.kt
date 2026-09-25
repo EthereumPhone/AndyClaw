@@ -364,7 +364,9 @@ class HeartbeatBindingService : Service() {
             runWithWakeLock {
                 val app = application as NodeApp
                 // Each tick reads the settings as they are now: a toggle changed since the
-                // runtime started must reach the runner that actually runs.
+                // runtime started must reach the runner that actually runs. The heartbeat may
+                // have been switched on since then too, so the starter list is checked here.
+                seedHeartbeatFile()
                 app.runtime.heartbeatConfig = heartbeatConfig(app)
                 Log.i(TAG, "performHeartbeat: running the heartbeat")
                 // Awaited, so the wake lock covers the run itself and not just its launch.
@@ -807,17 +809,14 @@ class HeartbeatBindingService : Service() {
         } else if (file.readText().contains("Gather fresh info the user might care about")) {
             file.writeText(HeartbeatInstructions.CONTENT)
             Log.i(TAG, "Migrated HEARTBEAT.md: removed legacy proactive instructions")
-        } else if (
-            prefs.heartbeatIntervalMinutes.value > 0 &&
-            prefs.getString(HEARTBEAT_SEEDED_KEY) != "true" &&
-            org.ethereumphone.andyclaw.heartbeat.HeartbeatPrompt.isContentEffectivelyEmpty(file.readText())
-        ) {
-            // Phones from before the file was seeded carry a header and nothing else, so every
-            // tick skipped as EMPTY_HEARTBEAT_FILE with the heartbeat switched on. Seeded once;
-            // a file the user empties afterwards stays empty.
-            file.writeText(HeartbeatInstructions.CONTENT)
-            Log.i(TAG, "Seeded an empty HEARTBEAT.md")
         }
-        prefs.putString(HEARTBEAT_SEEDED_KEY, "true")
+        // Phones onboarded before onboarding wrote the starter list carry a header and nothing
+        // else, so with the heartbeat switched on every tick skipped as EMPTY_HEARTBEAT_FILE. The
+        // first time the heartbeat is found on, a list that is still empty gets the starter tasks
+        // — once: a list the user empties afterwards stays empty.
+        if (prefs.heartbeatIntervalMinutes.value > 0 && prefs.getString(HEARTBEAT_SEEDED_KEY) != "true") {
+            HeartbeatInstructions.seedStarterTasks(file)
+            prefs.putString(HEARTBEAT_SEEDED_KEY, "true")
+        }
     }
 }
