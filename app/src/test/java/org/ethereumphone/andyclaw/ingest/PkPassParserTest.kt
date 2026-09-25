@@ -12,6 +12,7 @@ import java.time.ZoneId
 import java.time.ZoneOffset
 import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
+import org.ethereumphone.andyclaw.ambient.TimePrecision
 
 /** Apple Wallet passes: a zip, a `pass.json`, and the barcode payload it already carries. */
 class PkPassParserTest {
@@ -173,5 +174,30 @@ class PkPassParserTest {
     fun `bytes that are not a zip are not a pass`() {
         assertFalse(PkPassParser.looksLikePkPass("not a zip".toByteArray()))
         assertNull(PkPassParser.parse("not a zip".toByteArray(), utc))
+    }
+
+    @Test
+    fun `a gate closing time is not the gate`() {
+        val json = passJson().replace(
+            """"headerFields": [{"key":"gate","label":"GATE","value":"K14"}],""",
+            """"headerFields": [{"key":"gateClosingTime","label":"GATE CLOSES","value":"2026-08-14T08:40:00Z"}],""",
+        )
+        val flight = PkPassParser.toFlightReservation(PkPassParser.parseJson(json, utc)!!, august2026, utc)!!
+        assertNull(flight.departureGate)
+    }
+
+    @Test
+    fun `a boarding time is labelled as one`() {
+        val flight = PkPassParser.toFlightReservation(PkPassParser.parse(zip("pass.json" to passJson()), utc)!!, august2026, utc)!!
+        assertEquals(TimePrecision.BOARDING, flight.departurePrecision)
+        assertEquals(1_786_695_000_000L, flight.departureTimeMs) // 2026-08-14T08:10Z
+        assertEquals("the barcode's day", "2026-08-14", flight.departureDate)
+    }
+
+    @Test
+    fun `a departure time on the pass is exact`() {
+        val json = passJson().replace(""""key":"boardingTime","label":"BOARDS"""", """"key":"departureTime","label":"DEPARTS"""")
+        val flight = PkPassParser.toFlightReservation(PkPassParser.parseJson(json, utc)!!, august2026, utc)!!
+        assertEquals(TimePrecision.EXACT, flight.departurePrecision)
     }
 }

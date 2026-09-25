@@ -6,6 +6,7 @@ import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
+import org.ethereumphone.andyclaw.ambient.TimePrecision
 import java.time.ZoneId
 
 /**
@@ -111,6 +112,9 @@ object JsonLdReservationParser {
         val airline = f.obj("airline")
         val from = f.obj("departureAirport")
         val to = f.obj("arrivalAirport")
+        // A departure given as a bare date is a day, not midnight: no time is invented for it.
+        val departure = IsoDates.parseMoment(f.str("departureTime") ?: f.str("departureDate"), zone)
+        val arrival = IsoDates.parseMoment(f.str("arrivalTime"), zone)?.takeIf { !it.dateOnly }
 
         val reservation = FlightReservation(
             reservationNumber = node.str("reservationNumber"),
@@ -121,12 +125,15 @@ object JsonLdReservationParser {
             departureAirportName = from?.str("name"),
             arrivalAirport = to?.str("iataCode"),
             arrivalAirportName = to?.str("name"),
-            departureTimeMs = IsoDates.parseIso(f.str("departureTime"), zone),
-            arrivalTimeMs = IsoDates.parseIso(f.str("arrivalTime"), zone),
+            departureTimeMs = departure?.takeIf { !it.dateOnly }?.epochMs,
+            arrivalTimeMs = arrival?.epochMs,
             departureTerminal = f.str("departureTerminal"),
             departureGate = f.str("departureGate"),
             passengerName = node.obj("underName")?.str("name"),
             seat = node.obj("airplaneSeat")?.str("seatNumber") ?: node.str("airplaneSeat"),
+            departureDate = departure?.localDate,
+            departurePrecision = if (departure?.dateOnly == true) TimePrecision.DATE_ONLY else TimePrecision.EXACT,
+            cancelled = isCancelled(node),
         )
         // A block with nothing identifying in it is markup noise, not a booking.
         val identified = reservation.flightNumber != null ||
@@ -135,32 +142,59 @@ object JsonLdReservationParser {
         return reservation.takeIf { identified }
     }
 
+    /**
+     * Most hotel mail says `checkinDate` / `checkoutDate`, not the `…Time` variant — and read
+     * only as `…Time`, most hotels produced no card at all.
+     */
     private fun lodging(node: JsonObject, zone: ZoneId): LodgingReservation? {
         val place = node.obj("reservationFor")
+        val checkin = IsoDates.parseMoment(
+            node.str("checkinTime") ?: place?.str("checkinTime") ?: node.str("checkinDate") ?: place?.str("checkinDate"),
+            zone,
+        )
+        val checkout = IsoDates.parseMoment(
+            node.str("checkoutTime") ?: place?.str("checkoutTime") ?: node.str("checkoutDate") ?: place?.str("checkoutDate"),
+            zone,
+        )
         val reservation = LodgingReservation(
             reservationNumber = node.str("reservationNumber"),
             name = place?.str("name"),
             address = place?.let { address(it) },
-            checkinMs = IsoDates.parseIso(node.str("checkinTime") ?: place?.str("checkinTime"), zone),
-            checkoutMs = IsoDates.parseIso(node.str("checkoutTime") ?: place?.str("checkoutTime"), zone),
+            checkinMs = checkin?.epochMs,
+            checkoutMs = checkout?.epochMs,
             guestName = node.obj("underName")?.str("name"),
+            checkinDate = checkin?.localDate,
+            dateOnly = checkin?.dateOnly == true,
+            cancelled = isCancelled(node),
         )
         return reservation.takeIf { it.name != null || it.reservationNumber != null }
     }
 
     private fun event(node: JsonObject, zone: ZoneId): EventReservation? {
         val e = node.obj("reservationFor")
+        val start = IsoDates.parseMoment(e?.str("startDate"), zone)
         val reservation = EventReservation(
             reservationNumber = node.str("reservationNumber"),
             eventName = e?.str("name"),
             location = e?.obj("location")?.let { it.str("name") ?: address(it) },
-            startTimeMs = IsoDates.parseIso(e?.str("startDate"), zone),
+            startTimeMs = start?.epochMs,
             endTimeMs = IsoDates.parseIso(e?.str("endDate"), zone),
             attendeeName = node.obj("underName")?.str("name"),
             ticketToken = node.str("ticketToken"),
+            startDate = start?.localDate,
+            dateOnly = start?.dateOnly == true,
+            cancelled = isCancelled(node),
         )
         return reservation.takeIf { it.eventName != null || it.reservationNumber != null }
     }
+
+    /**
+     * `reservationStatus: ReservationCancelled`, in any of the spellings senders use (bare,
+     * `http://schema.org/…`, `https://schema.org/…`). The cancellation mail becomes a
+     * tombstone for the card the confirmation made, rather than being ignored.
+     */
+    private fun isCancelled(node: JsonObject): Boolean =
+        node.str("reservationStatus")?.substringAfterLast('/')?.equals("ReservationCancelled", ignoreCase = true) == true
 
     /** A `PostalAddress`, flattened to one line, or a plain string address. */
     private fun address(node: JsonObject): String? {

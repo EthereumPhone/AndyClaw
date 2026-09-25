@@ -65,12 +65,45 @@ class GoogleCalendarEventParserTest {
     }
 
     @Test
-    fun `a cancelled event is not upcoming context`() {
+    fun `a cancelled event comes back as a tombstone, not as upcoming context`() {
+        // Dropped outright, the card an earlier ingest made for it stayed on screen.
         val body = """
             {"items":[{"id":"x","summary":"Gone","status":"cancelled",
               "start":{"dateTime":"2026-09-01T08:30:00Z"}}]}
         """.trimIndent()
-        assertTrue(GoogleCalendarEventParser.parse(body, utc).isEmpty())
+        assertTrue(GoogleCalendarEventParser.parse(body, utc).single().cancelled)
+    }
+
+    @Test
+    fun `an event the user declined is a tombstone too`() {
+        val body = """
+            {"items":[{"id":"d","summary":"Declined","start":{"dateTime":"2026-09-01T08:30:00Z"},
+              "attendees":[{"email":"me@x.com","self":true,"responseStatus":"declined"},
+                           {"email":"you@x.com","responseStatus":"accepted"}]}]}
+        """.trimIndent()
+        assertTrue(GoogleCalendarEventParser.parse(body, utc).single().cancelled)
+    }
+
+    @Test
+    fun `each occurrence of a repeating event is its own card`() {
+        // Every occurrence shares the series' iCalUID; keyed by that alone a daily standup
+        // collapsed into whichever day came last.
+        val body = """
+            {"items":[
+              {"id":"s_1","iCalUID":"standup@x","recurringEventId":"s","summary":"Standup",
+               "start":{"dateTime":"2026-09-01T09:00:00Z"},"originalStartTime":{"dateTime":"2026-09-01T09:00:00Z"}},
+              {"id":"s_2","iCalUID":"standup@x","recurringEventId":"s","summary":"Standup",
+               "start":{"dateTime":"2026-09-02T09:00:00Z"},"originalStartTime":{"dateTime":"2026-09-02T09:00:00Z"}}
+            ]}
+        """.trimIndent()
+        val keys = GoogleCalendarEventParser.parse(body, utc).map { it.sourceKey }
+        assertEquals(listOf("calendar:standup@x@1788253200000", "calendar:standup@x@1788339600000"), keys)
+    }
+
+    @Test
+    fun `the next page is named`() {
+        val body = """{"items":[],"nextPageToken":"p2"}"""
+        assertEquals("p2", GoogleCalendarEventParser.parsePage(body, utc).nextPageToken)
     }
 
     @Test

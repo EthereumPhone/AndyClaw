@@ -9,6 +9,8 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import org.ethereumphone.andyclaw.ambient.TimePrecision
+import java.time.ZoneId
 
 /** Parsed reservation to ambient card, with the barcode payload intact. */
 class PredictedContextMapperTest {
@@ -136,5 +138,42 @@ class PredictedContextMapperTest {
         assertTrue(json["gate"] == null)
         assertTrue(json["barcode_payload"] == null)
         assertEquals("BA", json.str("airline_iata"))
+    }
+
+    @Test
+    fun `a boarding time is labelled as one, not as the departure`() {
+        val json = payload(PredictedContextMapper.fromReservation(flight.copy(departurePrecision = TimePrecision.BOARDING), "gmail")!!.payloadJson)
+        assertEquals("boarding", json.str("time_precision"))
+        assertEquals(flight.departureTimeMs.toString(), json.str("boarding_ms"))
+        assertNull(json["departure_ms"])
+    }
+
+    @Test
+    fun `a date-only flight is a whole-day card`() {
+        val berlin = ZoneId.of("Europe/Berlin")
+        val dateOnly = flight.copy(departureTimeMs = null, departureDate = "2026-09-01", departurePrecision = TimePrecision.DATE_ONLY)
+        val context = PredictedContextMapper.fromReservation(dateOnly, "gmail", berlin)!!
+        assertEquals(1_788_213_600_000L, context.startMs) // 2026-09-01T00:00+02:00
+        assertEquals(1_788_300_000_000L, context.endMs)
+        val json = payload(context.payloadJson)
+        assertEquals("true", json.str("date_only"))
+        assertEquals("2026-09-01", json.str("departure_date"))
+        assertNull(json["departure_ms"])
+    }
+
+    @Test
+    fun `the store's bookkeeping travels in the payload`() {
+        val stamped = flight.copy(cancelled = true, authenticated = true, observedMs = 1234L)
+        val json = payload(PredictedContextMapper.fromReservation(stamped, "gmail:m1")!!.payloadJson)
+        assertEquals("true", json.str("cancelled"))
+        assertEquals("true", json.str("authenticated"))
+        assertEquals("1234", json.str("observed_ms"))
+    }
+
+    @Test
+    fun `a live calendar row carries no mail authentication and an invitation does`() {
+        val event = CalendarEvent(uid = "u", summary = "Review", startMs = 1L, authenticated = false)
+        assertNull(payload(PredictedContextMapper.fromCalendarEvent(event, "gcal", observedMs = 5L)!!.payloadJson)["authenticated"])
+        assertEquals("false", payload(PredictedContextMapper.fromCalendarEvent(event, "gmail-ics")!!.payloadJson).str("authenticated"))
     }
 }

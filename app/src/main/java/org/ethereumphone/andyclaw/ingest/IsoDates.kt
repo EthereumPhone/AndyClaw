@@ -30,14 +30,115 @@ object IsoDates {
     private val isoDay = DateTimeFormatter.ofPattern("yyyy-MM-dd")
 
     /** ISO-8601 with or without an offset, or a bare date. Null when it is none of those. */
-    fun parseIso(value: String?, zone: ZoneId = ZoneId.systemDefault()): Long? {
-        val raw = value?.trim().orEmpty()
+    fun parseIso(value: String?, zone: ZoneId = ZoneId.systemDefault()): Long? = parseMoment(value, zone)?.epochMs
+
+    /**
+     * A parsed time together with what it knew about itself.
+     *
+     * [localDate] is the day *as the source wrote it*: `2026-09-01T00:30:00+02:00` is on the
+     * 1st, whatever that is in UTC. That, not the UTC day, is what a boarding-pass barcode
+     * carries, so it is what a flight's dedupe key is built from. [dateOnly] is a bare date,
+     * whose [epochMs] is only the start of that day in [zone] and must not be shown as a time.
+     */
+    data class Moment(val epochMs: Long, val localDate: String, val dateOnly: Boolean)
+
+    fun parseMoment(value: String?, zone: ZoneId = ZoneId.systemDefault()): Moment? {
+        val raw = normalise(value?.trim().orEmpty())
         if (raw.isEmpty()) return null
-        return runCatching { OffsetDateTime.parse(raw).toInstant().toEpochMilli() }
-            .recoverCatching { LocalDateTime.parse(raw).atZone(zone).toInstant().toEpochMilli() }
-            .recoverCatching { LocalDate.parse(raw).atStartOfDay(zone).toInstant().toEpochMilli() }
-            .getOrNull()
+        runCatching { OffsetDateTime.parse(raw) }.getOrNull()?.let {
+            return Moment(it.toInstant().toEpochMilli(), formatDay(it.toLocalDate()), dateOnly = false)
+        }
+        runCatching { LocalDateTime.parse(raw) }.getOrNull()?.let {
+            return Moment(it.atZone(zone).toInstant().toEpochMilli(), formatDay(it.toLocalDate()), dateOnly = false)
+        }
+        runCatching { LocalDate.parse(raw) }.getOrNull()?.let {
+            return Moment(it.atStartOfDay(zone).toInstant().toEpochMilli(), formatDay(it), dateOnly = true)
+        }
+        return null
     }
+
+    private val compactOffset = Regex("""^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?)([+-]\d{2})(\d{2})$""")
+    private val spaceSeparated = Regex("""^(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}.*)$""")
+
+    /**
+     * The two near-ISO shapes senders really use: a `+0200` offset with no colon, and a space
+     * where the `T` belongs. Read strictly, both fell through to "no time" and the card was lost.
+     */
+    private fun normalise(raw: String): String {
+        var s = raw
+        spaceSeparated.find(s)?.let { s = "${it.groupValues[1]}T${it.groupValues[2]}" }
+        compactOffset.find(s)?.let { s = "${it.groupValues[1]}${it.groupValues[2]}:${it.groupValues[3]}" }
+        return s
+    }
+
+    /**
+     * An iCal `TZID`, as whatever wrote it spelled it: an IANA name, one of the Windows names
+     * Outlook and Exchange write (`W. Europe Standard Time`), or Outlook's own display form
+     * (`(UTC+01:00) Amsterdam, Berlin, …`). Null when none of those, which leaves the device's
+     * zone to decide — the old behaviour, and still the right last resort.
+     */
+    fun zoneFor(tzid: String?): ZoneId? {
+        val id = tzid?.trim()?.trim('"').orEmpty()
+        if (id.isEmpty()) return null
+        runCatching { ZoneId.of(id) }.getOrNull()?.let { return it }
+        WINDOWS_ZONES[id.lowercase()]?.let { return ZoneId.of(it) }
+        outlookLabel.find(id)?.let { m ->
+            val sign = m.groupValues[1]
+            val hours = m.groupValues[2].padStart(2, '0')
+            val minutes = m.groupValues[3].ifEmpty { "00" }
+            return runCatching { ZoneOffset.of("$sign$hours:$minutes") }.getOrNull()
+        }
+        if (id.equals("utc", ignoreCase = true) || id.equals("gmt", ignoreCase = true)) return ZoneOffset.UTC
+        return null
+    }
+
+    private val outlookLabel = Regex("""^\((?:UTC|GMT)\s*([+-])(\d{1,2})(?::(\d{2}))?\)""", RegexOption.IGNORE_CASE)
+
+    /** The common Windows zone names (CLDR windowsZones, "001" territory). */
+    private val WINDOWS_ZONES = mapOf(
+        "utc" to "UTC",
+        "gmt standard time" to "Europe/London",
+        "greenwich standard time" to "Atlantic/Reykjavik",
+        "w. europe standard time" to "Europe/Berlin",
+        "central europe standard time" to "Europe/Budapest",
+        "central european standard time" to "Europe/Warsaw",
+        "romance standard time" to "Europe/Paris",
+        "e. europe standard time" to "Europe/Chisinau",
+        "fle standard time" to "Europe/Kiev",
+        "gtb standard time" to "Europe/Bucharest",
+        "russian standard time" to "Europe/Moscow",
+        "turkey standard time" to "Europe/Istanbul",
+        "israel standard time" to "Asia/Jerusalem",
+        "arabian standard time" to "Asia/Dubai",
+        "india standard time" to "Asia/Kolkata",
+        "china standard time" to "Asia/Shanghai",
+        "singapore standard time" to "Asia/Singapore",
+        "tokyo standard time" to "Asia/Tokyo",
+        "korea standard time" to "Asia/Seoul",
+        "aus eastern standard time" to "Australia/Sydney",
+        "new zealand standard time" to "Pacific/Auckland",
+        "eastern standard time" to "America/New_York",
+        "central standard time" to "America/Chicago",
+        "mountain standard time" to "America/Denver",
+        "us mountain standard time" to "America/Phoenix",
+        "pacific standard time" to "America/Los_Angeles",
+        "alaskan standard time" to "America/Anchorage",
+        "hawaiian standard time" to "Pacific/Honolulu",
+        "atlantic standard time" to "America/Halifax",
+        "e. south america standard time" to "America/Sao_Paulo",
+        "sa pacific standard time" to "America/Bogota",
+        "canada central standard time" to "America/Regina",
+        "south africa standard time" to "Africa/Johannesburg",
+        "egypt standard time" to "Africa/Cairo",
+    )
+
+    /** The start of [date] (`yyyy-MM-dd`) in [zone]. */
+    fun startOfDayMs(date: String, zone: ZoneId = ZoneId.systemDefault()): Long? =
+        runCatching { LocalDate.parse(date).atStartOfDay(zone).toInstant().toEpochMilli() }.getOrNull()
+
+    /** The start of the day after [date] in [zone] — a date-only card's end. */
+    fun endOfDayMs(date: String, zone: ZoneId = ZoneId.systemDefault()): Long? =
+        runCatching { LocalDate.parse(date).plusDays(1).atStartOfDay(zone).toInstant().toEpochMilli() }.getOrNull()
 
     /**
      * An iCal `DATE-TIME` or `DATE`, with the `TZID` parameter the property carried.
@@ -48,7 +149,7 @@ object IsoDates {
     fun parseICal(value: String?, tzid: String? = null, zone: ZoneId = ZoneId.systemDefault()): Long? {
         val raw = value?.trim().orEmpty()
         if (raw.isEmpty()) return null
-        val target = tzid?.let { runCatching { ZoneId.of(it) }.getOrNull() } ?: zone
+        val target = zoneFor(tzid) ?: zone
         return runCatching { LocalDateTime.parse(raw, icalUtc).toInstant(ZoneOffset.UTC).toEpochMilli() }
             .recoverCatching { LocalDateTime.parse(raw, icalLocal).atZone(target).toInstant().toEpochMilli() }
             .recoverCatching { LocalDate.parse(raw, icalDate).atStartOfDay(target).toInstant().toEpochMilli() }

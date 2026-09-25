@@ -7,6 +7,9 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.flow.map
 import org.ethereumphone.andyclaw.agent.AgentLedger
 import org.ethereumphone.andyclaw.agent.ModelPrice
 import org.ethereumphone.andyclaw.ambient.PredictedContextRepository
@@ -17,6 +20,8 @@ import org.ethereumphone.andyclaw.heartbeat.HeartbeatLogStore
 import org.ethereumphone.andyclaw.ingest.AmbientIngestManager
 import org.ethereumphone.andyclaw.ingest.AmbientIngestor
 import org.ethereumphone.andyclaw.ingest.CalendarIngestSource
+import org.ethereumphone.andyclaw.ingest.DeviceCalendarSource
+import org.ethereumphone.andyclaw.ingest.FileIngestStores
 import org.ethereumphone.andyclaw.ingest.GmailIngestSource
 import org.ethereumphone.andyclaw.ledger.LedgerRecorder
 import org.ethereumphone.andyclaw.ledger.LedgerRepository
@@ -540,20 +545,29 @@ class NodeApp : Application() {
         PredictedContextRepository(PredictedContextDatabase.getInstance(this).predictedContextDao())
     }
 
+    /** Ingest bookkeeping: its state, and the mail it has already read. Under `files/ambient/`. */
+    private val ambientIngestStores: FileIngestStores by lazy {
+        FileIngestStores(java.io.File(filesDir, "ambient"))
+    }
+
     val ambientIngestor: AmbientIngestor by lazy {
         val token: suspend () -> String = { googleAuthManager.getAccessToken() }
+        val connected = { googleAuthManager.isAuthenticated }
+        val invalidate = { googleAuthManager.invalidateAccessToken() }
         AmbientIngestor(
-            mail = GmailIngestSource(token),
-            calendar = CalendarIngestSource(token),
+            mail = GmailIngestSource(token, isAuthenticated = connected, invalidateToken = invalidate),
+            calendar = CalendarIngestSource(token, isAuthenticated = connected, invalidateToken = invalidate),
             contexts = predictedContextRepository,
-            enabled = {
-                securePrefs.ambientIngestEnabled.value && googleAuthManager.isAuthenticated
-            },
+            // Not gated on a Google account any more: the phone's own calendars make cards too.
+            enabled = { securePrefs.ambientIngestEnabled.value },
+            deviceCalendar = DeviceCalendarSource(this, skipGoogleAccounts = connected),
+            stateStore = ambientIngestStores,
+            seen = ambientIngestStores,
         )
     }
 
     private val ambientIngestManager: AmbientIngestManager by lazy {
-        AmbientIngestManager(this, appScope, ambientIngestor)
+        AmbientIngestManager(this, appScope, ambientIngestor, observeDeviceCalendar = true)
     }
 
     /**
@@ -562,13 +576,82 @@ class NodeApp : Application() {
      * The pref alone is not the feature: the receivers are registered once at startup, so
      * flipping it in Settings has to start them there and then or nothing happens until the
      * next boot — which is exactly the shape of dead-on-arrival bug `CLAUDE.md` §7 is about.
+     *
+     * Switching it off forgets what was read — PNRs, names, barcodes are not kept for a
+     * feature the user has turned off.
      */
     fun setAmbientIngestEnabled(enabled: Boolean) {
         securePrefs.setAmbientIngestEnabled(enabled)
         try {
-            if (enabled) ambientIngestManager.start() else ambientIngestManager.stop()
+            if (enabled) {
+                ambientIngestManager.start()
+            } else {
+                ambientIngestManager.stop()
+                appScope.launch { forgetAmbientData(sources = null) }
+            }
         } catch (e: Exception) {
             Log.w(TAG, "ambient ingest toggle failed: ${e.message}", e)
+        }
+    }
+
+    /** Drop ingested cards — those of [sources] (name prefixes), or all — and what was read. */
+    private suspend fun forgetAmbientData(sources: List<String>?) {
+        try {
+            if (sources == null) predictedContextRepository.clear()
+            else sources.forEach { predictedContextRepository.clearSource(it) }
+            ambientIngestStores.clear()
+            ambientIngestStores.save(org.ethereumphone.andyclaw.ingest.IngestState())
+        } catch (e: Exception) {
+            Log.w(TAG, "clearing ambient data failed: ${e.message}", e)
+        }
+    }
+
+    /**
+     * How ambient ingestion is doing, for the launcher: `ok`, `no_account`, `auth_expired`,
+     * `offline` or `off`, with when it last worked. The account half is read live, so a revoked
+     * grant shows as soon as it is known rather than after the next ingest.
+     */
+    fun ambientIngestStatus(): org.ethereumphone.andyclaw.ingest.IngestState {
+        val stored = ambientIngestor.state()
+        return when {
+            !securePrefs.ambientIngestEnabled.value -> stored.copy(state = org.ethereumphone.andyclaw.ingest.IngestState.OFF)
+            googleAuthManager.isAuthExpired -> stored.copy(state = org.ethereumphone.andyclaw.ingest.IngestState.AUTH_EXPIRED)
+            !googleAuthManager.isAuthenticated -> stored.copy(state = org.ethereumphone.andyclaw.ingest.IngestState.NO_ACCOUNT)
+            stored.state == org.ethereumphone.andyclaw.ingest.IngestState.NO_ACCOUNT ->
+                stored.copy(state = org.ethereumphone.andyclaw.ingest.IngestState.OK)
+            else -> stored
+        }
+    }
+
+    /** The launcher asked for the cards: someone is looking, a cheap moment to be current. */
+    fun onAmbientPresence() {
+        if (!securePrefs.ambientIngestEnabled.value) return
+        runCatching { ambientIngestManager.onPresence() }
+    }
+
+    /** The OS heartbeat ticked: ambient ingestion's periodic sweep, under its own long cooldown. */
+    fun onAmbientTick() {
+        if (!securePrefs.ambientIngestEnabled.value) return
+        runCatching { ambientIngestManager.onHeartbeatTick() }
+    }
+
+    /**
+     * A Google account connected or disconnected. Disconnecting drops what was read from it —
+     * mail cards and Google Calendar cards; connecting sweeps at once instead of waiting.
+     */
+    private fun watchGoogleAccountForAmbient() {
+        appScope.launch {
+            securePrefs.googleOauthRefreshToken
+                .map { it.isNotBlank() }
+                .distinctUntilChanged()
+                .drop(1)
+                .collect { connected ->
+                    if (!connected) {
+                        forgetAmbientData(sources = listOf("gmail", org.ethereumphone.andyclaw.ingest.AmbientIngestor.GCAL))
+                    } else if (securePrefs.ambientIngestEnabled.value) {
+                        runCatching { ambientIngestManager.onSignal(org.ethereumphone.andyclaw.ingest.AmbientSignal.MANUAL) }
+                    }
+                }
         }
     }
 
@@ -1183,6 +1266,8 @@ class NodeApp : Application() {
 
         // One-time backfill of agent tx history from existing session messages
         backfillAgentTxHistory()
+
+        watchGoogleAccountForAmbient()
 
         // Event-driven ingestion of mail and calendar. Registers its receivers and does one
         // sweep; everything after that is a signal, not a timer.

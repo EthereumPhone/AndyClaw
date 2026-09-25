@@ -23,35 +23,53 @@ object GoogleCalendarEventParser {
 
     private val json = Json { ignoreUnknownKeys = true; isLenient = true }
 
-    fun parse(body: String, zone: ZoneId = ZoneId.systemDefault()): List<CalendarEvent> {
-        val root = runCatching { json.parseToJsonElement(body) }.getOrNull() ?: return emptyList()
+    fun parse(body: String, zone: ZoneId = ZoneId.systemDefault()): List<CalendarEvent> = parsePage(body, zone).events
+
+    /** One page of `events.list`, and the token for the next one if there is more. */
+    data class Page(val events: List<CalendarEvent>, val nextPageToken: String?)
+
+    fun parsePage(body: String, zone: ZoneId = ZoneId.systemDefault()): Page {
+        val root = runCatching { json.parseToJsonElement(body) }.getOrNull() ?: return Page(emptyList(), null)
         val items = when (root) {
             is JsonArray -> root
-            is JsonObject -> root["items"] as? JsonArray ?: return emptyList()
-            else -> return emptyList()
+            is JsonObject -> root["items"] as? JsonArray ?: return Page(emptyList(), null)
+            else -> return Page(emptyList(), null)
         }
-        return items.mapNotNull { el -> (el as? JsonObject)?.let { toEvent(it, zone) } }
+        val next = (root as? JsonObject)?.str("nextPageToken")
+        return Page(items.mapNotNull { el -> (el as? JsonObject)?.let { toEvent(it, zone) } }, next)
     }
 
     private fun toEvent(node: JsonObject, zone: ZoneId): CalendarEvent? {
         val start = node["start"] as? JsonObject
         val end = node["end"] as? JsonObject
+        val original = node["originalStartTime"] as? JsonObject
         val startValue = start?.str("dateTime") ?: start?.str("date")
         val endValue = end?.str("dateTime") ?: end?.str("date")
+        val originalMs = IsoDates.parseIso(original?.str("dateTime") ?: original?.str("date"), timeZoneOf(original, zone))
 
+        // A cancelled event, or one the user declined, is the absence of context. It still
+        // comes back as a tombstone, so a card made for it earlier goes away instead of staying.
+        val declined = (node["attendees"] as? JsonArray).orEmpty().any { a ->
+            val attendee = a as? JsonObject
+            attendee?.get("self")?.let { (it as? JsonPrimitive)?.contentOrNull } == "true" &&
+                attendee.str("responseStatus") == "declined"
+        }
         val event = CalendarEvent(
             uid = node.str("iCalUID") ?: node.str("id"),
             summary = node.str("summary"),
             location = node.str("location"),
             description = node.str("description"),
-            startMs = IsoDates.parseIso(startValue, timeZoneOf(start, zone)),
+            startMs = IsoDates.parseIso(startValue, timeZoneOf(start, zone)) ?: originalMs,
             endMs = IsoDates.parseIso(endValue, timeZoneOf(end, zone)),
             allDay = start?.str("date") != null,
+            cancelled = node.str("status") == "cancelled" || declined,
+            // One occurrence of a repeating event: the same iCalUID as every other occurrence.
+            occurrenceMs = originalMs.takeIf { node.str("recurringEventId") != null },
         )
-        // A cancelled event is not upcoming context; it is the absence of it.
-        if (node.str("status") == "cancelled") return null
         return event.takeIf { it.startMs != null }
     }
+
+    private fun JsonArray?.orEmpty(): JsonArray = this ?: JsonArray(emptyList())
 
     /** The event's own `timeZone`, when it names one — an all-day date has no offset of its own. */
     private fun timeZoneOf(node: JsonObject?, fallback: ZoneId): ZoneId =

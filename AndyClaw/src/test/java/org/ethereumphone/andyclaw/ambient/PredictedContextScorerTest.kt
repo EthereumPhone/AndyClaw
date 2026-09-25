@@ -111,6 +111,39 @@ class PredictedContextScorerTest {
     }
 
     @Test
+    fun `an all-day entry does not bury a flight two hours out`() {
+        // A birthday that started at midnight used to score 1 all day, above everything.
+        val allDay = ctx(PredictedKind.CALENDAR, startsInMs = -10 * hour, durationMs = 24 * hour)
+        val flight = ctx(PredictedKind.FLIGHT, startsInMs = 2 * hour)
+
+        val ranked = PredictedContextScorer.rank(listOf(allDay, flight), now)
+
+        assertEquals(flight.sourceKey, ranked.first().context.sourceKey)
+        assertEquals("still shown, below", 2, ranked.size)
+    }
+
+    @Test
+    fun `a long span is fully relevant only as it begins`() {
+        val justBegun = ctx(PredictedKind.LODGING, startsInMs = -30 * 60_000, durationMs = 3 * 24 * hour)
+        val midStay = ctx(PredictedKind.LODGING, startsInMs = -30 * hour, durationMs = 3 * 24 * hour)
+
+        assertEquals(1.0, PredictedContextScorer.score(justBegun, now), 1e-9)
+        assertEquals(PredictedContextScorer.LONG_SPAN_FLOOR, PredictedContextScorer.score(midStay, now), 1e-9)
+    }
+
+    @Test
+    fun `a flight known only by its day stays at full relevance all that day`() {
+        val dateOnlyFlight = ctx(PredictedKind.FLIGHT, startsInMs = -14 * hour, durationMs = 24 * hour)
+        assertEquals(1.0, PredictedContextScorer.score(dateOnlyFlight, now), 1e-9)
+    }
+
+    @Test
+    fun `a cancelled booking scores nothing`() {
+        val cancelled = ctx(PredictedKind.FLIGHT, startsInMs = hour).copy(payloadJson = """{"cancelled":true}""")
+        assertEquals(0.0, PredictedContextScorer.score(cancelled, now), 0.0)
+    }
+
+    @Test
     fun `the query window covers every kind`() {
         // The repository narrows in SQL using these two; a kind whose lead-in exceeded the
         // window would silently never surface.

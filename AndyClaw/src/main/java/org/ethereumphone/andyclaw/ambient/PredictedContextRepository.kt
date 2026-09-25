@@ -4,9 +4,15 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.longOrNull
 import org.ethereumphone.andyclaw.ambient.db.PredictedContextDao
 import org.ethereumphone.andyclaw.ambient.db.entity.PredictedContextEntity
 import java.security.MessageDigest
+import java.time.Instant
+import java.time.LocalTime
+import java.time.ZoneId
+import kotlin.math.abs
 
 /**
  * What the device thinks is about to matter, and how relevant each of those things is now.
@@ -18,26 +24,36 @@ import java.security.MessageDigest
  */
 class PredictedContextRepository(
     private val dao: PredictedContextDao,
+    /** The device's zone, read per call: only to recognise an older build's date-only rows. */
+    private val zone: () -> ZoneId = { ZoneId.systemDefault() },
+    /** Last, so `PredictedContextRepository(dao) { now }` keeps meaning the clock. */
     private val clock: () -> Long = System::currentTimeMillis,
 ) {
 
     private val writeLock = Mutex()
 
     /**
-     * Insert or update the row for this [PredictedContext.sourceKey].
+     * Insert, or merge into the row for the same real-world thing.
      *
-     * An update keeps the original `createdMs` and, deliberately, the user's
-     * `dismissedMs`: a re-ingest of the same flight is not a reason to put a card back on
-     * screen that the user has already waved away. A genuinely changed time is a different
-     * matter and does clear it — a gate change is exactly when the card should come back.
+     * The merge is [PredictedContextPayload.merge]'s: the calendar outranks mail and signed
+     * mail outranks unsigned, a vaguer time never replaces a precise one, a cancellation only
+     * counts if it is newer than what it cancels, and a dismissed card comes back only for a
+     * change a person would act on — a new gate, a delay, a boarding pass arriving — not for
+     * the same mail being read again. `createdMs` and the id never change; `updatedMs` moves
+     * only when something did.
+     *
+     * The row is found by key, or else *adopted*: an earlier build dated flight, hotel and event
+     * keys in UTC, so the same booking can already be on file under a key one day off. Those
+     * rows keep their id and the user's dismissal instead of becoming a second card.
      */
     suspend fun put(context: PredictedContext): PredictedContext = writeLock.withLock {
         val now = clock()
-        val existing = dao.findBySourceKey(context.sourceKey)
+        val existing = dao.findBySourceKey(context.sourceKey) ?: adoptable(context)
 
         if (existing == null) {
             val entity = context.copy(
                 id = context.id.ifBlank { idFor(context.sourceKey) },
+                payloadJson = stampCancellation(context, now),
                 createdMs = now,
                 updatedMs = now,
             ).toEntity()
@@ -45,22 +61,57 @@ class PredictedContextRepository(
             return@withLock entity.toDomain()
         }
 
-        val timeChanged = existing.startMs != context.startMs || existing.endMs != context.endMs
-        val updated = existing.copy(
-            kind = context.kind.name,
-            title = context.title,
-            subtitle = context.subtitle,
-            startMs = context.startMs,
-            endMs = context.endMs,
-            location = context.location,
-            payloadJson = context.payloadJson,
-            provenance = context.provenance,
-            source = context.source.ifBlank { existing.source },
-            updatedMs = now,
-            dismissedMs = if (timeChanged) null else existing.dismissedMs,
-        )
+        val before = existing.toDomain()
+        val merged = PredictedContextPayload.merge(before, context, now)
+        // Re-reading a calendar sees every event again; only a real change is a write, and only
+        // a real change moves `updatedMs` — which the launcher reads as "this card just changed".
+        if (PredictedContextPayload.sameContent(merged, before)) return@withLock before
+        val updated = merged.copy(updatedMs = now).toEntity()
         dao.update(updated)
         updated.toDomain()
+    }
+
+    /** A tombstone written from nothing still has to say when it was cancelled. */
+    private fun stampCancellation(context: PredictedContext, now: Long): String {
+        if (!context.cancelled) return context.payloadJson
+        val payload = PredictedContextPayload.parse(context.payloadJson)
+        if (payload.containsKey(PredictedContextPayload.CANCELLED_MS)) return context.payloadJson
+        val observed = (payload[PredictedContextPayload.OBSERVED_MS] as? JsonPrimitive)?.longOrNull
+        return PredictedContextPayload.encode(
+            payload + (PredictedContextPayload.CANCELLED_MS to JsonPrimitive(observed?.takeIf { it > 0 } ?: now))
+        )
+    }
+
+    /**
+     * The row an earlier key rule filed this under, if there is one.
+     *
+     * Only dated keys (`flight:LH400:2026-09-01`) and only the same thing on either side of
+     * the date: a start within 12 h, or 36 h when either side knows only the day. A flight
+     * number flies once a day, so two precise times further apart than that are two flights.
+     */
+    private suspend fun adoptable(context: PredictedContext): PredictedContextEntity? {
+        val prefix = datedKeyPrefix(context.sourceKey) ?: return null
+        val incomingDateOnly = isDateOnly(context.payloadJson, context.startMs)
+        return dao.findBySourceKeyLike(likePrefix(prefix))
+            .asSequence()
+            .filter { it.sourceKey != context.sourceKey && datedKeyPrefix(it.sourceKey) == prefix }
+            .map { it to abs(it.startMs - context.startMs) }
+            .filter { (row, distance) ->
+                val window = if (incomingDateOnly || isDateOnly(row.payloadJson, row.startMs)) 36 * HOUR else 12 * HOUR
+                distance <= window
+            }
+            .minByOrNull { it.second }
+            ?.first
+    }
+
+    /**
+     * Whether a row knows only its day. Rows this build wrote say so; an older build's rows
+     * do not, and those it resolved from a bare date always start at local midnight.
+     */
+    private fun isDateOnly(payloadJson: String, startMs: Long): Boolean {
+        val payload = PredictedContextPayload.parse(payloadJson)
+        PredictedContextPayload.precision(payload)?.let { return it == TimePrecision.DATE_ONLY }
+        return Instant.ofEpochMilli(startMs).atZone(zone()).toLocalTime() == LocalTime.MIDNIGHT
     }
 
     /** Everything relevant at [nowMs], most relevant first. */
@@ -76,7 +127,7 @@ class PredictedContextRepository(
     suspend fun upcoming(nowMs: Long = clock(), limit: Int = 50): List<PredictedContext> =
         dao.getAll()
             .map { it.toDomain() }
-            .filter { (it.endMs ?: it.startMs) >= nowMs }
+            .filter { (it.endMs ?: it.startMs) >= nowMs && !it.cancelled }
             .sortedBy { it.startMs }
             .take(limit)
 
@@ -85,15 +136,49 @@ class PredictedContextRepository(
     fun observeAll(): Flow<List<PredictedContext>> =
         dao.observeAll().map { rows -> rows.map { it.toDomain() } }
 
-    suspend fun dismiss(id: String) = dao.dismiss(id, clock())
+    /**
+     * Under the write lock: a dismissal landing between a merge's read and its write used to
+     * be overwritten by the merge, and the card the user had just waved away came straight back.
+     */
+    suspend fun dismiss(id: String) = writeLock.withLock { dao.dismiss(id, clock()) }
+
+    suspend fun delete(id: String) = writeLock.withLock { dao.deleteById(id) }
+
+    /**
+     * Forget everything a source wrote — its name starting with [sourcePrefix] — when the
+     * account behind it is disconnected: PNRs, names and barcodes are not kept for an account
+     * the user has let go of.
+     */
+    suspend fun clearSource(sourcePrefix: String) =
+        writeLock.withLock { dao.deleteBySourceLike(likePrefix(sourcePrefix)) }
+
+    /**
+     * After a complete read of a live calendar: its rows in [fromMs]..[toMs] that it no longer
+     * returned were deleted or declined there, so they go here too. Returns how many.
+     */
+    suspend fun reconcile(source: String, fromMs: Long, toMs: Long, keep: Set<String>): Int = writeLock.withLock {
+        val stale = dao.getAll().filter { it.source == source && it.startMs in fromMs..toMs && it.sourceKey !in keep }
+        for (row in stale) dao.deleteById(row.id)
+        stale.size
+    }
 
     /** Drop anything whose tail has run out. Cheap, and keeps the table roughly trip-sized. */
     suspend fun purgeExpired(nowMs: Long = clock()) =
         dao.deleteEndedBefore(nowMs - PredictedContextScorer.maxTailMs)
 
-    suspend fun clear() = dao.deleteAll()
+    suspend fun clear() = writeLock.withLock { dao.deleteAll() }
 
     companion object {
+        private const val HOUR = 60 * 60 * 1000L
+        private val DATED_KEY = Regex("""^(.+:)\d{4}-\d{2}-\d{2}$""")
+
+        /** `flight:LH400:` for `flight:LH400:2026-09-01`; null for a key with no date on the end. */
+        fun datedKeyPrefix(sourceKey: String): String? = DATED_KEY.find(sourceKey)?.groupValues?.get(1)
+
+        /** [prefix] as a `LIKE` pattern matching everything that starts with it, literally. */
+        private fun likePrefix(prefix: String): String =
+            prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+
         /**
          * A deterministic id from the dedupe key.
          *

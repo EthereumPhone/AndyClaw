@@ -133,6 +133,9 @@ class HeartbeatBindingService : Service() {
             enforceSystemCaller()
             Log.i(TAG, "heartbeatNow() called by OS (uid=${Binder.getCallingUid()})")
             ensureRuntimeReady()
+            // Also ambient ingestion's scheduled sweep — before the heartbeat's own on/off check,
+            // because the cards are their own feature. Its cooldown decides whether it runs.
+            (application as NodeApp).onAmbientTick()
             performHeartbeat()
         }
 

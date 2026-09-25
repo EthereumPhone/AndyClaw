@@ -50,7 +50,10 @@ data class PredictedContext(
     val updatedMs: Long = 0L,
     /** Set when the user has waved it away. Scored zero from then on. */
     val dismissedMs: Long? = null,
-)
+) {
+    /** The source said it is cancelled: kept as a tombstone so an older mail cannot revive it. */
+    val cancelled: Boolean get() = PredictedContextPayload.isCancelled(payloadJson)
+}
 
 /** A [PredictedContext] with its relevance worked out for one particular moment. */
 data class ScoredContext(
@@ -76,6 +79,10 @@ data class ScoredContext(
  * - **Across the lead-in** — a straight ramp from 0 at the window's edge to 1 at the start.
  * - **While it is happening, and briefly after** — 1, then a decay across the tail, so the
  *   card does not vanish the instant the meeting begins.
+ * - **Long spans** — an all-day entry, a three-day conference, a hotel stay — are 1 only just
+ *   after they begin, then sit at [LONG_SPAN_FLOOR] until they end. Scored 1 for their whole
+ *   length they buried a flight two hours out under a birthday. Flights are exempt: a flight
+ *   known only by its date spans its day, and on that day it is the most relevant thing there is.
  *
  * Pure, so the ambient surface can rank without a query and the ranking can be tested
  * without a clock.
@@ -108,11 +115,15 @@ object PredictedContextScorer {
 
     fun score(context: PredictedContext, nowMs: Long): Double {
         if (context.dismissedMs != null) return 0.0
+        if (context.cancelled) return 0.0
 
         val start = context.startMs
         val end = context.endMs?.takeIf { it > start } ?: start
         val leadIn = leadInMs(context.kind)
         val tail = tailMs(context.kind)
+        val longSpan = context.kind != PredictedKind.FLIGHT && end - start >= LONG_SPAN_MS
+        // What a long span settles to once it has begun, and what its tail decays from.
+        val held = if (longSpan) LONG_SPAN_FLOOR else 1.0
 
         return when {
             nowMs < start - leadIn -> 0.0
@@ -120,9 +131,9 @@ object PredictedContextScorer {
             nowMs < start -> {
                 if (leadIn <= 0) 1.0 else (1.0 - (start - nowMs).toDouble() / leadIn).coerceIn(0.0, 1.0)
             }
-            nowMs <= end -> 1.0
+            nowMs <= end -> if (longSpan && nowMs - start > LONG_SPAN_PLATEAU_MS) LONG_SPAN_FLOOR else 1.0
             else -> {
-                if (tail <= 0) 0.0 else (1.0 - (nowMs - end).toDouble() / tail).coerceIn(0.0, 1.0)
+                if (tail <= 0) 0.0 else (held * (1.0 - (nowMs - end).toDouble() / tail)).coerceIn(0.0, 1.0)
             }
         }
     }
@@ -146,4 +157,13 @@ object PredictedContextScorer {
 
     private const val MINUTE = 60_000L
     private const val HOUR = 60 * MINUTE
+
+    /** A span this long or longer is a background fact of the day, not something happening. */
+    const val LONG_SPAN_MS = 12 * HOUR
+
+    /** How long a long span stays at full relevance after it starts. */
+    const val LONG_SPAN_PLATEAU_MS = 2 * HOUR
+
+    /** Where a long span sits once its start has passed: shown, but below anything imminent. */
+    const val LONG_SPAN_FLOOR = 0.3
 }

@@ -47,6 +47,26 @@ class GoogleAuthManager(private val securePrefs: SecurePrefs) {
     val isAuthenticated: Boolean
         get() = securePrefs.googleOauthRefreshToken.value.isNotBlank()
 
+    /**
+     * The refresh token this process last tried was refused (`invalid_grant`: revoked,
+     * expired, or the password changed). Only reconnecting fixes that, so it is remembered
+     * rather than retried: before, every ingest signal spent two token POSTs finding out again.
+     */
+    @Volatile private var rejectedRefreshToken: String? = null
+
+    /** Connected, but Google no longer accepts the grant. The user has to reconnect. */
+    val isAuthExpired: Boolean
+        get() = isAuthenticated && rejectedRefreshToken == securePrefs.googleOauthRefreshToken.value
+
+    /**
+     * Forget the cached access token, so the next [getAccessToken] refreshes it. For a 401
+     * from an API: the token was revoked or expired early, and keeping it until its stated
+     * expiry made every call for up to an hour fail the same way.
+     */
+    fun invalidateAccessToken() {
+        securePrefs.setGoogleOauthExpiresAt(0L)
+    }
+
     suspend fun getAccessToken(): String {
         val current = securePrefs.googleOauthAccessToken.value
         val expiresAt = securePrefs.googleOauthExpiresAt.value
@@ -54,6 +74,7 @@ class GoogleAuthManager(private val securePrefs: SecurePrefs) {
         if (current.isNotBlank() && System.currentTimeMillis() < expiresAt - EXPIRY_BUFFER_MS) {
             return current
         }
+        if (isAuthExpired) throw GoogleAuthExpiredException()
 
         return mutex.withLock {
             val rechecked = securePrefs.googleOauthAccessToken.value
@@ -61,6 +82,7 @@ class GoogleAuthManager(private val securePrefs: SecurePrefs) {
             if (rechecked.isNotBlank() && System.currentTimeMillis() < recheckExpiry - EXPIRY_BUFFER_MS) {
                 return@withLock rechecked
             }
+            if (isAuthExpired) throw GoogleAuthExpiredException()
             refreshToken()
         }
     }
@@ -225,6 +247,10 @@ class GoogleAuthManager(private val securePrefs: SecurePrefs) {
 
         if (!response.isSuccessful) {
             Log.e(TAG, "Token refresh failed: HTTP ${response.code} — $responseBody")
+            if (responseBody.contains("invalid_grant")) {
+                rejectedRefreshToken = refreshToken
+                throw GoogleAuthExpiredException()
+            }
             throw GoogleAuthException("Google token refresh failed (${response.code}). Reconnect your Google account in Settings.")
         }
 
@@ -265,4 +291,8 @@ class GoogleAuthManager(private val securePrefs: SecurePrefs) {
     )
 }
 
-class GoogleAuthException(message: String) : Exception(message)
+open class GoogleAuthException(message: String) : Exception(message)
+
+/** Google refused the refresh token: revoked, expired, or the password changed. Reconnect to fix. */
+class GoogleAuthExpiredException :
+    GoogleAuthException("Google no longer accepts this sign-in. Reconnect your Google account in Settings.")

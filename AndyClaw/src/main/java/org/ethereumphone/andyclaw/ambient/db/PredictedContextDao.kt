@@ -48,8 +48,23 @@ interface PredictedContextDao {
     @Query("SELECT * FROM predicted_context ORDER BY startMs ASC")
     fun observeAll(): Flow<List<PredictedContextEntity>>
 
+    /**
+     * Rows whose key matches a `LIKE` [pattern] (escaped with `\`). Used to find a row keyed
+     * by an earlier build's rule for the same real-world thing, so it can be adopted rather
+     * than duplicated.
+     */
+    @Query("SELECT * FROM predicted_context WHERE sourceKey LIKE :pattern ESCAPE '\\'")
+    suspend fun findBySourceKeyLike(pattern: String): List<PredictedContextEntity>
+
     @Query("UPDATE predicted_context SET dismissedMs = :atMs WHERE id = :id")
     suspend fun dismiss(id: String, atMs: Long)
+
+    @Query("DELETE FROM predicted_context WHERE id = :id")
+    suspend fun deleteById(id: String)
+
+    /** Everything that came from sources whose name matches a `LIKE` [pattern]. */
+    @Query("DELETE FROM predicted_context WHERE source LIKE :pattern ESCAPE '\\'")
+    suspend fun deleteBySourceLike(pattern: String)
 
     /** Retention: a thing that is over and whose tail has run out is not context any more. */
     @Query("DELETE FROM predicted_context WHERE COALESCE(endMs, startMs) < :beforeMs")

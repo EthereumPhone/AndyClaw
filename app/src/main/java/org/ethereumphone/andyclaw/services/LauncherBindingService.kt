@@ -331,6 +331,13 @@ class LauncherBindingService : Service() {
                 put("ledgerEnabled", prefs.ledgerEnabled.value)
                 put("displayFrameCapture", prefs.displayFrameCaptureEnabled.value)
                 put("ambientIngest", prefs.ambientIngestEnabled.value)
+                // ok | no_account | auth_expired | offline | off, and when it last worked, so
+                // the launcher can say "Google disconnected — reconnect" instead of showing nothing.
+                runCatching { app.ambientIngestStatus() }.getOrNull()?.let { status ->
+                    put("ambientIngestState", status.state)
+                    put("ambientIngestLastSuccessMs", status.lastSuccessMs)
+                    put("ambientIngestLastAttemptMs", status.lastAttemptMs)
+                }
                 put("heartbeatOnXmtpMessage", prefs.heartbeatOnXmtpMessageEnabled.value)
                 put("heartbeatIntervalMinutes", prefs.heartbeatIntervalMinutes.value)
                 put("heartbeatUseSameModel", prefs.heartbeatUseSameModel.value)
@@ -1115,6 +1122,8 @@ class LauncherBindingService : Service() {
             enforceCallerIsLauncher()
             val app = application as? NodeApp ?: return "[]"
             val n = limit.coerceIn(1, 100)
+            // Someone is looking at the home screen: a presence signal for ambient ingestion.
+            app.onAmbientPresence()
             return try {
                 val ranked = runBlocking { app.predictedContextRepository.relevantNow(limit = n) }
                 val arr = JSONArray()
@@ -1136,6 +1145,8 @@ class LauncherBindingService : Service() {
                         put("source", c.source)
                         put("score", scored.score)
                         put("untilStartMs", scored.untilStartMs)
+                        // When the card last changed, so the launcher can mark a fresh gate change.
+                        put("updatedMs", c.updatedMs)
                     })
                 }
                 arr.toString()

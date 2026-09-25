@@ -32,46 +32,50 @@ import java.util.concurrent.TimeUnit
 class GmailIngestSource(
     private val getAccessToken: suspend () -> String,
     private val client: OkHttpClient = defaultClient(),
+    /** Whether a Google account is connected at all; without one there is nothing to fetch. */
+    private val isAuthenticated: () -> Boolean = { true },
+    /** Drop a cached access token the API has just refused. */
+    private val invalidateToken: () -> Unit = {},
 ) : MailSource {
 
     private val json = Json { ignoreUnknownKeys = true; isLenient = true }
 
     /**
-     * Candidate messages for [query].
+     * Candidate messages for [DEFAULT_QUERY], less the ones an earlier ingest read in full.
      *
      * Bounded on both axes — how many messages, and how big an attachment is worth pulling
      * — because this runs on a battery behind a metered connection and a mail with a 30 MB
      * PDF in it is not a boarding pass.
      */
-    override suspend fun fetch(): List<MailMessage> = fetchMatching(DEFAULT_QUERY, DEFAULT_MAX_RESULTS)
+    override suspend fun fetch(alreadySeen: (String) -> Boolean): SourceResult<List<MailMessage>> =
+        fetchMatching(DEFAULT_QUERY, DEFAULT_MAX_RESULTS, alreadySeen)
 
     suspend fun fetchMatching(
         query: String,
         maxResults: Int,
-    ): List<MailMessage> = withContext(Dispatchers.IO) {
-        val token = try {
-            getAccessToken()
-        } catch (e: Exception) {
-            Log.i(TAG, "no Google access token — skipping mail ingest: ${e.message}")
-            return@withContext emptyList()
-        }
+        alreadySeen: (String) -> Boolean = { false },
+    ): SourceResult<List<MailMessage>> = withContext(Dispatchers.IO) {
+        if (!isAuthenticated()) return@withContext SourceResult.Unavailable(IngestProblem.NO_ACCOUNT)
+        val session = GoogleSession(getAccessToken, invalidateToken, client, TAG)
 
-        val ids = listMessageIds(token, query, maxResults.coerceIn(1, HARD_MAX_RESULTS))
-        ids.mapNotNull { id -> runCatching { getMessage(token, id) }.getOrNull() }
+        val url = "$BASE_URL/messages?q=${java.net.URLEncoder.encode(query, "UTF-8")}" +
+            "&maxResults=${maxResults.coerceIn(1, HARD_MAX_RESULTS)}"
+        val listing = when (val r = session.get(url)) {
+            is GoogleSession.Response.Ok -> r.body
+            is GoogleSession.Response.Unavailable -> return@withContext SourceResult.Unavailable(r.problem, r.detail)
+        }
+        val root = runCatching { json.parseToJsonElement(listing) as? JsonObject }.getOrNull()
+        val ids = (root?.get("messages") as? JsonArray).orEmpty().mapNotNull { (it as? JsonObject)?.str("id") }
+
+        val fresh = ids.filterNot(alreadySeen)
+        val messages = fresh.mapNotNull { id -> runCatching { getMessage(session, id) }.getOrNull() }
+        SourceResult.Fetched(messages, complete = messages.size == fresh.size && messages.all { it.complete })
     }
 
     // ── Gmail API ─────────────────────────────────────────────────────
 
-    private fun listMessageIds(token: String, query: String, maxResults: Int): List<String> {
-        val url = "$BASE_URL/messages?q=${java.net.URLEncoder.encode(query, "UTF-8")}&maxResults=$maxResults"
-        val body = get(url, token) ?: return emptyList()
-        val root = runCatching { json.parseToJsonElement(body) as? JsonObject }.getOrNull() ?: return emptyList()
-        val messages = root["messages"] as? JsonArray ?: return emptyList()
-        return messages.mapNotNull { (it as? JsonObject)?.str("id") }
-    }
-
-    private fun getMessage(token: String, id: String): MailMessage? {
-        val body = get("$BASE_URL/messages/$id?format=full", token) ?: return null
+    private suspend fun getMessage(session: GoogleSession, id: String): MailMessage? {
+        val body = (session.get("$BASE_URL/messages/$id?format=full") as? GoogleSession.Response.Ok)?.body ?: return null
         val root = runCatching { json.parseToJsonElement(body) as? JsonObject }.getOrNull() ?: return null
 
         val payload = root["payload"] as? JsonObject
@@ -81,9 +85,14 @@ class GmailIngestSource(
         val received = root["internalDate"]?.let { (it as? JsonPrimitive)?.contentOrNull?.toLongOrNull() }
             ?: (root["internalDate"] as? JsonPrimitive)?.longOrNull
             ?: 0L
+        val headerPairs = headers.mapNotNull { h ->
+            val o = h as? JsonObject ?: return@mapNotNull null
+            val name = o.str("name") ?: return@mapNotNull null
+            name to (o.str("value") ?: "")
+        }
 
         val parts = mutableListOf<MailPart>()
-        collectParts(token, id, payload, parts, depth = 0)
+        val complete = collectParts(session, id, payload, parts, depth = 0)
 
         return MailMessage(
             id = id,
@@ -91,23 +100,28 @@ class GmailIngestSource(
             from = from,
             receivedMs = received,
             parts = parts,
+            authenticated = MailAuthentication.isAuthenticated(headerPairs, from),
+            complete = complete,
         )
     }
 
     /**
-     * Walk the MIME tree, pulling body text inline and attachments by id.
+     * Walk the MIME tree, pulling body text inline and attachments by id. Returns false when an
+     * attachment worth reading could not be fetched: the message is then not marked as read,
+     * so the next ingest tries again instead of losing its boarding pass for good.
      *
      * Depth-bounded: a mail is a tree the sender chose the shape of, and a pathological one
      * would otherwise be a stack overflow on a background thread.
      */
-    private fun collectParts(
-        token: String,
+    private suspend fun collectParts(
+        session: GoogleSession,
         messageId: String,
         node: JsonObject?,
         into: MutableList<MailPart>,
         depth: Int,
-    ) {
-        if (node == null || depth > MAX_MIME_DEPTH || into.size >= MAX_PARTS) return
+    ): Boolean {
+        if (node == null || depth > MAX_MIME_DEPTH || into.size >= MAX_PARTS) return true
+        var complete = true
 
         val mime = node.str("mimeType").orEmpty().lowercase()
         val filename = node.str("filename")?.takeIf { it.isNotBlank() }
@@ -128,15 +142,18 @@ class GmailIngestSource(
         val attachmentId = body?.str("attachmentId")
         val size = body?.get("size")?.let { (it as? JsonPrimitive)?.contentOrNull?.toLongOrNull() } ?: 0L
         if (attachmentId != null && isWorthDownloading(mime, filename) && size <= MAX_ATTACHMENT_BYTES) {
-            val data = get("$BASE_URL/messages/$messageId/attachments/$attachmentId", token)
+            val data = (session.get("$BASE_URL/messages/$messageId/attachments/$attachmentId") as? GoogleSession.Response.Ok)
+                ?.body
                 ?.let { runCatching { json.parseToJsonElement(it) as? JsonObject }.getOrNull() }
                 ?.str("data")
-            decodeUrlBase64(data)?.let { into += MailPart(mime, filename, bytes = it) }
+            val bytes = decodeUrlBase64(data)
+            if (bytes != null) into += MailPart(mime, filename, bytes = bytes) else complete = false
         }
 
         (node["parts"] as? JsonArray)?.forEach { child ->
-            collectParts(token, messageId, child as? JsonObject, into, depth + 1)
+            if (!collectParts(session, messageId, child as? JsonObject, into, depth + 1)) complete = false
         }
+        return complete
     }
 
     /**
@@ -151,26 +168,6 @@ class GmailIngestSource(
         return mime.contains("pkpass") || name.endsWith(".pkpass") ||
             mime.startsWith("application/pdf") || name.endsWith(".pdf") ||
             mime.startsWith("text/calendar") || name.endsWith(".ics")
-    }
-
-    private fun get(url: String, token: String): String? = try {
-        val request = Request.Builder()
-            .url(url)
-            .addHeader("Authorization", "Bearer $token")
-            .get()
-            .build()
-        client.newCall(request).execute().use { response ->
-            val body = response.body?.string()
-            if (!response.isSuccessful) {
-                Log.w(TAG, "Gmail ${response.code} for $url")
-                null
-            } else {
-                body
-            }
-        }
-    } catch (e: Exception) {
-        Log.w(TAG, "Gmail request failed: ${e.message}")
-        null
     }
 
     // ── Helpers ───────────────────────────────────────────────────────
@@ -202,7 +199,10 @@ class GmailIngestSource(
             "newer_than:60d (" +
                 "subject:(booking OR reservation OR confirmation OR itinerary OR " +
                 "boarding OR \"check-in\" OR ticket) " +
-                "OR filename:pkpass OR filename:ics OR filename:pdf)"
+                "OR filename:pkpass OR filename:ics " +
+                // A PDF only when the subject says it could be a boarding pass: on its own,
+                // `filename:pdf` pulled every invoice and statement of the last 60 days.
+                "OR (filename:pdf subject:(boarding OR \"boarding pass\" OR bordkarte OR flight OR flug OR e-ticket)))"
 
         private const val DEFAULT_MAX_RESULTS = 25
         private const val HARD_MAX_RESULTS = 100

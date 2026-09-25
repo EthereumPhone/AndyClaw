@@ -5,6 +5,7 @@ import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
+import org.ethereumphone.andyclaw.ambient.TimePrecision
 import java.io.ByteArrayInputStream
 import java.time.ZoneId
 import java.util.zip.ZipInputStream
@@ -15,6 +16,8 @@ data class PkPass(
     val description: String? = null,
     val serialNumber: String? = null,
     val relevantDateMs: Long? = null,
+    /** `relevantDate` as written, so its local day survives as well as its instant. */
+    val relevantDate: String? = null,
     val transitType: String? = null,
     /** Every barcode the pass offers, best first — passes carry a fallback for old scanners. */
     val barcodes: List<PkBarcode> = emptyList(),
@@ -102,6 +105,7 @@ object PkPassParser {
             description = root.str("description"),
             serialNumber = root.str("serialNumber"),
             relevantDateMs = IsoDates.parseIso(root.str("relevantDate"), zone),
+            relevantDate = root.str("relevantDate"),
             transitType = group?.str("transitType"),
             barcodes = barcodes,
             fields = fields,
@@ -129,21 +133,36 @@ object PkPassParser {
             payload = raw?.message ?: bcbp.payload,
         ) ?: raw?.let { BoardingPass(payload = it.message, format = it.format) }
 
-        val departureMs = pass.fields.firstOfKeys("boardingTime", "departureTime", "gateClosingTime")
-            ?.let { IsoDates.parseIso(it, zone) }
-            ?: pass.relevantDateMs
-            ?: bcbp?.flightDate?.let { IsoDates.parseIso(it, zone) }
+        // The departure itself if the pass says it; otherwise boarding, which is a real time
+        // but not the departure; otherwise only the barcode's day. Each is labelled for what it
+        // is, so a later confirmation with the true departure time always wins over it.
+        val departure = pass.fields.firstOfKeys("departureTime", "departureDate", exclude = NOT_A_TIME)
+            ?.let { IsoDates.parseMoment(it, zone) }?.takeIf { !it.dateOnly }
+        val boarding = if (departure != null) null else
+            (pass.fields.firstOfKeys("boardingTime", "gateClosingTime", exclude = NOT_A_TIME)?.let { IsoDates.parseMoment(it, zone) }
+                ?: pass.relevantDate?.let { IsoDates.parseMoment(it, zone) })
+                ?.takeIf { !it.dateOnly }
+        val timed = departure ?: boarding
+        val precision = when {
+            departure != null -> TimePrecision.EXACT
+            boarding != null -> TimePrecision.BOARDING
+            else -> TimePrecision.DATE_ONLY
+        }
 
         val reservation = FlightReservation(
             reservationNumber = bcbp?.recordLocator ?: pass.fields.firstOfKeys("confirmationNumber", "pnr"),
             airlineName = pass.organizationName,
             airlineIata = bcbp?.carrier ?: pass.fields.firstOfKeys("carrier", "airline"),
             flightNumber = bcbp?.flightNumber ?: pass.fields.firstOfKeys("flightNumber", "flight"),
-            departureAirport = bcbp?.fromAirport ?: pass.fields.firstOfKeys("origin", "from", "departure"),
-            arrivalAirport = bcbp?.toAirport ?: pass.fields.firstOfKeys("destination", "to", "arrival"),
-            departureTimeMs = departureMs,
-            departureTerminal = pass.fields.firstOfKeys("terminal", "departureTerminal"),
-            departureGate = pass.fields.firstOfKeys("gate", "departureGate"),
+            departureAirport = bcbp?.fromAirport ?: pass.fields.firstOfKeys("origin", "from", "departure", exclude = TIME_WORDS),
+            arrivalAirport = bcbp?.toAirport ?: pass.fields.firstOfKeys("destination", "to", "arrival", exclude = TIME_WORDS),
+            departureTimeMs = timed?.epochMs,
+            // The barcode's day is the flight's own; a boarding time can fall the evening before.
+            departureDate = departure?.localDate ?: bcbp?.flightDate ?: timed?.localDate,
+            departurePrecision = precision,
+            departureTerminal = pass.fields.firstOfKeys("terminal", "departureTerminal", exclude = TIME_WORDS),
+            // Not `gateClosingTime`: a key that merely contains "gate" put a time where the gate goes.
+            departureGate = pass.fields.firstOfKeys("gate", "departureGate", exclude = TIME_WORDS),
             passengerName = bcbp?.passengerName ?: pass.fields.firstOfKeys("passenger", "passengerName", "name"),
             seat = bcbp?.seat ?: pass.fields.firstOfKeys("seat", "seatNumber"),
             boardingPass = boardingPass,
@@ -165,16 +184,24 @@ object PkPassParser {
         )
     }
 
-    private fun Map<String, String>.firstOfKeys(vararg keys: String): String? {
+    private fun Map<String, String>.firstOfKeys(vararg keys: String, exclude: Set<String> = emptySet()): String? {
         for (key in keys) {
             // Airlines name fields freely; `gate` is as likely to be `gateNumber`.
             entries.firstOrNull { it.key.equals(key, ignoreCase = true) }?.let { return it.value.trim().ifBlank { null } }
         }
         for (key in keys) {
-            entries.firstOrNull { it.key.contains(key, ignoreCase = true) }?.let { return it.value.trim().ifBlank { null } }
+            entries.firstOrNull { e ->
+                e.key.contains(key, ignoreCase = true) && exclude.none { e.key.contains(it, ignoreCase = true) }
+            }?.let { return it.value.trim().ifBlank { null } }
         }
         return null
     }
+
+    /** A key containing one of these holds a time, whatever else its name says. */
+    private val TIME_WORDS = setOf("time", "date", "closing", "closes", "boarding")
+
+    /** For time fields: a key about something else that happens to share a word. */
+    private val NOT_A_TIME = setOf("terminal", "gate")
 
     private fun JsonObject.str(key: String): String? =
         (this[key] as? JsonPrimitive)?.contentOrNull?.trim()?.takeIf { it.isNotEmpty() }

@@ -1,5 +1,6 @@
 package org.ethereumphone.andyclaw.ingest
 
+import org.ethereumphone.andyclaw.ambient.TimePrecision
 import java.time.ZoneId
 
 /** One part of a mail: a body, or an attachment. */
@@ -38,6 +39,15 @@ data class MailMessage(
     val from: String? = null,
     val receivedMs: Long = 0L,
     val parts: List<MailPart> = emptyList(),
+    /**
+     * The receiving server saw a DKIM signature pass for the From domain
+     * ([MailAuthentication]). Anyone can write "From: lufthansa.com"; only Lufthansa can sign
+     * it. Mail that is not signed still makes cards, marked as such, and can never overwrite
+     * what signed mail said.
+     */
+    val authenticated: Boolean = false,
+    /** Every part was fetched. A message missing an attachment is not marked as done. */
+    val complete: Boolean = true,
 )
 
 /** What one message yielded. */
@@ -134,10 +144,20 @@ object ReservationExtractor {
             }
         }
 
+        // What the message says about itself travels with everything taken from it.
+        val stamped = merge(reservations, boardingPasses).map { it.from(message) }
         return IngestResult(
-            reservations = merge(reservations, boardingPasses),
-            calendarEvents = events.distinctBy { it.sourceKey },
+            reservations = stamped,
+            calendarEvents = events.distinctBy { it.sourceKey }.map {
+                it.copy(authenticated = message.authenticated, observedMs = message.receivedMs)
+            },
         )
+    }
+
+    private fun Reservation.from(message: MailMessage): Reservation = when (this) {
+        is FlightReservation -> copy(authenticated = message.authenticated, observedMs = message.receivedMs, sourceMessageId = message.id)
+        is LodgingReservation -> copy(authenticated = message.authenticated, observedMs = message.receivedMs, sourceMessageId = message.id)
+        is EventReservation -> copy(authenticated = message.authenticated, observedMs = message.receivedMs, sourceMessageId = message.id)
     }
 
     /** Every reservation across a batch of messages, already merged and deduplicated. */
@@ -169,52 +189,84 @@ object ReservationExtractor {
      */
     private fun merge(base: List<Reservation>, boardingPasses: List<FlightReservation>): List<Reservation> {
         val byKey = LinkedHashMap<String, Reservation>()
-        for (reservation in base) {
+        for (reservation in base + boardingPasses) {
             val existing = byKey[reservation.sourceKey]
-            byKey[reservation.sourceKey] =
-                if (existing is FlightReservation && reservation is FlightReservation) {
-                    combine(existing, reservation)
-                } else {
-                    existing ?: reservation
-                }
-        }
-        for (pass in boardingPasses) {
-            val existing = byKey[pass.sourceKey]
-            byKey[pass.sourceKey] =
-                if (existing is FlightReservation) combine(existing, pass) else pass
+            byKey[reservation.sourceKey] = when {
+                existing == null -> reservation
+                existing is FlightReservation && reservation is FlightReservation -> combine(existing, reservation)
+                else -> pickOne(existing, reservation)
+            }
         }
         return byKey.values.toList()
     }
 
-    /** Field-by-field, [b] filling in what [a] does not have. Neither overwrites the other. */
-    private fun combine(a: FlightReservation, b: FlightReservation) = FlightReservation(
-        reservationNumber = a.reservationNumber ?: b.reservationNumber,
-        airlineName = a.airlineName ?: b.airlineName,
-        airlineIata = a.airlineIata ?: b.airlineIata,
-        flightNumber = a.flightNumber ?: b.flightNumber,
-        departureAirport = a.departureAirport ?: b.departureAirport,
-        departureAirportName = a.departureAirportName ?: b.departureAirportName,
-        arrivalAirport = a.arrivalAirport ?: b.arrivalAirport,
-        arrivalAirportName = a.arrivalAirportName ?: b.arrivalAirportName,
-        departureTimeMs = a.departureTimeMs ?: b.departureTimeMs,
-        arrivalTimeMs = a.arrivalTimeMs ?: b.arrivalTimeMs,
-        departureTerminal = a.departureTerminal ?: b.departureTerminal,
-        departureGate = a.departureGate ?: b.departureGate,
-        passengerName = a.passengerName ?: b.passengerName,
-        seat = a.seat ?: b.seat,
-        boardingPass = a.boardingPass ?: b.boardingPass,
-    )
+    /**
+     * Two sources for the same flight, as one.
+     *
+     * - A signed mail and an unsigned one are not combined: the signed one stands alone, so
+     *   nothing an unverified sender wrote rides along on a verified card.
+     * - The **time** comes from the more precise source — a departure beats a boarding time
+     *   beats a bare day — whichever mail arrived first. Taking the first one's time was how a
+     *   boarding pass read ahead of its confirmation turned 09:40 into midnight.
+     * - Everything else comes from the **newer** message, the older one filling gaps; and the
+     *   newer one decides whether the booking stands or is cancelled.
+     */
+    private fun combine(a: FlightReservation, b: FlightReservation): FlightReservation {
+        if (a.authenticated != b.authenticated) return if (a.authenticated) a else b
+        val (newer, older) = if (b.observedMs > a.observedMs) b to a else a to b
+        val (timed, untimed) = when {
+            a.departurePrecision > b.departurePrecision -> a to b
+            b.departurePrecision > a.departurePrecision -> b to a
+            else -> newer to older
+        }
+        return FlightReservation(
+            reservationNumber = newer.reservationNumber ?: older.reservationNumber,
+            airlineName = newer.airlineName ?: older.airlineName,
+            airlineIata = newer.airlineIata ?: older.airlineIata,
+            flightNumber = newer.flightNumber ?: older.flightNumber,
+            departureAirport = newer.departureAirport ?: older.departureAirport,
+            departureAirportName = newer.departureAirportName ?: older.departureAirportName,
+            arrivalAirport = newer.arrivalAirport ?: older.arrivalAirport,
+            arrivalAirportName = newer.arrivalAirportName ?: older.arrivalAirportName,
+            departureTimeMs = timed.departureTimeMs,
+            arrivalTimeMs = newer.arrivalTimeMs ?: older.arrivalTimeMs,
+            departureTerminal = newer.departureTerminal ?: older.departureTerminal,
+            departureGate = newer.departureGate ?: older.departureGate,
+            passengerName = newer.passengerName ?: older.passengerName,
+            seat = newer.seat ?: older.seat,
+            boardingPass = newer.boardingPass ?: older.boardingPass,
+            departureDate = timed.departureDate ?: untimed.departureDate,
+            departurePrecision = timed.departurePrecision,
+            cancelled = newer.cancelled,
+            authenticated = a.authenticated,
+            observedMs = maxOf(a.observedMs, b.observedMs),
+            sourceMessageId = newer.sourceMessageId,
+        )
+    }
 
+    /** Hotels and events are not field-merged: the signed one, else the newer one, stands. */
+    private fun pickOne(a: Reservation, b: Reservation): Reservation = when {
+        a.authenticated != b.authenticated -> if (a.authenticated) a else b
+        b.observedMs > a.observedMs -> b
+        else -> a
+    }
+
+    /**
+     * A barcode knows the day of the flight and nothing about the hour. It becomes a
+     * date-only flight — never midnight, which is a time nobody boards at.
+     */
     private fun fromBoardingPass(pass: BoardingPass, zone: ZoneId) = FlightReservation(
         reservationNumber = pass.recordLocator,
         airlineIata = pass.carrier,
         flightNumber = pass.flightNumber,
         departureAirport = pass.fromAirport,
         arrivalAirport = pass.toAirport,
-        departureTimeMs = pass.flightDate?.let { IsoDates.parseIso(it, zone) },
+        departureTimeMs = null,
         passengerName = pass.passengerName,
         seat = pass.seat,
         boardingPass = pass,
+        departureDate = pass.flightDate,
+        departurePrecision = TimePrecision.DATE_ONLY,
     )
 
     private fun ByteArray.toText(): String? =

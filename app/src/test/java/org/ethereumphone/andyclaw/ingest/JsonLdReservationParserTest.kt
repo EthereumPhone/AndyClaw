@@ -214,4 +214,53 @@ class JsonLdReservationParserTest {
         val tokyo = JsonLdReservationParser.parse(body, ZoneId.of("Asia/Tokyo")).single() as FlightReservation
         assertTrue(berlin.departureTimeMs!! > tokyo.departureTimeMs!!)
     }
+
+    @Test
+    fun `a hotel that gives only dates still makes a card`() {
+        // Most hotel mail says checkinDate/checkoutDate; read only as …Time, it produced nothing.
+        val body = """
+            <script type="application/ld+json">
+            { "@type": "LodgingReservation", "reservationNumber": "HX1",
+              "checkinDate": "2026-09-01", "checkoutDate": "2026-09-04",
+              "reservationFor": { "@type": "LodgingBusiness", "name": "Hotel Adlon" } }
+            </script>
+        """.trimIndent()
+        val hotel = JsonLdReservationParser.parse(body, utc).single() as LodgingReservation
+        assertEquals(1_788_220_800_000L, hotel.checkinMs)
+        assertEquals(1_788_480_000_000L, hotel.checkoutMs)
+        assertEquals("2026-09-01", hotel.checkinDate)
+        assertTrue(hotel.dateOnly)
+        assertEquals("lodging:hoteladlon:2026-09-01", hotel.sourceKey)
+    }
+
+    @Test
+    fun `a cancelled reservation is marked, not ignored`() {
+        val cancelled = flightMail.replace(
+            "\"reservationNumber\": \"ABC123\",",
+            "\"reservationNumber\": \"ABC123\", \"reservationStatus\": \"http://schema.org/ReservationCancelled\",",
+        )
+        assertTrue(JsonLdReservationParser.parse(cancelled, utc).single().cancelled)
+        assertTrue(!JsonLdReservationParser.parse(flightMail, utc).single().cancelled)
+    }
+
+    @Test
+    fun `a flight dated only by its day has no invented time`() {
+        val dateOnly = flightMail.replace("\"departureTime\": \"2026-09-01T09:40:00+02:00\"", "\"departureTime\": \"2026-09-01\"")
+        val flight = JsonLdReservationParser.parse(dateOnly, utc).single() as FlightReservation
+        assertNull(flight.departureTimeMs)
+        assertEquals("2026-09-01", flight.departureDate)
+    }
+
+    @Test
+    fun `the key uses the local day the mail gave, not the UTC day`() {
+        val late = flightMail.replace("2026-09-01T09:40:00+02:00", "2026-09-01T00:30:00+02:00")
+        assertEquals("flight:LH400:2026-09-01", JsonLdReservationParser.parse(late, utc).single().sourceKey)
+    }
+
+    @Test
+    fun `an offset written without a colon still parses`() {
+        val compact = flightMail.replace("2026-09-01T09:40:00+02:00", "2026-09-01T09:40:00+0200")
+        val flight = JsonLdReservationParser.parse(compact, utc).single() as FlightReservation
+        assertEquals(1_788_248_400_000L, flight.departureTimeMs)
+    }
 }

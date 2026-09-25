@@ -36,6 +36,9 @@ abstract class PredictedContextDatabase : RoomDatabase() {
                     PredictedContextDatabase::class.java,
                     DB_NAME,
                 )
+                    // A cache, rebuilt from mail and calendar on the next ingest. A rollback to a
+                    // build with an older schema must drop it rather than crash on open.
+                    .fallbackToDestructiveMigrationOnDowngrade(dropAllTables = true)
                     .build()
                     .also { INSTANCE = it }
             }

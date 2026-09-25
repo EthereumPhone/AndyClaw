@@ -11,6 +11,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.time.Instant
 import java.time.ZoneId
 
 /**
@@ -37,6 +38,14 @@ class AmbientIngestorTest {
         }
         override suspend fun findBySourceKey(sourceKey: String) = rows.firstOrNull { it.sourceKey == sourceKey }
         override suspend fun findById(id: String) = rows.firstOrNull { it.id == id }
+        override suspend fun findBySourceKeyLike(pattern: String) =
+            rows.filter { it.sourceKey.startsWith(pattern.removeSuffix("%").replace("\\", "")) }
+        override suspend fun deleteById(id: String) {
+            rows.removeAll { it.id == id }
+        }
+        override suspend fun deleteBySourceLike(pattern: String) {
+            rows.removeAll { it.source.startsWith(pattern.removeSuffix("%").replace("\\", "")) }
+        }
         override suspend fun inWindow(from: Long, to: Long) = rows.filter { it.startMs in from..to }
         override suspend fun getAll() = rows.sortedBy { it.startMs }
         override fun observeAll(): Flow<List<PredictedContextEntity>> = flowOf(rows)
@@ -66,34 +75,48 @@ class AmbientIngestorTest {
         </script>
     """.trimIndent()
 
-    private class CountingMail(private val messages: List<MailMessage>) : MailSource {
+    private class CountingMail(var messages: List<MailMessage>) : MailSource {
         var calls = 0
-        override suspend fun fetch(): List<MailMessage> {
+        val fetched = mutableListOf<String>()
+        var unavailable: IngestProblem? = null
+        override suspend fun fetch(alreadySeen: (String) -> Boolean): SourceResult<List<MailMessage>> {
             calls++
-            return messages
+            unavailable?.let { return SourceResult.Unavailable(it, it.name) }
+            val fresh = messages.filterNot { alreadySeen(it.id) }
+            fetched += fresh.map { it.id }
+            return SourceResult.Fetched(fresh)
         }
     }
 
-    private class CountingCalendar(private val events: List<CalendarEvent>) : CalendarSource {
+    private class CountingCalendar(var events: List<CalendarEvent>) : CalendarSource {
         var calls = 0
-        override suspend fun fetch(fromMs: Long, toMs: Long, zone: ZoneId): List<CalendarEvent> {
+        var unavailable: IngestProblem? = null
+        override suspend fun fetch(fromMs: Long, toMs: Long, zone: ZoneId): SourceResult<List<CalendarEvent>> {
             calls++
-            return events
+            unavailable?.let { return SourceResult.Unavailable(it, it.name) }
+            return SourceResult.Fetched(events)
         }
     }
+
+    private val state = IngestStateStore.InMemory()
+    private val seen = IngestSeenStore.InMemory()
 
     private fun ingestor(
         mail: MailSource,
         calendar: CalendarSource,
         dao: PredictedContextDao,
         enabled: Boolean = true,
+        deviceCalendar: CalendarSource? = null,
     ) = AmbientIngestor(
         mail = mail,
         calendar = calendar,
-        contexts = PredictedContextRepository(dao) { now },
+        contexts = PredictedContextRepository(dao, zone = { utc }) { now },
         clock = { now },
-        zone = utc,
+        zone = { utc },
         enabled = { enabled },
+        deviceCalendar = deviceCalendar,
+        stateStore = state,
+        seen = seen,
     )
 
     @Test
@@ -126,6 +149,7 @@ class AmbientIngestorTest {
             ),
             dao,
         ).ingest(AmbientSignal.MANUAL)
+        assertEquals("gcal", dao.rows.single().source)
 
         assertEquals(1, report.calendarEvents)
         assertEquals("calendar:abc", dao.rows.single().sourceKey)
@@ -189,7 +213,7 @@ class AmbientIngestorTest {
         val dao = FakeDao()
         val ingestor = ingestor(
             CountingMail(listOf(MailMessage("m1", parts = listOf(MailPart("text/html", text = confirmation))))),
-            { _, _, _ -> throw IllegalStateException("calendar is down") },
+            CalendarSource { _, _, _ -> throw IllegalStateException("calendar is down") },
             dao,
         )
 
@@ -228,5 +252,157 @@ class AmbientIngestorTest {
         assertTrue(report.ran)
         assertEquals(0, report.contextsWritten)
         assertTrue(dao.rows.isEmpty())
+    }
+
+    // ── Cooldown and failure ─────────────────────────────────────────
+
+    @Test
+    fun `a failed fetch does not use up the cooldown`() = runBlocking {
+        // It used to: one dropped connection meant six hours without fresh cards.
+        val dao = FakeDao()
+        val mail = CountingMail(emptyList()).apply { unavailable = IngestProblem.OFFLINE }
+        val ingestor = ingestor(mail, CountingCalendar(emptyList()), dao)
+
+        val failed = ingestor.ingest(AmbientSignal.SCHEDULED)
+        assertTrue(failed.ran)
+        assertEquals(IngestState.OFFLINE, failed.state)
+
+        now += 10_000
+        assertFalse("a failure holds retries back briefly", ingestor.ingest(AmbientSignal.MAIL_NOTIFICATION).ran)
+
+        now += AmbientTriggerPolicy.FAILURE_BACKOFF_MS
+        mail.unavailable = null
+        val retried = ingestor.ingest(AmbientSignal.SCHEDULED)
+        assertTrue("the six-hour cooldown was never started", retried.ran)
+        assertEquals(IngestState.OK, retried.state)
+        assertEquals(now, state.load().lastSuccessMs)
+    }
+
+    @Test
+    fun `no Google account is not a failure and the phone's calendar still makes cards`() = runBlocking {
+        val dao = FakeDao()
+        val report = ingestor(
+            CountingMail(emptyList()).apply { unavailable = IngestProblem.NO_ACCOUNT },
+            CountingCalendar(emptyList()).apply { unavailable = IngestProblem.NO_ACCOUNT },
+            dao,
+            deviceCalendar = CountingCalendar(listOf(CalendarEvent(uid = "d1", summary = "Dentist", startMs = now + 3_600_000))),
+        ).ingest(AmbientSignal.MANUAL)
+
+        assertEquals(IngestState.NO_ACCOUNT, report.state)
+        assertEquals("device-calendar", dao.rows.single().source)
+        assertEquals("the cooldown still counts from here", now, state.load().lastSuccessMs)
+    }
+
+    @Test
+    fun `the cooldown survives a restart`() = runBlocking {
+        val dao = FakeDao()
+        val mail = CountingMail(emptyList())
+        ingestor(mail, CountingCalendar(emptyList()), dao).ingest(AmbientSignal.SCHEDULED)
+        now += 60_000
+        // A new ingestor over the same stored state: what a process restart looks like.
+        assertFalse(ingestor(mail, CountingCalendar(emptyList()), dao).ingest(AmbientSignal.SCHEDULED).ran)
+        assertEquals(1, mail.calls)
+    }
+
+    // ── Mail already read ─────────────────────────────────────────────
+
+    @Test
+    fun `a message read in full is not downloaded again`() = runBlocking {
+        val dao = FakeDao()
+        val mail = CountingMail(listOf(MailMessage("m1", parts = listOf(MailPart("text/html", text = confirmation)))))
+        val ingestor = ingestor(mail, CountingCalendar(emptyList()), dao)
+
+        ingestor.ingest(AmbientSignal.MANUAL)
+        mail.messages = mail.messages + MailMessage("m2", parts = listOf(MailPart("text/plain", text = "hi")))
+        ingestor.ingest(AmbientSignal.MANUAL)
+
+        assertEquals(listOf("m1", "m2"), mail.fetched)
+        assertEquals("the card is still there", 1, dao.rows.size)
+    }
+
+    @Test
+    fun `a message missing an attachment is read again next time`() = runBlocking {
+        val dao = FakeDao()
+        val partial = MailMessage("m1", parts = listOf(MailPart("text/html", text = confirmation)), complete = false)
+        val mail = CountingMail(listOf(partial))
+        val ingestor = ingestor(mail, CountingCalendar(emptyList()), dao)
+
+        ingestor.ingest(AmbientSignal.MANUAL)
+        ingestor.ingest(AmbientSignal.MANUAL)
+        assertEquals(listOf("m1", "m1"), mail.fetched)
+    }
+
+    // ── Cancellations and the calendar's authority ───────────────────
+
+    private val cancellation = confirmation.replace(
+        "\"reservationNumber\": \"PNR001\",",
+        "\"reservationNumber\": \"PNR001\", \"reservationStatus\": \"http://schema.org/ReservationCancelled\",",
+    )
+
+    @Test
+    fun `a cancellation mail takes the card away`() = runBlocking {
+        val dao = FakeDao()
+        val repo = PredictedContextRepository(dao, zone = { utc }) { now }
+        val mail = CountingMail(listOf(MailMessage("m1", receivedMs = 100, parts = listOf(MailPart("text/html", text = confirmation)))))
+        val ingestor = ingestor(mail, CountingCalendar(emptyList()), dao)
+        ingestor.ingest(AmbientSignal.MANUAL)
+        assertEquals(1, repo.relevantNow(Instant.parse("2026-09-01T08:00:00Z").toEpochMilli()).size)
+
+        mail.messages = mail.messages + MailMessage("m2", receivedMs = 200, parts = listOf(MailPart("text/html", text = cancellation)))
+        ingestor.ingest(AmbientSignal.MANUAL)
+
+        assertEquals("one row, now a tombstone", 1, dao.rows.size)
+        assertTrue(repo.relevantNow(Instant.parse("2026-09-01T08:00:00Z").toEpochMilli()).isEmpty())
+    }
+
+    @Test
+    fun `an event deleted from the calendar loses its card`() = runBlocking {
+        val dao = FakeDao()
+        val calendar = CountingCalendar(listOf(
+            CalendarEvent(uid = "keep", summary = "Standup", startMs = now + 3_600_000),
+            CalendarEvent(uid = "gone", summary = "Cancelled offsite", startMs = now + 7_200_000),
+        ))
+        val ingestor = ingestor(CountingMail(emptyList()), calendar, dao)
+        ingestor.ingest(AmbientSignal.MANUAL)
+        assertEquals(2, dao.rows.size)
+
+        calendar.events = calendar.events.take(1)
+        ingestor.ingest(AmbientSignal.MANUAL)
+        assertEquals(listOf("calendar:keep"), dao.rows.map { it.sourceKey })
+    }
+
+    @Test
+    fun `the calendar's version of an event beats the invitation mail`() = runBlocking {
+        val dao = FakeDao()
+        val ics = """
+            BEGIN:VCALENDAR
+            BEGIN:VEVENT
+            UID:kickoff-1
+            SUMMARY:Kickoff
+            DTSTART:20260901T090000Z
+            END:VEVENT
+            END:VCALENDAR
+        """.trimIndent()
+        val moved = Instant.parse("2026-09-01T11:00:00Z").toEpochMilli()
+        ingestor(
+            CountingMail(listOf(MailMessage("m1", parts = listOf(MailPart("text/calendar", filename = "invite.ics", text = ics))))),
+            CountingCalendar(listOf(CalendarEvent(uid = "kickoff-1", summary = "Kickoff", startMs = moved))),
+            dao,
+        ).ingest(AmbientSignal.MANUAL)
+
+        val row = dao.rows.single()
+        assertEquals("the calendar knows it moved", moved, row.startMs)
+        assertEquals("gcal", row.source)
+    }
+
+    @Test
+    fun `mail cards name the message they came from`() = runBlocking {
+        val dao = FakeDao()
+        ingestor(
+            CountingMail(listOf(MailMessage("m42", parts = listOf(MailPart("text/html", text = confirmation))))),
+            CountingCalendar(emptyList()),
+            dao,
+        ).ingest(AmbientSignal.MANUAL)
+        assertEquals("gmail:m42", dao.rows.single().source)
     }
 }

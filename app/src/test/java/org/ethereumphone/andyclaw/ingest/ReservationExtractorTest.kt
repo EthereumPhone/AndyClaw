@@ -11,6 +11,8 @@ import java.time.ZoneId
 import java.time.ZoneOffset
 import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
+import java.time.Instant
+import org.ethereumphone.andyclaw.ambient.TimePrecision
 
 /**
  * The whole extraction path, end to end: a mail in, typed data out.
@@ -201,5 +203,113 @@ class ReservationExtractorTest {
     @Test
     fun `a mail with no parts is harmless`() {
         assertTrue(ReservationExtractor.extract(mail("m8"), august2026, utc).isEmpty)
+    }
+
+    // ── Local days, precise times ─────────────────────────────────────
+
+    private fun passMail(id: String, receivedMs: Long) =
+        MailMessage(id, receivedMs = receivedMs, parts = listOf(MailPart("application/vnd.apple.pkpass", filename = "bp.pkpass", bytes = pkpass())))
+
+    private fun bookingMail(id: String, receivedMs: Long, departure: String) =
+        MailMessage(id, receivedMs = receivedMs, parts = listOf(MailPart("text/html", text = confirmation.replace("2026-08-14T09:40:00Z", departure))))
+
+    @Test
+    fun `in Berlin a pass read after its confirmation is one card at the booked time`() {
+        // Gmail lists newest first, so the pass is read first. Before: the pass's midnight
+        // (the 13th in UTC) and the 09:40 booking (the 14th in UTC) were two cards.
+        val berlin = ZoneId.of("Europe/Berlin")
+        val result = ReservationExtractor.extractAll(
+            listOf(passMail("pass", 2_000), bookingMail("booking", 1_000, "2026-08-14T09:40:00+02:00")),
+            august2026,
+            berlin,
+        )
+
+        val flight = result.reservations.single() as FlightReservation
+        assertEquals(Instant.parse("2026-08-14T07:40:00Z").toEpochMilli(), flight.departureTimeMs)
+        assertEquals(TimePrecision.EXACT, flight.departurePrecision)
+        assertEquals("flight:LH400:2026-08-14", flight.sourceKey)
+        assertEquals("K14", flight.departureGate)
+        assertEquals(bcbp, flight.boardingPass!!.payload)
+    }
+
+    @Test
+    fun `just after midnight in Berlin the booked time still wins over the pass's day`() {
+        val berlin = ZoneId.of("Europe/Berlin")
+        val result = ReservationExtractor.extractAll(
+            listOf(passMail("pass", 2_000), bookingMail("booking", 1_000, "2026-08-14T00:30:00+02:00")),
+            august2026,
+            berlin,
+        )
+        val flight = result.reservations.single() as FlightReservation
+        assertEquals("not 00:00", Instant.parse("2026-08-13T22:30:00Z").toEpochMilli(), flight.departureTimeMs)
+        assertEquals("flight:LH400:2026-08-14", flight.sourceKey)
+    }
+
+    @Test
+    fun `an evening flight in New York keeps its own day`() {
+        // 21:30 in New York is the next day in UTC; the barcode says the 14th, and so does the key.
+        val newYork = ZoneId.of("America/New_York")
+        val result = ReservationExtractor.extractAll(
+            listOf(bookingMail("booking", 1_000, "2026-08-14T21:30:00-04:00"), passMail("pass", 2_000)),
+            august2026,
+            newYork,
+        )
+        val flight = result.reservations.single() as FlightReservation
+        assertEquals("flight:LH400:2026-08-14", flight.sourceKey)
+        assertEquals(Instant.parse("2026-08-15T01:30:00Z").toEpochMilli(), flight.departureTimeMs)
+    }
+
+    @Test
+    fun `a boarding pass alone knows the day and not the hour`() {
+        val berlin = ZoneId.of("Europe/Berlin")
+        val flight = ReservationExtractor.extract(passMail("pass", 2_000), august2026, berlin)
+            .reservations.single() as FlightReservation
+
+        assertNull("no midnight is invented", flight.departureTimeMs)
+        assertEquals(TimePrecision.DATE_ONLY, flight.departurePrecision)
+        assertEquals("2026-08-14", flight.departureDate)
+        assertEquals("flight:LH400:2026-08-14", flight.sourceKey)
+
+        val card = PredictedContextMapper.fromReservation(flight, "gmail:pass", berlin)!!
+        assertEquals(Instant.parse("2026-08-13T22:00:00Z").toEpochMilli(), card.startMs)
+        assertEquals("spans the whole local day", Instant.parse("2026-08-14T22:00:00Z").toEpochMilli(), card.endMs)
+        assertTrue(card.payloadJson.contains("\"date_only\":true"))
+        assertTrue(card.payloadJson.contains("\"departure_date\":\"2026-08-14\""))
+        assertTrue("no departure time to show", !card.payloadJson.contains("departure_ms"))
+    }
+
+    @Test
+    fun `the newer of two messages decides whether the booking stands`() {
+        val cancelled = confirmation.replace(
+            "\"reservationNumber\": \"PNR001\",",
+            "\"reservationNumber\": \"PNR001\", \"reservationStatus\": \"ReservationCancelled\",",
+        )
+        val result = ReservationExtractor.extractAll(
+            listOf(
+                MailMessage("cancel", receivedMs = 2_000, parts = listOf(MailPart("text/html", text = cancelled))),
+                MailMessage("booking", receivedMs = 1_000, parts = listOf(MailPart("text/html", text = confirmation))),
+            ),
+            august2026,
+            utc,
+        )
+        assertTrue((result.reservations.single() as FlightReservation).cancelled)
+    }
+
+    @Test
+    fun `signed mail is not combined with unsigned mail`() {
+        val result = ReservationExtractor.extractAll(
+            listOf(
+                MailMessage("spoof", receivedMs = 2_000, authenticated = false,
+                    parts = listOf(MailPart("text/html", text = confirmation.replace("\"departureTerminal\": \"2\"", "\"departureTerminal\": \"9\", \"departureGate\": \"Z99\"")))),
+                MailMessage("real", receivedMs = 1_000, authenticated = true, parts = listOf(MailPart("text/html", text = confirmation))),
+            ),
+            august2026,
+            utc,
+        )
+        val flight = result.reservations.single() as FlightReservation
+        assertTrue(flight.authenticated)
+        assertEquals("2", flight.departureTerminal)
+        assertNull(flight.departureGate)
+        assertEquals("real", flight.sourceMessageId)
     }
 }

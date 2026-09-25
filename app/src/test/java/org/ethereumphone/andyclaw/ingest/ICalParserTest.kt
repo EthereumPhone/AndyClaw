@@ -197,4 +197,70 @@ class ICalParserTest {
         """.trimIndent()
         assertEquals("calendar:stable-uid", ICalParser.parse(ics, utc).single().sourceKey)
     }
+
+    @Test
+    fun `METHOD CANCEL cancels every event it carries`() {
+        val ics = """
+            BEGIN:VCALENDAR
+            METHOD:CANCEL
+            BEGIN:VEVENT
+            UID:offsite-1
+            SUMMARY:Offsite
+            DTSTART:20260901T090000Z
+            END:VEVENT
+            END:VCALENDAR
+        """.trimIndent()
+        val event = ICalParser.parse(ics, utc).single()
+        assertTrue(event.cancelled)
+        assertEquals("calendar:offsite-1", event.sourceKey)
+    }
+
+    @Test
+    fun `STATUS CANCELLED cancels that event`() {
+        val ics = """
+            BEGIN:VCALENDAR
+            BEGIN:VEVENT
+            UID:a
+            SUMMARY:Kept
+            DTSTART:20260901T090000Z
+            END:VEVENT
+            BEGIN:VEVENT
+            UID:b
+            SUMMARY:Dropped
+            STATUS:CANCELLED
+            DTSTART:20260902T090000Z
+            END:VEVENT
+            END:VCALENDAR
+        """.trimIndent()
+        assertEquals(listOf(false, true), ICalParser.parse(ics, utc).map { it.cancelled })
+    }
+
+    @Test
+    fun `one occurrence of a repeating event has a key of its own`() {
+        val ics = """
+            BEGIN:VCALENDAR
+            BEGIN:VEVENT
+            UID:standup
+            SUMMARY:Standup (moved)
+            RECURRENCE-ID:20260902T090000Z
+            DTSTART:20260902T100000Z
+            END:VEVENT
+            END:VCALENDAR
+        """.trimIndent()
+        assertEquals("calendar:standup@1788339600000", ICalParser.parse(ics, utc).single().sourceKey)
+    }
+
+    @Test
+    fun `a Windows zone name is understood`() {
+        val ics = """
+            BEGIN:VCALENDAR
+            BEGIN:VEVENT
+            UID:w
+            SUMMARY:Outlook invite
+            DTSTART;TZID=W. Europe Standard Time:20260901T103000
+            END:VEVENT
+            END:VCALENDAR
+        """.trimIndent()
+        assertEquals(1_788_251_400_000L, ICalParser.parse(ics, utc).single().startMs)
+    }
 }

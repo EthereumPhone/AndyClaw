@@ -34,6 +34,9 @@ object ICalParser {
 
         val events = mutableListOf<CalendarEvent>()
         var current: MutableMap<String, Property>? = null
+        // `METHOD:CANCEL` is the organiser withdrawing the whole invitation. It sits on the
+        // calendar, outside the event, and applies to every event in it.
+        var cancelAll = false
 
         for (line in unfold(text)) {
             val upper = line.uppercase()
@@ -48,9 +51,12 @@ object ICalParser {
                     // First wins: a malformed feed that repeats DTSTART means the first one.
                     current.putIfAbsent(property.name, property)
                 }
+                upper.startsWith("METHOD:") -> cancelAll = upper.substringAfter(':').trim() == "CANCEL"
             }
         }
-        return events.filter { it.startMs != null || it.summary != null }
+        return events
+            .filter { it.startMs != null || it.summary != null }
+            .map { if (cancelAll) it.copy(cancelled = true) else it }
     }
 
     // ── Lines ─────────────────────────────────────────────────────────
@@ -113,6 +119,9 @@ object ICalParser {
             startMs = start?.let { IsoDates.parseICal(it.value, it.params["TZID"], zone) },
             endMs = end?.let { IsoDates.parseICal(it.value, it.params["TZID"], zone) },
             allDay = IsoDates.isICalAllDay(start?.value),
+            cancelled = props["STATUS"]?.value?.trim()?.equals("CANCELLED", ignoreCase = true) == true,
+            // One occurrence of a repeating event, rescheduled or cancelled on its own.
+            occurrenceMs = props["RECURRENCE-ID"]?.let { IsoDates.parseICal(it.value, it.params["TZID"], zone) },
         )
     }
 

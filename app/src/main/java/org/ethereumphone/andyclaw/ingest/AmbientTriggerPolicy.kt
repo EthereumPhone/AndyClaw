@@ -96,4 +96,12 @@ object AmbientTriggerPolicy {
 
     private const val MINUTE = 60_000L
     private const val HOUR = 60 * MINUTE
+
+    /**
+     * After a failed ingest — offline, a server error — how long before the next signal may
+     * try again. Short on purpose: the per-signal cooldowns count only from a success, so a
+     * failure no longer costs hours of stale cards, and this is what keeps a flapping network
+     * from being retried on every notification instead.
+     */
+    const val FAILURE_BACKOFF_MS = 60_000L
 }
