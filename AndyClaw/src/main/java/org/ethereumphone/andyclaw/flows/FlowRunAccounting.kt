@@ -12,6 +12,11 @@ package org.ethereumphone.andyclaw.flows
  *   could not be confirmed is still probably a send, and sending it again through the autopilot
  *   or the model is the double message this exists to prevent. Never after STOP, a refused
  *   checkpoint or a sensitive target either — each of those is a "no", not a "not like this".
+ *
+ * "May have committed" is the interpreter's call ([FlowRunResult.Aborted.committed]): an action
+ * that went out past the checkpoint, an irreversible one, or the flow's last action — and any of
+ * those whose outcome is unknown. Only an action that certainly never reached the app leaves it
+ * uncommitted.
  */
 object FlowRunAccounting {
 

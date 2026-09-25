@@ -28,6 +28,13 @@ object FlowStepEffects {
     /**
      * Tokens that mean "this commits". Matched whole, against the tokens of a view id,
      * so `resend` does not match `send` and `com.sendbird.x` does not either.
+     *
+     * Not the list of everything that commits — "save", "create", "done" and "publicar" are not
+     * in it — and not what stops a replay from doing its task twice: the interpreter counts a
+     * flow as committed once its last action has gone out, whatever that action's target is
+     * called. Growing this set is not a fix for that either. It decides where a checkpoint must
+     * sit, so a new token makes every installed flow that taps it without one fail validation,
+     * and stop loading.
      */
     val COMMIT_TOKENS: Set<String> = setOf(
         "send", "submit", "post", "publish", "share", "delete", "remove", "discard",

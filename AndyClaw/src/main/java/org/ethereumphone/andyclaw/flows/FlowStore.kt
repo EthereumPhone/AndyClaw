@@ -100,9 +100,12 @@ class FlowStore(
             val meta = readMeta(hash)?.copy(installedMs = clock())
                 ?: FlowMeta(installedMs = clock())
             writeMeta(hash, meta)
-            // A new version of a flow replaces the old one — same id, different bytes.
+            // A new version of a flow replaces the old one — same id, different bytes — and so does
+            // a recompile of the same task under another id: autopilot ids gained a hash of the
+            // task, so the first recompile of a task compiled before that arrives with a new name.
             for (other in listAll()) {
-                if (other.flow.flow == flow.flow && other.hash != hash) remove(other.hash)
+                if (other.hash == hash) continue
+                if (other.flow.flow == flow.flow || FlowFirst.sameTask(other.flow, flow)) remove(other.hash)
             }
             FlowInstallResult.Installed(StoredFlow(hash, flow, meta))
         } catch (e: Exception) {

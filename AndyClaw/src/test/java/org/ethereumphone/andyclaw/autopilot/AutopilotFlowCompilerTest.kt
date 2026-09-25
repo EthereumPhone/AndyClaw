@@ -8,6 +8,7 @@ import org.ethereumphone.andyclaw.flows.NodeTextContains
 import org.ethereumphone.andyclaw.flows.TapStep
 import org.ethereumphone.andyclaw.flows.TypeStep
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -65,7 +66,7 @@ class AutopilotFlowCompilerTest {
         assertEquals(AutopilotResult.Status.SUCCESS, result.status)
 
         val id = AutopilotFlowCompiler.flowIdFor(plan.packageName, plan.goal, plan.values)
-        assertEquals("msg.send_body_to_anna", id)
+        assertTrue(id, Regex("msg\\.send_body_to_anna_[0-9a-f]{8}").matches(id))
         val compiled = AutopilotFlowCompiler.compile(result, id, ">=1") as AutopilotFlowCompiler.Result.Compiled
         val flow = compiled.flow
 
@@ -97,6 +98,40 @@ class AutopilotFlowCompilerTest {
     @Test
     fun `values are replaced only as whole words`() {
         assertEquals("say {{body}} but keep this", AutopilotFlowCompiler.parameterize("say hi but keep this", mapOf("body" to "hi")))
-        assertEquals("settings.turn_on_dark_mode", AutopilotFlowCompiler.flowIdFor("com.android.settings", "Turn on dark mode!"))
+        assertTrue(AutopilotFlowCompiler.flowIdFor("com.android.settings", "Turn on dark mode!").startsWith("settings.turn_on_dark_mode_"))
+    }
+
+    @Test
+    fun `an id tells tasks apart that its readable part cannot`() {
+        val settings = "com.android.settings"
+        val on = AutopilotFlowCompiler.flowIdFor(settings, "Open the quick settings panel and turn Wi-Fi on")
+        val off = AutopilotFlowCompiler.flowIdFor(settings, "Open the quick settings panel and turn Wi-Fi off")
+        assertNotEquals(on, off)
+
+        val cyrillic = AutopilotFlowCompiler.flowIdFor("org.telegram.messenger", "Напиши Анне")
+        val cjk = AutopilotFlowCompiler.flowIdFor("org.telegram.messenger", "给安娜发消息")
+        assertNotEquals(cyrillic, cjk)
+        assertTrue(cyrillic, cyrillic.startsWith("messenger.task_"))
+
+        // Two apps whose package names end alike.
+        assertNotEquals(
+            AutopilotFlowCompiler.flowIdFor("org.telegram.messenger", "Send 'hi' to Anna", mapOf("body" to "hi")),
+            AutopilotFlowCompiler.flowIdFor("org.ethereumhpone.messenger", "Send 'hi' to Anna", mapOf("body" to "hi")),
+        )
+    }
+
+    @Test
+    fun `an id is the same for the same task with other values, and stays a valid id no longer than before`() {
+        val a = AutopilotFlowCompiler.flowIdFor("com.msg", "Send 'hi there' to Anna", mapOf("body" to "hi there"))
+        val b = AutopilotFlowCompiler.flowIdFor("com.msg", "Send 'see you at 6' to Anna", mapOf("body" to "see you at 6"))
+        assertEquals("a recompile of the task must replace its flow", a, b)
+        // Another value key is another task.
+        assertNotEquals(a, AutopilotFlowCompiler.flowIdFor("com.msg", "Send 'hi there' to Anna", mapOf("text" to "hi there")))
+
+        val long = AutopilotFlowCompiler.flowIdFor("com.android.settings", "Open the quick settings panel and turn Wi-Fi on, then go back home")
+        assertTrue(long, long.substringAfter('.').length <= 40)
+        for (id in listOf(a, long, AutopilotFlowCompiler.flowIdFor("x.y", "给安娜发消息"))) {
+            assertTrue(id, Regex("^[a-z0-9]+(?:[._-][a-z0-9]+)*$").matches(id))
+        }
     }
 }

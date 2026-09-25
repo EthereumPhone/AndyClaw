@@ -12,6 +12,10 @@ import org.ethereumphone.andyclaw.skills.ToolEffect
  * The compiled flow names a view id and nothing else, so everything the IR cannot say — what the
  * button reads *now*, whether the id repeats — has to be read off the screen at replay time. A flow
  * compiled while a button said "Next" must not tap it once the same id says "Pay €49".
+ *
+ * Every check here is only as good as the screen it is given: a target that is not on it yet
+ * passes all of them. The interpreter therefore waits for the target and checks the tree it found
+ * it in, immediately before acting.
  */
 object FlowTargetGuard {
 
@@ -59,9 +63,27 @@ object FlowTargetGuard {
     }
 
     /**
+     * Whether a node carrying [viewId] names [expected]: one of its texts is [expected], or has it
+     * as a whole word or phrase. "Anna" is named by "Anna", "Anna Schmidt" and "Chat with Anna" —
+     * never by "Hanna" or "Annabel", which a substring match let through. Case is ignored.
+     *
+     * This is what an `assert` checks, and an assert is what proves a list row was the right one
+     * ([identityAssertedAfter]), so a looser match is a wrong recipient that passes.
+     */
+    fun names(tree: String?, viewId: String, expected: String): Boolean {
+        val wanted = expected.trim()
+        if (wanted.isEmpty()) return false
+        val whole = Regex("(?<![\\p{L}\\p{N}])" + Regex.escape(wanted) + "(?![\\p{L}\\p{N}])", RegexOption.IGNORE_CASE)
+        return NodeTreeChecksum.textOf(tree, viewId).lineSequence().any { text ->
+            text.trim().equals(wanted, ignoreCase = true) || whole.containsMatchIn(text)
+        }
+    }
+
+    /**
      * Whether something after the step at [index] proves the right node was hit before the flow
      * does anything that cannot be undone: an `assert` with `node_text_contains` (the toolbar
-     * now names Anna) before the next checkpoint or irreversible step.
+     * now names Anna) before the next checkpoint or irreversible step. The interpreter checks
+     * that assert with [names], and gives it as long to hold as it gives a target to appear.
      */
     fun identityAssertedAfter(steps: List<FlowStep>, index: Int): Boolean {
         for (i in index + 1 until steps.size) {

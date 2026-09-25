@@ -2,11 +2,11 @@ package org.ethereumphone.andyclaw.flows
 
 import android.content.Context
 import android.content.pm.PackageManager
+import android.os.IAgentDisplayService
 import android.util.Log
 import kotlinx.coroutines.delay
 import org.ethereumphone.andyclaw.autopilot.AgentDisplayCapabilities
 import org.ethereumphone.andyclaw.skills.builtin.AgentDisplayBinder
-import org.json.JSONObject
 import org.ethereumphone.andyclaw.ExecutionEngine.rethrowIfCancelled
 
 /**
@@ -63,28 +63,38 @@ class AgentDisplayFlowDriver(
         null
     }
 
-    override suspend fun clickNode(viewId: String, index: Int): Boolean {
+    override suspend fun clickNode(viewId: String, index: Int): FlowDispatch {
         // The proxy selects a node by view id and nothing else, so a flow that wants
         // the second match of a repeated id cannot be replayed faithfully. Refusing is
         // the whole contract of this rung: abort, fall back, recompile — never guess
         // which row the user meant.
         if (index != 0) {
             Log.w(TAG, "clickNode($viewId, index=$index) refused — the a11y proxy has no index selector")
-            return false
+            return FlowDispatch.NOT_DISPATCHED
         }
-        return ok(runCatching { AgentDisplayBinder.serviceOrNull()?.clickNode(viewId) }.getOrNull())
+        return nodeAction("clickNode($viewId)") { it.clickNode(viewId) }
     }
 
-    override suspend fun setNodeText(viewId: String, text: String): Boolean =
-        ok(runCatching { AgentDisplayBinder.serviceOrNull()?.setNodeText(viewId, text) }.getOrNull())
+    override suspend fun setNodeText(viewId: String, text: String): FlowDispatch =
+        nodeAction("setNodeText($viewId)") { it.setNodeText(viewId, text) }
 
-    /** The node actions answer with `{"ok":true,"method":"..."}` or an error object. */
-    private fun ok(result: String?): Boolean {
-        if (result == null) return false
-        return try {
-            JSONObject(result).optBoolean("ok", false)
+    /**
+     * One node action, and what is known about whether it happened. No service means the call never
+     * went out. An exception once it has gone out, or an answer saying the OS stopped waiting for
+     * the app, means it may still happen — it used to read as "not tapped", and a replay that
+     * believed that could let the task be done a second time. [FlowDispatch.ofNodeActionResult]
+     * has the rest.
+     */
+    private fun nodeAction(what: String, call: (IAgentDisplayService) -> String?): FlowDispatch {
+        val service = AgentDisplayBinder.serviceOrNull() ?: return FlowDispatch.NOT_DISPATCHED
+        val answer = try {
+            call(service)
         } catch (e: Exception) {
-            false
+            Log.w(TAG, "$what threw; it may still have gone through, so it counts as possibly done: ${e.message}")
+            return FlowDispatch.UNKNOWN
+        }
+        return FlowDispatch.ofNodeActionResult(answer).also {
+            if (it != FlowDispatch.DONE) Log.w(TAG, "$what -> $it: ${answer?.take(200)}")
         }
     }
 

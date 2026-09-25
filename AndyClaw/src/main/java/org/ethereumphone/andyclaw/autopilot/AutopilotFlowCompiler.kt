@@ -2,6 +2,7 @@ package org.ethereumphone.andyclaw.autopilot
 
 import org.ethereumphone.andyclaw.flows.CheckpointStep
 import org.ethereumphone.andyclaw.flows.Flow
+import org.ethereumphone.andyclaw.flows.FlowCodec
 import org.ethereumphone.andyclaw.flows.FlowIntent
 import org.ethereumphone.andyclaw.flows.FlowIntentStep
 import org.ethereumphone.andyclaw.flows.FlowStep
@@ -77,7 +78,7 @@ object AutopilotFlowCompiler {
             steps = steps,
             postconditions = listOf(postcondition),
             intent = FlowIntent(
-                goal = parameterize(plan.goal, plan.values),
+                goal = intentGoal(plan.goal, plan.values),
                 steps = plan.steps.map {
                     FlowIntentStep(parameterize(it.doText, plan.values), it.doneWhen?.let { d -> parameterize(d, plan.values) }, it.typeKeys)
                 },
@@ -112,16 +113,44 @@ object AutopilotFlowCompiler {
 
     /**
      * `org.ethereumhpone.messenger` + "Send 'hi' to Anna" with values {body: hi}
-     * -> `messenger.send_body_to_anna`. Typed values become their key names, so the same task
-     * with different text maps to the same flow.
+     * -> `messenger.send_body_to_anna_` + 8 hex digits. Typed values become their key names, so
+     * the same task with different text maps to the same flow.
+     *
+     * The readable part is cut short and keeps only ASCII, so on its own it cannot tell tasks
+     * apart: "…and turn Wi-Fi off" and "…and turn Wi-Fi on" shared an id, and so did every goal
+     * written in Cyrillic or CJK (`<app>.task`) — and an install replaces the flow with the same
+     * id. The suffix is a hash of the whole task: the package, the goal as [compile] stores it,
+     * and the value keys. The id stays within the old length, so tool names do not grow.
+     *
+     * Only new compilations get the suffix. An id is part of a flow's content, so the flows
+     * already installed keep theirs and still verify; [org.ethereumphone.andyclaw.flows.FlowFirst]
+     * does not match on the id at all.
      */
     fun flowIdFor(packageName: String, goal: String, values: Map<String, String> = emptyMap()): String {
         val app = packageName.substringAfterLast('.').lowercase().filter { it.isLetterOrDigit() }.ifEmpty { "app" }
         var g = goal
         values.entries.sortedByDescending { it.value.length }.forEach { (k, v) -> if (v.isNotBlank()) g = wholeWord(v).replace(g, k) }
-        val slug = g.lowercase().replace(Regex("[^a-z0-9]+"), "_").trim('_').take(40).trim('_').ifEmpty { "task" }
-        return "$app.$slug"
+        val slug = g.lowercase().replace(Regex("[^a-z0-9]+"), "_").trim('_').take(SLUG_LENGTH).trim('_').ifEmpty { "task" }
+        return "$app.${slug}_${taskHash(packageName, goal, values)}"
     }
+
+    /** Readable part of an id; with `_` and the hash it stays within the 40 characters it always had. */
+    private const val SLUG_LENGTH = 31
+    private const val HASH_LENGTH = 8
+
+    /** The first [HASH_LENGTH] hex digits of sha256 over the task, length-prefixed so no two tasks run together. */
+    private fun taskHash(packageName: String, goal: String, values: Map<String, String>): String {
+        val parts = listOf(packageName, intentGoal(goal, values)) + values.keys.sorted()
+        val canonical = buildString { parts.forEach { append(it.length).append(':').append(it) } }
+        return FlowCodec.sha256Hex(canonical.toByteArray(Charsets.UTF_8)).take(HASH_LENGTH)
+    }
+
+    /**
+     * The goal as a compiled flow stores it (`Flow.intent.goal`): every value taken out as its
+     * `{{key}}`. What [org.ethereumphone.andyclaw.flows.FlowFirst] compares a new plan's goal
+     * against, so the two can never be worked out differently.
+     */
+    fun intentGoal(goal: String, values: Map<String, String>): String = parameterize(goal, values)
 
     /** Replaces literal values with `{{key}}` so a stored intent is reusable. */
     fun parameterize(text: String, values: Map<String, String>): String {

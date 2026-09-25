@@ -29,7 +29,6 @@ import org.ethereumphone.andyclaw.ExecutionEngine.currentProvenance
 import org.ethereumphone.andyclaw.ExecutionEngine.currentUserApproval
 import org.ethereumphone.andyclaw.agent.currentRunToken
 import org.ethereumphone.andyclaw.autopilot.AgentDisplayCapabilities
-import org.ethereumphone.andyclaw.autopilot.AutopilotFlowCompiler
 import org.ethereumphone.andyclaw.autopilot.AutopilotPlan
 import org.ethereumphone.andyclaw.autopilot.AutopilotToolHandler
 import org.ethereumphone.andyclaw.skills.AndyClawSkill
@@ -164,7 +163,14 @@ class FlowSkill(
         val interpreter = FlowInterpreter(driver, checkpointHandler(flow.toolName), stop = stopSignal())
         val result = interpreter.run(flow, arguments)
         FlowMetrics.onResult(result)
-        repository.recordRun(stored.hash, result, driver.installedVersion(flow.app))
+        // The replay has run. A bookkeeping failure must not turn that into an exception, which
+        // both callers read as "nothing happened" — and answer by doing the task another way.
+        try {
+            repository.recordRun(stored.hash, result, driver.installedVersion(flow.app))
+        } catch (e: Exception) {
+            rethrowIfCancelled(e)
+            Log.w(TAG, "could not record the run of '${flow.flow}'", e)
+        }
         return result
     }
 
@@ -175,8 +181,8 @@ class FlowSkill(
      * screens have moved on (the autopilot then recompiles it).
      */
     suspend fun flowFirst(plan: AutopilotPlan): SkillResult? {
-        val flowId = AutopilotFlowCompiler.flowIdFor(plan.packageName, plan.goal, plan.values)
-        val stored = FlowFirst.select(flowId, plan.values, repository.flows(), noConfirm(), currentProvenance())
+        // By what the flow is for — app, goal, values — never by its id, which another task can share.
+        val stored = FlowFirst.select(plan.packageName, plan.goal, plan.values, repository.flows(), noConfirm(), currentProvenance())
             ?: return null
         val arguments = stored.flow.params.associateWith { plan.values[it].orEmpty() }
         Log.i(TAG, "autopilot: replaying the compiled flow '${stored.flow.flow}' first")

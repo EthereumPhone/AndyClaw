@@ -1,6 +1,7 @@
 package org.ethereumphone.andyclaw.flows
 
 import kotlinx.coroutines.test.runTest
+import org.ethereumphone.andyclaw.skills.ToolEffect
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -48,17 +49,17 @@ class FlowInterpreterTest {
             treeReads++
             return current.json()
         }
-        override suspend fun clickNode(viewId: String, index: Int): Boolean {
-            if (index != 0) return false
-            if (viewId !in current.viewIds) return false
+        override suspend fun clickNode(viewId: String, index: Int): FlowDispatch {
+            if (index != 0) return FlowDispatch.NOT_DISPATCHED
+            if (viewId !in current.viewIds) return FlowDispatch.NOT_DISPATCHED
             clicks += viewId
             advance()
-            return true
+            return FlowDispatch.DONE
         }
-        override suspend fun setNodeText(viewId: String, text: String): Boolean {
-            if (viewId !in current.viewIds) return false
+        override suspend fun setNodeText(viewId: String, text: String): FlowDispatch {
+            if (viewId !in current.viewIds) return FlowDispatch.NOT_DISPATCHED
             typed += viewId to text
-            return true
+            return FlowDispatch.DONE
         }
     }
 
@@ -256,7 +257,10 @@ class FlowInterpreterSafetyTest {
     /**
      * A screen graph. Acting on a node moves to [transitions]["screen|viewId"]; a screen named in
      * [settlesAfterReads] shows as [unsettled] for that many reads first; [nullReads] makes that
-     * many consecutive reads fail after an action.
+     * many consecutive reads fail after an action. [answers] overrides what the display says about
+     * an action on a view id: NOT_DISPATCHED as if the node had gone between the read and the tap
+     * (nothing happens), UNKNOWN as if the answer was lost (the action happens), and [throwsOn]
+     * makes the call throw once it has been carried out.
      */
     private class Driver(
         private val screens: Map<String, Screen>,
@@ -265,6 +269,8 @@ class FlowInterpreterSafetyTest {
         private val settlesAfterReads: Map<String, Int> = emptyMap(),
         private val unsettled: Screen? = null,
         var nullReadsAfterAction: Int = 0,
+        private val answers: Map<String, FlowDispatch> = emptyMap(),
+        private val throwsOn: Set<String> = emptySet(),
     ) : FlowDisplayDriver {
         var current = start
         private var readsSinceArrival = 0
@@ -285,24 +291,28 @@ class FlowInterpreterSafetyTest {
             val wait = settlesAfterReads[current] ?: 0
             return if (readsSinceArrival <= wait && unsettled != null) unsettled.json() else screens.getValue(current).json()
         }
-        private fun act(viewId: String): Boolean {
-            if (screens.getValue(current).nodes.none { it.viewId == viewId }) return false
+        /** Like the real display, the action resolves against the live screen, settled or not. */
+        private fun act(viewId: String): FlowDispatch {
+            if (answers[viewId] == FlowDispatch.NOT_DISPATCHED) return FlowDispatch.NOT_DISPATCHED
+            if (screens.getValue(current).nodes.none { it.viewId == viewId }) return FlowDispatch.NOT_DISPATCHED
             transitions["$current|$viewId"]?.let {
                 current = it
                 readsSinceArrival = 0
             }
             nullReads = nullReadsAfterAction
-            return true
+            return answers[viewId] ?: FlowDispatch.DONE
         }
-        override suspend fun clickNode(viewId: String, index: Int): Boolean {
-            if (!act(viewId)) return false
-            clicks += viewId
-            return true
+        override suspend fun clickNode(viewId: String, index: Int): FlowDispatch {
+            val sent = act(viewId)
+            if (sent.mayHaveHappened) clicks += viewId
+            if (viewId in throwsOn) throw IllegalStateException("binder died")
+            return sent
         }
-        override suspend fun setNodeText(viewId: String, text: String): Boolean {
-            if (!act(viewId)) return false
-            typed += viewId
-            return true
+        override suspend fun setNodeText(viewId: String, text: String): FlowDispatch {
+            val sent = act(viewId)
+            if (sent.mayHaveHappened) typed += viewId
+            if (viewId in throwsOn) throw IllegalStateException("binder died")
+            return sent
         }
     }
 
@@ -502,6 +512,249 @@ class FlowInterpreterSafetyTest {
         val steps = listOf(AssertStep(viewId = "conversation_list", nodeTextContains = "", expectChecksum = expected))
         val result = interpreter(driver).run(flow(steps, post = listOf(NodeExists(viewId = "search_button"))), emptyMap())
         assertTrue("expected completion, got $result", result is FlowRunResult.Completed)
+    }
+
+    // ── Committed: the last action, and only what went out ────────────────
+
+    private val editor = Screen("editor", "com.notes",
+        Node("note_editor", "container"), Node("note_text", "text_field"), Node("save", "button", "Save"))
+
+    /** A notes app: no commit token anywhere, and its "saved" banner shows late or never. */
+    private fun notesFlow(steps: List<FlowStep>) = Flow(
+        flow = "notes.add", version = 1, app = "com.notes", appVersionRange = ">=7,<8",
+        preconditions = listOf(NodeExists(viewId = "note_editor")),
+        steps = steps,
+        postconditions = listOf(NodeExists(viewId = "saved_banner")),
+    )
+
+    private val saveSteps = listOf(
+        TypeStep(target = Selector(viewId = "note_text"), value = "milk"),
+        TapStep(viewId = "save"),
+    )
+
+    @Test
+    fun `a flow that ends on Save and cannot confirm it is committed, never done again`() = runTest {
+        // Neither a checkpoint nor a commit token: only being the last action says the task is done.
+        assertEquals(ToolEffect.REVERSIBLE, FlowStepEffects.of(TapStep(viewId = "save")))
+        val driver = Driver(mapOf("editor" to editor), emptyMap(), "editor")
+        val result = interpreter(driver).run(notesFlow(saveSteps), emptyMap()) as FlowRunResult.Aborted
+        assertEquals(FlowAbortReason.ASSERT_FAILED, result.reason)
+        assertEquals(listOf("save"), driver.clicks)
+        assertTrue(result.committed)
+        assertFalse("the autopilot must not save it a second time", FlowRunAccounting.mayFallBack(result))
+    }
+
+    @Test
+    fun `a last action that never reached the app is not a commit, even past the checkpoint`() = runTest {
+        // The button was on the screen that was checked, and gone when the tap looked for it.
+        val send = Driver(mapOf("list" to list, "thread" to thread, "sent" to sent), graph, "list",
+            answers = mapOf("send_button" to FlowDispatch.NOT_DISPATCHED))
+        val unsent = interpreter(send).run(flow(sendSteps), emptyMap()) as FlowRunResult.Aborted
+        assertEquals(FlowAbortReason.STEP_FAILED, unsent.reason)
+        assertFalse("send_button" in send.clicks)
+        assertFalse("nothing was sent, so nothing may be reported as sent", unsent.committed)
+        assertTrue(FlowRunAccounting.mayFallBack(unsent))
+
+        val save = Driver(mapOf("editor" to editor), emptyMap(), "editor",
+            answers = mapOf("save" to FlowDispatch.NOT_DISPATCHED))
+        val unsaved = interpreter(save).run(notesFlow(saveSteps), emptyMap()) as FlowRunResult.Aborted
+        assertEquals(FlowAbortReason.STEP_FAILED, unsaved.reason)
+        assertFalse(unsaved.committed)
+        assertTrue(FlowRunAccounting.mayFallBack(unsaved))
+    }
+
+    @Test
+    fun `a last action with no clear answer counts as done`() = runTest {
+        // The OS stopped waiting ("outcome":"unknown"), and the tap landed anyway.
+        val driver = Driver(mapOf("editor" to editor), emptyMap(), "editor", answers = mapOf("save" to FlowDispatch.UNKNOWN))
+        val result = interpreter(driver).run(notesFlow(saveSteps), emptyMap()) as FlowRunResult.Aborted
+        assertEquals(FlowAbortReason.STEP_FAILED, result.reason)
+        assertTrue(result.committed)
+        assertFalse(FlowRunAccounting.mayFallBack(result))
+    }
+
+    @Test
+    fun `a last action that throws once it is out counts as done`() = runTest {
+        val driver = Driver(mapOf("editor" to editor), emptyMap(), "editor", throwsOn = setOf("save"))
+        val result = interpreter(driver).run(notesFlow(saveSteps), emptyMap()) as FlowRunResult.Aborted
+        assertEquals(FlowAbortReason.STEP_FAILED, result.reason)
+        assertTrue(result.committed)
+        assertFalse(FlowRunAccounting.mayFallBack(result))
+    }
+
+    @Test
+    fun `an unclear answer to a step that commits nothing leaves the task to another route`() = runTest {
+        val driver = Driver(mapOf("list" to list, "thread" to thread, "sent" to sent), graph, "list",
+            answers = mapOf("row" to FlowDispatch.UNKNOWN))
+        val result = interpreter(driver).run(flow(sendSteps), emptyMap()) as FlowRunResult.Aborted
+        assertEquals(FlowAbortReason.STEP_FAILED, result.reason)
+        assertTrue("nothing after an unclear answer is acted on", driver.typed.isEmpty())
+        assertFalse(result.committed)
+        assertTrue(FlowRunAccounting.mayFallBack(result))
+    }
+
+    @Test
+    fun `STOP after the last action went out is still reported as done`() = runTest {
+        val driver = Driver(mapOf("editor" to editor), emptyMap(), "editor")
+        val result = interpreter(driver, FlowStopSignal { "save" in driver.clicks })
+            .run(notesFlow(saveSteps), emptyMap()) as FlowRunResult.Aborted
+        assertEquals(FlowAbortReason.STOPPED, result.reason)
+        assertTrue(result.committed)
+    }
+
+    // ── A target that is not on the screen yet ─────────────────────────
+
+    private val loading = Screen("loading", "com.msg", Node("conversation_list", "list"), Node("spinner", "image"))
+
+    private val blindSend = listOf(
+        TapStep(viewId = "row"),
+        TypeStep(target = Selector(viewId = "compose_text"), value = "see you"),
+        CheckpointStep("send"),
+        TapStep(viewId = "send_button"),
+    )
+
+    @Test
+    fun `a target that is not on the screen yet is waited for, then acted on`() = runTest {
+        val driver = Driver(mapOf("list" to list, "thread" to thread, "sent" to sent), graph, "list",
+            settlesAfterReads = mapOf("thread" to 5), unsettled = loading)
+        val result = interpreter(driver).run(flow(blindSend), emptyMap())
+        assertTrue("expected completion, got $result", result is FlowRunResult.Completed)
+        assertEquals(listOf("compose_text"), driver.typed)
+        assertEquals(listOf("row", "send_button"), driver.clicks)
+    }
+
+    @Test
+    fun `a target that never shows is never acted on`() = runTest {
+        // The thread never finishes loading. Checked on the loading screen, the compose field and
+        // the send button had zero matches, passed every check, and were acted on blind.
+        var reads = 0
+        val driver = Driver(mapOf("list" to list, "thread" to thread, "sent" to sent), graph, "list",
+            settlesAfterReads = mapOf("thread" to Int.MAX_VALUE), unsettled = loading)
+        driver.onRead = { reads++ }
+        val typing = interpreter(driver).run(flow(blindSend), emptyMap()) as FlowRunResult.Aborted
+        assertEquals(FlowAbortReason.STEP_FAILED, typing.reason)
+        assertTrue(driver.typed.isEmpty())
+        assertEquals(listOf("row"), driver.clicks)
+        assertFalse(typing.committed)
+        assertTrue("a frozen clock is bounded by the poll count, not the deadline", reads < 100)
+
+        val tapping = Driver(mapOf("list" to list, "thread" to thread, "sent" to sent), graph, "list",
+            settlesAfterReads = mapOf("thread" to Int.MAX_VALUE), unsettled = loading)
+        val result = interpreter(tapping).run(flow(listOf(TapStep(viewId = "row"), CheckpointStep("send"),
+            TapStep(viewId = "send_button"))), emptyMap()) as FlowRunResult.Aborted
+        assertEquals(FlowAbortReason.STEP_FAILED, result.reason)
+        assertEquals("no blind send", listOf("row"), tapping.clicks)
+        assertFalse(result.committed)
+    }
+
+    @Test
+    fun `a target that only shows up reading Pay is never tapped`() = runTest {
+        // Checked on the screen before it arrived, the target had no matches and passed; the tap
+        // then landed on the live "Pay" button.
+        val checkout = Screen("checkout", "com.shop", Node("conversation_list", "list"), Node("primary_action", "button", "Pay 49 EUR"))
+        val driver = Driver(mapOf("list" to list, "checkout" to checkout), mapOf("list|row" to "checkout"), "list",
+            settlesAfterReads = mapOf("checkout" to 3), unsettled = loading)
+        val result = interpreter(driver).run(flow(listOf(TapStep(viewId = "row"), TapStep(viewId = "primary_action"))), emptyMap())
+            as FlowRunResult.Aborted
+        assertEquals(FlowAbortReason.SENSITIVE_TARGET, result.reason)
+        assertEquals(listOf("row"), driver.clicks)
+    }
+
+    @Test
+    fun `a list that arrives late with two rows is ambiguous, not the first row`() = runTest {
+        val driver = Driver(mapOf("list" to list, "list2" to listTwoRows, "thread" to thread),
+            mapOf("list|search_button" to "list2", "list2|row" to "thread"), "list",
+            settlesAfterReads = mapOf("list2" to 3), unsettled = loading)
+        val steps = listOf(TapStep(viewId = "search_button"), TapStep(viewId = "row"),
+            TypeStep(target = Selector(viewId = "compose_text"), value = "x"), CheckpointStep("send"), TapStep(viewId = "send_button"))
+        val result = interpreter(driver).run(flow(steps), emptyMap()) as FlowRunResult.Aborted
+        assertEquals(FlowAbortReason.AMBIGUOUS_TARGET, result.reason)
+        assertEquals(listOf("search_button"), driver.clicks)
+    }
+
+    @Test
+    fun `STOP ends the wait for a target`() = runTest {
+        var reads = 0
+        val driver = Driver(mapOf("list" to list, "thread" to thread), graph, "list",
+            settlesAfterReads = mapOf("thread" to Int.MAX_VALUE), unsettled = loading)
+        driver.onRead = { reads++ }
+        val result = interpreter(driver, FlowStopSignal { reads >= 4 }).run(flow(blindSend), emptyMap()) as FlowRunResult.Aborted
+        assertEquals(FlowAbortReason.STOPPED, result.reason)
+        assertTrue("stopped within a poll, not at the bound", reads < 8)
+        assertTrue(driver.typed.isEmpty())
+    }
+
+    // ── The identity assert ───────────────────────────────────────────
+
+    @Test
+    fun `Hanna does not pass for Anna`() = runTest {
+        // Hanna's row is first. "Hanna" contains "Anna", and the substring match sent it to her.
+        val hannaFirst = Screen("list2", "com.msg",
+            Node("conversation_list", "list"), Node("row", "list_item", "Hanna"), Node("row", "list_item", "Anna"))
+        val hannaThread = Screen("thread", "com.msg",
+            Node("toolbar_title", "text", "Hanna"), Node("compose_text", "text_field"), Node("send_button"))
+        val driver = Driver(mapOf("list2" to hannaFirst, "thread" to hannaThread, "sent" to sent), graph, "list2")
+        val result = interpreter(driver).run(flow(sendSteps), emptyMap()) as FlowRunResult.Aborted
+        assertEquals(FlowAbortReason.ASSERT_FAILED, result.reason)
+        assertFalse("send_button" in driver.clicks)
+        assertFalse(result.committed)
+    }
+
+    @Test
+    fun `an identity assert names the parameter's value as a whole word`() = runTest {
+        val steps = listOf(
+            TapStep(viewId = "row"),
+            AssertStep(viewId = "toolbar_title", nodeTextContains = "{{contact}}"),
+            CheckpointStep("send"),
+            TapStep(viewId = "send_button"),
+        )
+        fun titled(title: String) = Screen("thread", "com.msg",
+            Node("toolbar_title", "text", title), Node("compose_text", "text_field"), Node("send_button"))
+        suspend fun replay(title: String): FlowRunResult {
+            val driver = Driver(mapOf("list" to list, "thread" to titled(title), "sent" to sent), graph, "list")
+            return interpreter(driver).run(flow(steps).copy(params = listOf("contact")), mapOf("contact" to "Anna"))
+        }
+        assertTrue(replay("Anna") is FlowRunResult.Completed)
+        assertTrue(replay("Anna Schmidt") is FlowRunResult.Completed)
+        assertTrue(replay("anna") is FlowRunResult.Completed)
+        assertEquals(FlowAbortReason.ASSERT_FAILED, (replay("Hanna") as FlowRunResult.Aborted).reason)
+        assertEquals(FlowAbortReason.ASSERT_FAILED, (replay("Annabel") as FlowRunResult.Aborted).reason)
+    }
+
+    @Test
+    fun `an identity assert on a screen that is still arriving is read again`() = runTest {
+        // The thread's title shows a few reads after the tap; read once, the assert called it wrong.
+        val driver = Driver(mapOf("list" to list, "thread" to thread, "sent" to sent), graph, "list",
+            settlesAfterReads = mapOf("thread" to 6), unsettled = loading)
+        val result = interpreter(driver).run(flow(sendSteps), emptyMap())
+        assertTrue("expected completion, got $result", result is FlowRunResult.Completed)
+        assertEquals(listOf("row", "send_button"), driver.clicks)
+    }
+
+    @Test
+    fun `an identity assert that never holds gives up at its bound, even on a frozen clock`() = runTest {
+        var reads = 0
+        val bobThread = Screen("thread", "com.msg",
+            Node("toolbar_title", "text", "Bob"), Node("compose_text", "text_field"), Node("send_button"))
+        val driver = Driver(mapOf("list" to list, "thread" to bobThread, "sent" to sent), graph, "list")
+        driver.onRead = { reads++ }
+        val result = interpreter(driver).run(flow(sendSteps), emptyMap()) as FlowRunResult.Aborted
+        assertEquals(FlowAbortReason.ASSERT_FAILED, result.reason)
+        assertTrue(reads <= FlowInterpreter.MAX_SCREEN_POLLS + 5)
+    }
+
+    @Test
+    fun `names is a whole word or the whole text, never a substring`() {
+        fun tree(label: String) = Screen("t", "com.msg", Node("title", "text", label)).json()
+        assertTrue(FlowTargetGuard.names(tree("Anna"), "title", "Anna"))
+        assertTrue(FlowTargetGuard.names(tree("Chat with Anna"), "title", "anna"))
+        assertTrue(FlowTargetGuard.names(tree("Anna Schmidt"), "title", "Anna Schmidt"))
+        assertTrue(FlowTargetGuard.names(tree("Anna's phone"), "title", "Anna"))
+        assertTrue(FlowTargetGuard.names(tree("Анна"), "title", "анна"))
+        assertFalse(FlowTargetGuard.names(tree("Hanna"), "title", "Anna"))
+        assertFalse(FlowTargetGuard.names(tree("Annabel"), "title", "Anna"))
+        assertFalse(FlowTargetGuard.names(tree("Anna"), "other", "Anna"))
+        assertFalse(FlowTargetGuard.names(tree("Anna"), "title", "  "))
     }
 
     private fun Screen.copyWithout(viewId: String) = Screen(name, pkg, *nodes.filter { it.viewId != viewId }.toTypedArray())

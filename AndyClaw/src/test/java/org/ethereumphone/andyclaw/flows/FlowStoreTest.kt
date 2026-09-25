@@ -102,6 +102,22 @@ class FlowStoreTest {
     }
 
     @Test
+    fun `a recompile of the same task under a new id replaces the old flow, and nothing else`() {
+        // Autopilot ids gained a hash of the task: the first recompile of an older flow arrives
+        // under a new name, and must not leave the old one behind as a second tool for one task.
+        val s = store()
+        val task = FlowIntent("Send '{{body}}' to Anna")
+        s.install(validFlow(id = "signal.send_body_to_anna", version = 3).copy(intent = task))
+        s.install(validFlow(id = "signal.send_body_to_bob").copy(intent = FlowIntent("Send '{{body}}' to Bob")))
+        s.install(validFlow(id = "signal.discovered"))
+        s.install(validFlow(id = "signal.send_body_to_anna_0123abcd").copy(intent = task))
+        assertEquals(
+            setOf("signal.send_body_to_bob", "signal.discovered", "signal.send_body_to_anna_0123abcd"),
+            s.listAll().map { it.flow.flow }.toSet(),
+        )
+    }
+
+    @Test
     fun `staleness is per package and does not change the content address`() {
         val s = store()
         val hash = (s.install(validFlow()) as FlowInstallResult.Installed).stored.hash
