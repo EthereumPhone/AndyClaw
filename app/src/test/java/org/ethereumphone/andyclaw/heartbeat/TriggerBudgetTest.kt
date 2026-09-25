@@ -1,5 +1,6 @@
 package org.ethereumphone.andyclaw.heartbeat
 
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -22,5 +23,13 @@ class TriggerBudgetTest {
         now += 10 * 60_000L
         assertTrue(budget.tryAcquire("xmtp:0xabc"))
         assertFalse(budget.tryAcquire("xmtp:0xabc"))
+    }
+
+    @Test
+    fun `fresh identities share one ceiling`() {
+        val b = TriggerBudget(capacity = 3, refillMs = 10 * 60_000L, totalCapacity = 10, totalRefillMs = 5 * 60_000L, clock = { now })
+        var ran = 0
+        for (sender in 1..20) if (b.tryAcquire("telegram:$sender")) ran++
+        assertEquals("a new chat each time still stops at the ceiling", 10, ran)
     }
 }

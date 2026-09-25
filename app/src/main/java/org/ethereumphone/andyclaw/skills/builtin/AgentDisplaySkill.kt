@@ -499,14 +499,17 @@ class AgentDisplaySkill(
      * a heartbeat finishing mid-autopilot from tearing the display out from under the user's task.
      */
     override fun onRunFinished(runId: String, end: RunEnd) {
-        if (!AgentDisplayLease.release(runId)) return
-        AgentHud.endRun(runId, end)
-        org.ethereumphone.andyclaw.services.AgentDisplayAccessibilityService.watchedDisplayId =
-            android.view.Display.INVALID_DISPLAY
-        try {
-            AgentDisplayBinder.serviceOrNull()?.destroyAgentDisplay()
-        } catch (e: Exception) {
-            Log.e(TAG, "failed to park the display at the end of run $runId", e)
+        // Put away first and given back after, as one step: a run claiming the display between
+        // the two used to have it parked under it.
+        AgentDisplayLease.releaseAfter(runId) {
+            AgentHud.endRun(runId, end)
+            org.ethereumphone.andyclaw.services.AgentDisplayAccessibilityService.watchedDisplayId =
+                android.view.Display.INVALID_DISPLAY
+            try {
+                AgentDisplayBinder.serviceOrNull()?.destroyAgentDisplay()
+            } catch (e: Exception) {
+                Log.e(TAG, "failed to park the display at the end of run $runId", e)
+            }
         }
     }
 

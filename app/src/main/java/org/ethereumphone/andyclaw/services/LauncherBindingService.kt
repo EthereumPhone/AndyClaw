@@ -1191,7 +1191,13 @@ class LauncherBindingService : Service() {
                     val input = e.input?.let {
                         runCatching { kotlinx.serialization.json.Json.parseToJsonElement(it) as? kotlinx.serialization.json.JsonObject }.getOrNull()
                     }
-                    val summary = org.ethereumphone.andyclaw.safety.ApprovalSummaries.of(e.toolName, input)
+                    val executable = store.isExecutable(e)
+                    // What APPROVE runs is shown whole: a card cut at 300 characters let a benign
+                    // start hide what followed it, and the whole input is what runs.
+                    val summary = org.ethereumphone.andyclaw.safety.ApprovalSummaries.of(
+                        e.toolName, input,
+                        maxValue = if (executable) Int.MAX_VALUE else org.ethereumphone.andyclaw.safety.ApprovalSummaries.MAX_VALUE,
+                    )
                     arr.put(JSONObject().apply {
                         put("id", e.id)
                         put("timestampMs", e.timestampMs)
@@ -1221,7 +1227,7 @@ class LauncherBindingService : Service() {
                         put("sourceLabel", org.ethereumphone.andyclaw.safety.ApprovalSummaries.sourceLabel(e.source, e.conversationId))
                         e.expiresMs?.let { put("expiresMs", it) }
                         put("count", e.count)
-                        put("executable", store.isExecutable(e))
+                        put("executable", executable)
                         // RUNNING: an approved call is executing (it answered RUNNING to the
                         // launcher). Not a card to act on again, and not one that "can't run".
                         put("state", if (e.state == org.ethereumphone.andyclaw.safety.PendingApprovalStore.State.EXECUTING) "RUNNING" else "PENDING")
@@ -1247,8 +1253,7 @@ class LauncherBindingService : Service() {
             val app = application as? NodeApp ?: return false
             if (!approved) return app.pendingApprovalExecutor.decline(id).state == "DECLINED"
             val entry = app.pendingApprovalStore.getAll().firstOrNull { it.id == id } ?: return false
-            if (entry.state != org.ethereumphone.andyclaw.safety.PendingApprovalStore.State.PENDING) return false
-            val done = app.pendingApprovalStore.finish(id, "ACKNOWLEDGED", "Acknowledged on the card; it was not run from there.")
+            val done = app.pendingApprovalStore.acknowledge(id, "Acknowledged on the card; it was not run from there.")
             if (done) app.recordApprovalDecision(entry, "ACKNOWLEDGED", entry.description)
             return done
         }

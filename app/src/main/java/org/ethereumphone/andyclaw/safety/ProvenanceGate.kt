@@ -80,8 +80,19 @@ object ProvenanceGate {
         audience: ReplyAudience? = null,
         /** Whether this run has already read the owner's private data. */
         readPrivateData: Boolean = false,
+        /** Whether this run has read something another person wrote. */
+        readThirdPartyContent: Boolean = false,
     ): PreflightVerdict {
         val effect = ToolEffects.of(call.name, toolDef)
+
+        if (taintedTrustedRunNeedsApproval(provenance, effect, call.name, readThirdPartyContent)) {
+            // The approval check a few steps on raises this anyway for such a tool.
+            if (toolDef?.requiresApproval == true) return PreflightVerdict.Pass
+            return PreflightVerdict.NeedsApproval(
+                "'${call.name}' cannot be undone, and this run has read something written by " +
+                    "someone other than you (a message, a notification, a page). Approve it to let it run."
+            )
+        }
 
         if (provenance == Provenance.UNTRUSTED) {
             privacyVerdict(call.name, audience, readPrivateData)?.let { return it }
@@ -122,9 +133,28 @@ object ProvenanceGate {
         toolName: String = "",
         audience: ReplyAudience? = null,
         readPrivateData: Boolean = false,
+        readThirdPartyContent: Boolean = false,
     ): Boolean =
         matrix(provenance, effect) is PreflightVerdict.Pass &&
+            !taintedTrustedRunNeedsApproval(provenance, effect, toolName, readThirdPartyContent) &&
             (provenance != Provenance.UNTRUSTED || privacyVerdict(toolName, audience, readPrivateData) == null)
+
+    /**
+     * A trusted run nobody watches — a heartbeat, the owner's own cron job — acts on its own
+     * authority only until it reads something another person wrote. After that an irreversible
+     * step needs the owner, like an untrusted run's: the heartbeat reads a notification as part
+     * of its task, and a notification is a stranger's text. Messages to the owner stay open —
+     * they are how the run tells the owner what it found. The user's own chat (USER) is not
+     * affected: somebody is watching it.
+     */
+    fun taintedTrustedRunNeedsApproval(
+        provenance: Provenance,
+        effect: ToolEffect,
+        toolName: String,
+        readThirdPartyContent: Boolean,
+    ): Boolean =
+        provenance == Provenance.TRUSTED && readThirdPartyContent &&
+            effect == ToolEffect.IRREVERSIBLE && toolName !in ToolEffects.OWNER_ONLY_MESSAGE_TOOLS
 
     // ── What an untrusted run may read, and what it may do after ──────
 

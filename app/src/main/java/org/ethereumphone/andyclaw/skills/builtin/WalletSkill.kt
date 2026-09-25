@@ -1136,9 +1136,19 @@ class WalletSkill(
         }
     }
 
+    /**
+     * Why the agent wallet must not send to [to], or null. Nothing here asks the user, so the
+     * check is strict: 0x and 40 hex digits, a checksum that matches if it has one, and never the
+     * zero address — a short "0x0" used to be padded into it, and an ENS name with no address
+     * record resolves to it.
+     */
+    private fun recipientError(to: String): String? =
+        org.ethereumphone.andyclaw.agentwallet.EthAddress.validationError(to)?.let { "Not sent: $it ($to)." }
+
     private suspend fun agentSendTransaction(params: JsonObject): SkillResult {
         val to = params["to"]?.jsonPrimitive?.contentOrNull
             ?: return SkillResult.Error("Missing required parameter: to")
+        recipientError(to)?.let { return SkillResult.Error(it) }
         val value = params["value"]?.jsonPrimitive?.contentOrNull
             ?: return SkillResult.Error("Missing required parameter: value")
         val data = params["data"]?.jsonPrimitive?.contentOrNull
@@ -1225,6 +1235,7 @@ class WalletSkill(
             ?: return SkillResult.Error("Missing required parameter: contract_address")
         val to = params["to"]?.jsonPrimitive?.contentOrNull
             ?: return SkillResult.Error("Missing required parameter: to")
+        recipientError(to)?.let { return SkillResult.Error(it) }
         val amount = params["amount"]?.jsonPrimitive?.contentOrNull
             ?: return SkillResult.Error("Missing required parameter: amount")
         val decimals = params["decimals"]?.jsonPrimitive?.intOrNull
@@ -1551,6 +1562,7 @@ class WalletSkill(
     private suspend fun agentSendNativeToken(params: JsonObject): SkillResult {
         val to = params["to"]?.jsonPrimitive?.contentOrNull
             ?: return SkillResult.Error("Missing required parameter: to")
+        recipientError(to)?.let { return SkillResult.Error(it) }
         val amount = params["amount"]?.jsonPrimitive?.contentOrNull
             ?: return SkillResult.Error("Missing required parameter: amount")
         val chainId = params["chain_id"]?.jsonPrimitive?.intOrNull
@@ -1600,6 +1612,7 @@ class WalletSkill(
     private suspend fun agentSendToken(params: JsonObject): SkillResult {
         val to = params["to"]?.jsonPrimitive?.contentOrNull
             ?: return SkillResult.Error("Missing required parameter: to")
+        recipientError(to)?.let { return SkillResult.Error(it) }
         val amount = params["amount"]?.jsonPrimitive?.contentOrNull
             ?: return SkillResult.Error("Missing required parameter: amount")
         val chainId = params["chain_id"]?.jsonPrimitive?.intOrNull

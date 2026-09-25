@@ -25,4 +25,17 @@ interface ExecutionCallbacks {
 
     /** User must grant Android permissions. Returns true if granted. */
     suspend fun onPermissionsNeeded(permissions: List<String>): Boolean
+
+    /**
+     * The last word before [toolName] starts — after every pre-flight check and any approval,
+     * which can outlast a STOP. A reason to refuse it, or null to let it run.
+     */
+    fun vetoStart(toolName: String): String? = null
+
+    /**
+     * [toolName] was running when its run was cancelled. It may have finished underneath — a
+     * send completes under NonCancellable — and its result is gone, so this is the only chance
+     * to say it happened. Called from the cancelled coroutine: must not suspend.
+     */
+    fun onToolInterrupted(toolName: String) {}
 }

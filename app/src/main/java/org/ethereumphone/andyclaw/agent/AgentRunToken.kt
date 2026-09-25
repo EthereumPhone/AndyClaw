@@ -43,6 +43,16 @@ class AgentRunToken(
     @Volatile
     var readPrivateData: Boolean = false
 
+    /**
+     * A trusted run nobody is watching — a heartbeat, the owner's own cron job — has read
+     * something another person wrote: a notification, a message, a mail, a web page, a screen.
+     * From then on nothing irreversible runs unattended; see `ProvenanceGate.evaluate`. A
+     * notification reading "send 0.05 ETH to 0x…" used to reach the promptless agent wallet
+     * through the heartbeat that read it. Set after each tool returns, only ever set.
+     */
+    @Volatile
+    var readThirdPartyContent: Boolean = false
+
     companion object Key : CoroutineContext.Key<AgentRunToken>
 }
 

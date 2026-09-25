@@ -103,8 +103,9 @@ class PendingApprovalExecutorTest {
     fun `a busy display keeps the card for later`() = runBlocking {
         val store = store()
         val e = queued(store)
+        // The display tools answer "busy" as their own result, so it arrives as an executed call.
         val r = executor(store) {
-            ToolCallResult("c", "send_sms", AgentDisplayLease.BUSY, isError = true, phase = ToolCallResult.Phase.BLOCKED_PREFLIGHT)
+            ToolCallResult("c", "agent_display_autopilot", AgentDisplayLease.BUSY, isError = true, phase = ToolCallResult.Phase.EXECUTED)
         }.approve(e.id)
         assertEquals("BLOCKED", r.state)
         assertEquals("still waiting, and runnable", 1, store.getAll().size)

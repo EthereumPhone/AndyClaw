@@ -82,8 +82,10 @@ class HeartbeatAgentRunner(
             enabledSkillIds = enabledSkillIds,
             model = model,
             aiName = aiName,
-            userStory = if (repliesToStranger) null else userStory,
-            soulContent = app.soulManager.read(),
+            // Nor, for any untrusted run, the owner's story and standing instructions: they are
+            // private, and an untrusted run with no audience may still reach the web.
+            userStory = if (provenance == Provenance.UNTRUSTED) null else userStory,
+            soulContent = if (provenance == Provenance.UNTRUSTED) null else app.soulManager.read(),
             safetyLayer = app.createSafetyLayer(),
             smartRouter = if (app.securePrefs.smartRoutingEnabled.value && !app.securePrefs.toolSearchEnabled.value) app.smartRouter else null,
             toolSearchService = app.createToolSearchService(tier, enabledSkillIds),
@@ -155,13 +157,18 @@ class HeartbeatAgentRunner(
                 //  - the run is untrusted: an auto-yes would hand a stranger's message the very
                 //    tools the gate raised the prompt about;
                 //  - the tool touches payment, auth or the agent's own code (SENSITIVE), whoever
-                //    set the run off: a background run never completes one of those unattended.
+                //    set the run off: a background run never completes one of those unattended;
+                //  - the run has read something another person wrote (a notification, a message,
+                //    a page): whatever it now wants to do may be that person's idea.
                 val name = toolName ?: "unknown"
                 val effect = org.ethereumphone.andyclaw.safety.ToolEffects.of(
                     name, registry.getTools(tier).firstOrNull { it.name == name },
                 )
-                if (provenance == Provenance.UNTRUSTED || effect == org.ethereumphone.andyclaw.skills.ToolEffect.SENSITIVE) {
-                    Log.w(TAG, "Not approving '$name' in a background run ($provenance, $effect); queueing it for the owner")
+                val tainted = agentLoop.currentRunToken.readThirdPartyContent
+                if (provenance == Provenance.UNTRUSTED || tainted ||
+                    effect == org.ethereumphone.andyclaw.skills.ToolEffect.SENSITIVE
+                ) {
+                    Log.w(TAG, "Not approving '$name' in a background run ($provenance, $effect, read others' content: $tainted); queueing it for the owner")
                     collectedToolCalls.add(HeartbeatToolCall(
                         toolName = name,
                         result = "QUEUED: needs the owner's approval, raised as a pending card",

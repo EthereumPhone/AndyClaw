@@ -463,6 +463,9 @@ class AgentDisplayAccessibilityService : AccessibilityService() {
      * The private app ([SensitiveApps]) open among the agent display's app windows, or null.
      * For the frame capture: a private app's screen is neither streamed nor recorded.
      */
+    /** Whether any window on [displayId] can be read at all. */
+    fun hasWindowsOn(displayId: Int): Boolean = !windowsOnAllDisplays.get(displayId).isNullOrEmpty()
+
     fun sensitivePackageOnDisplay(displayId: Int): String? {
         val windows = windowsOnAllDisplays.get(displayId) ?: return null
         return SensitiveApps.sensitiveAmong(windowPackages(windows, AccessibilityWindowInfo.TYPE_APPLICATION))

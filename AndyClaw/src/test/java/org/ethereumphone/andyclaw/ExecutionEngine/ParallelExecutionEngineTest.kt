@@ -815,4 +815,67 @@ class ParallelExecutionEngineTest {
         assertEquals(2, runs)
         assertEquals("call-7", witnessed)
     }
+
+    @Test
+    fun `a tool interrupted by the run's cancel is reported, so its ledger row is not lost`() = runTest {
+        val interrupted = mutableListOf<String>()
+        val callbacks = object : ExecutionCallbacks by noOpCallbacks() {
+            override fun onToolInterrupted(toolName: String) { interrupted += toolName }
+        }
+        val engine = buildEngine(
+            executor = ToolExecutor { _, _ ->
+                delay(10_000)
+                ToolExecResult.Success("sent")
+            },
+            callbacks = callbacks,
+        )
+
+        val job = launch { engine.executeBatch(listOf(toolCall(name = "agent_send_native_token"))) }
+        runCurrent()
+        job.cancel()
+        job.join()
+
+        assertEquals(listOf("agent_send_native_token"), interrupted)
+    }
+
+    @Test
+    fun `a tool's own timeout is not an interrupted run`() = runTest {
+        val interrupted = mutableListOf<String>()
+        val callbacks = object : ExecutionCallbacks by noOpCallbacks() {
+            override fun onToolInterrupted(toolName: String) { interrupted += toolName }
+        }
+        val engine = buildEngine(
+            executor = ToolExecutor { _, _ -> withTimeout(10) { delay(1_000); ToolExecResult.Success("x") } },
+            callbacks = callbacks,
+        )
+        engine.executeBatch(listOf(toolCall()))
+        assertTrue(interrupted.isEmpty())
+    }
+
+    @Test
+    fun `a stop that comes during the approval keeps the approved tool from starting`() = runTest {
+        var stopped = false
+        val executed = AtomicInteger(0)
+        val blocked = mutableListOf<String>()
+        val callbacks = object : ExecutionCallbacks by noOpCallbacks() {
+            override suspend fun onApprovalNeeded(description: String, toolName: String?, toolInput: JsonObject?): Boolean {
+                stopped = true // STOP pressed while the dialog was up; then the user taps approve
+                return true
+            }
+            override fun onToolBlocked(toolName: String, reason: String) { blocked += toolName }
+            override fun vetoStart(toolName: String): String? = if (stopped) "Stopped by the user." else null
+        }
+        val engine = buildEngine(
+            executor = ToolExecutor { _, _ -> executed.incrementAndGet(); ToolExecResult.Success("sent") },
+            preflightChecks = listOf(PreflightCheck { PreflightVerdict.NeedsApproval("send?") }),
+            callbacks = callbacks,
+        )
+
+        val result = engine.executeBatch(listOf(toolCall(name = "send_sms"))).results.single()
+
+        assertEquals(0, executed.get())
+        assertTrue(result.isError)
+        assertEquals(ToolCallResult.Phase.BLOCKED_PREFLIGHT, result.phase)
+        assertEquals(listOf("send_sms"), blocked)
+    }
 }

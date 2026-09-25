@@ -215,6 +215,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         val toolName: String? = null,
         val slug: String? = null,
         val threatAssessment: ThreatAssessment? = null,
+        /** Which request an answer is for, so a second tap cannot answer the next one unseen. */
+        val id: String = java.util.UUID.randomUUID().toString(),
     )
 
     fun loadSession(sessionId: String) {
@@ -681,9 +683,17 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun respondToApproval(approved: Boolean) {
+    /**
+     * The user's answer to [requestId] — the request the dialog showed. An answer for one that is
+     * gone (answered already, or dropped with its turn) does nothing: taking the head of the
+     * queue instead let a double tap approve the next request without its dialog ever showing.
+     */
+    fun respondToApproval(requestId: String, approved: Boolean) {
         val ask = synchronized(approvalQueue) {
-            approvalQueue.removeFirstOrNull().also { publishApprovalHeadLocked() }
+            approvalQueue.firstOrNull { it.request.id == requestId }?.also {
+                approvalQueue.remove(it)
+                publishApprovalHeadLocked()
+            }
         } ?: return
         val request = ask.request
         if (!approved && request.toolName == "clawhub_install" && request.slug != null) {

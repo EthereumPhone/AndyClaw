@@ -198,6 +198,22 @@ class PredictedContextRepositoryTest {
     }
 
     @Test
+    fun `a flight ingested before the update keeps its exact time when the pass arrives`() = runTest {
+        // v69 recorded no precision: an exact departure is simply a time that is not midnight.
+        val dao = FakeDao()
+        val repo = repo(dao)
+        repo.put(flight(6 * hour, payload = """{"departure_ms":${now + 6 * hour}}"""))
+        repo.put(
+            flight(-3 * hour, payload = """{"time_precision":"date_only","date_only":true,"seat":"14A"}""")
+                .copy(endMs = now + 21 * hour)
+        )
+
+        val row = repo.all().single()
+        assertEquals(now + 6 * hour, row.startMs)
+        assertEquals("14A", PredictedContextPayload.parse(row.payloadJson).str("seat"))
+    }
+
+    @Test
     fun `an exact departure replaces a date-only one`() = runTest {
         val dao = FakeDao()
         val repo = repo(dao)

@@ -99,7 +99,8 @@ class TelegramAgentRunner(
             // The reply goes back to this chat. Anyone but the owner reading it must not get the
             // owner's story or what the agent remembers about them.
             userStory = if (isOwnerChat) userStory else null,
-            soulContent = app.soulManager.read(),
+            // Nor the owner's standing instructions, which are theirs and may say anything.
+            soulContent = if (isOwnerChat) app.soulManager.read() else null,
             memoryManager = if (isOwnerChat) app.memoryManager else null,
             safetyLayer = app.createSafetyLayer(),
             smartRouter = if (app.securePrefs.smartRoutingEnabled.value && !app.securePrefs.toolSearchEnabled.value) app.smartRouter else null,

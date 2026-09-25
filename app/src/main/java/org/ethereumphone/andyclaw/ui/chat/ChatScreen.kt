@@ -465,8 +465,8 @@ fun ChatScreen(
                     secondaryColor = secondaryColor,
                     confirmButtonText = "APPROVE",
                     cancelButtonText = "DENY",
-                    onConfirm = { viewModel.respondToApproval(true) },
-                    onDismiss = { viewModel.respondToApproval(false) },
+                    onConfirm = { viewModel.respondToApproval(request.id, true) },
+                    onDismiss = { viewModel.respondToApproval(request.id, false) },
                 )
             } else {
                 ConfirmationOverlay(
@@ -477,8 +477,8 @@ fun ChatScreen(
                     secondaryColor = secondaryColor,
                     cancelButtonText = "DENY",
                     confirmButtonText = "APPROVE",
-                    onCancel = { viewModel.respondToApproval(false) },
-                    onConfirm = { viewModel.respondToApproval(true) }
+                    onCancel = { viewModel.respondToApproval(request.id, false) },
+                    onConfirm = { viewModel.respondToApproval(request.id, true) }
                 )
             }
         }

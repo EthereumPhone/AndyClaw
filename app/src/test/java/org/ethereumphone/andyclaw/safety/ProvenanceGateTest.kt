@@ -287,4 +287,59 @@ class ProvenanceGateTest {
         assertTrue(ProvenanceGate.sameConversation("555-010-9999", "+15550109999"))
         assertTrue(!ProvenanceGate.sameConversation("+15550109999", "+15550101111"))
     }
+
+    // ══════════════════════════════════════════════════════════════
+    // A trusted run that has read someone else's words
+    // ══════════════════════════════════════════════════════════════
+
+    @Test
+    fun `a heartbeat that read a notification cannot pay from the agent wallet unattended`() {
+        val send = call("agent_send_native_token")
+        val def = toolDef("agent_send_native_token", ToolEffect.IRREVERSIBLE)
+
+        val before = ProvenanceGate.evaluate(send, Provenance.TRUSTED, null, def)
+        val after = ProvenanceGate.evaluate(send, Provenance.TRUSTED, null, def, readThirdPartyContent = true)
+
+        assertEquals("PASS", verdictName(before))
+        assertEquals("NEEDS_APPROVAL", verdictName(after))
+        assertFalse(ProvenanceGate.allowsUnattended(
+            Provenance.TRUSTED, ToolEffect.IRREVERSIBLE, "agent_send_native_token", readThirdPartyContent = true,
+        ))
+    }
+
+    @Test
+    fun `after reading others' words the run can still tell the owner, and still read and toggle`() {
+        val def = toolDef("send_message_to_user", ToolEffect.IRREVERSIBLE)
+        assertEquals("PASS", verdictName(ProvenanceGate.evaluate(
+            call("send_message_to_user"), Provenance.TRUSTED, null, def, readThirdPartyContent = true,
+        )))
+        assertEquals("PASS", verdictName(ProvenanceGate.evaluate(
+            call("list_notifications"), Provenance.TRUSTED, null, toolDef("list_notifications", ToolEffect.READ),
+            readThirdPartyContent = true,
+        )))
+        assertEquals("PASS", verdictName(ProvenanceGate.evaluate(
+            call("set_volume"), Provenance.TRUSTED, null, toolDef("set_volume", ToolEffect.REVERSIBLE),
+            readThirdPartyContent = true,
+        )))
+    }
+
+    @Test
+    fun `the user's own chat is not affected, somebody is watching it`() {
+        assertEquals("PASS", verdictName(ProvenanceGate.evaluate(
+            call("agent_send_native_token"), Provenance.USER, null,
+            toolDef("agent_send_native_token", ToolEffect.IRREVERSIBLE), readThirdPartyContent = true,
+        )))
+    }
+
+    @Test
+    fun `only tools that cannot carry someone else's words leave a trusted run clean`() {
+        for (t in listOf("list_notifications", "read_sms", "gmail_read", "fetch_webpage", "read_screen",
+            "agent_display_get_ui_tree", "agent_display_tap", "get_owned_tokens", "list_installed_apps",
+            "some_extension_tool_nobody_classified")) {
+            assertTrue("$t should taint", ToolEffects.taintsTrustedRun(t))
+        }
+        for (t in listOf("get_device_info", "get_storage_info", "read_agent_balance", "send_message_to_user")) {
+            assertFalse("$t should not taint", ToolEffects.taintsTrustedRun(t))
+        }
+    }
 }

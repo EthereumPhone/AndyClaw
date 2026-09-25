@@ -62,7 +62,10 @@ object LedgerDigest {
         val intent = e.intent.trimStart()
         return when {
             session.startsWith("system:") || e.actions.any { it.tool == "ledger" } -> Trigger.SYSTEM
-            APPROVAL_PREFIXES.any { intent.startsWith(it) } || session.startsWith("approval:") -> Trigger.APPROVAL
+            // The owner's decision, which AndyClaw writes as a USER row. An older row that holds a
+            // stranger's raw message can start with the same words, and is not one.
+            session.startsWith("approval:") ||
+                (e.provenance != "UNTRUSTED" && APPROVAL_PREFIXES.any { intent.startsWith(it) }) -> Trigger.APPROVAL
             session.startsWith("telegram:") -> Trigger.TELEGRAM
             session.startsWith("background:") -> when {
                 intent.startsWith(HEADER_REMINDER) || intent.startsWith(LABEL_REMINDER) -> Trigger.REMINDER

@@ -62,7 +62,7 @@ class PredictedContextRepository(
         }
 
         val before = existing.toDomain()
-        val merged = PredictedContextPayload.merge(before, context, now)
+        val merged = PredictedContextPayload.merge(before, context, now, zone())
         // Re-reading a calendar sees every event again; only a real change is a write, and only
         // a real change moves `updatedMs` — which the launcher reads as "this card just changed".
         if (PredictedContextPayload.sameContent(merged, before)) return@withLock before

@@ -88,11 +88,12 @@ object ExecutionEngineFactory {
         // executor is handed a name and parameters, never the call id.
         val toolDurations = java.util.concurrent.ConcurrentHashMap<String, Long>()
 
+        val runToken = runContext[AgentRunToken]
         val builder = EngineBuilder()
             .executor(createExecutor(skillRegistry, tier, provenance, triggerConversationId, toolDurations, runContext))
             .callbacks(
                 createCallbacks(
-                    agentCallbacks, safetyLayer, ledger, provenance, intent, toolDurations,
+                    agentCallbacks, safetyLayer, ledger, provenance, intent, toolDurations, runToken,
                 ) { name -> rungOf(name, toolsByName) },
             )
 
@@ -104,14 +105,20 @@ object ExecutionEngineFactory {
         //    skill-enabled check or the route gate was going to refuse used to raise an
         //    approval card first — and a headless run queued it for the user, who could then
         //    approve something that was never going to run.
-        val runToken = runContext[AgentRunToken]
+        //  - Nothing at all after STOP: not a message, not a send, not an approval card. Only the
+        //    display tools used to refuse, so a turn the user stopped could still send.
         val audience = runContext[ReplyAudience]
+        builder.addPreflightCheck(stopCheck(runToken))
         builder.addPreflightCheck(
             provenanceCheck(provenance, triggerConversationId, enforceProvenance, blocksOnly = true,
                 runToken = runToken, audience = audience) { toolsByName }
         )
         builder.addPreflightCheck(skillEnabledCheck(skillRegistry, tier, enabledSkillIds))
-        builder.addPreflightCheck(routeGateCheck { toolsByName })
+        // An approved exact call runs as approved: the owner said yes to that tool, and a cheaper
+        // route found since is no reason to refuse it.
+        if (agentCallbacks !is org.ethereumphone.andyclaw.safety.ExactCallCallbacks) {
+            builder.addPreflightCheck(routeGateCheck { toolsByName })
+        }
         if (safetyLayer != null) {
             builder.addPreflightCheck(rateLimitCheck(safetyLayer))
             builder.addPreflightCheck(paramValidationCheck(safetyLayer))
@@ -175,6 +182,13 @@ object ExecutionEngineFactory {
                 }
             } finally {
                 durations[toolName] = System.currentTimeMillis() - startedMs
+                // What this tool returned is in front of the model from now on. For a trusted
+                // run nobody watches, someone else's words among it mean nothing irreversible
+                // runs unattended any more (ProvenanceGate.taintedTrustedRunNeedsApproval).
+                // After the call, not before: the call itself was decided without it.
+                if (provenance == Provenance.TRUSTED && ToolEffects.taintsTrustedRun(toolName)) {
+                    runContext[AgentRunToken]?.readThirdPartyContent = true
+                }
             }
         }
 
@@ -223,6 +237,7 @@ object ExecutionEngineFactory {
             call, provenance, triggerConversationId, toolDef,
             audience = audience,
             readPrivateData = runToken?.readPrivateData == true,
+            readThirdPartyContent = runToken?.readThirdPartyContent == true,
         )
         val mine = if (blocksOnly) verdict is PreflightVerdict.Block else verdict is PreflightVerdict.NeedsApproval
 
@@ -244,6 +259,11 @@ object ExecutionEngineFactory {
             Log.w(TAG, "provenance $provenance + $effect on '${call.name}' -> $outcome$unclassified$mode")
             if (enforce) verdict else PreflightVerdict.Pass
         }
+    }
+
+    /** After STOP nothing more runs in the turn; see [create]. */
+    private fun stopCheck(runToken: AgentRunToken?) = PreflightCheck { _ ->
+        if (runToken?.stopRequested == true) PreflightVerdict.Block(STOPPED_BEFORE_START) else PreflightVerdict.Pass
     }
 
     private fun permissionsCheck(tools: () -> Map<String, ToolDefinition>) = PreflightCheck { call ->
@@ -370,6 +390,8 @@ object ExecutionEngineFactory {
 
     /** Enough to say which gate fired and why; not enough to be a second copy of the prompt. */
     private const val MAX_BLOCK_NOTE_CHARS = 240
+    private const val STOPPED_BEFORE_START = "Stopped by the user. Nothing more runs in this turn."
+    private const val INTERRUPTED_NOTE = "interrupted when the turn was stopped; it may have run"
 
     /** Tests drive the gate repeatedly against the same package; they start from clean. */
     internal fun clearRouteMemory() = recentlyRouted.clear()
@@ -555,8 +577,43 @@ object ExecutionEngineFactory {
         provenance: Provenance,
         intent: String,
         durations: Map<String, Long>,
+        runToken: AgentRunToken?,
         rungOf: (String) -> Int?,
     ) = object : ExecutionCallbacks {
+
+        // An approval dialog can outlast a STOP; this is checked once more as the tool starts.
+        override fun vetoStart(toolName: String): String? =
+            if (runToken?.stopRequested == true) STOPPED_BEFORE_START else null
+
+        override fun onToolInterrupted(toolName: String) {
+            // The turn was cancelled with this tool running. It may have finished anyway — the
+            // agent wallet's send does, under NonCancellable — and its result is gone. Without
+            // this row the ledger, which the user is told to check, would say nothing ran.
+            ledger?.let { l ->
+                runCatching {
+                    l.sink.record(
+                        LedgerDraft(
+                            sessionId = l.sessionId,
+                            kind = LedgerKind.TOOL,
+                            intent = intent,
+                            provenance = provenance.name,
+                            outcome = LedgerOutcome.ERROR,
+                            routeRung = rungOf(toolName),
+                            flowRef = l.flowRef(toolName),
+                            actions = listOf(
+                                LedgerAction(
+                                    tool = toolName,
+                                    ok = false,
+                                    durationMs = durations[toolName] ?: 0L,
+                                    note = INTERRUPTED_NOTE,
+                                )
+                            ),
+                            durationMs = durations[toolName] ?: 0L,
+                        )
+                    )
+                }
+            }
+        }
 
         override fun onToolStarted(toolName: String) {
             agentCallbacks.onToolExecution(toolName)

@@ -121,7 +121,29 @@ object ToolEffects {
         // Whatever is on the agent display.
         "agent_display_look", "agent_display_screenshot", "agent_display_get_ui_tree",
         "agent_display_get_node_info", "agent_display_current_activity",
+        // What the owner scheduled, and what the agent was taught or built for them.
+        "list_reminders", "list_cronjobs", "list_triggers",
+        "refinement_read", "refinement_list_skills", "refinement_list_all",
+        "skill_read_source", "skill_list_created", "skill_list_references",
+        "list_custom_tools", "cli_tools_list", "cli_tools_info",
     ) + CLIPBOARD_READS
+
+    /**
+     * Tools whose result can carry nothing another person wrote: the device's own state, the
+     * owner's own addresses, a balance. Everything else taints a trusted run once it returns
+     * (`AgentRunToken.readThirdPartyContent`) — a list of what *does* carry someone else's words
+     * would fail open the day a tool is added, and nearly everything does: a notification, a
+     * message, a mail, a page, a screen, an app's name, a token's name, a file.
+     */
+    val NO_THIRD_PARTY_TEXT: Set<String> = setOf(
+        "get_audio_state", "get_connectivity_status", "get_device_info", "get_storage_info",
+        "get_system_setting", "list_settings", "termux_check_status", "led_list_patterns",
+        "get_user_wallet_address", "get_agent_wallet_address", "read_agent_balance",
+        "agent_display_get_info",
+    ) + OWNER_ONLY_MESSAGE_TOOLS
+
+    /** Whether [toolName]'s result may carry someone else's words into a trusted run. */
+    fun taintsTrustedRun(toolName: String): Boolean = toolName !in NO_THIRD_PARTY_TEXT
 
     /** Reads that put arbitrary text on the network — a URL, a search query. */
     val NETWORK_EGRESS: Set<String> = setOf(

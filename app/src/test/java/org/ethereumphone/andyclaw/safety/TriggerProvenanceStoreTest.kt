@@ -25,10 +25,19 @@ class TriggerProvenanceStoreTest {
     }
 
     @Test
-    fun `a job older than the store keeps running as it always did`() {
+    fun `a job with no recorded creator runs as untrusted`() {
+        // Older than the store — when a stranger's message could create one — or its entry lost:
+        // either way nobody can vouch for it.
         val s = TriggerProvenanceStore(tmp.root)
         assertNull(s.of(TriggerProvenanceStore.cronKey(1)))
-        assertEquals(Provenance.TRUSTED, s.provenanceFor(TriggerProvenanceStore.cronKey(1)))
+        assertEquals(Provenance.UNTRUSTED, s.provenanceFor(TriggerProvenanceStore.cronKey(1)))
+    }
+
+    @Test
+    fun `an unreadable store vouches for nobody`() {
+        java.io.File(tmp.root, TriggerProvenanceStore.FILENAME).writeText("{not json")
+        val s = TriggerProvenanceStore(tmp.root)
+        assertEquals(Provenance.UNTRUSTED, s.provenanceFor(TriggerProvenanceStore.cronKey(2)))
     }
 
     @Test
@@ -37,5 +46,15 @@ class TriggerProvenanceStoreTest {
         s.record(TriggerProvenanceStore.cronKey(3), Provenance.UNTRUSTED)
         s.forget(TriggerProvenanceStore.cronKey(3))
         assertNull(s.of(TriggerProvenanceStore.cronKey(3)))
+    }
+
+    @Test
+    fun `the owner's own job fires as a background task, a stranger's stays untrusted`() {
+        val s = TriggerProvenanceStore(tmp.root)
+        s.record(TriggerProvenanceStore.cronKey(10), Provenance.USER)
+        s.record(TriggerProvenanceStore.cronKey(11), Provenance.UNTRUSTED)
+        assertEquals(Provenance.TRUSTED, s.firedProvenanceFor(TriggerProvenanceStore.cronKey(10)))
+        assertEquals(Provenance.UNTRUSTED, s.firedProvenanceFor(TriggerProvenanceStore.cronKey(11)))
+        assertEquals(Provenance.UNTRUSTED, s.firedProvenanceFor(TriggerProvenanceStore.cronKey(12)))
     }
 }

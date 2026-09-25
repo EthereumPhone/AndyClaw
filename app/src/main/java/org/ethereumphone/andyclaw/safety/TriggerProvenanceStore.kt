@@ -20,8 +20,11 @@ import java.io.File
  * provenance of the run that created it, recorded here.
  *
  * `filesDir/trigger_provenance.json`, a flat `{ "cron:<id>": "USER", "reminder:<id>": … }`
- * map. A job with no entry was created before this file existed; it keeps running as TRUSTED,
- * which is what it always did, and that is logged.
+ * map. A job with no entry runs as [Provenance.UNTRUSTED]: it was created before this file
+ * existed — when a stranger's message could create one — or its entry was lost, and there is no
+ * telling which. Failing open here would let every job the old hole created pay out as TRUSTED.
+ * An owner's own older job keeps working, except that an irreversible step now waits for the
+ * owner's approval; re-creating the job records it as the owner's.
  */
 class TriggerProvenanceStore(private val dir: File) {
 
@@ -32,7 +35,7 @@ class TriggerProvenanceStore(private val dir: File) {
         /** One lock for every instance: the skills that create jobs and the service that fires them each hold one. */
         private val LOCK = Any()
         const val FILENAME = "trigger_provenance.json"
-        private const val MAX_ENTRIES = 200
+        private const val MAX_ENTRIES = 500
 
         fun cronKey(id: Int) = "cron:$id"
         fun reminderKey(id: Int) = "reminder:$id"
@@ -59,9 +62,18 @@ class TriggerProvenanceStore(private val dir: File) {
 
     /** The provenance a fired job runs with. */
     fun provenanceFor(key: String): Provenance = of(key) ?: run {
-        Log.w(TAG, "$key has no recorded creator (created by an older build); running it as TRUSTED")
-        Provenance.TRUSTED
+        Log.w(TAG, "$key has no recorded creator (an older build, or a lost entry); running it as UNTRUSTED")
+        Provenance.UNTRUSTED
     }
+
+    /**
+     * The provenance a fired job runs with: its creator's, except that the owner's own job runs
+     * as [Provenance.TRUSTED] — a background task, like the heartbeat. It fires with nobody
+     * watching, so what it reads from other people is treated as such
+     * (`ProvenanceGate.taintedTrustedRunNeedsApproval`); as USER it would act on it unattended.
+     */
+    fun firedProvenanceFor(key: String): Provenance =
+        provenanceFor(key).let { if (it == Provenance.USER) Provenance.TRUSTED else it }
 
     private fun read(): Map<String, String> {
         if (!file.exists()) return emptyMap()

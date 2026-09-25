@@ -109,6 +109,11 @@ class ENSSkill : AndyClawSkill {
             return SkillResult.Error("Failed to resolve ENS name '$ensName': ${e.message}")
         }
 
+        // A name with no address record resolves to the zero address, and anything sent there
+        // is gone: that is "no address", never an answer.
+        if (address != null && org.ethereumphone.andyclaw.agentwallet.EthAddress.isZero(address.hex)) {
+            return SkillResult.Error("ENS name '$ensName' has no address set, so there is nothing to send to")
+        }
         return if (address != null) {
             Log.d(TAG, "Resolved $ensName -> ${address.hex}")
             SkillResult.Success("ENS name '$ensName' resolves to address: ${address.hex}")

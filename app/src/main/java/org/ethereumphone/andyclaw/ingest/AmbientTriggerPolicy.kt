@@ -91,6 +91,9 @@ object AmbientTriggerPolicy {
     fun shouldIngest(signal: AmbientSignal, lastIngestMs: Long, nowMs: Long): Boolean {
         if (signal == AmbientSignal.MANUAL) return true
         if (lastIngestMs <= 0L) return true
+        // A last ingest "in the future" means the clock was set back: counting from it would
+        // hold every ingest off until the clock caught up again.
+        if (lastIngestMs > nowMs) return true
         return nowMs - lastIngestMs >= cooldownMs(signal)
     }
 

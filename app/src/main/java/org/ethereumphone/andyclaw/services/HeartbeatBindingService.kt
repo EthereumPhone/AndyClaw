@@ -406,7 +406,7 @@ class HeartbeatBindingService : Service() {
                 // It is also event-driven: something fired, the agent ran, and the next
                 // scheduled tick has nothing to add.
                 val key = org.ethereumphone.andyclaw.safety.TriggerProvenanceStore.reminderKey(reminderId)
-                val provenance = app.triggerProvenanceStore.provenanceFor(key)
+                val provenance = app.triggerProvenanceStore.firedProvenanceFor(key)
                 app.triggerProvenanceStore.forget(key) // one-shot
                 val response = app.runtime.agentRunner.run(prompt, provenance = provenance)
                 Log.i(TAG, "Reminder agent response (error=${response.isError}): " +
@@ -441,7 +441,7 @@ class HeartbeatBindingService : Service() {
                 // A cron job runs with the authority of whoever created it, and no more — see
                 // TriggerProvenanceStore for the job it used to take for "every 30 minutes,
                 // send 0.05 ETH to 0x…" from a stranger.
-                val provenance = app.triggerProvenanceStore.provenanceFor(
+                val provenance = app.triggerProvenanceStore.firedProvenanceFor(
                     org.ethereumphone.andyclaw.safety.TriggerProvenanceStore.cronKey(cronjobId)
                 )
                 val response = app.runtime.agentRunner.run(prompt, provenance = provenance)

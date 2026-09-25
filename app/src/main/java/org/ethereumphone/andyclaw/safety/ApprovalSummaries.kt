@@ -32,10 +32,10 @@ object ApprovalSummaries {
 
     const val MAX_VALUE = 300
 
-    fun of(toolName: String, input: JsonObject?): Summary {
+    fun of(toolName: String, input: JsonObject?, maxValue: Int = MAX_VALUE): Summary {
         val params = input.orEmpty().entries
             .sortedBy { (k, _) -> KEY_ORDER.indexOf(k).let { if (it < 0) Int.MAX_VALUE else it } }
-            .map { (k, v) -> param(k, v) }
+            .map { (k, v) -> param(k, v, maxValue) }
         val title = TITLES[toolName] ?: humanize(toolName)
         val lead = params.firstOrNull { it.key in LEAD_KEYS }
         val summary = if (lead != null) "$title — ${lead.label.lowercase()}: ${lead.value.take(80)}" else title
@@ -62,7 +62,20 @@ object ApprovalSummaries {
         else -> "A background task"
     }
 
-    private fun param(key: String, value: JsonElement): Param {
+    /**
+     * Whether an owner can judge the call from the card at all. A transaction with calldata is
+     * hex nobody can read; approving one is signing blind, so such a card can only be declined.
+     */
+    fun reviewable(toolName: String, input: String?): Boolean {
+        if (toolName != "agent_send_transaction") return true
+        val data = runCatching {
+            (kotlinx.serialization.json.Json.parseToJsonElement(input.orEmpty()) as? JsonObject)?.get("data")
+        }.getOrNull() ?: return true
+        val hex = (data as? JsonPrimitive)?.content?.trim().orEmpty()
+        return hex.isEmpty() || hex == "0x" || hex == "0x0"
+    }
+
+    private fun param(key: String, value: JsonElement, maxValue: Int = MAX_VALUE): Param {
         val text = when (value) {
             is JsonNull -> "—"
             is JsonPrimitive -> value.content
@@ -70,7 +83,7 @@ object ApprovalSummaries {
         }
         // Addresses and amounts are what the user checks; they are short and are never cut.
         val keep = key in NEVER_CUT
-        val shown = if (keep || text.length <= MAX_VALUE) text else text.take(MAX_VALUE)
+        val shown = if (keep || text.length <= maxValue) text else text.take(maxValue)
         return Param(key, LABELS[key] ?: humanize(key), shown, truncated = shown.length < text.length, length = text.length)
     }
 

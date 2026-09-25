@@ -205,4 +205,61 @@ class PendingApprovalStoreTest {
         val b = buildJsonObject { put("a", 2); put("b", 1) }
         assertEquals(PendingApprovalStore.canonical(a), PendingApprovalStore.canonical(b))
     }
+
+    @Test
+    fun `a queue file restored from before a call ran cannot run it again`() {
+        val s = store()
+        val e = s.queue(request())!!
+        val before = File(tmp.root, PendingApprovalStore.FILENAME).readText()
+        s.claim(e.id)
+        s.finish(e.id, "DONE", "Done.")
+
+        File(tmp.root, PendingApprovalStore.FILENAME).writeText(before) // restored, same keystore
+        assertEquals(PendingApprovalStore.Claim.Missing, store().claim(e.id))
+    }
+
+    @Test
+    fun `a fresh request is not counted onto an expired one`() {
+        val s = store()
+        val old = s.queue(request())!!
+        now += PendingApprovalStore.TTL_MS + 1
+        val fresh = s.queue(request())!!
+        assertTrue(fresh.id != old.id)
+        assertEquals(1, fresh.count)
+        assertTrue(s.isExecutable(fresh))
+    }
+
+    @Test
+    fun `strangers cannot crowd out the owner's own requests`() {
+        val s = store()
+        for (chat in 1..PendingApprovalStore.MAX_PENDING) s.queue(request(conversation = "chat-$chat", input = send(to = "0x$chat")))
+        assertEquals(null, s.queue(request(conversation = "chat-99")))
+
+        val own = s.queue(request(conversation = null, source = "heartbeat").copy(provenance = "TRUSTED"))
+        assertTrue("the owner's request makes room", own != null)
+        assertEquals(PendingApprovalStore.MAX_PENDING, s.getAll().size)
+    }
+
+    @Test
+    fun `an old launcher's acknowledge never marks a running call as not run`() {
+        val s = store()
+        val e = s.queue(request())!!
+        s.claim(e.id)
+        assertFalse(s.acknowledge(e.id, "not run"))
+        assertEquals(PendingApprovalStore.Claim.Running, s.claim(e.id))
+    }
+
+    @Test
+    fun `a contract call is hex nobody can read, so it can only be declined`() {
+        val s = store()
+        val call = buildJsonObject {
+            put("to", "0x1111111111111111111111111111111111111111")
+            put("value", "0")
+            put("data", "0xa9059cbb000000000000000000000000")
+            put("chain_id", 8453)
+        }
+        val e = s.queue(request(tool = "agent_send_transaction", input = call))!!
+        assertFalse(s.isExecutable(e))
+        assertEquals(PendingApprovalStore.Claim.NotExecutable, s.claim(e.id))
+    }
 }

@@ -113,11 +113,32 @@ class FileSystemSkill(private val context: Context) : AndyClawSkill {
         val cleaned = path.trimStart('/')
         if (cleaned.isEmpty() || cleaned == ".") return workDir
         return File(workDir, cleaned).also {
-            // Prevent path traversal outside the sandbox
-            require(it.canonicalPath.startsWith(workDir.canonicalPath)) {
+            // Prevent path traversal outside the sandbox. A bare prefix match let "files2" pass
+            // for "files".
+            val root = workDir.canonicalPath
+            val canon = it.canonicalPath
+            require(canon == root || canon.startsWith(root + File.separator)) {
                 "Path escapes app sandbox"
             }
+            // AndyClaw's own control files are not the agent's to read or rewrite: who created
+            // each scheduled job, the queued approvals, which Telegram chat is the owner's.
+            // Rewriting any of them was a way to give a stranger the owner's authority.
+            val rel = canon.removePrefix(root).trimStart(File.separatorChar)
+            require(PROTECTED.none { p -> rel == p || rel.startsWith("$p.") || rel.startsWith(p + File.separator) }) {
+                "'$path' is AndyClaw's own state; the file tools don't read or write it"
+            }
         }
+    }
+
+    private companion object {
+        val PROTECTED = setOf(
+            org.ethereumphone.andyclaw.safety.TriggerProvenanceStore.FILENAME,
+            org.ethereumphone.andyclaw.safety.PendingApprovalStore.FILENAME,
+            org.ethereumphone.andyclaw.safety.PendingApprovalStore.OUTCOMES_FILENAME,
+            "telegram_chats.json",
+            "flows",
+            "session_frames",
+        )
     }
 
     private fun listDirectory(params: JsonObject): SkillResult {

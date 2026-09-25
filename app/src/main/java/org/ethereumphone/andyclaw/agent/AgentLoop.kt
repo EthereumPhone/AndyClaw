@@ -11,6 +11,7 @@ import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
@@ -192,6 +193,9 @@ class AgentLoop(
      */
     @Volatile
     private var runToken = AgentRunToken(job = null)
+
+    /** The token of the run in progress (or the last one): what a headless runner's callbacks ask about. */
+    val currentRunToken: AgentRunToken get() = runToken
 
     /** This run's intent as the ledger keeps it; see [ledgerIntent]. */
     @Volatile
@@ -1118,7 +1122,9 @@ class AgentLoop(
                 cacheWriteTokens = totalCacheWriteTokens,
             ))
         } catch (e: CancellationException) {
-            runOutcome = LedgerOutcome.ERROR
+            // The user (or the launcher) ending the turn: stopped short, not failed. The home
+            // screen said "I couldn't finish" about every turn the user stopped.
+            runOutcome = LedgerOutcome.BLOCKED
             cancelled = true
             throw e
         } catch (e: Exception) {
@@ -1136,10 +1142,15 @@ class AgentLoop(
                 runOutcome == LedgerOutcome.ERROR -> RunEnd.FAILED
                 else -> RunEnd.OK
             }
-            skillRegistry.onRunFinished(runToken.id, end)
-            // The display skill has normally done this already; if no skill did, the lease
-            // must still not outlive the run.
-            org.ethereumphone.andyclaw.skills.builtin.AgentDisplayLease.release(runToken.id)
+            // Off the caller's thread — the in-app chat runs this loop on Main — and past whatever
+            // cancelled the run: putting the display away is binder calls, closing the recording
+            // is disk work, and neither may be skipped.
+            withContext(kotlinx.coroutines.NonCancellable + Dispatchers.IO) {
+                skillRegistry.onRunFinished(runToken.id, end)
+                // The display skill has normally done this already; if no skill did, the lease
+                // must still not outlive the run.
+                org.ethereumphone.andyclaw.skills.builtin.AgentDisplayLease.release(runToken.id)
+            }
 
             // The turn row goes in `finally` so there is exactly one per run however the
             // run ended — completed, thrown, or cancelled mid-tool. A record that only
@@ -1349,6 +1360,11 @@ class AgentLoop(
         val subagentMaxTokens = (baseMaxTokens / 4).coerceAtLeast(512)
 
         for (iteration in 1..maxIterations) {
+            // STOP ends a sub-agent too, before it pays for another model call or runs anything.
+            if (runToken.stopRequested) {
+                Log.i(TAG, "Subagent stopped by the user after ${iteration - 1} iteration(s)")
+                break
+            }
             val request = MessagesRequest(
                 model = effectiveModelId,
                 maxTokens = subagentMaxTokens,
@@ -1438,8 +1454,9 @@ class AgentLoop(
         Log.i(TAG, "Subagent complete for '${taskDescription.take(60)}': ${fullText.length} chars")
 
         // Discovery is an investment, not an action: if this sub-agent drove the
-        // display, turn what it did into a flow so the next time costs nothing.
-        val compiled = try {
+        // display, turn what it did into a flow so the next time costs nothing. Not a session
+        // the user stopped: that is a task left half done, not one that was carried out.
+        val compiled = if (runToken.stopRequested) null else try {
             compileDiscoveredFlow(taskDescription, effectiveModelId, recorderSessionAtEntry)
         } catch (e: CancellationException) {
             throw e
@@ -1485,6 +1502,12 @@ class AgentLoop(
 
         // No display session started inside this sub-agent -> nothing of ours to compile.
         if (recorderSessionAtEntry == null || recorder.sessionId == recorderSessionAtEntry) return null
+        // A session another run started, or one that was ended before this run was done with
+        // it, is not the record of this task.
+        if (!org.ethereumphone.andyclaw.skills.builtin.RecordingSessions.compilable(recorder.sessionId, runToken.id)) {
+            Log.i(TAG, "flow compilation skipped: the recording is not a whole session of this run")
+            return null
+        }
 
         val packageName = recorder.packageName ?: return null
         val versionRange = repository.suggestedRangeFor(packageName) ?: return null

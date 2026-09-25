@@ -74,4 +74,45 @@ class AgentDisplayLeaseTest {
         assertTrue(AgentDisplayLease.isOwner("a"))
         assertFalse(withContext(AgentRunToken(job = liveJob(), id = "b")) { AgentDisplayLease.claimForCaller() })
     }
+
+    @Test
+    fun `a run that is over cannot take the display back`() {
+        val done = kotlinx.coroutines.Job().apply { cancel() }
+        assertFalse(AgentDisplayLease.claim("a", done))
+        assertFalse(AgentDisplayLease.isOwner("a"))
+    }
+
+    @Test
+    fun `while the display is being put away nobody is handed it`() {
+        AgentDisplayLease.claim("a", liveJob())
+        var claimedDuringPark = true
+        assertTrue(AgentDisplayLease.releaseAfter("a") {
+            claimedDuringPark = AgentDisplayLease.claim("b", liveJob())
+        })
+        assertFalse("a claim during the park would get a display parked under it", claimedDuringPark)
+        assertTrue("afterwards it is free", AgentDisplayLease.claim("b", liveJob()))
+    }
+
+    @Test
+    fun `only the owner puts the display away`() {
+        AgentDisplayLease.claim("a", liveJob())
+        var parked = false
+        assertFalse(AgentDisplayLease.releaseAfter("b") { parked = true })
+        assertFalse(parked)
+        assertTrue(AgentDisplayLease.isOwner("a"))
+    }
+
+    @Test
+    fun `an unused prewarm is parked, a used one is left to its run`() {
+        val before = AgentDisplayLease.claims
+        var parked = false
+        assertTrue(AgentDisplayLease.parkIfUnclaimed(before) { parked = true })
+        assertTrue(parked)
+
+        val again = AgentDisplayLease.claims
+        AgentDisplayLease.claim("a", liveJob())
+        parked = false
+        assertFalse(AgentDisplayLease.parkIfUnclaimed(again) { parked = true })
+        assertFalse(parked)
+    }
 }

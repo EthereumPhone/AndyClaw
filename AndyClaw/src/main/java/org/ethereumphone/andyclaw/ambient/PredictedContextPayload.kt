@@ -90,6 +90,18 @@ object PredictedContextPayload {
 
     fun precision(payload: JsonObject): TimePrecision? = TimePrecision.parse(payload.str(TIME_PRECISION))
 
+    /**
+     * How precise the time of a row written before precision was recorded (v69) is. Such a
+     * row's date-only source became a bare local midnight; any other time came from an exact
+     * one. Without this, the first date-only boarding pass after the update replaced the exact
+     * departure a confirmation had given with the whole day.
+     */
+    private fun legacyPrecision(p: JsonObject, startMs: Long, zone: java.time.ZoneId): TimePrecision? {
+        val t = p.long("departure_ms") ?: startMs.takeIf { it > 0 } ?: return null
+        val local = java.time.Instant.ofEpochMilli(t).atZone(zone).toLocalTime()
+        return if (local == java.time.LocalTime.MIDNIGHT) null else TimePrecision.EXACT
+    }
+
     fun JsonObject.str(key: String): String? = (this[key] as? JsonPrimitive)?.contentOrNull
     fun JsonObject.bool(key: String): Boolean = (this[key] as? JsonPrimitive)?.booleanOrNull == true
     fun JsonObject.long(key: String): Long? = (this[key] as? JsonPrimitive)?.longOrNull
@@ -160,7 +172,12 @@ object PredictedContextPayload {
      *   ignored, and a cancelled booking comes back only from a newer message.
      * - A **material** change clears a dismissal; anything else keeps it.
      */
-    fun merge(existing: PredictedContext, incoming: PredictedContext, nowMs: Long): PredictedContext {
+    fun merge(
+        existing: PredictedContext,
+        incoming: PredictedContext,
+        nowMs: Long,
+        zone: java.time.ZoneId = java.time.ZoneId.systemDefault(),
+    ): PredictedContext {
         val pe = parse(existing.payloadJson)
         val pi = parse(incoming.payloadJson)
         val ae = authority(existing.source, pe)
@@ -182,7 +199,7 @@ object PredictedContextPayload {
             if (iCancelled && !eCancelled && iObserved in 1 until eObserved) return existing
             if (!iCancelled && eCancelled && iObserved <= (pe.long(CANCELLED_MS) ?: eObserved)) return existing
 
-            val pE = precision(pe)
+            val pE = precision(pe) ?: legacyPrecision(pe, existing.startMs, zone)
             val pI = precision(pi) ?: TimePrecision.EXACT
             keepTimes = pE != null && pI < pE
             payload.putAll(pe)

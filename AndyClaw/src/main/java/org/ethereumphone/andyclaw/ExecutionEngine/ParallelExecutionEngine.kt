@@ -1,9 +1,12 @@
 package org.ethereumphone.andyclaw.ExecutionEngine
 
 import android.util.Log
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
 
 /**
@@ -185,6 +188,7 @@ class ParallelExecutionEngine(
     ): List<ExecutedTool> = coroutineScope {
         readyTools.map { (call, approvedByUser) ->
             async {
+                vetoed(call)?.let { return@async it }
                 callbacks.onToolStarted(call.name)
                 val startMs = System.currentTimeMillis()
                 val result = try {
@@ -194,6 +198,7 @@ class ParallelExecutionEngine(
                         executor.execute(call.name, call.input)
                     }
                 } catch (e: Exception) {
+                    noteIfInterrupted(call, e)
                     rethrowIfCancelled(e)
                     Log.e(TAG, "Tool execution threw [${call.name}]: ${e.message}", e)
                     ToolExecResult.Error("Tool execution failed: ${e.message}")
@@ -232,15 +237,37 @@ class ParallelExecutionEngine(
             )
         }
 
+        // The approval may have outlasted a STOP.
+        vetoed(call)?.let { return it }
+
         // Re-execute after approval, now carrying the proof of it.
         val retryResult = try {
             withContext(UserApproval(call.id, call.name)) { executor.execute(call.name, call.input) }
         } catch (e: Exception) {
+            noteIfInterrupted(call, e)
             rethrowIfCancelled(e)
             ToolExecResult.Error("Tool re-execution failed: ${e.message}")
         }
 
         return ExecutedTool(call, retryResult, ToolCallResult.Phase.EXECUTED_AFTER_APPROVAL)
+    }
+
+    /**
+     * A call refused at the last moment ([ExecutionCallbacks.vetoStart]): recorded and reported
+     * exactly as a pre-flight block, and never shown to the post-processors, since it never ran.
+     */
+    private fun vetoed(call: ToolCall): ExecutedTool? {
+        val reason = callbacks.vetoStart(call.name) ?: return null
+        Log.d(TAG, "Vetoed at start [${call.name}]: $reason")
+        callbacks.onToolBlocked(call.name, reason)
+        return ExecutedTool(call, ToolExecResult.Error(reason), ToolCallResult.Phase.BLOCKED_PREFLIGHT, vetoed = true)
+    }
+
+    /** The run itself was cancelled while [call] was executing, as opposed to a tool's own timeout. */
+    private suspend fun noteIfInterrupted(call: ToolCall, e: Exception) {
+        if (e is CancellationException && !currentCoroutineContext().isActive) {
+            runCatching { callbacks.onToolInterrupted(call.name) }
+        }
     }
 
     // ═══════════════════════════════════════════
@@ -253,8 +280,9 @@ class ParallelExecutionEngine(
         return executedTools.map { executed ->
             val (call, result, phase) = executed
 
-            // If no post-processors, convert directly
-            if (postProcessors.isEmpty()) {
+            // If no post-processors, convert directly. A vetoed call never ran: nothing to
+            // process, and its row was written when it was refused.
+            if (postProcessors.isEmpty() || executed.vetoed) {
                 return@map resultToToolCallResult(call, result, phase)
             }
 
@@ -388,5 +416,6 @@ class ParallelExecutionEngine(
         val call: ToolCall,
         val result: ToolExecResult,
         val phase: ToolCallResult.Phase,
+        val vetoed: Boolean = false,
     )
 }

@@ -164,7 +164,9 @@ class PendingApprovalStore(
     @Synchronized
     fun queue(req: Request): Entry? {
         val now = clock()
-        val all = load()
+        // Expired requests leave first: a fresh request is never counted onto one that is about
+        // to be dropped, and they hold no room.
+        var all = getAll()
         val canonicalInput = req.input?.let { canonical(it) }
         val storable = canonicalInput?.takeIf { it.toByteArray().size <= MAX_INPUT_BYTES && !holdsSecret(it) }
         val dedupeKey = sha256(
@@ -181,8 +183,15 @@ class PendingApprovalStore(
             return null
         }
         if (all.size >= MAX_PENDING) {
-            Log.w(TAG, "Not queueing '${req.toolName}': $MAX_PENDING already pending")
-            return null
+            // Strangers opening new chats could otherwise fill the queue and crowd out the
+            // owner's own background requests. Those make room by dropping the oldest stranger's.
+            val oldestStranger = all.firstOrNull { it.provenance == "UNTRUSTED" && it.state == State.PENDING }
+            if (req.provenance == "UNTRUSTED" || oldestStranger == null) {
+                Log.w(TAG, "Not queueing '${req.toolName}': $MAX_PENDING already pending")
+                return null
+            }
+            if (!finishLocked(all, oldestStranger, "DROPPED", "Dropped to make room for a request of your own; it didn't run.")) return null
+            all = all.filterNot { it.id == oldestStranger.id }
         }
         val unsigned = Entry(
             id = UUID.randomUUID().toString(),
@@ -228,6 +237,7 @@ class PendingApprovalStore(
     fun isExecutable(e: Entry): Boolean {
         if (e.v != VERSION || e.input == null || e.state != State.PENDING) return false
         if (e.expiresMs == null || clock() >= e.expiresMs) return false
+        if (!ApprovalSummaries.reviewable(e.toolName, e.input)) return false
         return mac.verify(signingBytes(e), e.mac)
     }
 
@@ -241,6 +251,11 @@ class PendingApprovalStore(
     fun claim(id: String): Claim {
         val all = load()
         val e = all.firstOrNull { it.id == id } ?: return Claim.Missing
+        // Finished already: a queue file restored from before it ran must not run it again.
+        if (loadOutcomes().any { it.id == id }) {
+            save(all.filterNot { it.id == id })
+            return Claim.Missing
+        }
         if (e.state == State.EXECUTING) return Claim.Running
         if (e.expiresMs != null && clock() >= e.expiresMs) {
             finishLocked(all, e, "EXPIRED", "This request expired, so it didn't run.")
@@ -268,6 +283,18 @@ class PendingApprovalStore(
         val all = load()
         val e = all.firstOrNull { it.id == id } ?: return false
         return finishLocked(all, e, state, message, ledgerSessionId, requestId)
+    }
+
+    /**
+     * The older launcher's APPROVE: recorded as seen, never run. False when [id] is not pending —
+     * checked under the lock, so a call already claimed for execution is never marked "not run".
+     */
+    @Synchronized
+    fun acknowledge(id: String, message: String): Boolean {
+        val all = load()
+        val e = all.firstOrNull { it.id == id } ?: return false
+        if (e.state != State.PENDING) return false
+        return finishLocked(all, e, "ACKNOWLEDGED", message)
     }
 
     /** The user declined [id]. False when it is not pending — it may be running. */

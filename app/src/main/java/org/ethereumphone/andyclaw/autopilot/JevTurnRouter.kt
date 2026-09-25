@@ -90,14 +90,16 @@ class JevTurnRouter(
         svc.launchApp(packageName)
         Log.i(TAG, "prelaunched $packageName")
         delay(UNUSED_DISPLAY_MS)
-        if (AgentDisplayLease.claims == claimsBefore && !AgentDisplayLease.isHeld()) {
-            // Nothing used it: the turn did not need the app after all. Park the display so
-            // the app does not linger there, suppressed from the rear screen. Anything that did
-            // use it — a display tool, the autopilot, a flow replay — claimed it, and puts it
-            // away itself when its run ends.
+        // Nothing used it: the turn did not need the app after all. Park the display so the app
+        // does not linger there, suppressed from the rear screen, and stop watching it at full
+        // accessibility rate. Anything that did use it — a display tool, the autopilot, a flow
+        // replay — claimed it, and puts it away itself when its run ends. Checked and parked as
+        // one step, so a claim arriving meanwhile is never handed a display that is then parked.
+        val parked = AgentDisplayLease.parkIfUnclaimed(claimsBefore) {
+            AgentDisplayAccessibilityService.watchedDisplayId = android.view.Display.INVALID_DISPLAY
             try { svc.destroyAgentDisplay() } catch (_: Exception) {}
-            Log.i(TAG, "prewarmed display unused; parked")
         }
+        if (parked) Log.i(TAG, "prewarmed display unused; parked")
     }
 
     /** Launchable apps, most relevant to [message] first, within Jev's option limit. */

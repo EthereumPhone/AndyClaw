@@ -42,15 +42,25 @@ class RecordingDisplaySkill(
 
     override suspend fun execute(tool: String, params: JsonObject, tier: Tier): SkillResult {
         val runId = currentRunToken()?.id
-        if (recorder.isRecording && recordingFor != runId) {
-            // Another run's session, left open: what this run does must not be appended to it,
-            // or a flow could be compiled from two runs' steps as if they were one task.
+        val owner = recordingFor
+        if (recorder.isRecording && owner != runId) {
+            if (owner != null && AgentDisplayLease.isOwner(owner) && AgentDisplayLease.isHeld()) {
+                // The display is the recording run's and that run is still at work: this call is
+                // about to be refused as busy. It must neither end that recording — a heartbeat's
+                // refused call used to, so the user's own steps after it were never recorded —
+                // nor be recorded into it.
+                return inner.execute(tool, params, tier)
+            }
+            // A session its run left open: what this run does must not be appended to it, or a
+            // flow could be compiled from two runs' steps as if they were one task.
+            RecordingSessions.cutShort(recorder.sessionId)
             recorder.stop()
             recordingFor = null
         }
         if (tool in START_TOOLS && !recorder.isRecording) {
             recorder.start()
             recordingFor = runId
+            RecordingSessions.started(recorder.sessionId, runId)
             Log.i(TAG, "recording started for $tool")
         }
 

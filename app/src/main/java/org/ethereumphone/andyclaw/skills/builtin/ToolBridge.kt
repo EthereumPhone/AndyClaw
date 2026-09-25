@@ -84,6 +84,7 @@ class ToolBridge(
                 provenance, effect, toolName,
                 audience = runContext[ReplyAudience],
                 readPrivateData = token?.readPrivateData == true,
+                readThirdPartyContent = token?.readThirdPartyContent == true,
             )
         ) {
             if (provenance == Provenance.UNTRUSTED && toolName in ToolEffects.PRIVATE_DATA_TOOLS) {
@@ -117,6 +118,16 @@ class ToolBridge(
 
     /** Log of all tool calls made during this execution. */
     val callLog = mutableListOf<ToolCallRecord>()
+
+    /**
+     * The code now holds what [toolName] returned; see `AgentRunToken.readThirdPartyContent`.
+     * Code can read and then act in one tool call, so the bridge marks it call by call.
+     */
+    private fun noteResultSeen(toolName: String) {
+        if (provenance == Provenance.TRUSTED && ToolEffects.taintsTrustedRun(toolName)) {
+            runContext[AgentRunToken]?.readThirdPartyContent = true
+        }
+    }
 
     /**
      * Call an AndyClaw tool synchronously from BeanShell code.
@@ -155,8 +166,12 @@ class ToolBridge(
         Log.d(TAG, "Programmatic call: $toolName(${jsonParams.toString().take(100)})")
 
         // Execute on IO dispatcher to avoid blocking the BeanShell executor thread
-        val result = runBlocking(Dispatchers.IO + runContext) {
-            registry.executeTool(toolName, jsonParams, tier)
+        val result = try {
+            runBlocking(Dispatchers.IO + runContext) {
+                registry.executeTool(toolName, jsonParams, tier)
+            }
+        } finally {
+            noteResultSeen(toolName)
         }
 
         val durationMs = System.currentTimeMillis() - startMs
@@ -226,13 +241,17 @@ class ToolBridge(
         Log.d(TAG, "Programmatic callParallel: $toolName x${paramsList.size}")
         val startMs = System.currentTimeMillis()
 
-        val results = runBlocking(Dispatchers.IO + runContext) {
-            paramsList.map { params ->
-                async {
-                    val jsonParams = mapToJsonObject(params)
-                    registry.executeTool(toolName, jsonParams, tier)
-                }
-            }.awaitAll()
+        val results = try {
+            runBlocking(Dispatchers.IO + runContext) {
+                paramsList.map { params ->
+                    async {
+                        val jsonParams = mapToJsonObject(params)
+                        registry.executeTool(toolName, jsonParams, tier)
+                    }
+                }.awaitAll()
+            }
+        } finally {
+            noteResultSeen(toolName)
         }
 
         val durationMs = System.currentTimeMillis() - startMs

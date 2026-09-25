@@ -117,7 +117,11 @@ class PendingApprovalExecutor(
         try {
             val result = withTimeout(EXEC_TIMEOUT_MS) { runCall(entry, input, token) }
             val resolution = when {
-                token.stopRequested -> Resolution("STOPPED", "Stopped.", session, requestId).also { end = RunEnd.STOPPED }
+                token.stopRequested || result.content == AgentDisplayLease.STOPPED ->
+                    Resolution("STOPPED", "Stopped.", session, requestId).also { end = RunEnd.STOPPED }
+                // The display tools answer "busy" as their own result, not as a pre-flight block:
+                // nothing ran either way, and the card waits for a better moment.
+                result.content == AgentDisplayLease.BUSY -> return retryLater(entry, result, session, requestId)
                 result.phase == ToolCallResult.Phase.BLOCKED_PREFLIGHT -> blocked(entry, result, session, requestId)
                     ?: return retryLater(entry, result, session, requestId)
                 result.isError -> Resolution("FAILED", "It ran, but it didn't work: ${reason(result.content)}", session, requestId)

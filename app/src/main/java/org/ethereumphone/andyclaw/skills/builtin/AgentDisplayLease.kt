@@ -36,16 +36,32 @@ object AgentDisplayLease {
     @Volatile var claims = 0L
         private set
 
-    /** Claims the display for [token]. False only while another *live* run holds it. */
+    /**
+     * Set while a display is being put away ([releaseAfter], [parkIfUnclaimed]). A claim meanwhile
+     * waits: granted at once, it would be handed a display that is then parked under it.
+     */
+    @Volatile private var parking: String? = null
+
+    private enum class Claim { FRESH, AGAIN, REFUSED }
+
+    /**
+     * Claims the display for [token]. False while another *live* run holds it, while it is being
+     * put away, and for a run that is itself over — a cancelled run's code can outlive it
+     * (`execute_code`), and taking the display back after its own end released it would leave a
+     * live display nothing ever puts away.
+     */
+    fun claim(token: String, job: Job?): Boolean = claimInternal(token, job) != Claim.REFUSED
+
     @Synchronized
-    fun claim(token: String, job: Job?): Boolean {
+    private fun claimInternal(token: String, job: Job?): Claim {
+        if (job != null && !job.isActive) return Claim.REFUSED
+        if (parking != null) return Claim.REFUSED
         val o = owner
-        if (o == null || o.token == token || o.job?.isActive != true) {
-            owner = Owner(token, job)
-            claims++
-            return true
+        return when {
+            o != null && o.token == token -> { claims++; Claim.AGAIN }
+            o == null || o.job?.isActive != true -> { owner = Owner(token, job); claims++; Claim.FRESH }
+            else -> Claim.REFUSED
         }
-        return false
     }
 
     /** Ends [token]'s lease. True when it was the owner, so the caller puts the display away. */
@@ -53,6 +69,42 @@ object AgentDisplayLease {
         val released = synchronized(this) { (owner?.token == token).also { if (it) owner = null } }
         if (released) runCatching { listener?.onReleased(token) }
         return released
+    }
+
+    /**
+     * Puts [token]'s display away with [putAway] and ends its lease, as one step for anyone
+     * claiming: releasing first let another run claim in between and have the display parked
+     * under it. True when [token] was the owner.
+     */
+    fun releaseAfter(token: String, putAway: () -> Unit): Boolean {
+        synchronized(this) {
+            if (owner?.token != token) return false
+            parking = token
+        }
+        try {
+            putAway()
+        } finally {
+            synchronized(this) {
+                parking = null
+                if (owner?.token == token) owner = null
+            }
+            runCatching { listener?.onReleased(token) }
+        }
+        return true
+    }
+
+    /** Parks a prewarmed display with [putAway] only if nothing has claimed it since [claimsBefore]. */
+    fun parkIfUnclaimed(claimsBefore: Long, putAway: () -> Unit): Boolean {
+        synchronized(this) {
+            if (claims != claimsBefore || owner?.job?.isActive == true || parking != null) return false
+            parking = PREWARM
+        }
+        try {
+            putAway()
+        } finally {
+            synchronized(this) { parking = null }
+        }
+        return true
     }
 
     /** Whether a live run holds the display. */
@@ -86,15 +138,30 @@ object AgentDisplayLease {
      * while no live run holds it, and never becomes its owner.
      */
     suspend fun claimForCaller(): Boolean {
-        val token = currentRunToken() ?: return !isHeld()
-        val fresh = !isOwner(token.id)
-        val ok = claim(token.id, token.job)
-        if (ok && fresh) runCatching { listener?.onClaimed(token) }
-        return ok
+        // A display being put away is not free yet: wait for that to finish, briefly.
+        var waited = 0L
+        while (parking != null && waited < PARK_WAIT_MS) {
+            kotlinx.coroutines.delay(PARK_POLL_MS)
+            waited += PARK_POLL_MS
+        }
+        val token = currentRunToken() ?: return !isHeld() && parking == null
+        // Whether this is the run's first claim is decided under the lock, with the claim: two
+        // of its calls claiming at once each used to see "first" and start a recording apiece.
+        return when (claimInternal(token.id, token.job)) {
+            Claim.FRESH -> {
+                runCatching { listener?.onClaimed(token) }
+                true
+            }
+            Claim.AGAIN -> true
+            Claim.REFUSED -> false
+        }
     }
 
     const val BUSY = "The agent display is busy with another task right now. Try again when it is done."
     const val STOPPED = "Stopped by the user. Do not use the agent display again in this turn."
 
     private const val MAX_REMEMBERED_STOPS = 16
+    private const val PREWARM = "prewarm"
+    private const val PARK_WAIT_MS = 2_000L
+    private const val PARK_POLL_MS = 25L
 }

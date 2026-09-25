@@ -50,8 +50,12 @@ class AgentDisplayRecording(
 
     @Volatile private var active: Active? = null
 
+    @Synchronized
     override fun onClaimed(token: AgentRunToken) {
-        active?.takeIf { it.runId != token.id }?.let { finish(it) } // an owner that died without releasing
+        // Already recording this run: a second first claim must not start a second capture loop
+        // that nothing would ever end.
+        if (active?.runId == token.id) return
+        active?.let { finish(it) } // an owner that died without releasing
         val sessionId = token.ledgerSessionId ?: return
         if (!enabled()) return
         val frames = store() ?: return
@@ -61,6 +65,7 @@ class AgentDisplayRecording(
         a.job = scope.launch(Dispatchers.IO) { capture(a) }
     }
 
+    @Synchronized
     override fun onReleased(runId: String) {
         active?.takeIf { it.runId == runId }?.let { finish(it) }
     }
@@ -72,7 +77,11 @@ class AgentDisplayRecording(
                 val displayId = svc?.displayId ?: -1
                 if (svc != null && displayId >= 0) {
                     val now = System.currentTimeMillis()
-                    val privateApp = AgentDisplayAccessibilityService.instance?.sensitivePackageOnDisplay(displayId)
+                    val a11y = AgentDisplayAccessibilityService.instance
+                    // A private app's screen is never kept — nor one nobody could check: with no
+                    // window to read there is no telling whether it was the wallet.
+                    val privateApp = if (a11y == null || !a11y.hasWindowsOn(displayId)) UNCHECKED
+                    else a11y.sensitivePackageOnDisplay(displayId)
                     if (privateApp != null) {
                         a.recorder.offer(ByteArray(0), now, privateApp = true)
                     } else {
@@ -100,7 +109,7 @@ class AgentDisplayRecording(
         val note = buildString {
             append("${ids.size} frame(s)")
             if (a.recorder.truncated) append("; the recording hit its cap")
-            if (a.recorder.skippedPrivate > 0) append("; a private app was on screen and was not recorded")
+            if (a.recorder.skippedPrivate > 0) append("; a private app, or a screen that could not be checked, was not recorded")
         }
         runCatching {
             sink.record(
@@ -121,6 +130,7 @@ class AgentDisplayRecording(
 
     private companion object {
         const val TAG = "AgentDisplayRecording"
+        const val UNCHECKED = "(unchecked)"
         const val POLL_MS = 500L
         const val FRAME_WIDTH = 480
         const val FRAME_QUALITY = 70
