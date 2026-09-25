@@ -37,7 +37,8 @@ class ParallelExecutionEngine(
         }
 
         val batchStartMs = System.currentTimeMillis()
-        val perToolMs = mutableMapOf<String, Long>()
+        // Written from every parallel `async` below, which run on a multi-threaded dispatcher.
+        val perToolMs = java.util.concurrent.ConcurrentHashMap<String, Long>()
 
         Log.i(TAG, "Batch start: ${toolCalls.size} tool(s): ${toolCalls.joinToString { it.name }}")
 
@@ -178,6 +179,7 @@ class ParallelExecutionEngine(
                 val result = try {
                     executor.execute(call.name, call.input)
                 } catch (e: Exception) {
+                    rethrowIfCancelled(e)
                     Log.e(TAG, "Tool execution threw [${call.name}]: ${e.message}", e)
                     ToolExecResult.Error("Tool execution failed: ${e.message}")
                 }
@@ -219,6 +221,7 @@ class ParallelExecutionEngine(
         val retryResult = try {
             executor.execute(call.name, call.input)
         } catch (e: Exception) {
+            rethrowIfCancelled(e)
             ToolExecResult.Error("Tool re-execution failed: ${e.message}")
         }
 

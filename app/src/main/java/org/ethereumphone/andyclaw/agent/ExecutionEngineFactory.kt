@@ -1,6 +1,7 @@
 package org.ethereumphone.andyclaw.agent
 
 import android.util.Log
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.contentOrNull
@@ -147,9 +148,13 @@ object ExecutionEngineFactory {
             // Publish the provenance into the coroutine context so code the engine
             // cannot see applies the same gate — `execute_code` runs BeanShell whose
             // `tools.call(name, params)` bridge reaches the registry directly.
+            //
+            // And run on IO whoever called: the in-app chat runs its loop in viewModelScope,
+            // and a display tool's binder calls (a tree read can wait 8 s) would otherwise
+            // block the UI thread. The two skills that need Main switch to it themselves.
             val startedMs = System.currentTimeMillis()
             try {
-                withContext(ProvenanceContext(provenance, triggerConversationId) + runContext) {
+                withContext(Dispatchers.IO + ProvenanceContext(provenance, triggerConversationId) + runContext) {
                     when (val result = registry.executeTool(toolName, params, tier)) {
                         is SkillResult.Success -> ToolExecResult.Success(result.data)
                         is SkillResult.ImageSuccess -> ToolExecResult.ImageSuccess(result.text, result.base64, result.mediaType)

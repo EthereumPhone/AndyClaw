@@ -2,9 +2,15 @@ package org.ethereumphone.andyclaw.agent
 
 import android.util.Log
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
@@ -614,6 +620,15 @@ class AgentLoop(
             Log.i(TAG, "ModelRouting | override active: $modelIdOverride (default was ${model.modelId}), maxTokens=$baseMaxTokens (default was ${model.maxTokens})")
         }
 
+        // Streamed tools run as children of this run, on IO, so cancelling the turn reaches a
+        // tool that is still running — an autopilot driving the display — instead of leaving it
+        // to carry on alone. SupervisorJob: one failing tool doesn't cancel its siblings.
+        // Cancelled in `finally`, which is required: a SupervisorJob left active would keep
+        // the job that called run() from ever completing.
+        val toolScope = CoroutineScope(
+            currentCoroutineContext() + SupervisorJob(currentCoroutineContext()[Job]) + Dispatchers.IO
+        )
+
         try {
             Log.i(TAG, "=== AgentLoop.run starting === model=$effectiveModelId" +
                 (if (modelIdOverride != null) " [ROUTED from ${model.modelId}]" else "") +
@@ -705,7 +720,7 @@ class AgentLoop(
                             ?: ContentBlock.ToolResult(block.id, "No result", isError = true)
                     },
                     isConcurrencySafe = StreamingToolExecutor::defaultIsConcurrencySafe,
-                    scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO),
+                    scope = toolScope,
                 )
 
                 val streamCallback = object : StreamingCallback {
@@ -748,6 +763,17 @@ class AgentLoop(
                 try {
                     withRetry { attempt ->
                         if (attempt > 0) {
+                            // A stream that dropped after it had handed tools to the executor
+                            // must not be retried: the tools are already acting, and the retry
+                            // would ask the model again — which asks for the same action a
+                            // second time. Let what started finish, then end the turn honestly.
+                            if (streamingExecutor.hasTools) {
+                                streamingExecutor.awaitAll()
+                                throw IllegalStateException(
+                                    "The connection dropped after I had already started acting. " +
+                                        "Check what happened before asking again."
+                                )
+                            }
                             // Reset accumulators on retry so we don't double-count
                             responseBlocks.clear()
                             streamText.clear()
@@ -1026,6 +1052,8 @@ class AgentLoop(
             runOutcome = LedgerOutcome.ERROR
             callbacks.onError(e)
         } finally {
+            toolScope.cancel()
+
             // The turn row goes in `finally` so there is exactly one per run however the
             // run ended — completed, thrown, or cancelled mid-tool. A record that only
             // covers the runs that finished cleanly is not a record of what the agent did.

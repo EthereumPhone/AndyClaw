@@ -1,7 +1,10 @@
 package org.ethereumphone.andyclaw.ExecutionEngine
 
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import org.junit.Assert.assertEquals
@@ -734,5 +737,42 @@ class ParallelExecutionEngineTest {
         assertEquals(50, result.results.size)
         assertTrue(result.allSucceeded)
         assertEquals(50, result.metrics.executedCount)
+    }
+
+    @Test
+    fun `a tool's own timeout is that tool's failure, not a cancelled turn`() = runTest {
+        val engine = buildEngine(
+            executor = ToolExecutor { _, _ ->
+                withTimeout(10) { delay(1_000) }
+                ToolExecResult.Success("unreachable")
+            },
+        )
+
+        val result = engine.executeBatch(listOf(toolCall()))
+
+        assertEquals(1, result.results.size)
+        assertTrue(result.results.single().isError)
+    }
+
+    @Test
+    fun `cancelling the run cancels the tool instead of finishing the batch as an error`() = runTest {
+        var finished = false
+        var produced: ExecutionBatchResult? = null
+        val engine = buildEngine(
+            executor = ToolExecutor { _, _ ->
+                delay(10_000)
+                finished = true
+                ToolExecResult.Success("late")
+            },
+        )
+
+        val job = launch { produced = engine.executeBatch(listOf(toolCall())) }
+        runCurrent()
+        job.cancel()
+        job.join()
+
+        assertTrue(job.isCancelled)
+        assertFalse(finished)
+        assertEquals(null, produced)
     }
 }

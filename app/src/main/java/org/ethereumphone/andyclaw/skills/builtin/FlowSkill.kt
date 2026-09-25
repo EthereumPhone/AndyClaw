@@ -28,6 +28,7 @@ import org.ethereumphone.andyclaw.skills.SkillManifest
 import org.ethereumphone.andyclaw.skills.SkillResult
 import org.ethereumphone.andyclaw.skills.Tier
 import org.ethereumphone.andyclaw.skills.ToolDefinition
+import org.ethereumphone.andyclaw.ExecutionEngine.rethrowIfCancelled
 
 /**
  * Rung 3, as tools the model can actually pick.
@@ -104,6 +105,7 @@ class FlowSkill(
         val result = try {
             interpreter.run(flow, arguments)
         } catch (e: Exception) {
+            rethrowIfCancelled(e)
             Log.w(TAG, "flow '${flow.flow}' threw", e)
             return SkillResult.Error("Flow '${flow.flow}' failed: ${e.message}")
         }

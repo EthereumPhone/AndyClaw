@@ -6,6 +6,7 @@ import android.util.Log
 import kotlinx.coroutines.delay
 import org.ethereumphone.andyclaw.skills.builtin.AgentDisplayBinder
 import org.json.JSONObject
+import org.ethereumphone.andyclaw.ExecutionEngine.rethrowIfCancelled
 
 /**
  * [FlowDisplayDriver] over the real `IAgentDisplayService` — the same binder methods
@@ -52,6 +53,7 @@ class AgentDisplayFlowDriver(
             }
             true
         } catch (e: Exception) {
+            rethrowIfCancelled(e)
             Log.w(TAG, "ensureApp($packageName) failed: ${e.message}")
             false
         }

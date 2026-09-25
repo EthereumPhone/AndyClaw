@@ -21,6 +21,7 @@ import org.ethereumphone.andyclaw.skills.SkillResult
 import org.ethereumphone.andyclaw.skills.Tier
 import org.ethereumphone.andyclaw.skills.ToolDefinition
 import org.ethereumphone.andyclaw.skills.ToolRoutes
+import org.ethereumphone.andyclaw.ExecutionEngine.rethrowIfCancelled
 
 class AgentDisplaySkill(
     /** Runs `agent_display_autopilot`; null leaves the tool out entirely. */
@@ -445,6 +446,7 @@ class AgentDisplaySkill(
             Log.w(DTAG, "TOOL_RESULT: $tool -> REFUSED, private app ${e.packageName} on the agent display")
             SkillResult.Error(SensitiveApps.refusal(e.packageName))
         } catch (e: Exception) {
+            rethrowIfCancelled(e)
             val elapsed = System.currentTimeMillis() - startMs
             Log.e(LTAG, "execute EXCEPTION tool=$tool elapsed=${elapsed}ms", e)
             Log.e(TAG, "Tool $tool failed", e)

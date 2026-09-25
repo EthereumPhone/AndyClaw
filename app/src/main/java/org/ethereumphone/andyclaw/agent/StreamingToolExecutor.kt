@@ -1,11 +1,12 @@
 package org.ethereumphone.andyclaw.agent
 
 import android.util.Log
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
-import kotlinx.serialization.json.JsonObject
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.joinAll
 import org.ethereumphone.andyclaw.llm.ContentBlock
 
 /**
@@ -21,7 +22,9 @@ import org.ethereumphone.andyclaw.llm.ContentBlock
  *
  * @param executeToolCall Function that executes a single tool call and returns the result.
  * @param isConcurrencySafe Function that returns true if a tool is safe to run concurrently.
- * @param scope Coroutine scope for launching tool executions.
+ * @param scope Coroutine scope for launching tool executions. It must be a child of the run
+ *   that owns these tools: a scope of its own would keep a tool — an autopilot driving the
+ *   display — running after the user cancelled the turn.
  */
 class StreamingToolExecutor(
     private val executeToolCall: suspend (ContentBlock.ToolUseBlock) -> ContentBlock,
@@ -75,20 +78,27 @@ class StreamingToolExecutor(
     /**
      * Returns true if any tools have been queued or are executing.
      */
-    val hasTools: Boolean get() = tools.isNotEmpty()
+    val hasTools: Boolean get() = synchronized(this) { tools.isNotEmpty() }
 
     /**
      * Awaits all queued and executing tools and returns their results
      * in the original stream order. Called after the stream completes.
      */
     suspend fun awaitAll(): List<ContentBlock> {
-        // Ensure all queued tools are started
-        synchronized(this) { processQueue() }
+        // A tool that waits behind a non-concurrent one only starts when that one finishes,
+        // so a single pass over the deferreds that exist *now* returned while it was still
+        // running — reported as "did not complete" while it went on acting. Keep going until
+        // nothing is left in flight.
+        while (true) {
+            val inFlight = synchronized(this) {
+                processQueue()
+                tools.mapNotNull { t -> t.deferred?.takeIf { t.status !is ToolStatus.Completed && !it.isCompleted } }
+            }
+            if (inFlight.isEmpty()) break
+            inFlight.joinAll()
+        }
 
-        // Await all deferreds
-        tools.mapNotNull { it.deferred }.awaitAll()
-
-        return tools.map { tracked ->
+        return synchronized(this) { tools.toList() }.map { tracked ->
             when (val status = tracked.status) {
                 is ToolStatus.Completed -> status.result
                 else -> {
@@ -151,6 +161,15 @@ class StreamingToolExecutor(
                 }
                 result
             } catch (e: Exception) {
+                // Our own cancellation ends the tool; a tool's own timeout is just a failure.
+                if (e is CancellationException && !isActive) {
+                    synchronized(this@StreamingToolExecutor) {
+                        tracked.status = ToolStatus.Completed(
+                            ContentBlock.ToolResult(tracked.block.id, "Tool execution was cancelled", isError = true)
+                        )
+                    }
+                    throw e
+                }
                 val elapsedMs = System.currentTimeMillis() - startMs
                 Log.w(TAG, "Failed: ${tracked.block.name} in ${elapsedMs}ms: ${e.message}")
                 val errorResult = ContentBlock.ToolResult(

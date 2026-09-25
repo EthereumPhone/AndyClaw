@@ -9,6 +9,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import org.ethereumphone.andyclaw.services.AgentDisplayAccessibilityService
 import org.ethereumphone.andyclaw.skills.builtin.AgentDisplayBinder
+import org.ethereumphone.andyclaw.ExecutionEngine.rethrowIfCancelled
 
 /**
  * The agent display as the autopilot drives it.
@@ -42,6 +43,7 @@ class AppAutopilotDevice(
             ScreenSettler.await(seq, ScreenSettler.Kind.LAUNCH, packageName)
             true
         } catch (e: Exception) {
+            rethrowIfCancelled(e)
             Log.e(TAG, "ensureApp($packageName) failed", e)
             false
         }
@@ -69,6 +71,7 @@ class AppAutopilotDevice(
                 org.ethereumphone.andyclaw.autopilot.replay.ReplayRecorder.addFrame(step, jpeg, lastSnapshot)
             }
         } catch (e: Exception) {
+            rethrowIfCancelled(e)
             Log.d(TAG, "replay frame skipped: ${e.message}")
         }
     }
@@ -130,6 +133,7 @@ class AppAutopilotDevice(
                     StepOption.Wait, StepOption.None -> OK to ScreenSettler.Kind.TAP
                 }
             } catch (e: Exception) {
+                rethrowIfCancelled(e)
                 Log.w(TAG, "perform ${option.key} failed", e)
                 return@withContext ActionOutcome(ok = false, changedScreen = false, error = e.message)
             }
