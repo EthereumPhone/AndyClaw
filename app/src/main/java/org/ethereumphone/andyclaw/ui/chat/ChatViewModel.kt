@@ -141,9 +141,29 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         _autopilot.value = null
     }
 
+    /**
+     * The live view's STOP. The binder calls go off the main thread; any approval the run is
+     * waiting on is answered no, since the user just said stop.
+     */
+    fun stopAutopilot() {
+        denyAllApprovals()
+        viewModelScope.launch(Dispatchers.IO) {
+            org.ethereumphone.andyclaw.autopilot.AgentDisplayCapabilities.requestStop()
+        }
+    }
+
+    private val _replayShare = MutableStateFlow(org.ethereumphone.andyclaw.ui.autopilot.ReplayShareState.IDLE)
+    val replayShare: StateFlow<org.ethereumphone.andyclaw.ui.autopilot.ReplayShareState> = _replayShare.asStateFlow()
+
     /** Renders the last run as a video and opens the share sheet. Only on the user's tap. */
     fun shareAutopilotReplay() {
-        val recording = org.ethereumphone.andyclaw.autopilot.replay.ReplayRecorder.latest() ?: return
+        if (_replayShare.value == org.ethereumphone.andyclaw.ui.autopilot.ReplayShareState.WORKING) return
+        val recording = org.ethereumphone.andyclaw.autopilot.replay.ReplayRecorder.latest()
+        if (recording == null) {
+            _replayShare.value = org.ethereumphone.andyclaw.ui.autopilot.ReplayShareState.FAILED
+            return
+        }
+        _replayShare.value = org.ethereumphone.andyclaw.ui.autopilot.ReplayShareState.WORKING
         viewModelScope.launch {
             val file = try {
                 withContext(Dispatchers.Default) {
@@ -151,8 +171,10 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 }
             } catch (e: Exception) {
                 Log.w("ChatViewModel", "replay export failed", e)
+                _replayShare.value = org.ethereumphone.andyclaw.ui.autopilot.ReplayShareState.FAILED
                 return@launch
             }
+            _replayShare.value = org.ethereumphone.andyclaw.ui.autopilot.ReplayShareState.IDLE
             val context = getApplication<Application>()
             val uri = androidx.core.content.FileProvider.getUriForFile(context, "${context.packageName}.replays", file)
             val send = android.content.Intent(android.content.Intent.ACTION_SEND)
@@ -308,6 +330,9 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         }
 
         ledController.onUserMessage()
+        // A finished run's card belongs to the turn it was in, not the next one.
+        if (_autopilot.value?.finished == true) _autopilot.value = null
+        _replayShare.value = org.ethereumphone.andyclaw.ui.autopilot.ReplayShareState.IDLE
 
         currentJob = viewModelScope.launch {
             // Proactive balance check — only when using the premium gateway
@@ -506,8 +531,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
                     // Agent display preview lifecycle
                     if (toolName == "agent_display_autopilot") {
-                        // The live view keeps its end card; the frame poller can stop.
-                        stopDisplayCapture(clearFrame = false)
+                        // Nothing to stop: after a hand-over the model keeps driving the display,
+                        // and the view keeps showing it until the turn ends.
                     } else if (toolName == "agent_display_create" && result !is SkillResult.Error) {
                         startDisplayCapture()
                     } else if (toolName == "agent_display_destroy" || toolName == "agent_display_destroy_and_promote") {
@@ -601,7 +626,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     flushStreamingText(sid)
                     _isStreaming.value = false
                     _currentToolExecution.value = null
-                    stopDisplayCapture()
+                    endAutopilotForTurn()
                     ledController.onPromptComplete(fullText)
 
                     // Update context window usage
@@ -649,7 +674,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     }
                     _isStreaming.value = false
                     _currentToolExecution.value = null
-                    stopDisplayCapture()
+                    endAutopilotForTurn()
                     ledController.onPromptError()
                 }
             })
@@ -720,7 +745,17 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         _streamingText.value = ""
         _currentToolExecution.value = null
         pendingExplorerUrls.clear()
-        stopDisplayCapture()
+        endAutopilotForTurn(stopped = true)
+    }
+
+    /**
+     * The turn is over: the live view shows how the run ended — a hand-over the model finished,
+     * a cancel — instead of "running" forever, and keeps its last frame for the end card.
+     */
+    private fun endAutopilotForTurn(stopped: Boolean = false) {
+        val ap = _autopilot.value
+        _autopilot.value = ap?.endOfTurn(stopped)
+        stopDisplayCapture(clearFrame = ap == null)
     }
 
     fun clearError() {
@@ -738,8 +773,13 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         } else current
         _autopilot.value = base.reduce(event)
         autopilotHaptics.on(event)
-        if (event.kind == org.ethereumphone.andyclaw.autopilot.AutopilotEvent.Kind.STARTED) {
-            startDisplayCapture(intervalMs = AUTOPILOT_FRAME_INTERVAL_MS)
+        when (event.kind) {
+            org.ethereumphone.andyclaw.autopilot.AutopilotEvent.Kind.STARTED ->
+                startDisplayCapture(intervalMs = autopilotFrameIntervalMs())
+            // One frame of how it ended, now, before anything parks the display.
+            org.ethereumphone.andyclaw.autopilot.AutopilotEvent.Kind.DONE,
+            org.ethereumphone.andyclaw.autopilot.AutopilotEvent.Kind.FAILED -> captureOneFrame()
+            else -> Unit
         }
     }
 
@@ -758,19 +798,42 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
             val scaled = org.ethereumphone.andyclaw.autopilot.AgentDisplayCapabilities.hasV2
             while (isActive) {
-                try {
-                    // The OS encodes on demand now; a smaller frame is cheaper on both sides.
-                    val frame = if (scaled) svc.captureFrameScaled(480, 70) else svc.captureFrame()
-                    if (frame != null) {
-                        val bitmap = BitmapFactory.decodeByteArray(frame, 0, frame.size)
-                        if (bitmap != null) {
-                            _agentDisplayBitmap.value = bitmap
+                // Before the run has created the display, and while it is parked, there is
+                // nothing to show — and nothing to log five times a second.
+                if (svc.displayId >= 0) {
+                    try {
+                        // The OS encodes on demand now; a smaller frame is cheaper on both sides.
+                        val frame = if (scaled) svc.captureFrameScaled(480, 70) else svc.captureFrame()
+                        if (frame != null) {
+                            val bitmap = BitmapFactory.decodeByteArray(frame, 0, frame.size)
+                            if (bitmap != null) {
+                                _agentDisplayBitmap.value = bitmap
+                            }
                         }
+                    } catch (e: Exception) {
+                        Log.d("ChatViewModel", "Display capture skipped: ${e.message}")
                     }
-                } catch (e: Exception) {
-                    Log.e("ChatViewModel", "Display capture failed", e)
                 }
                 delay(intervalMs)
+            }
+        }
+    }
+
+    /**
+     * With the OS's live mirror on screen the poll only keeps a fallback frame and the end card's
+     * picture, so once a second is plenty; an older OS has only the poll.
+     */
+    private fun autopilotFrameIntervalMs(): Long =
+        if (org.ethereumphone.andyclaw.autopilot.AgentDisplayCapabilities.hasV2) 1_000L else AUTOPILOT_FRAME_INTERVAL_MS
+
+    private fun captureOneFrame() {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val svc = org.ethereumphone.andyclaw.skills.builtin.AgentDisplayBinder.serviceOrNull() ?: return@launch
+                if (svc.displayId < 0) return@launch
+                val frame = svc.captureFrameScaled(480, 70) ?: return@launch
+                BitmapFactory.decodeByteArray(frame, 0, frame.size)?.let { _agentDisplayBitmap.value = it }
+            } catch (_: Exception) {
             }
         }
     }

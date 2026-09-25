@@ -34,6 +34,9 @@ class AutopilotHaptics(context: Context) {
                 .addPrimitive(VibrationEffect.Composition.PRIMITIVE_SLOW_RISE, 0.6f)
                 .addPrimitive(VibrationEffect.Composition.PRIMITIVE_CLICK, 1f)
                 .compose()
+            // A stop or a failure is felt too — one firm knock — but a hand-over is not an end.
+            AutopilotEvent.Kind.FAILED -> if (event.outcome == "handoff") return
+            else VibrationEffect.createPredefined(VibrationEffect.EFFECT_HEAVY_CLICK)
             else -> return
         }
         try {

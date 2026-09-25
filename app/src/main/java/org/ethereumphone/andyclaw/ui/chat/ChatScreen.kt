@@ -101,6 +101,7 @@ fun ChatScreen(
     val askUserRequest by viewModel.askUserRequest.collectAsState()
     val displayBitmap by viewModel.agentDisplayBitmap.collectAsState()
     val autopilot by viewModel.autopilot.collectAsState()
+    val replayShare by viewModel.replayShare.collectAsState()
     val contextWindow by viewModel.contextWindow.collectAsState()
     val isCompacting by viewModel.isCompacting.collectAsState()
     val navigationEvent by viewModel.navigationEvent.collectAsState()
@@ -302,8 +303,10 @@ fun ChatScreen(
                     org.ethereumphone.andyclaw.ui.autopilot.AutopilotLiveView(
                         state = autopilot,
                         fallbackFrame = displayBitmap,
+                        onStop = { viewModel.stopAutopilot() },
                         onDismiss = { viewModel.dismissAutopilot() },
                         onShare = { viewModel.shareAutopilotReplay() },
+                        shareState = replayShare,
                         modifier = Modifier
                             .align(Alignment.TopCenter)
                             .padding(8.dp)

@@ -32,9 +32,15 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.foundation.clickable
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -49,6 +55,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.ethereumphone.andyclaw.autopilot.AgentDisplayCapabilities
@@ -57,15 +64,24 @@ import org.ethereumphone.andyclaw.skills.builtin.AgentDisplayBinder
 import java.util.Locale
 
 private val Accent = Color(0xFF39FF88)
+private val Amber = Color(0xFFFFC857)
 private val Panel = Color(0xE6101010)
 private const val DISPLAY_PX = AppAutopilotDevice.WIDTH.toFloat()
+private const val COLLAPSE_AFTER_MS = 4_000L
+private const val MIRROR_ATTEMPTS = 40
+private const val MIRROR_RETRY_MS = 300L
+
+/** Where sharing a replay stands, for the button that started it. */
+enum class ReplayShareState { IDLE, WORKING, FAILED }
 
 /**
  * The agent display, live, with what the autopilot is doing drawn over it: a focus ring that
  * springs to each element as it is acted on, the sub-goals, a step ticker, the speed, and STOP.
  *
- * The picture is a SurfaceFlinger mirror of the agent display when the OS offers one (60 fps, no
- * copies); otherwise the most recent captured frame.
+ * The picture is a SurfaceFlinger mirror of the agent display while the display is live (60 fps,
+ * no copies), taken again whenever it comes back, and the most recent captured frame whenever no
+ * mirror is held — so it is never black. A few seconds after the run ends the view folds into one
+ * line, so the reply underneath can be read; a tap opens it again.
  */
 @Composable
 fun AutopilotLiveView(
@@ -75,16 +91,36 @@ fun AutopilotLiveView(
     onStop: () -> Unit = { AgentDisplayCapabilities.requestStop() },
     onDismiss: (() -> Unit)? = null,
     onShare: (() -> Unit)? = null,
+    shareState: ReplayShareState = ReplayShareState.IDLE,
+    /** Who the autopilot hands over to: the assistant's name. */
+    agentName: String = "the assistant",
 ) {
+    // Asked once: the answer is a binder call and does not change while the view is up.
+    val mirrorable = remember { AgentDisplayCapabilities.hasV2 }
+    var expanded by remember(state?.runId) { mutableStateOf(true) }
+    LaunchedEffect(state?.runId, state?.finishedAtMs) {
+        if (state?.finishedAtMs != null) {
+            delay(COLLAPSE_AFTER_MS)
+            expanded = false
+        } else {
+            expanded = true
+        }
+    }
+    if (state != null && state.finished && !expanded) {
+        CollapsedBar(state, onExpand = { expanded = true }, onDismiss = onDismiss, onShare = onShare, shareState = shareState, modifier = modifier)
+        return
+    }
     Column(
         modifier
             .clip(RoundedCornerShape(16.dp))
             .background(Color.Black),
     ) {
         BoxWithConstraints(Modifier.fillMaxWidth().aspectRatio(1f)) {
-            if (AgentDisplayCapabilities.hasV2) {
-                AgentDisplayMirror(Modifier.fillMaxSize())
-            } else if (fallbackFrame != null) {
+            var mirrorHeld by remember { mutableStateOf(false) }
+            if (mirrorable) {
+                AgentDisplayMirror(Modifier.fillMaxSize(), onMirror = { mirrorHeld = it })
+            }
+            if (!mirrorHeld && fallbackFrame != null) {
                 Image(
                     bitmap = fallbackFrame.asImageBitmap(),
                     contentDescription = "Agent display",
@@ -96,10 +132,15 @@ fun AutopilotLiveView(
             if (state != null) {
                 Box(Modifier.align(Alignment.TopStart).padding(8.dp)) { SpeedBadge(state) }
             }
-            if (state?.phase == AutopilotUiState.Phase.THINKING) {
+            val overlay = when (state?.phase) {
+                AutopilotUiState.Phase.THINKING -> "asking the model…"
+                AutopilotUiState.Phase.HANDOFF -> "Handing over to $agentName…"
+                else -> null
+            }
+            if (overlay != null) {
                 Text(
-                    "asking the model…",
-                    color = Accent,
+                    overlay,
+                    color = if (state?.phase == AutopilotUiState.Phase.HANDOFF) Amber else Accent,
                     fontFamily = FontFamily.Monospace,
                     fontSize = 12.sp,
                     modifier = Modifier.align(Alignment.BottomCenter).padding(8.dp)
@@ -116,8 +157,8 @@ fun AutopilotLiveView(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text(
-                    endLine(state),
-                    color = if (state.phase == AutopilotUiState.Phase.FAILED) Color(0xFFFF6B6B) else Color.White,
+                    endLine(state, agentName),
+                    color = endColor(state),
                     fontFamily = FontFamily.Monospace,
                     fontSize = 12.sp,
                     modifier = Modifier.weight(1f),
@@ -125,9 +166,7 @@ fun AutopilotLiveView(
                 if (!state.finished) {
                     TextButton(onClick = onStop) { Text("STOP", color = Color(0xFFFF6B6B), fontWeight = FontWeight.Bold) }
                 } else {
-                    if (onShare != null && state.phase == AutopilotUiState.Phase.DONE) {
-                        TextButton(onClick = onShare) { Text("SHARE", color = Accent, fontWeight = FontWeight.Bold) }
-                    }
+                    if (onShare != null && state.phase == AutopilotUiState.Phase.DONE) ShareButton(onShare, shareState)
                     if (onDismiss != null) {
                         TextButton(onClick = onDismiss) { Text("CLOSE", color = Color.White) }
                     }
@@ -137,11 +176,69 @@ fun AutopilotLiveView(
     }
 }
 
-private fun endLine(s: AutopilotUiState): String = when (s.phase) {
+/** The run, finished, in one line: what happened, and the two things left to do with it. */
+@Composable
+private fun CollapsedBar(
+    state: AutopilotUiState,
+    onExpand: () -> Unit,
+    onDismiss: (() -> Unit)?,
+    onShare: (() -> Unit)?,
+    shareState: ReplayShareState,
+    modifier: Modifier,
+) {
+    Row(
+        modifier
+            .clip(RoundedCornerShape(12.dp))
+            .background(Panel)
+            .clickable(onClick = onExpand)
+            .padding(horizontal = 10.dp, vertical = 2.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            endLine(state, null),
+            color = endColor(state),
+            fontFamily = FontFamily.Monospace,
+            fontSize = 12.sp,
+            maxLines = 1,
+            modifier = Modifier.weight(1f),
+        )
+        if (onShare != null && state.phase == AutopilotUiState.Phase.DONE) ShareButton(onShare, shareState)
+        if (onDismiss != null) {
+            TextButton(onClick = onDismiss) { Text("✕", color = Color.White) }
+        }
+    }
+}
+
+@Composable
+private fun ShareButton(onShare: () -> Unit, shareState: ReplayShareState) {
+    TextButton(onClick = onShare, enabled = shareState != ReplayShareState.WORKING) {
+        Text(
+            when (shareState) {
+                ReplayShareState.IDLE -> "SHARE"
+                ReplayShareState.WORKING -> "MAKING VIDEO…"
+                ReplayShareState.FAILED -> "RETRY SHARE"
+            },
+            color = if (shareState == ReplayShareState.FAILED) Amber else Accent,
+            fontWeight = FontWeight.Bold,
+        )
+    }
+}
+
+private fun endColor(s: AutopilotUiState): Color = when (s.phase) {
+    AutopilotUiState.Phase.FAILED -> Color(0xFFFF6B6B)
+    AutopilotUiState.Phase.STOPPED, AutopilotUiState.Phase.ENDED -> Color.White.copy(alpha = 0.7f)
+    AutopilotUiState.Phase.HANDOFF -> Amber
+    else -> Color.White
+}
+
+private fun endLine(s: AutopilotUiState, agentName: String?): String = when (s.phase) {
     AutopilotUiState.Phase.DONE -> String.format(
         Locale.ROOT, "✓ Done in %.1f s · %d steps", s.elapsedMs / 1000.0, s.steps,
     ) + if (s.plannerCalls == 0) " · no model help" else " · model helped ${s.plannerCalls}×"
-    AutopilotUiState.Phase.FAILED -> "Stopped: ${s.reason ?: "unknown"}"
+    AutopilotUiState.Phase.HANDOFF -> s.message ?: "Handing over to ${agentName ?: "the assistant"}"
+    AutopilotUiState.Phase.STOPPED -> "■ ${s.message ?: "Stopped"}"
+    AutopilotUiState.Phase.ENDED -> "» ${s.message ?: "Handed over"}"
+    AutopilotUiState.Phase.FAILED -> "✕ ${s.message ?: "Couldn't finish this"}"
     else -> String.format(Locale.ROOT, "%.1f s", s.elapsedMs / 1000.0)
 }
 
@@ -236,60 +333,103 @@ private fun Ticker(s: AutopilotUiState) {
 }
 
 /**
- * The agent display's own pixels, via a mirror layer reparented under a SurfaceView. The layer
- * is display-sized, so it is scaled to the view; when the view goes, the mirror is released.
+ * The agent display's own pixels, via a mirror layer reparented under a SurfaceView.
+ *
+ * Asked for whenever the display is (or may be) live, and asked again until the OS hands one
+ * over — the view usually appears before the run has created the display, and the old code asked
+ * once, got nothing, and stayed black. Released when the display is parked or released, and when
+ * the view goes. [onMirror] says whether a mirror is showing, so the caller can show the last
+ * captured frame instead of black when none is.
  */
 @Composable
-private fun AgentDisplayMirror(modifier: Modifier) {
+private fun AgentDisplayMirror(modifier: Modifier, onMirror: (Boolean) -> Unit) {
+    val displayState by AgentDisplayCapabilities.displayState.collectAsState()
+    val controller = remember { MirrorController(onMirror) }
+    DisposableEffect(Unit) { onDispose { controller.release() } }
+    LaunchedEffect(displayState, controller.surfaceReady) {
+        val gone = displayState == AgentDisplayCapabilities.STATE_PARKED || displayState == AgentDisplayCapabilities.STATE_RELEASED
+        if (gone || !controller.surfaceReady) {
+            controller.release()
+            return@LaunchedEffect
+        }
+        repeat(MIRROR_ATTEMPTS) {
+            if (controller.acquire()) return@LaunchedEffect
+            delay(MIRROR_RETRY_MS)
+        }
+    }
     AndroidView(
         modifier = modifier,
-        factory = { context ->
-            SurfaceView(context).apply {
-                holder.addCallback(object : SurfaceHolder.Callback {
-                    private var mirror: SurfaceControl? = null
-
-                    override fun surfaceCreated(holder: SurfaceHolder) {
-                        kotlinx.coroutines.CoroutineScope(Dispatchers.Main).launch {
-                            val sc = withContext(Dispatchers.IO) {
-                                try {
-                                    AgentDisplayBinder.serviceOrNull()?.mirrorAgentDisplay()
-                                } catch (e: Exception) {
-                                    Log.d("AutopilotLiveView", "mirror unavailable: ${e.message}")
-                                    null
-                                }
-                            } ?: return@launch
-                            if (!holder.surface.isValid) {
-                                sc.release()
-                                return@launch
-                            }
-                            mirror = sc
-                            apply(width, height)
-                        }
-                    }
-
-                    override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
-                        apply(width, height)
-                    }
-
-                    override fun surfaceDestroyed(holder: SurfaceHolder) {
-                        mirror?.let { sc ->
-                            SurfaceControl.Transaction().reparent(sc, null).apply()
-                            sc.release()
-                        }
-                        mirror = null
-                    }
-
-                    private fun apply(width: Int, height: Int) {
-                        val sc = mirror ?: return
-                        val scale = minOf(width, height) / DISPLAY_PX
-                        SurfaceControl.Transaction()
-                            .reparent(sc, surfaceControl)
-                            .setScale(sc, scale, scale)
-                            .setVisibility(sc, true)
-                            .apply()
-                    }
-                })
-            }
-        },
+        factory = { context -> SurfaceView(context).also { controller.bind(it) } },
     )
+}
+
+/** Holds at most one mirror of the agent display under one SurfaceView. Main thread only. */
+private class MirrorController(private val onMirror: (Boolean) -> Unit) {
+    private var view: SurfaceView? = null
+    private var mirror: SurfaceControl? = null
+    var surfaceReady by mutableStateOf(false)
+        private set
+
+    fun bind(v: SurfaceView) {
+        view = v
+        v.holder.addCallback(object : SurfaceHolder.Callback {
+            override fun surfaceCreated(holder: SurfaceHolder) {
+                surfaceReady = true
+            }
+
+            override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
+                place(width, height)
+            }
+
+            override fun surfaceDestroyed(holder: SurfaceHolder) {
+                surfaceReady = false
+                release()
+            }
+        })
+    }
+
+    /** True when a mirror is showing now. */
+    suspend fun acquire(): Boolean {
+        if (mirror != null) return true
+        val v = view ?: return false
+        val sc = withContext(Dispatchers.IO) {
+            try {
+                AgentDisplayBinder.serviceOrNull()?.mirrorAgentDisplay()
+            } catch (e: Exception) {
+                Log.d("AutopilotLiveView", "mirror unavailable: ${e.message}")
+                null
+            }
+        } ?: return false
+        if (!v.holder.surface.isValid) {
+            sc.release()
+            return false
+        }
+        mirror = sc
+        place(v.width, v.height)
+        onMirror(true)
+        return true
+    }
+
+    fun release() {
+        mirror?.let { sc ->
+            try {
+                SurfaceControl.Transaction().reparent(sc, null).apply()
+            } catch (_: Exception) {
+            }
+            sc.release()
+            onMirror(false)
+        }
+        mirror = null
+    }
+
+    private fun place(width: Int, height: Int) {
+        val sc = mirror ?: return
+        val v = view ?: return
+        val scale = minOf(width, height) / DISPLAY_PX
+        SurfaceControl.Transaction()
+            .reparent(sc, v.surfaceControl)
+            .setScale(sc, scale, scale)
+            .setVisibility(sc, true)
+            .apply()
+    }
 }

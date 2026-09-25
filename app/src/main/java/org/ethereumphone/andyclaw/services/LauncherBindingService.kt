@@ -330,6 +330,12 @@ class LauncherBindingService : Service() {
                 put("heartbeatOnNotification", prefs.heartbeatOnNotificationEnabled.value)
                 put("ledgerEnabled", prefs.ledgerEnabled.value)
                 put("displayFrameCapture", prefs.displayFrameCaptureEnabled.value)
+                // The autopilot, and running saved tasks (compiled flows) without a card. Only on
+                // a phone that has the agent display, where both exist.
+                if (OsCapabilities.hasPrivilegedAccess) {
+                    put("autopilotEnabled", prefs.autopilotEnabled.value)
+                    put("autopilotNoConfirm", prefs.autopilotNoConfirm.value)
+                }
                 put("ambientIngest", prefs.ambientIngestEnabled.value)
                 // ok | no_account | auth_expired | offline | off, and when it last worked, so
                 // the launcher can say "Google disconnected — reconnect" instead of showing nothing.
@@ -409,6 +415,8 @@ class LauncherBindingService : Service() {
                     "heartbeatOnNotification" -> prefs.setHeartbeatOnNotificationEnabled(value.toBooleanStrict())
                     "ledgerEnabled" -> prefs.setLedgerEnabled(value.toBooleanStrict())
                     "displayFrameCapture" -> prefs.setDisplayFrameCaptureEnabled(value.toBooleanStrict())
+                    "autopilotEnabled" -> prefs.setAutopilotEnabled(value.toBooleanStrict())
+                    "autopilotNoConfirm" -> prefs.setAutopilotNoConfirm(value.toBooleanStrict())
                     // Through the app, not the prefs: the receivers have to follow the
                     // switch, or nothing happens until the next boot.
                     "ambientIngest" -> app.setAmbientIngestEnabled(value.toBooleanStrict())

@@ -29,6 +29,7 @@ object ToolResultFormatter {
                 "read_file" -> formatReadFile(unwrap(rawResult))
                 "write_file" -> formatWriteFile(unwrap(rawResult))
                 "file_info" -> formatFileInfo(unwrap(rawResult))
+                "agent_display_autopilot" -> formatAutopilot(unwrap(rawResult))
                 "agent_display_get_ui_tree" -> formatUiTree(rawResult)
                 "agent_display_get_info" -> formatDisplayInfo(rawResult)
                 "propose_transaction",
@@ -251,10 +252,52 @@ object ToolResultFormatter {
         }
     }
 
+    // ── autopilot ─────────────────────────────────────────────────
+
+    /**
+     * The autopilot's result is JSON written for the model. In the chat it is one line — how it
+     * went — and the steps it took, never the raw object.
+     */
+    private fun formatAutopilot(raw: String): Formatted {
+        val json = JSONObject(raw)
+        val steps = json.optInt("steps", 0)
+        val seconds = json.optLong("ms", 0) / 1000.0
+        val say = json.optString("say").takeIf { it.isNotBlank() }
+        val summary = when (json.optString("outcome", json.optString("status"))) {
+            "success" -> say ?: String.format(java.util.Locale.ROOT, "Done in %.1f s, %d steps", seconds, steps)
+            "handoff", "needs_planner" -> "Handed over after $steps steps"
+            "stopped" -> "Stopped"
+            "cancelled" -> "Cancelled"
+            else -> say ?: "Couldn't finish"
+        }
+        val detail = buildString {
+            append(String.format(java.util.Locale.ROOT, "%d steps in %.1f s", steps, seconds))
+            json.optString("trace").takeIf { it.isNotBlank() }?.let {
+                append("\n\n")
+                append(it.split(" → ").joinToString("\n") { step -> "• $step" })
+            }
+            json.optString("flow").takeIf { it.isNotBlank() }?.let { append("\n\nSaved as a replayable task: $it") }
+        }
+        return Formatted(summary, detail)
+    }
+
     // ── transactions ──────────────────────────────────────────────
 
-    private fun txExplorerUrl(txHash: String): String {
-        return "https://blockscan.com/tx/$txHash"
+    /**
+     * Where to look a sent UserOperation up. It is a UserOperation hash, not a transaction hash:
+     * a transaction explorer finds nothing under it. JiffyScan indexes UserOperations; chains it
+     * does not know get no link rather than a wrong one.
+     */
+    private fun userOpExplorerUrl(userOpHash: String, chainId: Int): String? {
+        val network = when (chainId) {
+            1 -> "mainnet"
+            10 -> "optimism"
+            137 -> "matic"
+            8453 -> "base"
+            42161 -> "arbitrum-one"
+            else -> return null
+        }
+        return "https://jiffyscan.xyz/userOpHash/$userOpHash?network=$network"
     }
 
     private fun formatTransaction(raw: String): Formatted {
@@ -281,9 +324,7 @@ object ToolResultFormatter {
             appendLine("Chain: $chainId")
         }.trimEnd()
 
-        val explorerUrl = if (userOpHash.isNotBlank()) {
-            txExplorerUrl(userOpHash)
-        } else null
+        val explorerUrl = if (userOpHash.isNotBlank()) userOpExplorerUrl(userOpHash, chainId) else null
 
         return Formatted(summary, detail, explorerUrl)
     }
