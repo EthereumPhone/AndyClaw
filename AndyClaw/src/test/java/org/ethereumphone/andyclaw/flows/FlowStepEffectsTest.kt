@@ -81,4 +81,27 @@ class FlowStepEffectsTest {
         assertEquals(ToolEffect.READ, FlowToolEffect.of(readOnly))
         assertFalse(FlowToolEffect.requiresApproval(readOnly))
     }
+
+    @Test
+    fun `camelCase ids are split before they are matched`() {
+        assertEquals(ToolEffect.SENSITIVE, FlowStepEffects.of(TapStep(viewId = "com.shop:id/btnPay")))
+        assertEquals(ToolEffect.SENSITIVE, FlowStepEffects.of(TapStep(viewId = "confirmPurchase")))
+        assertEquals(ToolEffect.SENSITIVE, FlowStepEffects.of(TapStep(viewId = "privateKeyField")))
+        assertEquals(ToolEffect.IRREVERSIBLE, FlowStepEffects.of(TapStep(viewId = "sendMessageButton")))
+    }
+
+    @Test
+    fun `German words are known, umlauts and all`() {
+        assertTrue("kaufen" in FlowStepEffects.tokenize("Jetzt kaufen"))
+        assertTrue("loschen" in FlowStepEffects.tokenize("Löschen"))
+        assertTrue("zahlungspflichtig" in FlowStepEffects.tokenize("Zahlungspflichtig bestellen"))
+        assertEquals(ToolEffect.SENSITIVE, FlowStepEffects.of(TapStep(viewId = "btn_bezahlen")))
+        assertEquals(ToolEffect.IRREVERSIBLE, FlowStepEffects.of(TapStep(viewId = "nachricht_senden")))
+    }
+
+    @Test
+    fun `words split by punctuation are joined back`() {
+        assertEquals(ToolEffect.SENSITIVE, FlowStepEffects.of(TapStep(viewId = "sign_in_button")))
+        assertEquals(ToolEffect.SENSITIVE, FlowStepEffects.of(TapStep(viewId = "check-out")))
+    }
 }

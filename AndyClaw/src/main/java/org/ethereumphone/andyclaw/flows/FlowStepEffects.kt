@@ -34,6 +34,13 @@ object FlowStepEffects {
         "confirm", "accept", "approve", "transfer", "withdraw", "sign", "call", "dial",
         "book", "reserve", "install", "uninstall", "block", "report", "logout",
         "signout", "unfollow", "unsubscribe", "reply", "forward", "invite",
+        // German, folded the way [tokenize] folds them (ä -> a, ö -> o, ü -> u, ß -> ss),
+        // plus the ae/oe/ue spellings people type when they have no umlaut key.
+        "senden", "absenden", "abschicken", "schicken", "loschen", "loeschen", "entfernen",
+        "teilen", "posten", "veroffentlichen", "veroeffentlichen", "bestatigen", "bestaetigen",
+        "annehmen", "akzeptieren", "uberweisen", "ueberweisen", "antworten", "weiterleiten",
+        "einladen", "blockieren", "melden", "abmelden", "installieren", "deinstallieren",
+        "buchen", "reservieren", "anrufen", "unterschreiben", "signieren",
     )
 
     /**
@@ -45,7 +52,14 @@ object FlowStepEffects {
         "pay", "payment", "purchase", "buy", "checkout", "card", "cvv", "cvc", "iban",
         "pin", "password", "passcode", "passphrase", "otp", "2fa", "mfa", "totp",
         "biometric", "fingerprint", "faceid", "authenticate", "auth", "login", "signin",
-        "seed", "mnemonic", "privatekey", "private_key", "keystore", "unlock", "verify",
+        "seed", "mnemonic", "privatekey", "keystore", "unlock", "verify",
+        "paypal", "gpay", "googlepay", "applepay", "klarna", "venmo", "cashapp",
+        // German, folded as above. "zahlungspflichtig bestellen" is the button German law
+        // requires on a checkout, so both halves are here.
+        "bezahlen", "zahlen", "zahlung", "zahlungspflichtig", "kaufen", "kauf", "kasse",
+        "bestellen", "passwort", "kennwort", "anmelden", "anmeldung", "einloggen",
+        "geheimzahl", "tan", "kartennummer", "prufziffer", "pruefziffer", "entsperren",
+        "verifizieren",
     )
 
     /** The effect of [step] — the declaration and the classification, whichever is higher. */
@@ -81,13 +95,42 @@ object FlowStepEffects {
         }
     }
 
-    /** `com.android.mms:id/send_button` -> `[com, android, mms, id, send, button]`. */
+    /**
+     * The words to match against, whole: `com.android.mms:id/send_button` ->
+     * `[com, android, mms, id, send, button]`.
+     *
+     * Three things beyond splitting on punctuation, each of which let a payment button through:
+     * - camelCase is split first — `btnPay` and `confirmPurchase` are two words each, and a
+     *   lowercase-first tokenizer saw one word it did not know;
+     * - letters are folded to ASCII (`Löschen` -> `loschen`, `ß` -> `ss`) instead of being
+     *   treated as separators, which cut German words in half;
+     * - adjacent pairs are joined too, so `privateKey`, `sign_in` and `check-out` still meet
+     *   `privatekey`, `signin` and `checkout`. The unsplit word is kept as well.
+     */
     fun tokenize(value: String?): List<String> {
         if (value.isNullOrBlank()) return emptyList()
-        return value.lowercase()
-            .split(Regex("[^a-z0-9]+"))
+        val folded = fold(value)
+        val words = CAMEL_BOUNDARY.replace(ACRONYM_BOUNDARY.replace(folded, "$1 $2"), "$1 $2")
+            .lowercase()
+            .split(NON_WORD)
             .filter { it.isNotEmpty() }
+        val unsplit = folded.lowercase().split(NON_WORD).filter { it.isNotEmpty() }
+        val pairs = words.zipWithNext { a, b -> a + b }
+        return (words + unsplit + pairs).distinct()
     }
+
+    /** `Löschen` -> `Loschen`, `Straße` -> `Strasse`: diacritics dropped, ligatures spelled out. */
+    private fun fold(value: String): String {
+        val spelled = value.replace("ß", "ss").replace("ẞ", "SS")
+            .replace("æ", "ae").replace("Æ", "AE").replace("œ", "oe").replace("Œ", "OE")
+            .replace("ø", "o").replace("Ø", "O").replace("ł", "l").replace("Ł", "L")
+        return COMBINING_MARKS.replace(java.text.Normalizer.normalize(spelled, java.text.Normalizer.Form.NFD), "")
+    }
+
+    private val CAMEL_BOUNDARY = Regex("([a-z0-9])([A-Z])")
+    private val ACRONYM_BOUNDARY = Regex("([A-Z]+)([A-Z][a-z])")
+    private val NON_WORD = Regex("[^a-z0-9]+")
+    private val COMBINING_MARKS = Regex("\\p{M}+")
 
     /** The highest effect any step in [flow] reaches. */
     fun highestOf(flow: Flow): ToolEffect =

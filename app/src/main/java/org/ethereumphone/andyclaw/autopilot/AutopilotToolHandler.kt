@@ -29,7 +29,11 @@ class AutopilotToolHandler(
     private val context: Context? = null,
 ) {
 
-    suspend fun handle(params: JsonObject): SkillResult {
+    /**
+     * [flowLookup] false skips the compiled-flow shortcut — for the flow skill's own fallback,
+     * which lands here because that flow just failed.
+     */
+    suspend fun handle(params: JsonObject, flowLookup: Boolean = true): SkillResult {
         if (!enabled()) {
             return SkillResult.Error(
                 "agent_display_autopilot is turned off. Use agent_display_create and the other agent_display tools.")
@@ -41,6 +45,10 @@ class AutopilotToolHandler(
         if (!AgentDisplayLease.claimForCaller()) return SkillResult.Error(AgentDisplayLease.BUSY)
         val token = currentRunToken()
         if (token?.stopRequested == true) return SkillResult.Error(AgentDisplayLease.STOPPED)
+
+        // The same task done before, compiled into a flow: replay that — no Jev, no planner,
+        // well under a second — and drive the app only if the flow no longer fits it.
+        if (flowLookup) flows()?.skill?.flowFirst(plan)?.let { return it }
 
         val run = coroutineContext[AutopilotRunContext]
         val planner = run?.let { LlmAutopilotPlanner(it.client, it.modelId, it.onModelCall) }

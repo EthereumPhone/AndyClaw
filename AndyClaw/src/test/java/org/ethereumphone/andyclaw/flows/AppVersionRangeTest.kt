@@ -1,5 +1,6 @@
 package org.ethereumphone.andyclaw.flows
 
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -40,5 +41,19 @@ class AppVersionRangeTest {
     fun `component comparison is numeric not lexical`() {
         assertTrue(AppVersionRange.compare("7.10", "7.9") > 0)
         assertTrue(AppVersionRange.compare("7.2", "7.2.0") == 0)
+    }
+
+    @Test
+    fun `a suggested range only ever uses the leading version number`() {
+        assertEquals(">=7.2.1,<8", AppVersionRange.suggestedFor("7.2.1"))
+        assertEquals(">=2024.07.14.123456789,<2025", AppVersionRange.suggestedFor("2024.07.14.123456789.Release"))
+        assertEquals(">=7.2.1,<8", AppVersionRange.suggestedFor("7.2.1 (4471)"))
+        assertEquals("*", AppVersionRange.suggestedFor("beta"))
+        assertEquals(null, AppVersionRange.suggestedFor(null))
+        for (v in listOf("7.2.1", "2024.07.14.123456789.Release", "1.0-beta3", "beta")) {
+            val range = AppVersionRange.suggestedFor(v)!!
+            assertTrue("$range must parse", AppVersionRange.isParseable(range))
+            assertTrue("$v must satisfy its own range $range", AppVersionRange.contains(range, v))
+        }
     }
 }

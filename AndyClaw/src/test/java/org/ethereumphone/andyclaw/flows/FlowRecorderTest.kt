@@ -44,7 +44,34 @@ class FlowRecorderTest {
         r.record("agent_display_click_node", "x", null, null, null, null, treeA, treeB, true)
 
         val step = r.draft("msg.send", "*")!!.flow.steps.single()
-        assertEquals(NodeTreeChecksum.of(treeA), step.expectChecksum)
+        // v2: a list that gained a row is still the screen the step was taken on.
+        assertEquals(NodeTreeChecksum.ofV2(treeA), step.expectChecksum)
+    }
+
+    @Test
+    fun `a long-press is not recorded as a tap`() {
+        val r = recorder()
+        r.start()
+        r.record("agent_display_create", null, null, null, null, "com.msg", null, treeA, true)
+        r.record("agent_display_long_click_node", "a", null, null, null, null, treeA, treeB, true)
+
+        val draft = r.draft("msg.x", "*")
+        assertTrue(draft == null || draft.flow.steps.isEmpty())
+        assertEquals(listOf("agent_display_long_click_node"), draft?.unsupportedActions ?: listOf("agent_display_long_click_node"))
+    }
+
+    @Test
+    fun `a tap on a repeated view id is marked, with the screens either side kept`() {
+        val rows = """{"screen":{"package":"com.msg"},"elements":[{"id":0,"type":"row","viewId":"row"},{"id":1,"type":"row","viewId":"row"}]}"""
+        val r = recorder()
+        r.start()
+        r.record("agent_display_create", null, null, null, null, "com.msg", null, rows, true)
+        r.record("agent_display_click_node", "row", null, null, null, null, rows, treeB, true)
+
+        val draft = r.draft("msg.open", "*")!!
+        assertEquals(2, draft.stepSources.single().matchesBefore)
+        assertEquals(rows, r.firstActionTree)
+        assertEquals(treeB, r.lastTree)
     }
 
     @Test

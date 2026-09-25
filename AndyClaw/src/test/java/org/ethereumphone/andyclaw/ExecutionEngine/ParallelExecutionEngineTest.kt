@@ -775,4 +775,44 @@ class ParallelExecutionEngineTest {
         assertFalse(finished)
         assertEquals(null, produced)
     }
+
+    @Test
+    fun `a call the user approved carries proof of it, and only that call`() = runTest {
+        val seen = mutableMapOf<String, String?>()
+        val engine = buildEngine(
+            executor = ToolExecutor { name, _ ->
+                seen[name] = currentUserApproval()?.toolName
+                ToolExecResult.Success("ok")
+            },
+            preflightChecks = listOf(PreflightCheck { call ->
+                if (call.name == "needs_card") PreflightVerdict.NeedsApproval("Send it?") else PreflightVerdict.Pass
+            }),
+        )
+
+        engine.executeBatch(listOf(toolCall(id = "a", name = "needs_card"), toolCall(id = "b", name = "plain")))
+
+        assertEquals("needs_card", seen["needs_card"])
+        assertEquals(null, seen["plain"])
+    }
+
+    @Test
+    fun `a tool that asked for approval runs again with the proof`() = runTest {
+        var runs = 0
+        var witnessed: String? = null
+        val engine = buildEngine(
+            executor = ToolExecutor { _, _ ->
+                runs++
+                if (runs == 1) ToolExecResult.RequiresApproval("Send it?")
+                else {
+                    witnessed = currentUserApproval()?.toolCallId
+                    ToolExecResult.Success("sent")
+                }
+            },
+        )
+
+        engine.executeBatch(listOf(toolCall(id = "call-7")))
+
+        assertEquals(2, runs)
+        assertEquals("call-7", witnessed)
+    }
 }

@@ -61,3 +61,22 @@ suspend fun currentProvenance(fallback: Provenance = Provenance.UNTRUSTED): Prov
 /** The conversation the current trigger arrived on, if one was declared. */
 suspend fun currentTriggerConversationId(): String? =
     coroutineContext[ProvenanceContext]?.conversationId
+
+/**
+ * Proof that the user approved this very tool call: the engine puts it in the call's context
+ * only after an approval card for the call was shown and accepted — by the pre-flight check, or
+ * by a tool that answered RequiresApproval and ran again.
+ *
+ * Code that must not act unconfirmed — a compiled flow crossing its checkpoint — checks for it
+ * instead of assuming that a tool marked "needs approval" was in fact approved.
+ */
+class UserApproval(
+    val toolCallId: String,
+    val toolName: String,
+) : AbstractCoroutineContextElement(Key) {
+
+    companion object Key : CoroutineContext.Key<UserApproval>
+}
+
+/** The approval witness for the running tool call, or null when none was given. */
+suspend fun currentUserApproval(): UserApproval? = coroutineContext[UserApproval]

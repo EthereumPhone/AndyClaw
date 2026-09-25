@@ -13,6 +13,11 @@ data class RecordedAction(
     val checksumAfter: String = NodeTreeChecksum.UNKNOWN,
     val ok: Boolean = true,
     val timestampMs: Long = 0L,
+    /**
+     * How many nodes on the screen before the action carried [viewId]. More than one is a list
+     * row taken by position, which only compiles with an identity assert after it.
+     */
+    val matchesBefore: Int = 1,
 )
 
 /**
@@ -28,6 +33,8 @@ data class FlowDraft(
     val actions: List<RecordedAction>,
     /** Actions with no opcode in the IR — a swipe, a back press, a scroll. */
     val unsupportedActions: List<String>,
+    /** The recorded action behind each of [flow]'s steps, index for index. */
+    val stepSources: List<RecordedAction> = emptyList(),
 ) {
     val isMechanicallyComplete: Boolean get() = unsupportedActions.isEmpty()
 }
@@ -70,9 +77,24 @@ class FlowRecorder(private val clock: () -> Long = System::currentTimeMillis) {
 
     val recorded: List<RecordedAction> get() = synchronized(actions) { actions.toList() }
 
+    /**
+     * The screen before the session's first node action, and the screen after its last action:
+     * what a compiled flow's preconditions and postconditions are checked against before it may
+     * be installed ([FlowCompileConformance]). Raw trees, kept only for the session's life.
+     */
+    @Volatile
+    var firstActionTree: String? = null
+        private set
+
+    @Volatile
+    var lastTree: String? = null
+        private set
+
     fun start() {
         synchronized(actions) { actions.clear() }
         packageName = null
+        firstActionTree = null
+        lastTree = null
         sessionId++
         isRecording = true
     }
@@ -101,19 +123,26 @@ class FlowRecorder(private val clock: () -> Long = System::currentTimeMillis) {
         treeBefore: String?,
         treeAfter: String?,
         ok: Boolean,
-    ) = record(
-        RecordedAction(
-            tool = tool,
-            viewId = viewId,
-            text = text,
-            x = x,
-            y = y,
-            packageName = packageName,
-            checksumBefore = NodeTreeChecksum.of(treeBefore),
-            checksumAfter = NodeTreeChecksum.of(treeAfter),
-            ok = ok,
-        ),
-    )
+    ) {
+        if (!isRecording) return
+        // v2 checksums: a list that gained a row is still the screen the step was taken on.
+        record(
+            RecordedAction(
+                tool = tool,
+                viewId = viewId,
+                text = text,
+                x = x,
+                y = y,
+                packageName = packageName,
+                checksumBefore = NodeTreeChecksum.ofV2(treeBefore),
+                checksumAfter = NodeTreeChecksum.ofV2(treeAfter),
+                ok = ok,
+                matchesBefore = viewId?.let { NodeTreeChecksum.nodesWithViewId(treeBefore, it).size } ?: 0,
+            ),
+        )
+        if (ok && tool in NODE_ACTION_TOOLS && firstActionTree == null) firstActionTree = treeBefore
+        if (treeAfter != null) lastTree = treeAfter
+    }
 
     /**
      * The mechanical half of compilation: recorded actions to IR steps.
@@ -128,6 +157,7 @@ class FlowRecorder(private val clock: () -> Long = System::currentTimeMillis) {
         val pkg = app ?: packageName ?: return null
 
         val steps = mutableListOf<FlowStep>()
+        val sources = mutableListOf<RecordedAction>()
         val unsupported = mutableListOf<String>()
 
         for (action in recordedActions) {
@@ -136,18 +166,22 @@ class FlowRecorder(private val clock: () -> Long = System::currentTimeMillis) {
                 in LAUNCH_TOOLS -> Unit
                 in PASSIVE_TOOLS -> Unit
 
-                "agent_display_click_node", "agent_display_long_click_node" ->
+                "agent_display_click_node" -> {
                     steps += TapStep(
                         viewId = action.viewId,
                         expectChecksum = action.checksumBefore.takeIf { it.isNotEmpty() },
                     )
+                    sources += action
+                }
 
-                "agent_display_set_node_text" ->
+                "agent_display_set_node_text" -> {
                     steps += TypeStep(
                         target = Selector(viewId = action.viewId),
                         value = action.text.orEmpty(),
                         expectChecksum = action.checksumBefore.takeIf { it.isNotEmpty() },
                     )
+                    sources += action
+                }
 
                 // Recorded faithfully so the validator can refuse it, rather than
                 // quietly dropped so a flow looks replayable when it is not.
@@ -157,9 +191,12 @@ class FlowRecorder(private val clock: () -> Long = System::currentTimeMillis) {
                         y = action.y,
                         expectChecksum = action.checksumBefore.takeIf { it.isNotEmpty() },
                     )
+                    sources += action
                     unsupported += "${action.tool} (coordinates)"
                 }
 
+                // There is no long-press opcode: replayed as a tap it would do something else —
+                // open instead of select, send instead of pick a reaction.
                 else -> unsupported += action.tool
             }
         }
@@ -185,7 +222,7 @@ class FlowRecorder(private val clock: () -> Long = System::currentTimeMillis) {
             postconditions = emptyList(),
         )
 
-        return FlowDraft(flow = flow, actions = recordedActions, unsupportedActions = unsupported)
+        return FlowDraft(flow = flow, actions = recordedActions, unsupportedActions = unsupported, stepSources = sources)
     }
 
     /** The recording rendered for a model that is being asked to compile it. */
@@ -206,6 +243,13 @@ class FlowRecorder(private val clock: () -> Long = System::currentTimeMillis) {
     companion object {
         /** A session longer than this is not a flow, it is a wander. */
         const val MAX_ACTIONS = 128
+
+        /** Actions on a node the flow will replay — the first one's screen is where it starts. */
+        private val NODE_ACTION_TOOLS = setOf(
+            "agent_display_click_node",
+            "agent_display_long_click_node",
+            "agent_display_set_node_text",
+        )
 
         private val LAUNCH_TOOLS = setOf(
             "agent_display_create",

@@ -122,7 +122,16 @@ class FlowStore(
 
     fun get(hash: String): StoredFlow? = load(flowFile(hash))
 
-    fun findByFlowId(flowId: String): StoredFlow? = listAll().firstOrNull { it.flow.flow == flowId }
+    /**
+     * The installed flow with this id. Normally there is one — an install removes the older
+     * versions — but a crash between the write and the removal can leave two, and then the
+     * newest is the one that counts.
+     */
+    fun findByFlowId(flowId: String): StoredFlow? =
+        listAll().filter { it.flow.flow == flowId }.maxByOrNull { it.flow.version }
+
+    /** A flow's bookkeeping alone, without re-reading and re-verifying the flow. */
+    fun meta(hash: String): FlowMeta? = readMeta(hash)
 
     private fun load(file: File): StoredFlow? {
         if (!file.isFile) return null

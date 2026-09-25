@@ -1452,6 +1452,12 @@ class AgentLoop(
             Log.i(TAG, "flow compilation skipped: nothing replayable in the recording")
             return null
         }
+        // A swipe, a back press or a long-press has no opcode, and replaying the rest would not
+        // be the same task — so there is nothing to pay a model to compile.
+        if (!draft.isMechanicallyComplete) {
+            Log.i(TAG, "flow compilation skipped: the session used ${draft.unsupportedActions.joinToString()}")
+            return null
+        }
 
         val system = buildString {
             appendLine("You compile a recorded Android UI session into Flow IR: a deterministic script")
@@ -1468,6 +1474,10 @@ class AgentLoop(
             appendLine("  automated; stop the flow before them.")
             appendLine("- Keep every expect_checksum exactly as the draft has it. They are the recorded")
             appendLine("  screen shapes and the replay aborts on a mismatch.")
+            appendLine("- Keep every tap and type exactly as recorded: same order, same view_id. You may")
+            appendLine("  only add assert, wait_for and checkpoint steps, and turn typed text into {{params}}.")
+            appendLine("- A tap on a repeated view_id (a list row) must be followed by an assert with")
+            appendLine("  node_text_contains that proves the right row was opened, before any checkpoint.")
             appendLine()
             appendLine("Answer with the JSON object and nothing else.")
         }
@@ -1479,11 +1489,6 @@ class AgentLoop(
             appendLine("Mechanical draft (steps and checksums are correct; params, conditions and")
             appendLine("checkpoints are missing and are your job):")
             appendLine(FlowCodec.prettyJson.encodeToString(org.ethereumphone.andyclaw.flows.Flow.serializer(), draft.flow))
-            if (draft.unsupportedActions.isNotEmpty()) {
-                appendLine()
-                appendLine("These actions have no opcode and were dropped: ${draft.unsupportedActions.joinToString()}.")
-                appendLine("If the task cannot be reproduced without them, answer exactly: NOT_COMPILABLE")
-            }
         }
 
         val request = MessagesRequest(
@@ -1521,7 +1526,9 @@ class AgentLoop(
             return null
         }
 
-        return when (val result = repository.install(flow)) {
+        // Installed only if it is the recording: the same taps and types, conditions the
+        // recorded screens showed. Validating alone let the model retarget or invent a step.
+        return when (val result = repository.installDiscovered(draft, flow, recorder.firstActionTree, recorder.lastTree)) {
             is FlowInstallResult.Installed -> {
                 Log.i(TAG, "compiled flow '${flow.flow}' -> tool '${flow.toolName}' (${flow.steps.size} steps)")
                 "Compiled this into the reusable flow `${flow.toolName}`. Next time, call that tool " +

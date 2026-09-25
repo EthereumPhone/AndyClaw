@@ -60,6 +60,26 @@ object AppVersionRange {
         return 0
     }
 
+    /**
+     * The range a flow compiled now against [versionName] is pinned to: at least this version,
+     * below the next major. Pinning to the exact build would retire every flow on a patch
+     * update; leaving it open would replay into a redesigned UI. Within the range, the per-step
+     * checksums are what actually catch drift.
+     *
+     * Only the leading numeric part is used. Gmail, Messages, X and Discord ship version names
+     * like `2024.07.14.123456789.Release`, and embedding that verbatim produced a range this
+     * class cannot parse — so no flow could ever compile for them. A name with no leading number
+     * pins to `*`. Null when there is no version (the app is not installed).
+     */
+    fun suggestedFor(versionName: String?): String? {
+        val version = versionName?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+        val numeric = LEADING_NUMERIC.find(version)?.value ?: return "*"
+        val major = numeric.substringBefore('.').toLongOrNull() ?: return "*"
+        return ">=$numeric,<${major + 1}"
+    }
+
+    private val LEADING_NUMERIC = Regex("^\\d+(\\.\\d+)*")
+
     private fun majorOf(v: String): Long = components(v).firstOrNull() ?: 0L
 
     private fun components(version: String): List<Long> =

@@ -1300,14 +1300,20 @@ class NodeApp : Application() {
      */
     private fun registerFlowPackageReceiver() {
         val filter = android.content.IntentFilter(android.content.Intent.ACTION_PACKAGE_REPLACED)
-            .apply { addDataScheme("package") }
+            .apply {
+                // An uninstalled app's flows can never run again; retire them rather than
+                // leave tools behind that fail on every call.
+                addAction(android.content.Intent.ACTION_PACKAGE_FULLY_REMOVED)
+                addDataScheme("package")
+            }
         registerReceiver(
             object : android.content.BroadcastReceiver() {
                 override fun onReceive(context: android.content.Context, intent: android.content.Intent) {
                     val pkg = intent.data?.schemeSpecificPart ?: return
+                    val removed = intent.action == android.content.Intent.ACTION_PACKAGE_FULLY_REMOVED
                     appScope.launch {
                         try {
-                            flowRepository.onPackageReplaced(pkg)
+                            if (removed) flowRepository.onPackageRemoved(pkg) else flowRepository.onPackageReplaced(pkg)
                         } catch (e: Exception) {
                             Log.w(TAG, "flow staleness update for $pkg failed: ${e.message}")
                         }

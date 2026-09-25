@@ -49,14 +49,14 @@ class FlowRepository(
 
     fun byToolName(toolName: String): StoredFlow? = published.firstOrNull { it.flow.toolName == toolName }
 
-    /** Re-read the store and republish. Cheap enough to call on any change. */
+    /** Re-read the store and republish. Only on a change to what is published. */
     @Synchronized
     fun reload() {
         published = try {
-            // Two flow ids can normalise to the same tool name (`a.b_c` and `a_b.c`).
-            // Publishing both would give the registry two tools with one name and make
-            // which one runs an accident of ordering.
-            store.listAll().distinctBy { it.flow.toolName }
+            // Two flow ids can normalise to the same tool name (`a.b_c` and `a_b.c`), and a
+            // crashed install can leave two versions of one id. Publishing both would give the
+            // registry two tools with one name; the newest version wins.
+            store.listAll().sortedByDescending { it.flow.version }.distinctBy { it.flow.toolName }
         } catch (e: Exception) {
             Log.w(TAG, "reload failed: ${e.message}")
             emptyList()
@@ -76,6 +76,20 @@ class FlowRepository(
         return result
     }
 
+    /**
+     * Install a flow the model compiled from a recorded session — only if it is that session:
+     * the same taps and types on the same nodes, and conditions the recorded screens showed.
+     * See [FlowCompileConformance].
+     */
+    @Synchronized
+    fun installDiscovered(draft: FlowDraft, compiled: Flow, firstTree: String?, finalTree: String?): FlowInstallResult {
+        val problems = FlowCompileConformance.check(draft, compiled, firstTree, finalTree)
+        if (problems.isNotEmpty()) {
+            return FlowInstallResult.Rejected(problems.map { FlowValidationError("nonconforming", it) })
+        }
+        return install(compiled)
+    }
+
     /** An app was replaced — every flow compiled against it is now suspect. */
     @Synchronized
     fun onPackageReplaced(packageName: String) {
@@ -86,20 +100,40 @@ class FlowRepository(
         }
     }
 
-    /** A replay finished. Success clears staleness; repeated failure retires the flow. */
+    /** An app was uninstalled for good: its flows can never run again, so they go. */
+    @Synchronized
+    fun onPackageRemoved(packageName: String) {
+        val gone = store.listAll().filter { it.flow.app == packageName }
+        if (gone.isEmpty()) return
+        gone.forEach { store.remove(it.hash) }
+        Log.i(TAG, "$packageName removed: retired ${gone.size} flow(s)")
+        reload()
+    }
+
+    /**
+     * A replay finished. Success clears staleness; repeated failure retires the flow.
+     *
+     * Only outcomes that say something about the flow are written down ([FlowRunAccounting]):
+     * a STOP, a missing value or a refused checkpoint used to count toward retirement and mark
+     * a good flow stale. And the tool list is only republished when what it shows changed —
+     * staleness or retirement — not after every replay, which rescanned the directory and
+     * rebuilt the tool search index on the warm path this rung exists to make fast.
+     */
     @Synchronized
     fun recordRun(hash: String, result: FlowRunResult, appVersion: String?) {
+        if (!FlowRunAccounting.counts(result)) return
+        val wasStale = published.firstOrNull { it.hash == hash }?.meta?.stale
         val aborted = result !is FlowRunResult.Completed
         store.recordUse(hash, aborted = aborted, appVersion = appVersion)
-        if (aborted) {
-            store.setStale(hash, true)
-            val meta = store.get(hash)?.meta
-            if (meta != null && meta.aborts >= MAX_CONSECUTIVE_ABORTS) {
-                Log.w(TAG, "retiring flow $hash after ${meta.aborts} aborts — discovery can recompile it")
-                store.remove(hash)
-            }
+        if (aborted) store.setStale(hash, true)
+        val meta = store.meta(hash)
+        if (aborted && meta != null && meta.aborts >= MAX_CONSECUTIVE_ABORTS) {
+            Log.w(TAG, "retiring flow $hash after ${meta.aborts} aborts — discovery can recompile it")
+            store.remove(hash)
+            reload()
+            return
         }
-        reload()
+        if (meta?.stale != wasStale) reload()
     }
 
     // ── Version pinning ───────────────────────────────────────────────
@@ -111,19 +145,9 @@ class FlowRepository(
         null
     }
 
-    /**
-     * The range a flow compiled right now should be pinned to.
-     *
-     * "At least the version I was compiled against, below the next major." Pinning to
-     * the exact build would retire every flow on a patch update; leaving it open would
-     * replay into a redesigned UI. Within the range, the per-step checksums are what
-     * actually catch drift — the range only decides when to stop trying.
-     */
-    fun suggestedRangeFor(packageName: String): String? {
-        val version = installedVersion(packageName)?.trim()?.takeIf { it.isNotEmpty() } ?: return null
-        val major = version.takeWhile { it.isDigit() }.toIntOrNull() ?: return "=$version"
-        return ">=$version,<${major + 1}"
-    }
+    /** The range a flow compiled right now should be pinned to; see [AppVersionRange.suggestedFor]. */
+    fun suggestedRangeFor(packageName: String): String? =
+        AppVersionRange.suggestedFor(installedVersion(packageName))
 
     companion object {
         private const val TAG = "FlowRepository"

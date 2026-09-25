@@ -4,6 +4,7 @@ import android.util.Log
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.withContext
 
 /**
  * Executes tool calls with parallel execution of independent tools.
@@ -74,7 +75,7 @@ class ParallelExecutionEngine(
 
         // ─── Phase 2: Execution (parallel) ───
         val executionResults = runParallelExecution(
-            readyTools.keys.toList(),
+            readyTools.map { (call, outcome) -> call to (outcome as PreflightOutcome.Ready).approvedByUser },
             perToolMs,
         )
 
@@ -132,6 +133,7 @@ class ParallelExecutionEngine(
     }
 
     private suspend fun runPreflightForTool(call: ToolCall): PreflightOutcome {
+        var approvedByUser = false
         for (check in preflightChecks) {
             when (val verdict = check.check(call)) {
                 is PreflightVerdict.Pass -> continue
@@ -152,6 +154,7 @@ class ParallelExecutionEngine(
                         return PreflightOutcome.Blocked(NOT_APPROVED)
                     }
                     Log.d(TAG, "Pre-flight APPROVED [${call.name}]")
+                    approvedByUser = true
                 }
 
                 is PreflightVerdict.NeedsPermissions -> {
@@ -169,7 +172,7 @@ class ParallelExecutionEngine(
             }
         }
 
-        return PreflightOutcome.Ready
+        return PreflightOutcome.Ready(approvedByUser)
     }
 
     // ═══════════════════════════════════════════
@@ -177,15 +180,19 @@ class ParallelExecutionEngine(
     // ═══════════════════════════════════════════
 
     private suspend fun runParallelExecution(
-        readyTools: List<ToolCall>,
+        readyTools: List<Pair<ToolCall, Boolean>>,
         perToolMs: MutableMap<String, Long>,
     ): List<ExecutedTool> = coroutineScope {
-        readyTools.map { call ->
+        readyTools.map { (call, approvedByUser) ->
             async {
                 callbacks.onToolStarted(call.name)
                 val startMs = System.currentTimeMillis()
                 val result = try {
-                    executor.execute(call.name, call.input)
+                    if (approvedByUser) {
+                        withContext(UserApproval(call.id, call.name)) { executor.execute(call.name, call.input) }
+                    } else {
+                        executor.execute(call.name, call.input)
+                    }
                 } catch (e: Exception) {
                     rethrowIfCancelled(e)
                     Log.e(TAG, "Tool execution threw [${call.name}]: ${e.message}", e)
@@ -225,9 +232,9 @@ class ParallelExecutionEngine(
             )
         }
 
-        // Re-execute after approval
+        // Re-execute after approval, now carrying the proof of it.
         val retryResult = try {
-            executor.execute(call.name, call.input)
+            withContext(UserApproval(call.id, call.name)) { executor.execute(call.name, call.input) }
         } catch (e: Exception) {
             rethrowIfCancelled(e)
             ToolExecResult.Error("Tool re-execution failed: ${e.message}")
@@ -372,7 +379,8 @@ class ParallelExecutionEngine(
     // ═══════════════════════════════════════════
 
     private sealed class PreflightOutcome {
-        data object Ready : PreflightOutcome()
+        /** [approvedByUser]: an approval card for this call ran and was accepted. */
+        data class Ready(val approvedByUser: Boolean = false) : PreflightOutcome()
         data class Blocked(val reason: String) : PreflightOutcome()
     }
 

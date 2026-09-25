@@ -31,9 +31,56 @@ object NodeTreeChecksum {
     /** Number of hex characters kept. 16 hex = 64 bits, plenty to spot a changed screen. */
     private const val LENGTH = 16
 
+    /** Marks a [ofV2] checksum. A value without it is v1 ([of]), as every flow before it has. */
+    const val V2_PREFIX = "2:"
+
+    /** v1: the ordered `(type, view_id)` list — so a list that gained a row is a new screen. */
     fun of(treeJson: String?): String {
         val shape = shapeOf(treeJson) ?: return UNKNOWN
         return FlowCodec.sha256Hex(shape.toByteArray(Charsets.UTF_8)).take(LENGTH)
+    }
+
+    /**
+     * v2: the set of distinct `(type, view_id)` pairs, sorted. A conversation list with four
+     * rows and one with nine are the same screen, which v1 said they were not — so a flow
+     * recorded on one aborted on the other for no reason. A missing button, a new dialog or a
+     * different app still changes it.
+     */
+    fun ofV2(treeJson: String?): String {
+        val shape = shapeV2Of(treeJson) ?: return UNKNOWN
+        return V2_PREFIX + FlowCodec.sha256Hex(shape.toByteArray(Charsets.UTF_8)).take(LENGTH)
+    }
+
+    /** The checksum of [treeJson] in whichever version [expected] was recorded in. */
+    fun matching(expected: String, treeJson: String?): String =
+        if (expected.startsWith(V2_PREFIX)) ofV2(treeJson) else of(treeJson)
+
+    /**
+     * The canonical shape string [ofV2] is taken over. Exposed for diagnostics.
+     *
+     * Unlike v1 it never falls back to a smart-format element's numeric `id`: that is the
+     * element's position on screen, so it counts rows by another name.
+     */
+    fun shapeV2Of(treeJson: String?): String? {
+        val root = parse(treeJson) ?: return null
+        val screen = root["screen"] as? JsonObject
+        val pkg = screen?.get("package")?.jsonPrimitive?.contentOrNull.orEmpty()
+        val scrollable = (root["scrollable"] as? JsonPrimitive)?.content ?: "?"
+        val elements = root["elements"] as? JsonArray ?: JsonArray(emptyList())
+        val pairs = elements.mapNotNull { element ->
+            val el = element as? JsonObject ?: return@mapNotNull null
+            val type = el["type"]?.jsonPrimitive?.contentOrNull
+                ?: el["cls"]?.jsonPrimitive?.contentOrNull
+                ?: ""
+            val viewId = el["viewId"]?.jsonPrimitive?.contentOrNull
+                ?: (el["id"] as? JsonPrimitive)?.takeIf { it.isString }?.content
+                ?: ""
+            "$type|$viewId"
+        }.distinct().sorted()
+        return buildString {
+            append(pkg).append('\n').append(scrollable).append('\n')
+            pairs.forEach { append(it).append('\n') }
+        }
     }
 
     /** The canonical shape string the checksum is taken over. Exposed for diagnostics. */
@@ -64,6 +111,34 @@ object NodeTreeChecksum {
             sb.append(type).append('|').append(viewId).append('\n')
         }
         return sb.toString()
+    }
+
+    /** The package the tree says is on screen, or null. */
+    fun packageOf(treeJson: String?): String? {
+        val root = parse(treeJson) ?: return null
+        return (root["screen"] as? JsonObject)?.get("package")?.jsonPrimitive?.contentOrNull
+            ?.takeIf { it.isNotBlank() }
+    }
+
+    /** The elements carrying [viewId], in tree order. More than one means the id repeats. */
+    fun nodesWithViewId(treeJson: String?, viewId: String): List<JsonObject> {
+        val root = parse(treeJson) ?: return emptyList()
+        val elements = root["elements"] as? JsonArray ?: return emptyList()
+        return elements.mapNotNull { element ->
+            val el = element as? JsonObject ?: return@mapNotNull null
+            val id = el["viewId"]?.jsonPrimitive?.contentOrNull
+                ?: (el["id"] as? JsonPrimitive)?.takeIf { it.isString }?.content
+            el.takeIf { id == viewId }
+        }
+    }
+
+    private fun parse(treeJson: String?): JsonObject? {
+        if (treeJson.isNullOrBlank()) return null
+        return try {
+            FlowCodec.json.parseToJsonElement(treeJson) as? JsonObject
+        } catch (e: Exception) {
+            null
+        }
     }
 
     /** Every `view_id` present in a tree, for condition checks. */

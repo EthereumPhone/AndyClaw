@@ -73,4 +73,37 @@ class NodeTreeChecksumTest {
         assertTrue(NodeTreeChecksum.textOf(t, "toolbar_title").contains("Anna"))
         assertTrue(NodeTreeChecksum.textOf(t, "nope").isEmpty())
     }
+
+    @Test
+    fun `v2 is the same screen however many rows the list has`() {
+        fun list(rows: Int) = """{"screen":{"package":"com.msg"},"elements":[""" +
+            (0 until rows).joinToString(",") { """{"id":$it,"type":"list_item","viewId":"row","label":"r$it"}""" } +
+            """,{"id":99,"type":"button","viewId":"fab"}],"scrollable":true}"""
+        assertEquals(NodeTreeChecksum.ofV2(list(3)), NodeTreeChecksum.ofV2(list(9)))
+        assertTrue("v1 still counts rows", NodeTreeChecksum.of(list(3)) != NodeTreeChecksum.of(list(9)))
+    }
+
+    @Test
+    fun `v2 still sees a new control or a different app`() {
+        val a = """{"screen":{"package":"com.msg"},"elements":[{"id":0,"type":"button","viewId":"send"}]}"""
+        val b = """{"screen":{"package":"com.msg"},"elements":[{"id":0,"type":"button","viewId":"send"},{"id":1,"type":"button","viewId":"pay"}]}"""
+        val c = """{"screen":{"package":"com.other"},"elements":[{"id":0,"type":"button","viewId":"send"}]}"""
+        assertTrue(NodeTreeChecksum.ofV2(a) != NodeTreeChecksum.ofV2(b))
+        assertTrue(NodeTreeChecksum.ofV2(a) != NodeTreeChecksum.ofV2(c))
+    }
+
+    @Test
+    fun `v2 ignores smart-format positions, which would count rows by another name`() {
+        val a = """{"screen":{"package":"com.msg"},"elements":[{"id":0,"type":"text","label":"x"},{"id":1,"type":"button","viewId":"send"}]}"""
+        val b = """{"screen":{"package":"com.msg"},"elements":[{"id":0,"type":"text","label":"x"},{"id":1,"type":"text","label":"y"},{"id":2,"type":"button","viewId":"send"}]}"""
+        assertEquals(NodeTreeChecksum.ofV2(a), NodeTreeChecksum.ofV2(b))
+    }
+
+    @Test
+    fun `the checksum version follows what was recorded`() {
+        val tree = """{"screen":{"package":"com.msg"},"elements":[{"id":0,"type":"button","viewId":"send"}]}"""
+        assertTrue(NodeTreeChecksum.ofV2(tree).startsWith(NodeTreeChecksum.V2_PREFIX))
+        assertEquals(NodeTreeChecksum.ofV2(tree), NodeTreeChecksum.matching("2:abc", tree))
+        assertEquals(NodeTreeChecksum.of(tree), NodeTreeChecksum.matching("abc", tree))
+    }
 }

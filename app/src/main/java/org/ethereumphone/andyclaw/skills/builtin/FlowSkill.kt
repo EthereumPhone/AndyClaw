@@ -8,11 +8,16 @@ import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonPrimitive
 import org.ethereumphone.andyclaw.flows.AgentDisplayFlowDriver
 import org.ethereumphone.andyclaw.flows.Flow
+import org.ethereumphone.andyclaw.flows.FlowAbortReason
 import org.ethereumphone.andyclaw.flows.FlowCheckpointHandler
+import org.ethereumphone.andyclaw.flows.FlowCheckpointPolicy
+import org.ethereumphone.andyclaw.flows.FlowFirst
 import org.ethereumphone.andyclaw.flows.FlowInterpreter
 import org.ethereumphone.andyclaw.flows.FlowMetrics
 import org.ethereumphone.andyclaw.flows.FlowRepository
+import org.ethereumphone.andyclaw.flows.FlowRunAccounting
 import org.ethereumphone.andyclaw.flows.FlowRunResult
+import org.ethereumphone.andyclaw.flows.FlowStopSignal
 import org.ethereumphone.andyclaw.flows.FlowToolEffect
 import org.ethereumphone.andyclaw.flows.StoredFlow
 import kotlinx.serialization.json.buildJsonObject
@@ -20,9 +25,12 @@ import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
 import kotlinx.serialization.json.putJsonObject
 import kotlinx.serialization.json.addJsonObject
-import org.ethereumphone.andyclaw.ExecutionEngine.Provenance
 import org.ethereumphone.andyclaw.ExecutionEngine.currentProvenance
+import org.ethereumphone.andyclaw.ExecutionEngine.currentUserApproval
 import org.ethereumphone.andyclaw.agent.currentRunToken
+import org.ethereumphone.andyclaw.autopilot.AgentDisplayCapabilities
+import org.ethereumphone.andyclaw.autopilot.AutopilotFlowCompiler
+import org.ethereumphone.andyclaw.autopilot.AutopilotPlan
 import org.ethereumphone.andyclaw.autopilot.AutopilotToolHandler
 import org.ethereumphone.andyclaw.skills.AndyClawSkill
 import org.ethereumphone.andyclaw.skills.SkillManifest
@@ -72,21 +80,29 @@ class FlowSkill(
      * phase exists to shorten.
      */
     private var cachedFor: List<StoredFlow>? = null
+    private var cachedNoConfirm: Boolean? = null
     private var cachedManifest: SkillManifest? = null
 
+    /**
+     * Keyed on the no-confirm setting as well: whether a flow's tool needs the approval card
+     * depends on it, and a manifest memoized from before the user turned confirmations back on
+     * kept offering the flows as needing none.
+     */
     override val privilegedManifest: SkillManifest?
         get() {
             val flows = repository.flows()
+            val confirmOff = noConfirm()
             synchronized(this) {
-                if (cachedFor !== flows) {
+                if (cachedFor !== flows || cachedNoConfirm != confirmOff) {
                     cachedManifest = if (flows.isEmpty()) null else SkillManifest(
                         description = "Replay a previously compiled UI flow: a recorded, " +
                             "deterministic sequence of accessibility actions. No screenshots, no " +
                             "model calls, and it aborts rather than guessing if the screen has " +
                             "changed.",
-                        tools = flows.map { toolFor(it) },
+                        tools = flows.map { toolFor(it, confirmOff) },
                     )
                     cachedFor = flows
+                    cachedNoConfirm = confirmOff
                 }
                 return cachedManifest
             }
@@ -96,27 +112,29 @@ class FlowSkill(
         val stored = repository.byToolName(tool)
             ?: return SkillResult.Error("No compiled flow named '$tool'.")
         val flow = stored.flow
-        // A replay drives the same display as everything else: one run at a time.
-        if (!AgentDisplayLease.claimForCaller()) return SkillResult.Error(AgentDisplayLease.BUSY)
-        if (currentRunToken()?.stopRequested == true) return SkillResult.Error(AgentDisplayLease.STOPPED)
 
         val arguments = flow.params.associateWith { name ->
             params[name]?.jsonPrimitive?.contentOrNull.orEmpty()
         }
+        // A value the model left out is the model's slip, not the flow's: say so before anything
+        // runs. It used to reach the interpreter, count against the flow, and send the autopilot
+        // off to do the task with blanks.
+        val missing = flow.params.filter { arguments[it].isNullOrEmpty() }
+        if (missing.isNotEmpty()) {
+            return SkillResult.Error("Flow '${flow.flow}' needs ${missing.joinToString()}. Call it again with a value for each.")
+        }
 
-        FlowMetrics.onInvocation()
-        val interpreter = FlowInterpreter(driver, checkpointHandler(tool))
+        // A replay drives the same display as everything else: one run at a time.
+        if (!AgentDisplayLease.claimForCaller()) return SkillResult.Error(AgentDisplayLease.BUSY)
+        if (currentRunToken()?.stopRequested == true) return SkillResult.Error(AgentDisplayLease.STOPPED)
+
         val result = try {
-            interpreter.run(flow, arguments)
+            replayOnce(stored, arguments)
         } catch (e: Exception) {
             rethrowIfCancelled(e)
             Log.w(TAG, "flow '${flow.flow}' threw", e)
             return SkillResult.Error("Flow '${flow.flow}' failed: ${e.message}")
         }
-        FlowMetrics.onResult(result)
-
-        val appVersion = driver.installedVersion(flow.app)
-        repository.recordRun(stored.hash, result, appVersion)
 
         return when (result) {
             is FlowRunResult.Completed -> {
@@ -129,22 +147,96 @@ class FlowSkill(
             }
 
             is FlowRunResult.Aborted -> {
-                Log.w(TAG, "flow '${flow.flow}' aborted: ${result.reason} ${result.message}")
-                autopilotFallback(flow, arguments)?.let { return it }
-                SkillResult.Error(
-                    "Flow '${flow.flow}' aborted at step ${result.stepIndex ?: "-"} " +
-                        "(${result.reason}): ${result.message}. The screen is not the one this flow " +
-                        "was compiled against, so nothing further was replayed. This flow is now " +
-                        "marked stale — do the task on the agent display instead " +
-                        "(agent_display_create), and it will be recompiled from what you do."
-                )
+                Log.w(TAG, "flow '${flow.flow}' aborted: ${result.reason} ${result.message} (committed=${result.committed})")
+                if (FlowRunAccounting.mayFallBack(result)) autopilotFallback(flow, arguments)?.let { return it }
+                SkillResult.Error(abortMessage(flow, result))
             }
         }
     }
 
+    /**
+     * One replay of [stored] — the interpreter, the metrics, the flow's record — and nothing
+     * more. What an abort means for the task is the caller's decision.
+     */
+    private suspend fun replayOnce(stored: StoredFlow, arguments: Map<String, String>): FlowRunResult {
+        val flow = stored.flow
+        FlowMetrics.onInvocation()
+        val interpreter = FlowInterpreter(driver, checkpointHandler(flow.toolName), stop = stopSignal())
+        val result = interpreter.run(flow, arguments)
+        FlowMetrics.onResult(result)
+        repository.recordRun(stored.hash, result, driver.installedVersion(flow.app))
+        return result
+    }
+
+    /**
+     * The autopilot's first move, for a task a compiled flow already does: replay it, with no
+     * Jev and no planner, and end the turn on its `say`. Null means "drive the app instead" —
+     * no flow fits, or the replay stopped before doing anything that mattered because the
+     * screens have moved on (the autopilot then recompiles it).
+     */
+    suspend fun flowFirst(plan: AutopilotPlan): SkillResult? {
+        val flowId = AutopilotFlowCompiler.flowIdFor(plan.packageName, plan.goal, plan.values)
+        val stored = FlowFirst.select(flowId, plan.values, repository.flows(), noConfirm(), currentProvenance())
+            ?: return null
+        val arguments = stored.flow.params.associateWith { plan.values[it].orEmpty() }
+        Log.i(TAG, "autopilot: replaying the compiled flow '${stored.flow.flow}' first")
+        val result = try {
+            replayOnce(stored, arguments)
+        } catch (e: Exception) {
+            rethrowIfCancelled(e)
+            Log.w(TAG, "flow-first replay of '${stored.flow.flow}' threw; driving the app instead", e)
+            return null
+        }
+        return when (result) {
+            is FlowRunResult.Completed -> SkillResult.Success(
+                buildJsonObject {
+                    put("status", "success")
+                    put("outcome", "success")
+                    put("steps", result.stepsRun)
+                    put("ms", result.durationMs)
+                    plan.say?.let { put("say", it) }
+                    put("trace", result.trace.takeLast(12).joinToString(" → "))
+                    put("flow", stored.flow.toolName)
+                }.toString()
+            )
+            is FlowRunResult.Aborted ->
+                if (FlowRunAccounting.mayFallBack(result)) null else SkillResult.Error(abortMessage(stored.flow, result))
+        }
+    }
+
+    /** STOP for this replay: the run's own, or for a caller outside a run, any STOP from now on. */
+    private suspend fun stopSignal(): FlowStopSignal {
+        val token = currentRunToken()
+        if (token != null) return FlowStopSignal { token.stopRequested }
+        val baseline = AgentDisplayCapabilities.stopGeneration
+        return FlowStopSignal { AgentDisplayCapabilities.stoppedSince(baseline) }
+    }
+
+    /** What the model is told when a replay did not complete — never an invitation to repeat a send. */
+    private fun abortMessage(flow: Flow, result: FlowRunResult.Aborted): String = when {
+        result.committed ->
+            "Flow '${flow.flow}' performed its final action, but the result could not be confirmed on " +
+                "screen (${result.message}). It has most likely already happened. Do NOT repeat it, and do " +
+                "not do the task another way: tell the user it was done but could not be confirmed, so they can check."
+        result.reason == FlowAbortReason.STOPPED -> "Stopped by the user."
+        result.reason == FlowAbortReason.CHECKPOINT_REFUSED ->
+            "Flow '${flow.flow}' stopped at its confirmation step (${result.message}). Nothing irreversible was done."
+        result.reason == FlowAbortReason.SENSITIVE_TARGET ->
+            "Flow '${flow.flow}' stopped: ${result.message}. That step involves payment, a password, a sign-in " +
+                "or a private app, which is never automated. Ask the user to do it themselves."
+        result.reason == FlowAbortReason.APP_NOT_INSTALLED || result.reason == FlowAbortReason.DISPLAY_UNAVAILABLE ->
+            "Flow '${flow.flow}' could not run: ${result.message}."
+        else ->
+            "Flow '${flow.flow}' aborted at step ${result.stepIndex ?: "-"} " +
+                "(${result.reason}): ${result.message}. The screen is not the one this flow " +
+                "was compiled against, so nothing further was replayed. This flow is now " +
+                "marked stale — do the task on the agent display instead " +
+                "(agent_display_create), and it will be recompiled from what you do."
+    }
+
     // ── Tool definitions ──────────────────────────────────────────────
 
-    private fun toolFor(stored: StoredFlow): ToolDefinition {
+    private fun toolFor(stored: StoredFlow, confirmOff: Boolean): ToolDefinition {
         val flow = stored.flow
         val effect = FlowToolEffect.of(flow)
         return ToolDefinition(
@@ -155,7 +247,7 @@ class FlowSkill(
             // than by the interpreter mid-run — one card for the whole action, which is
             // what `agent-os-design.md` §6 asks for and what keeps the warm path free of
             // a second round trip.
-            requiresApproval = FlowToolEffect.requiresApproval(flow) && !noConfirm(),
+            requiresApproval = FlowToolEffect.requiresApproval(flow) && !confirmOff,
             searchHint = searchHintFor(flow),
             effect = effect,
             rung = RUNG,
@@ -212,21 +304,18 @@ class FlowSkill(
     // ── Checkpoints ───────────────────────────────────────────────────
 
     /**
-     * Crossing a `checkpoint:` is allowed exactly when this tool call was gated by the
-     * engine's approval check — which it was, because [toolFor] sets `requiresApproval`
-     * for any flow that actuates anything, and the check runs before `execute` is
-     * reached. The handler re-derives that rather than assuming it, so a flow that
-     * somehow reached execution without the gate stops at its own boundary instead of
-     * sending.
+     * Crossing a `checkpoint:` takes proof, not an assumption: the engine's witness that the
+     * user approved this very call, or the user's no-confirm for a request that is theirs.
+     * It used to assume the card had run whenever the tool was marked as needing one — and the
+     * tool list is memoized, so after confirmations were turned back on a replay crossed its
+     * checkpoint with no card at all. See [FlowCheckpointPolicy].
      */
-    private fun checkpointHandler(toolName: String) = FlowCheckpointHandler { flow, name, _ ->
-        val gated = FlowToolEffect.requiresApproval(flow)
-        if (gated && !noConfirm()) return@FlowCheckpointHandler true // the approval card ran
-        // No card was shown, by the user's choice. That choice covers the user's own requests
-        // only: anything a message or a webhook set off still stops here.
+    private fun checkpointHandler(toolName: String) = FlowCheckpointHandler { _, name, _ ->
+        val approved = currentUserApproval()?.toolName == toolName
         val provenance = currentProvenance()
-        val ok = noConfirm() && (provenance == Provenance.USER || provenance == Provenance.TRUSTED)
-        if (!ok) Log.w(TAG, "checkpoint '$name' in '$toolName' refused (gated=$gated, provenance=$provenance)")
+        val confirmOff = noConfirm()
+        val ok = FlowCheckpointPolicy.mayCross(approved, confirmOff, provenance)
+        if (!ok) Log.w(TAG, "checkpoint '$name' in '$toolName' refused (approved=$approved, noConfirm=$confirmOff, provenance=$provenance)")
         ok
     }
 
@@ -254,7 +343,8 @@ class FlowSkill(
             putJsonObject("values") { arguments.forEach { (k, v) -> put(k, v) } }
         }
         Log.i(TAG, "flow '${flow.flow}' falling back to the autopilot")
-        return handler.handle(params)
+        // flowLookup = false: the autopilot must not try this same flow first and come back here.
+        return handler.handle(params, flowLookup = false)
     }
 
     companion object {
