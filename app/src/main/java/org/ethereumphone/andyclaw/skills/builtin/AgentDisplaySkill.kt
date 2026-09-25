@@ -17,6 +17,7 @@ import org.ethereumphone.andyclaw.agent.currentRunToken
 import org.ethereumphone.andyclaw.autopilot.AgentDisplayCapabilities
 import org.ethereumphone.andyclaw.autopilot.AgentHud
 import org.ethereumphone.andyclaw.autopilot.AutopilotToolHandler
+import org.ethereumphone.andyclaw.autopilot.ScreenSettler
 import org.ethereumphone.andyclaw.autopilot.SensitiveApps
 import org.ethereumphone.andyclaw.skills.AndyClawSkill
 import org.ethereumphone.andyclaw.skills.RunEnd
@@ -44,18 +45,40 @@ class AgentDisplaySkill(
         /** Max compressed image size in bytes (before base64 encoding). */
         private const val MAX_IMAGE_BYTES = 200_000 // ~266 KB as base64
         private const val MIN_QUALITY = 40
-        // Wait times (ms) after actions before auto-capturing UI tree.
-        // These are aggressive — a11y tree queries are fast and the tree
-        // reflects committed state, so we only need minimal settling time.
-        private const val DELAY_TAP = 80L
-        private const val DELAY_SWIPE = 150L
-        private const val DELAY_TYPE = 50L
-        private const val DELAY_KEY = 80L
-        private const val DELAY_LAUNCH = 1200L
-        private const val DELAY_NODE_CLICK = 50L
-        private const val DELAY_NODE_TEXT = 30L
-        private const val DELAY_DRAG = 100L
-        private const val DELAY_PINCH = 100L
+        /** Tools that put input on the display: the ones the OS's STOP latch drops. */
+        private val INPUT_TOOLS = setOf(
+            "agent_display_tap", "agent_display_long_press", "agent_display_double_tap",
+            "agent_display_swipe", "agent_display_fling", "agent_display_drag", "agent_display_pinch",
+            "agent_display_gesture", "agent_display_press_back", "agent_display_press_home",
+            "agent_display_press_enter", "agent_display_press_recents", "agent_display_press_key",
+            "agent_display_type_text", "agent_display_type_text_slow", "agent_display_click_node",
+            "agent_display_long_click_node", "agent_display_set_node_text", "agent_display_scroll_node",
+            "agent_display_focus_node",
+        )
+
+        /** Tools that change what is on the display, which the rear HUD reports. */
+        private val HUD_TOOLS = INPUT_TOOLS + setOf(
+            "agent_display_create", "agent_display_launch_activity", "agent_display_launch_intent",
+        )
+    }
+
+    /** The last package whose name was looked up for the HUD, and that name. */
+    @Volatile private var labelFor: Pair<String, String?>? = null
+
+    /** The settle detection listens to the display the model is driving. */
+    private fun watchDisplay() {
+        val id = runCatching { getService().displayId }.getOrDefault(-1)
+        if (id >= 0) org.ethereumphone.andyclaw.services.AgentDisplayAccessibilityService.watchedDisplayId = id
+    }
+
+    /** The name the user knows the app on the display by, for the rear HUD. */
+    private fun appLabelOnDisplay(): String? {
+        val pkg = runCatching { getService().currentActivity }.getOrNull()?.substringBefore('/') ?: return null
+        labelFor?.let { (p, label) -> if (p == pkg) return label }
+        val pm = context?.packageManager ?: return null
+        val label = runCatching { pm.getApplicationLabel(pm.getApplicationInfo(pkg, 0)).toString() }.getOrNull()
+        labelFor = pkg to label
+        return label
     }
 
     override val id = "agent_display"
@@ -424,6 +447,13 @@ class AgentDisplaySkill(
                 else -> SkillResult.Error("Unknown tool: $tool")
             }
             val elapsed = System.currentTimeMillis() - startMs
+            // Input the OS dropped because STOP was pressed meanwhile is not "Tapped at…".
+            if (tool in INPUT_TOOLS && result !is SkillResult.Error && AgentDisplayCapabilities.latched()) {
+                return SkillResult.Error(AgentDisplayLease.STOPPED)
+            }
+            if (tool in HUD_TOOLS && result !is SkillResult.Error) {
+                AgentHud.action(currentRunToken()?.id, AgentHud.verb(tool.removePrefix("agent_display_")), appLabelOnDisplay())
+            }
             when (result) {
                 is SkillResult.ImageSuccess -> {
                     Log.i(LTAG, "execute DONE tool=$tool elapsed=${elapsed}ms resultType=ImageSuccess base64Len=${result.base64.length} mediaType=${result.mediaType} textLen=${result.text.length}")
@@ -469,6 +499,8 @@ class AgentDisplaySkill(
     override fun onRunFinished(runId: String, end: RunEnd) {
         if (!AgentDisplayLease.release(runId)) return
         AgentHud.endRun(runId, end)
+        org.ethereumphone.andyclaw.services.AgentDisplayAccessibilityService.watchedDisplayId =
+            android.view.Display.INVALID_DISPLAY
         try {
             AgentDisplayBinder.serviceOrNull()?.destroyAgentDisplay()
         } catch (e: Exception) {
@@ -524,17 +556,27 @@ class AgentDisplaySkill(
         )
     }
 
-    /** Execute an action, wait for the UI to settle, then return the accessibility UI tree. */
+    /**
+     * Execute an action, wait for the UI to settle, then return the accessibility UI tree.
+     *
+     * The wait is event-driven ([ScreenSettler]): the first accessibility event after the action,
+     * then a quiet period, capped — not the fixed 50-150 ms it used to be, which read the tree
+     * before a slow screen had moved and wasted time on a fast one. [extraWaitMs] is for input
+     * the OS is still feeding in (slow typing).
+     */
     private suspend fun actionWithUiTree(
-        delayMs: Long,
+        kind: ScreenSettler.Kind,
         description: String,
+        extraWaitMs: Long = 0L,
         action: () -> Unit,
     ): SkillResult {
-        Log.d(LTAG, "actionWithUiTree: executing action, then waiting ${delayMs}ms for UI settle")
-        Log.i(DTAG, "ACTION_WITH_TREE: $description (delay=${delayMs}ms)")
+        Log.i(DTAG, "ACTION_WITH_TREE: $description (settle=$kind)")
+        watchDisplay()
+        val seq = ScreenSettler.mark()
         action()
-        delay(delayMs)
-        Log.d(LTAG, "actionWithUiTree: delay done, fetching UI tree")
+        if (extraWaitMs > 0) delay(extraWaitMs)
+        ScreenSettler.await(seq, kind)
+        Log.d(LTAG, "actionWithUiTree: settled, fetching UI tree")
         val tree = readTree()
         Log.i(DTAG, "ACTION_WITH_TREE: got tree (${tree.length} chars) for: $description")
         return SkillResult.Success(formatTreeResponse(description, tree))
@@ -692,10 +734,22 @@ class AgentDisplaySkill(
             ?: return SkillResult.Error("Missing required parameter: package_name")
         if (SensitiveApps.isSensitive(pkg)) return SkillResult.Error(SensitiveApps.refusal(pkg))
         val svc = getService()
+        // A live display already showing this app is the one to keep: after the autopilot hands
+        // over, "create" again would have the OS clear the app's tasks and throw away how far it got.
+        val showing = svc.displayId >= 0 && !AgentDisplayCapabilities.latched() &&
+            runCatching { svc.currentActivity }.getOrNull()?.substringBefore('/') == pkg
+        if (showing) {
+            watchDisplay()
+            return SkillResult.Success(
+                formatTreeResponse("The virtual display is already showing $pkg; carrying on from where it is.", readTree(svc))
+            )
+        }
         svc.createAgentDisplay(DISPLAY_WIDTH, DISPLAY_HEIGHT, DISPLAY_DPI)
         val displayId = svc.displayId
+        org.ethereumphone.andyclaw.services.AgentDisplayAccessibilityService.watchedDisplayId = displayId
+        val seq = ScreenSettler.mark()
         svc.launchApp(pkg)
-        delay(DELAY_LAUNCH)
+        ScreenSettler.await(seq, ScreenSettler.Kind.LAUNCH, pkg)
         val tree = readTree(svc)
         return SkillResult.Success(
             formatTreeResponse(
@@ -727,7 +781,7 @@ class AgentDisplaySkill(
             ?: return SkillResult.Error("Missing required parameter: height")
         val dpi = params["dpi"]?.jsonPrimitive?.intOrNull
             ?: return SkillResult.Error("Missing required parameter: dpi")
-        return actionWithUiTree(DELAY_LAUNCH, "Resized display to ${width}x${height} @ ${dpi}dpi.") {
+        return actionWithUiTree(ScreenSettler.Kind.LAUNCH, "Resized display to ${width}x${height} @ ${dpi}dpi.") {
             getService().resizeAgentDisplay(width, height, dpi)
         }
     }
@@ -740,7 +794,7 @@ class AgentDisplaySkill(
         val activity = params["activity_name"]?.jsonPrimitive?.contentOrNull
             ?: return SkillResult.Error("Missing required parameter: activity_name")
         if (SensitiveApps.isSensitive(pkg)) return SkillResult.Error(SensitiveApps.refusal(pkg))
-        return actionWithUiTree(DELAY_LAUNCH, "Launched $pkg/$activity.") {
+        return actionWithUiTree(ScreenSettler.Kind.LAUNCH, "Launched $pkg/$activity.") {
             getService().launchActivity(pkg, activity)
         }
     }
@@ -751,7 +805,7 @@ class AgentDisplaySkill(
         // Where the intent leads, not what it says: a view URI or an implicit action can open a
         // private app as surely as its package name can.
         targetPackageOf(uri)?.takeIf(SensitiveApps::isSensitive)?.let { return SkillResult.Error(SensitiveApps.refusal(it)) }
-        return actionWithUiTree(DELAY_LAUNCH, "Launched intent: $uri.") {
+        return actionWithUiTree(ScreenSettler.Kind.LAUNCH, "Launched intent: $uri.") {
             getService().launchIntentUri(uri)
         }
     }
@@ -778,7 +832,7 @@ class AgentDisplaySkill(
             ?: return SkillResult.Error("Missing required parameter: x")
         val y = params["y"]?.jsonPrimitive?.floatOrNull
             ?: return SkillResult.Error("Missing required parameter: y")
-        return actionWithUiTree(DELAY_TAP, "Tapped at ($x, $y).") {
+        return actionWithUiTree(ScreenSettler.Kind.TAP, "Tapped at ($x, $y).") {
             getService().tap(x, y)
         }
     }
@@ -789,7 +843,7 @@ class AgentDisplaySkill(
         val y = params["y"]?.jsonPrimitive?.floatOrNull
             ?: return SkillResult.Error("Missing required parameter: y")
         val duration = params["duration_ms"]?.jsonPrimitive?.longOrNull ?: 500L
-        return actionWithUiTree(DELAY_TAP, "Long pressed at ($x, $y) for ${duration}ms.") {
+        return actionWithUiTree(ScreenSettler.Kind.TAP, "Long pressed at ($x, $y) for ${duration}ms.") {
             getService().longPress(x, y, duration)
         }
     }
@@ -800,7 +854,7 @@ class AgentDisplaySkill(
         val y = params["y"]?.jsonPrimitive?.floatOrNull
             ?: return SkillResult.Error("Missing required parameter: y")
         val interval = params["interval_ms"]?.jsonPrimitive?.longOrNull ?: 100L
-        return actionWithUiTree(DELAY_TAP, "Double tapped at ($x, $y).") {
+        return actionWithUiTree(ScreenSettler.Kind.TAP, "Double tapped at ($x, $y).") {
             getService().doubleTap(x, y, interval)
         }
     }
@@ -815,7 +869,7 @@ class AgentDisplaySkill(
         val y2 = params["y2"]?.jsonPrimitive?.floatOrNull
             ?: return SkillResult.Error("Missing required parameter: y2")
         val duration = params["duration_ms"]?.jsonPrimitive?.intOrNull ?: 300
-        return actionWithUiTree(DELAY_SWIPE, "Swiped from ($x1,$y1) to ($x2,$y2) over ${duration}ms.") {
+        return actionWithUiTree(ScreenSettler.Kind.SCROLL, "Swiped from ($x1,$y1) to ($x2,$y2) over ${duration}ms.") {
             getService().swipe(x1, y1, x2, y2, duration)
         }
     }
@@ -829,7 +883,7 @@ class AgentDisplaySkill(
             ?: return SkillResult.Error("Missing required parameter: x2")
         val y2 = params["y2"]?.jsonPrimitive?.floatOrNull
             ?: return SkillResult.Error("Missing required parameter: y2")
-        return actionWithUiTree(DELAY_SWIPE, "Flung from ($x1,$y1) to ($x2,$y2).") {
+        return actionWithUiTree(ScreenSettler.Kind.SCROLL, "Flung from ($x1,$y1) to ($x2,$y2).") {
             getService().fling(x1, y1, x2, y2)
         }
     }
@@ -845,7 +899,7 @@ class AgentDisplaySkill(
             ?: return SkillResult.Error("Missing required parameter: end_y")
         val holdMs = params["hold_before_drag_ms"]?.jsonPrimitive?.longOrNull ?: 500L
         val dragMs = params["drag_duration_ms"]?.jsonPrimitive?.intOrNull ?: 500
-        return actionWithUiTree(DELAY_DRAG, "Dragged from ($sx,$sy) to ($ex,$ey).") {
+        return actionWithUiTree(ScreenSettler.Kind.SCROLL, "Dragged from ($sx,$sy) to ($ex,$ey).") {
             getService().drag(sx, sy, ex, ey, holdMs, dragMs)
         }
     }
@@ -861,7 +915,7 @@ class AgentDisplaySkill(
             ?: return SkillResult.Error("Missing required parameter: end_span")
         val duration = params["duration_ms"]?.jsonPrimitive?.intOrNull ?: 500
         val action = if (startSpan > endSpan) "Pinched in" else "Pinched out"
-        return actionWithUiTree(DELAY_PINCH, "$action at ($cx,$cy).") {
+        return actionWithUiTree(ScreenSettler.Kind.SCROLL, "$action at ($cx,$cy).") {
             getService().pinch(cx, cy, startSpan, endSpan, duration)
         }
     }
@@ -879,7 +933,7 @@ class AgentDisplaySkill(
         val xPoints = FloatArray(xArr.size) { xArr[it].jsonPrimitive.floatOrNull ?: 0f }
         val yPoints = FloatArray(yArr.size) { yArr[it].jsonPrimitive.floatOrNull ?: 0f }
         val timestamps = LongArray(tArr.size) { tArr[it].jsonPrimitive.longOrNull ?: 0L }
-        return actionWithUiTree(DELAY_TAP, "Gesture with ${xPoints.size} waypoints.") {
+        return actionWithUiTree(ScreenSettler.Kind.TAP, "Gesture with ${xPoints.size} waypoints.") {
             getService().gesture(xPoints, yPoints, timestamps)
         }
     }
@@ -887,25 +941,25 @@ class AgentDisplaySkill(
     // -- Key input --
 
     private suspend fun doPressBack(): SkillResult {
-        return actionWithUiTree(DELAY_KEY, "Pressed Back.") {
+        return actionWithUiTree(ScreenSettler.Kind.BACK, "Pressed Back.") {
             getService().pressBack()
         }
     }
 
     private suspend fun doPressHome(): SkillResult {
-        return actionWithUiTree(DELAY_KEY, "Pressed Home.") {
+        return actionWithUiTree(ScreenSettler.Kind.BACK, "Pressed Home.") {
             getService().pressHome()
         }
     }
 
     private suspend fun doPressEnter(): SkillResult {
-        return actionWithUiTree(DELAY_KEY, "Pressed Enter.") {
+        return actionWithUiTree(ScreenSettler.Kind.BACK, "Pressed Enter.") {
             getService().pressEnter()
         }
     }
 
     private suspend fun doPressRecents(): SkillResult {
-        return actionWithUiTree(DELAY_KEY, "Pressed Recents.") {
+        return actionWithUiTree(ScreenSettler.Kind.BACK, "Pressed Recents.") {
             getService().pressRecents()
         }
     }
@@ -915,7 +969,7 @@ class AgentDisplaySkill(
             ?: return SkillResult.Error("Missing required parameter: key_code")
         val metaState = params["meta_state"]?.jsonPrimitive?.intOrNull
         val holdMs = params["hold_duration_ms"]?.jsonPrimitive?.longOrNull
-        return actionWithUiTree(DELAY_KEY, "Pressed key $keyCode.") {
+        return actionWithUiTree(ScreenSettler.Kind.BACK, "Pressed key $keyCode.") {
             when {
                 holdMs != null && holdMs > 0 -> getService().pressKeyWithDuration(keyCode, holdMs)
                 metaState != null && metaState != 0 -> getService().pressKeyWithMeta(keyCode, metaState)
@@ -931,12 +985,12 @@ class AgentDisplaySkill(
             ?: return SkillResult.Error("Missing required parameter: text")
         val delayMs = params["delay_ms"]?.jsonPrimitive?.intOrNull ?: 0
         return if (delayMs > 0) {
-            val totalWait = (text.length * delayMs).toLong().coerceAtMost(5000L) + DELAY_TYPE
-            actionWithUiTree(totalWait, "Typed text: \"$text\" (${delayMs}ms/char).") {
+            val feeding = (text.length * delayMs).toLong().coerceAtMost(5000L)
+            actionWithUiTree(ScreenSettler.Kind.TYPE, "Typed text: \"$text\" (${delayMs}ms/char).", extraWaitMs = feeding) {
                 getService().inputTextWithDelay(text, delayMs)
             }
         } else {
-            actionWithUiTree(DELAY_TYPE, "Typed text: \"$text\".") {
+            actionWithUiTree(ScreenSettler.Kind.TYPE, "Typed text: \"$text\".") {
                 getService().inputText(text)
             }
         }
@@ -971,11 +1025,13 @@ class AgentDisplaySkill(
      */
     private suspend fun nodeActionWithTree(
         viewId: String,
-        delayMs: Long,
+        kind: ScreenSettler.Kind,
         description: String,
         action: () -> String,
     ): SkillResult {
         Log.i(DTAG, "NODE_ACTION: $description viewId=$viewId")
+        watchDisplay()
+        val seq = ScreenSettler.mark()
         val result = action()
         val json = org.json.JSONObject(result)
         if (!json.optBoolean("ok", false)) {
@@ -985,7 +1041,7 @@ class AgentDisplaySkill(
         }
         val method = json.optString("method", "")
         Log.i(DTAG, "NODE_ACTION_OK: $description viewId=$viewId method=$method")
-        delay(delayMs)
+        ScreenSettler.await(seq, kind)
         val tree = readTree()
         Log.i(DTAG, "NODE_ACTION_TREE: got tree (${tree.length} chars) after: $description")
         val desc = if (method.isNotEmpty()) "$description (via $method)" else description
@@ -995,7 +1051,7 @@ class AgentDisplaySkill(
     private suspend fun doClickNode(params: JsonObject): SkillResult {
         val viewId = params["view_id"]?.jsonPrimitive?.contentOrNull
             ?: return SkillResult.Error("Missing required parameter: view_id")
-        return nodeActionWithTree(viewId, DELAY_NODE_CLICK, "Clicked node: $viewId.") {
+        return nodeActionWithTree(viewId, ScreenSettler.Kind.TAP, "Clicked node: $viewId.") {
             getService().clickNode(viewId)
         }
     }
@@ -1003,7 +1059,7 @@ class AgentDisplaySkill(
     private suspend fun doLongClickNode(params: JsonObject): SkillResult {
         val viewId = params["view_id"]?.jsonPrimitive?.contentOrNull
             ?: return SkillResult.Error("Missing required parameter: view_id")
-        return nodeActionWithTree(viewId, DELAY_NODE_CLICK, "Long-clicked node: $viewId.") {
+        return nodeActionWithTree(viewId, ScreenSettler.Kind.TAP, "Long-clicked node: $viewId.") {
             getService().longClickNode(viewId)
         }
     }
@@ -1013,7 +1069,7 @@ class AgentDisplaySkill(
             ?: return SkillResult.Error("Missing required parameter: view_id")
         val text = params["text"]?.jsonPrimitive?.contentOrNull
             ?: return SkillResult.Error("Missing required parameter: text")
-        return nodeActionWithTree(viewId, DELAY_NODE_TEXT, "Set text \"$text\" on node: $viewId.") {
+        return nodeActionWithTree(viewId, ScreenSettler.Kind.TYPE, "Set text \"$text\" on node: $viewId.") {
             getService().setNodeText(viewId, text)
         }
     }
@@ -1023,6 +1079,8 @@ class AgentDisplaySkill(
             ?: return SkillResult.Error("Missing required parameter: view_id")
         val direction = params["direction"]?.jsonPrimitive?.contentOrNull
             ?: return SkillResult.Error("Missing required parameter: direction")
+        watchDisplay()
+        val seq = ScreenSettler.mark()
         val actionResult = when (direction) {
             "forward" -> getService().scrollNodeForward(viewId)
             "backward" -> getService().scrollNodeBackward(viewId)
@@ -1032,7 +1090,7 @@ class AgentDisplaySkill(
         if (!json.optBoolean("ok", false)) {
             return SkillResult.Error("Scroll $direction on $viewId failed: ${json.optString("error")}")
         }
-        delay(DELAY_SWIPE)
+        ScreenSettler.await(seq, ScreenSettler.Kind.SCROLL)
         val tree = readTree()
         return SkillResult.Success(formatTreeResponse("Scrolled $direction on node: $viewId.", tree))
     }
@@ -1040,7 +1098,7 @@ class AgentDisplaySkill(
     private suspend fun doFocusNode(params: JsonObject): SkillResult {
         val viewId = params["view_id"]?.jsonPrimitive?.contentOrNull
             ?: return SkillResult.Error("Missing required parameter: view_id")
-        return nodeActionWithTree(viewId, DELAY_TAP, "Focused node: $viewId.") {
+        return nodeActionWithTree(viewId, ScreenSettler.Kind.TAP, "Focused node: $viewId.") {
             getService().focusNode(viewId)
         }
     }

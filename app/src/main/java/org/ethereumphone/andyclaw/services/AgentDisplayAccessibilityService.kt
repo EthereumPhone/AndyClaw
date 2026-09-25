@@ -70,16 +70,34 @@ class AgentDisplayAccessibilityService : AccessibilityService() {
         info.flags = info.flags or
             AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS or
             AccessibilityServiceInfo.FLAG_INCLUDE_NOT_IMPORTANT_VIEWS
-        info.eventTypes = AccessibilityEvent.TYPES_ALL_MASK
         info.feedbackType = AccessibilityServiceInfo.FEEDBACK_GENERIC
-        // The XML config throttles events to one per 100 ms per type. The autopilot's settle
-        // detection measures quiet periods between events, which that throttle would distort.
-        info.notificationTimeout = 0
         serviceInfo = info
         instance = this
+        applyEventConfig(watchedDisplayId != INVALID_DISPLAY)
         Log.i(TAG, "flags=0x${Integer.toHexString(info.flags)}")
 
         registerProxyWithFramework()
+    }
+
+    /**
+     * Every event, unthrottled, only while a run is watching the agent display: the settle
+     * detection measures the quiet between events, which the XML's 100 ms throttle would blur.
+     * The rest of the time this service hears every app on the phone, so it asks for window
+     * changes only, throttled — anything more is work on the main thread for nothing.
+     */
+    private fun applyEventConfig(watching: Boolean) {
+        val info = serviceInfo ?: return
+        val types = if (watching) AccessibilityEvent.TYPES_ALL_MASK
+        else AccessibilityEvent.TYPE_WINDOWS_CHANGED or AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED
+        val timeout = if (watching) 0L else IDLE_NOTIFICATION_TIMEOUT_MS
+        if (info.eventTypes == types && info.notificationTimeout == timeout) return
+        info.eventTypes = types
+        info.notificationTimeout = timeout
+        try {
+            serviceInfo = info
+        } catch (e: Exception) {
+            Log.w(TAG, "could not update the event config: ${e.message}")
+        }
     }
 
     /**
@@ -147,7 +165,7 @@ class AgentDisplayAccessibilityService : AccessibilityService() {
         }
             ?: run {
                 Log.e(DTAG, "A11Y_CLICK_NODE: node NOT FOUND: $viewId")
-                return """{"ok":false,"error":"Node not found: $viewId"}"""
+                return JSONObject().put("ok", false).put("error", "Node not found: $viewId").toString()
             }
 
         // Try a11y action first
@@ -171,7 +189,7 @@ class AgentDisplayAccessibilityService : AccessibilityService() {
             """{"ok":true,"method":"tap","x":$cx,"y":$cy}"""
         } catch (e: Exception) {
             Log.e(TAG, "clickNode tap fallback failed for $viewId", e)
-            """{"ok":false,"error":"Tap fallback failed: ${e.message}"}"""
+            JSONObject().put("ok", false).put("error", "Tap fallback failed: ${e.message}").toString()
         }
     }
 
@@ -181,7 +199,7 @@ class AgentDisplayAccessibilityService : AccessibilityService() {
         } catch (e: PrivateNodeException) {
             return privateRefusal(e)
         }
-            ?: return """{"ok":false,"error":"Node not found: $viewId"}"""
+            ?: return JSONObject().put("ok", false).put("error", "Node not found: $viewId").toString()
 
         if (node.performAction(AccessibilityNodeInfo.ACTION_LONG_CLICK)) {
             node.recycle()
@@ -201,7 +219,7 @@ class AgentDisplayAccessibilityService : AccessibilityService() {
             """{"ok":true,"method":"longPress","x":$cx,"y":$cy}"""
         } catch (e: Exception) {
             Log.e(TAG, "longClickNode longPress fallback failed for $viewId", e)
-            """{"ok":false,"error":"LongPress fallback failed: ${e.message}"}"""
+            JSONObject().put("ok", false).put("error", "LongPress fallback failed: ${e.message}").toString()
         }
     }
 
@@ -214,7 +232,7 @@ class AgentDisplayAccessibilityService : AccessibilityService() {
         }
             ?: run {
                 Log.e(DTAG, "A11Y_SET_TEXT: node NOT FOUND: $viewId")
-                return """{"ok":false,"error":"Node not found: $viewId"}"""
+                return JSONObject().put("ok", false).put("error", "Node not found: $viewId").toString()
             }
 
         // Try a11y ACTION_SET_TEXT first
@@ -227,7 +245,7 @@ class AgentDisplayAccessibilityService : AccessibilityService() {
             return """{"ok":true,"method":"a11y"}"""
         }
 
-        // Fallback: tap to focus, select all, then type text
+        // Fallback: tap it, and type only once it really has the focus
         val bounds = Rect()
         node.getBoundsInScreen(bounds)
         node.recycle()
@@ -237,16 +255,82 @@ class AgentDisplayAccessibilityService : AccessibilityService() {
             val svc = frameworkService
                 ?: return """{"ok":false,"error":"Framework service unavailable for text fallback"}"""
             svc.tap(cx, cy) // tap to focus
-            Thread.sleep(80)
-            svc.pressKeyWithMeta(29 /* KEYCODE_A */, 4096 /* META_CTRL_ON */) // Ctrl+A select all
-            Thread.sleep(30)
-            svc.inputText(text)
-            Log.d(TAG, "setNodeText $viewId -> type fallback ($cx, $cy)")
-            """{"ok":true,"method":"type","x":$cx,"y":$cy}"""
+            when (typeIntoFocusedField(displayId, cx.toInt(), cy.toInt(), text)) {
+                FocusedTyping.DONE -> """{"ok":true,"method":"focused","x":$cx,"y":$cy}"""
+                FocusedTyping.NO_FOCUS -> """{"ok":false,"error":"field did not take focus"}"""
+                FocusedTyping.UNVERIFIED -> {
+                    svc.pressKeyWithMeta(29 /* KEYCODE_A */, 4096 /* META_CTRL_ON */) // Ctrl+A select all
+                    svc.inputText(text)
+                    Log.d(TAG, "setNodeText $viewId -> type fallback ($cx, $cy)")
+                    """{"ok":true,"method":"type","x":$cx,"y":$cy}"""
+                }
+            }
         } catch (e: Exception) {
             Log.e(TAG, "setNodeText type fallback failed for $viewId", e)
-            """{"ok":false,"error":"Type fallback failed: ${e.message}"}"""
+            JSONObject().put("ok", false).put("error", "Type fallback failed: ${e.message}").toString()
         }
+    }
+
+    /** How [typeIntoFocusedField] went. */
+    enum class FocusedTyping {
+        /** The field took the text and reads it back. */
+        DONE,
+        /** No editable field near the tap took input focus: typing now would land elsewhere. */
+        NO_FOCUS,
+        /** The right field has focus but would not take the text directly; type it as keys. */
+        UNVERIFIED,
+    }
+
+    /**
+     * Types [text] into the field just tapped at ([x], [y]) — once, and only there.
+     *
+     * The old way was: tap, wait a fixed 80 ms, select-all and type into whatever had focus. When
+     * focus had not moved yet, that selected and overwrote a *different* field. Now the focused
+     * editable node is polled for up to [waitMs]; the text is set on that node and read back.
+     * Some WebView and React fields accept ACTION_SET_TEXT without taking it — then the caller
+     * types it as keys, into the field that is now known to have focus.
+     */
+    fun typeIntoFocusedField(displayId: Int, x: Int, y: Int, text: String, waitMs: Long = FOCUS_WAIT_MS): FocusedTyping {
+        val deadline = SystemClock.uptimeMillis() + waitMs
+        while (true) {
+            val node = focusedEditable(displayId)
+            if (node != null) {
+                try {
+                    val bounds = Rect()
+                    node.getBoundsInScreen(bounds)
+                    val near = bounds.contains(x, y) ||
+                        (Math.abs(bounds.centerX() - x) < NEAR_PX && Math.abs(bounds.centerY() - y) < NEAR_PX)
+                    if (near) {
+                        val args = Bundle().apply {
+                            putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text)
+                        }
+                        val set = node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
+                        node.refresh()
+                        return if (set && node.text?.toString() == text) FocusedTyping.DONE else FocusedTyping.UNVERIFIED
+                    }
+                } finally {
+                    try { node.recycle() } catch (_: Exception) {}
+                }
+            }
+            if (SystemClock.uptimeMillis() >= deadline) return FocusedTyping.NO_FOCUS
+            Thread.sleep(FOCUS_POLL_MS)
+        }
+    }
+
+    /** The editable node holding input focus on [displayId], never a private app's; or null. */
+    private fun focusedEditable(displayId: Int): AccessibilityNodeInfo? {
+        val windows = windowsOnAllDisplays.get(displayId) ?: return null
+        for (window in windows) {
+            val root = window.root ?: continue
+            val focused = try {
+                root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
+            } finally {
+                try { root.recycle() } catch (_: Exception) {}
+            } ?: continue
+            if (focused.isEditable && !SensitiveApps.isSensitive(focused.packageName?.toString())) return focused
+            try { focused.recycle() } catch (_: Exception) {}
+        }
+        return null
     }
 
     internal fun doScrollNode(displayId: Int, viewId: String, action: Int): String {
@@ -259,7 +343,7 @@ class AgentDisplayAccessibilityService : AccessibilityService() {
         }
             ?: run {
                 Log.e(DTAG, "A11Y_SCROLL_NODE: node NOT FOUND: $viewId")
-                return """{"ok":false,"error":"Node not found: $viewId"}"""
+                return JSONObject().put("ok", false).put("error", "Node not found: $viewId").toString()
             }
 
         if (node.performAction(action)) {
@@ -288,7 +372,7 @@ class AgentDisplayAccessibilityService : AccessibilityService() {
             """{"ok":true,"method":"swipe"}"""
         } catch (e: Exception) {
             Log.e(TAG, "scrollNode swipe fallback failed for $viewId", e)
-            """{"ok":false,"error":"Scroll fallback failed: ${e.message}"}"""
+            JSONObject().put("ok", false).put("error", "Scroll fallback failed: ${e.message}").toString()
         }
     }
 
@@ -298,7 +382,7 @@ class AgentDisplayAccessibilityService : AccessibilityService() {
         } catch (e: PrivateNodeException) {
             return privateRefusal(e)
         }
-            ?: return """{"ok":false,"error":"Node not found: $viewId"}"""
+            ?: return JSONObject().put("ok", false).put("error", "Node not found: $viewId").toString()
 
         if (node.performAction(AccessibilityNodeInfo.ACTION_ACCESSIBILITY_FOCUS)) {
             node.recycle()
@@ -319,7 +403,7 @@ class AgentDisplayAccessibilityService : AccessibilityService() {
             """{"ok":true,"method":"tap","x":$cx,"y":$cy}"""
         } catch (e: Exception) {
             Log.e(TAG, "focusNode tap fallback failed for $viewId", e)
-            """{"ok":false,"error":"Focus fallback failed: ${e.message}"}"""
+            JSONObject().put("ok", false).put("error", "Focus fallback failed: ${e.message}").toString()
         }
     }
 
@@ -329,7 +413,7 @@ class AgentDisplayAccessibilityService : AccessibilityService() {
         } catch (e: PrivateNodeException) {
             return privateRefusal(e, key = "error")
         }
-            ?: return """{"error":"Node not found: $viewId"}"""
+            ?: return JSONObject().put("error", "Node not found: $viewId").toString()
         return try {
             val bounds = Rect()
             node.getBoundsInScreen(bounds)
@@ -355,7 +439,7 @@ class AgentDisplayAccessibilityService : AccessibilityService() {
             }.toString()
         } catch (e: Exception) {
             Log.e(TAG, "getNodeInfo $viewId failed", e)
-            """{"error":"${e.message}"}"""
+            JSONObject().put("error", e.message ?: "failed").toString()
         } finally {
             node.recycle()
         }
@@ -470,7 +554,7 @@ class AgentDisplayAccessibilityService : AccessibilityService() {
         } catch (e: Exception) {
             Log.e(TAG, "Error in smart tree analysis", e)
             Log.e(DTAG, "SMART_ANALYSIS_ERROR: ${e.message}", e)
-            """{"error":"${e.message}"}"""
+            JSONObject().put("error", e.message ?: "failed").toString()
         }
     }
 
@@ -632,7 +716,7 @@ class AgentDisplayAccessibilityService : AccessibilityService() {
             result.toString()
         } catch (e: Exception) {
             Log.e(TAG, "Error building legacy tree", e)
-            """{"error":"${e.message}"}"""
+            JSONObject().put("error", e.message ?: "failed").toString()
         }
     }
 
@@ -786,6 +870,17 @@ class AgentDisplayAccessibilityService : AccessibilityService() {
         /** Only events from this display are counted. Set by the autopilot while it runs. */
         @Volatile
         var watchedDisplayId: Int = INVALID_DISPLAY
+            set(value) {
+                val changed = (field == INVALID_DISPLAY) != (value == INVALID_DISPLAY)
+                field = value
+                if (changed) instance?.applyEventConfig(value != INVALID_DISPLAY)
+            }
+
+        private const val IDLE_NOTIFICATION_TIMEOUT_MS = 100L
+        private const val FOCUS_WAIT_MS = 600L
+        private const val FOCUS_POLL_MS = 40L
+        /** How far from the tap a focused field may be and still be the one tapped. */
+        private const val NEAR_PX = 150
 
         /** Bumped on every event from [watchedDisplayId]. */
         val eventSeq = AtomicLong()

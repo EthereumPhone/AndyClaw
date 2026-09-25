@@ -6,6 +6,7 @@ import android.os.SystemClock
 import android.util.Log
 import android.view.accessibility.AccessibilityNodeInfo
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import org.ethereumphone.andyclaw.services.AgentDisplayAccessibilityService
@@ -34,6 +35,9 @@ class AppAutopilotDevice(
 
     /** The last screen read, for redacting the replay frame captured alongside it. */
     @Volatile private var lastSnapshot: ScreenSnapshot? = null
+
+    /** Where the OS's frame-quiet check runs; see [perform]. */
+    private val frameCheckScope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + Dispatchers.IO)
 
     override suspend fun isLaunchable(packageName: String): Boolean = withContext(Dispatchers.IO) {
         val pm = context?.packageManager ?: return@withContext true
@@ -142,12 +146,22 @@ class AppAutopilotDevice(
                             a11y.doSetNodeText(id, uniqueViewId, text)
                         } else {
                             val svc = service
-                            svc.tap(target!!.centerX.toFloat(), target.centerY.toFloat())
-                            delay(80)
+                            val x = target!!.centerX
+                            val y = target.centerY
+                            svc.tap(x.toFloat(), y.toFloat())
                             if (stopRequested) return@withContext ActionOutcome(ok = false, changedScreen = false, error = "stopped")
-                            svc.pressKeyWithMeta(KEYCODE_A, META_CTRL_ON)
-                            svc.inputText(text)
-                            OK
+                            // Type only once the tapped field has focus: typing blind after a fixed
+                            // wait overwrote whichever field still had it.
+                            when (a11y?.typeIntoFocusedField(id, x, y, text)) {
+                                AgentDisplayAccessibilityService.FocusedTyping.DONE -> OK
+                                AgentDisplayAccessibilityService.FocusedTyping.NO_FOCUS -> """{"ok":false,"error":"field did not take focus"}"""
+                                else -> {
+                                    if (a11y == null) delay(80)
+                                    svc.pressKeyWithMeta(KEYCODE_A, META_CTRL_ON)
+                                    svc.inputText(text)
+                                    OK
+                                }
+                            }
                         }
                         r to ScreenSettler.Kind.TYPE
                     }
@@ -182,15 +196,21 @@ class AppAutopilotDevice(
                 val error = Regex("\"error\":\"([^\"]*)\"").find(result)?.groupValues?.get(1) ?: "failed"
                 return@withContext ActionOutcome(ok = false, changedScreen = false, actMs = actMs, error = error)
             }
+            // No accessibility event is not proof of no change: WebViews and canvas apps redraw
+            // without announcing it. The OS's frame check runs alongside the event wait rather
+            // than after it, so a quiet app costs the longer of the two, not their sum.
+            // Detached: the binder wait cannot be interrupted, and withContext would otherwise sit
+            // out the rest of it even when the event wait already had the answer.
+            val visual = frameCheckScope.async { AgentDisplayCapabilities.visuallyChanged(quietMs = 100, timeoutMs = 600) }
             val settle = ScreenSettler.await(seq, kind)
             var changed = settle.changed
             var settleMs = settle.ms
             if (!changed) {
-                // No accessibility event is not proof of no change: WebViews and canvas apps
-                // redraw without announcing it. Ask the OS whether any frame visibly changed.
                 val t = SystemClock.uptimeMillis()
-                changed = AgentDisplayCapabilities.visuallyChanged(quietMs = 100, timeoutMs = 600) ?: false
+                changed = visual.await() ?: false
                 settleMs += SystemClock.uptimeMillis() - t
+            } else {
+                visual.cancel() // its answer is not needed; the binder wait finishes on its own
             }
             ActionOutcome(ok = true, changedScreen = changed, actMs = actMs, settleMs = settleMs)
         }
