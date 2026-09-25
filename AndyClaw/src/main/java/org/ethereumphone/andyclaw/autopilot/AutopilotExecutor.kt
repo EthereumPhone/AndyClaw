@@ -1,8 +1,16 @@
 package org.ethereumphone.andyclaw.autopilot
 
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 
@@ -10,6 +18,12 @@ import kotlinx.serialization.json.put
 interface AutopilotDevice {
     /** Create the display if needed and bring [packageName] to the front of it. */
     suspend fun ensureApp(packageName: String): Boolean
+
+    /** Whether [packageName] is installed with something to launch. */
+    suspend fun isLaunchable(packageName: String): Boolean = true
+
+    /** The app's name as the user knows it ("Signal"), for messages and the rear HUD. */
+    suspend fun appLabel(packageName: String): String? = null
 
     /** The current screen, read after the UI has settled. Null when it cannot be read. */
     suspend fun snapshot(): ScreenSnapshot?
@@ -23,7 +37,10 @@ interface AutopilotDevice {
     /** Grab a frame for the replay; runs in parallel with the Jev call. Optional. */
     suspend fun captureFrame(step: Int): Unit = Unit
 
-    /** The user asked the agent to stop (rear-screen hold, or the app's STOP button). */
+    /**
+     * The user asked this run to stop (rear-screen hold, the launcher's or the app's STOP).
+     * Checked before every action and polled while Jev or the planner is thinking.
+     */
     val stopRequested: Boolean get() = false
 }
 
@@ -56,6 +73,13 @@ sealed interface PlannerDecision {
     data class Replan(val steps: List<PlanStep>) : PlannerDecision
     data object Done : PlannerDecision
     data class Abort(val reason: String, val say: String? = null) : PlannerDecision
+
+    /**
+     * No usable answer: the call failed, or the reply made no sense. Unlike [Abort] this is not
+     * the planner deciding the task cannot be done, so the run is handed back to the model
+     * rather than failed.
+     */
+    data class Unusable(val reason: String) : PlannerDecision
 }
 
 /** Progress events, for the live view, the rear HUD and the replay. */
@@ -73,7 +97,16 @@ data class AutopilotEvent(
     val elapsedMs: Long = 0,
     val plannerCalls: Int = 0,
     val reason: String? = null,
+    /** On DONE and FAILED: how the run ended, as [AutopilotOutcome.Outcome.wire]. */
+    val outcome: String? = null,
+    /** On DONE and FAILED: one short sentence for the user, never a reason code. */
+    val message: String? = null,
 ) {
+    /**
+     * SUBGOAL_DONE carries the sub-goal the run moved *to*, and after a replan the new list.
+     * A hand-over ends in FAILED with outcome "handoff", so a consumer that only knows the kinds
+     * still finishes its card; one that reads [outcome] can tell it from a failure.
+     */
     enum class Kind { STARTED, ACTING, SETTLED, SUBGOAL_DONE, ESCALATED, DONE, FAILED }
     enum class Source { JEV, PLANNER }
 }
@@ -106,9 +139,16 @@ data class AutopilotResult(
 ) {
     enum class Status { SUCCESS, NEEDS_PLANNER, FAILED }
 
+    /** How the run ended, as the user should hear it. */
+    val outcome: AutopilotOutcome.Outcome get() = AutopilotOutcome.of(status, reason)
+
+    /** One short sentence for the user; never a reason code. */
+    val message: String get() = AutopilotOutcome.message(status, reason, say)
+
     /** What goes back to the model as the tool result: small on purpose. */
     fun toToolResultJson(): String = buildJsonObject {
         put("status", status.name.lowercase())
+        put("outcome", outcome.wire)
         put("steps", steps)
         put("ms", durationMs)
         say?.let { put("say", it) }
@@ -135,6 +175,13 @@ data class ExecutedAction(
  * a small context, not the whole conversation. The planner is also the way out: anything this
  * loop cannot resolve within its budgets comes back as [AutopilotResult.Status.NEEDS_PLANNER]
  * with a compact description of where it stopped.
+ *
+ * STOP is honoured at every point where the run could still do something: before each action,
+ * after each Jev or planner answer, and while either is still on the network — a call in flight
+ * is abandoned rather than waited out, and the action it would have chosen is never performed.
+ *
+ * Every way out emits exactly one DONE or FAILED event, a cancellation and an unexpected
+ * exception included, so no live view, launcher card or rear HUD is left saying "running".
  */
 class AutopilotExecutor(
     private val device: AutopilotDevice,
@@ -144,6 +191,8 @@ class AutopilotExecutor(
     private val events: AutopilotEventSink = AutopilotEventSink { },
     private val clock: () -> Long = System::currentTimeMillis,
     private val runId: String = "ap-" + java.lang.Long.toHexString(System.nanoTime() and 0xffffff),
+    /** Where Jev and planner calls run, so that STOP can walk away from one still in flight. */
+    private val netDispatcher: CoroutineDispatcher = Dispatchers.Default,
 ) {
 
     suspend fun run(initialPlan: AutopilotPlan): AutopilotResult {
@@ -165,6 +214,9 @@ class AutopilotExecutor(
         // Only arriving at a screen by acting counts as a visit; re-reading it after a wait, a
         // retry or a finished sub-goal is not going in circles.
         var arrivedByAction = true
+        // Network calls STOP can abandon. Not a child of this run on purpose: a blocking call
+        // that ignores cancellation must not hold the run open after STOP.
+        val netScope = CoroutineScope(SupervisorJob() + netDispatcher)
 
         fun elapsed() = clock() - start
         fun emit(kind: AutopilotEvent.Kind, block: AutopilotEvent.() -> AutopilotEvent = { this }) =
@@ -172,10 +224,7 @@ class AutopilotExecutor(
                 elapsedMs = elapsed(), plannerCalls = plannerCalls).block())
 
         fun finish(status: AutopilotResult.Status, reason: String?, say: String? = null): AutopilotResult {
-            emit(if (status == AutopilotResult.Status.SUCCESS) AutopilotEvent.Kind.DONE else AutopilotEvent.Kind.FAILED) {
-                copy(reason = reason)
-            }
-            return AutopilotResult(
+            val result = AutopilotResult(
                 status = status,
                 steps = steps,
                 durationMs = elapsed(),
@@ -191,176 +240,252 @@ class AutopilotExecutor(
                 finalScreen = lastScreen,
                 plan = plan,
             )
+            emit(if (status == AutopilotResult.Status.SUCCESS) AutopilotEvent.Kind.DONE else AutopilotEvent.Kind.FAILED) {
+                copy(reason = reason, outcome = result.outcome.wire, message = result.message)
+            }
+            return result
+        }
+
+        fun stopped() = finish(AutopilotResult.Status.FAILED, AutopilotOutcome.REASON_STOPPED, "Stopped.")
+
+        /**
+         * [block] on the network, polling STOP while it runs. Null when STOP came first: the call
+         * is cancelled and its answer, whatever it would have been, is never acted on.
+         */
+        suspend fun <T> untilStopped(block: suspend () -> T): Result<T>? {
+            val work = netScope.async { runCatching { block() } }
+            try {
+                while (!work.isCompleted) {
+                    if (device.stopRequested) {
+                        work.cancel()
+                        return null
+                    }
+                    withTimeoutOrNull(STOP_POLL_MS) { work.join() }
+                }
+            } catch (e: CancellationException) {
+                work.cancel()
+                throw e
+            }
+            // A cancellation inside the result is the call's own failure unless this run is the
+            // one being cancelled.
+            currentCoroutineContext().ensureActive()
+            return work.await()
+        }
+
+        /** A screen caught mid-transition can read as nothing; give it two more chances. */
+        suspend fun readScreen(): ScreenSnapshot? {
+            repeat(SNAPSHOT_ATTEMPTS - 1) {
+                device.snapshot()?.let { return it }
+                if (device.stopRequested) return null
+                device.waitForSettle()
+            }
+            return device.snapshot()
         }
 
         emit(AutopilotEvent.Kind.STARTED)
-        if (SensitiveApps.isSensitive(plan.packageName)) {
-            return finish(AutopilotResult.Status.FAILED, "sensitive_app", SensitiveApps.refusal(plan.packageName))
-        }
-        if (!device.ensureApp(plan.packageName)) {
-            return finish(AutopilotResult.Status.FAILED, "app_unavailable")
-        }
-
-        while (true) {
-            if (device.stopRequested) return finish(AutopilotResult.Status.FAILED, "stopped_by_user", "Stopped.")
-            if (steps >= plan.maxSteps) return finish(AutopilotResult.Status.NEEDS_PLANNER, "step_budget")
-            if (elapsed() >= config.wallClockBudgetMs) return finish(AutopilotResult.Status.NEEDS_PLANNER, "time_budget")
-            if (guard.subgoalBudgetExceeded()) return finish(AutopilotResult.Status.NEEDS_PLANNER, "subgoal_budget")
-
-            val stepStart = clock()
-            val screen = device.snapshot() ?: return finish(AutopilotResult.Status.FAILED, "screen_unreadable")
-            // Before the screen is kept anywhere: lastScreen ends up in the tool result's summary.
-            if (SensitiveApps.isSensitive(screen.packageName)) {
-                return finish(AutopilotResult.Status.FAILED, "sensitive_app", SensitiveApps.refusal(screen.packageName))
+        try {
+            if (SensitiveApps.isSensitive(plan.packageName)) {
+                return finish(AutopilotResult.Status.FAILED, "sensitive_app", SensitiveApps.refusal(plan.packageName))
             }
-            lastScreen = screen
-            if (arrivedByAction) {
-                guard.visit(screen)?.let { loop -> return finish(AutopilotResult.Status.NEEDS_PLANNER, loop) }
+            if (device.stopRequested) return stopped()
+            if (!device.isLaunchable(plan.packageName)) {
+                return finish(AutopilotResult.Status.FAILED, "app_not_installed",
+                    "I can't find ${device.appLabel(plan.packageName) ?: plan.packageName} on this phone.")
             }
-            arrivedByAction = false
+            if (!device.ensureApp(plan.packageName)) {
+                return if (device.stopRequested) stopped() else finish(AutopilotResult.Status.FAILED, "app_unavailable")
+            }
 
-            val prompt = StepPromptBuilder.build(plan, subgoal, screen, history, guard.triedOn(screen))
+            while (true) {
+                if (device.stopRequested) return stopped()
+                if (steps >= plan.maxSteps) return finish(AutopilotResult.Status.NEEDS_PLANNER, "step_budget")
+                if (elapsed() >= config.wallClockBudgetMs) return finish(AutopilotResult.Status.NEEDS_PLANNER, "time_budget")
+                if (guard.subgoalBudgetExceeded()) return finish(AutopilotResult.Status.NEEDS_PLANNER, "subgoal_budget")
 
-            // Ask Jev (unless this sub-goal needs reasoning Jev cannot do).
-            var jevMs = 0L
-            val decision: StepDecision = if (plan.steps[subgoal].needsPlanner || jev == null) {
-                StepDecision.Escalate(if (jev == null) "jev_unavailable" else "needs_planner")
-            } else if (jevFailures >= config.maxJevFailures) {
-                StepDecision.Escalate("jev_unavailable")
-            } else {
-                var failure = "jev_error"
-                val response = try {
-                    coroutineScope {
+                val stepStart = clock()
+                val screen = readScreen()
+                    ?: return if (device.stopRequested) stopped() else finish(AutopilotResult.Status.FAILED, "screen_unreadable")
+                // Before the screen is kept anywhere: lastScreen ends up in the tool result's summary.
+                if (SensitiveApps.isSensitive(screen.packageName)) {
+                    return finish(AutopilotResult.Status.FAILED, "sensitive_app", SensitiveApps.refusal(screen.packageName))
+                }
+                lastScreen = screen
+                if (arrivedByAction) {
+                    guard.visit(screen)?.let { loop -> return finish(AutopilotResult.Status.NEEDS_PLANNER, loop) }
+                }
+                arrivedByAction = false
+
+                val prompt = StepPromptBuilder.build(plan, subgoal, screen, history, guard.triedOn(screen))
+
+                // With Jev out of the picture the planner drives every step. Its calls are small
+                // next to a round trip of the main loop, so it gets the whole step budget rather
+                // than the three escalations that make sense when Jev is doing the work.
+                val jevDown = jev == null || jevFailures >= config.maxJevFailures
+                val plannerBudget = if (jevDown) plan.maxSteps else config.maxPlannerEscalations
+
+                // Ask Jev (unless this sub-goal needs reasoning Jev cannot do).
+                var jevMs = 0L
+                val decision: StepDecision = if (plan.steps[subgoal].needsPlanner || jev == null) {
+                    StepDecision.Escalate(if (jev == null) "jev_unavailable" else "needs_planner")
+                } else if (jevDown) {
+                    StepDecision.Escalate("jev_unavailable")
+                } else {
+                    var failure = "jev_error"
+                    val answer = coroutineScope {
                         val frame = async { runCatching { device.captureFrame(steps) } }
-                        val r = jev.evaluate(prompt.request)
+                        val r = untilStopped { jev.evaluate(prompt.request) }
                         frame.await()
                         r
-                    }
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (e: JevUnavailableException) {
-                    jevFailures = config.maxJevFailures
-                    failure = "jev_unavailable"
-                    null
-                } catch (e: Exception) {
-                    jevFailures++
-                    null
-                }
-                if (response == null) {
-                    StepDecision.Escalate(failure)
-                } else {
-                    jevFailures = 0
-                    jevMs = response.rttMs
-                    jevTimes += response.rttMs
-                    StepPolicy.decide(response, prompt, plan, subgoal, screen, lastActionCommitted,
-                        guard.thresholdBump(screen), config)
-                }
-            }
-
-            // Resolve escalations through the planner into a concrete decision.
-            val resolved: StepDecision = when (decision) {
-                is StepDecision.Escalate -> {
-                    escalations += decision.reason
-                    emit(AutopilotEvent.Kind.ESCALATED) { copy(reason = decision.reason) }
-                    if (decision.reason == "jev_error") {
-                        // One transient failure is not worth a planner round trip; re-read and retry.
-                        if (jevFailures in 1 until config.maxJevFailures) continue
-                    }
-                    if (planner == null || plannerCalls >= config.maxPlannerEscalations) {
-                        return finish(AutopilotResult.Status.NEEDS_PLANNER, decision.reason)
-                    }
-                    plannerCalls++
-                    val options = prompt.options.mapValues { (_, o) -> StepPromptBuilder.describe(o, screen, plan) }
-                    when (val pd = planner.decide(PlannerContext(plan, subgoal, screen, history, decision.reason, options))) {
-                        is PlannerDecision.Done -> StepDecision.Done
-                        is PlannerDecision.Abort -> return finish(AutopilotResult.Status.FAILED, pd.reason, pd.say)
-                        is PlannerDecision.Replan -> {
-                            if (pd.steps.isEmpty()) return finish(AutopilotResult.Status.NEEDS_PLANNER, "empty_replan")
-                            plan = plan.copy(steps = pd.steps.take(AutopilotPlan.MAX_SUBGOALS))
-                            subgoal = 0
-                            guard.subgoalAdvanced()
-                            continue
+                    } ?: return stopped()
+                    val response = answer.getOrElse { e ->
+                        if (e is JevUnavailableException) {
+                            jevFailures = config.maxJevFailures
+                            failure = "jev_unavailable"
+                        } else {
+                            jevFailures++
                         }
-                        is PlannerDecision.Act -> {
-                            val option = prompt.options[pd.optionKey]
-                                ?: return finish(AutopilotResult.Status.NEEDS_PLANNER, "planner_invalid_option")
-                            val target = option.elementId?.let { screen.byId(it) }
-                            if (target != null && StepPolicy.isSensitive(target)) {
-                                return finish(AutopilotResult.Status.NEEDS_PLANNER, "sensitive")
+                        null
+                    }
+                    if (device.stopRequested) return stopped()
+                    if (response == null) {
+                        StepDecision.Escalate(failure)
+                    } else {
+                        jevFailures = 0
+                        jevMs = response.rttMs
+                        jevTimes += response.rttMs
+                        StepPolicy.decide(response, prompt, plan, subgoal, screen, lastActionCommitted,
+                            guard.thresholdBump(screen), config, undoable = lastActed != null)
+                    }
+                }
+
+                // Resolve escalations through the planner into a concrete decision.
+                val resolved: StepDecision = when (decision) {
+                    is StepDecision.Escalate -> {
+                        // One transient failure is not worth a planner round trip, nor worth
+                        // telling anyone the model is being asked: re-read and retry.
+                        if (decision.reason == "jev_error" && jevFailures in 1 until config.maxJevFailures) continue
+                        escalations += decision.reason
+                        emit(AutopilotEvent.Kind.ESCALATED) { copy(reason = decision.reason) }
+                        if (planner == null || plannerCalls >= plannerBudget) {
+                            return finish(AutopilotResult.Status.NEEDS_PLANNER, decision.reason)
+                        }
+                        plannerCalls++
+                        val options = prompt.options.mapValues { (_, o) -> StepPromptBuilder.describe(o, screen, plan) }
+                        val context = PlannerContext(plan, subgoal, screen, history, decision.reason, options)
+                        val answer = untilStopped { planner.decide(context) } ?: return stopped()
+                        if (device.stopRequested) return stopped()
+                        when (val pd = answer.getOrElse { PlannerDecision.Unusable("planner_error") }) {
+                            is PlannerDecision.Unusable -> return finish(AutopilotResult.Status.NEEDS_PLANNER, pd.reason)
+                            is PlannerDecision.Done -> StepDecision.Done
+                            is PlannerDecision.Abort -> return finish(AutopilotResult.Status.FAILED, pd.reason, pd.say)
+                            is PlannerDecision.Replan -> {
+                                if (pd.steps.isEmpty()) return finish(AutopilotResult.Status.NEEDS_PLANNER, "empty_replan")
+                                plan = plan.copy(steps = pd.steps.take(AutopilotPlan.MAX_SUBGOALS))
+                                subgoal = 0
+                                guard.subgoalAdvanced()
+                                // Carries the new list, so every view redraws its sub-goals.
+                                emit(AutopilotEvent.Kind.SUBGOAL_DONE)
+                                continue
                             }
-                            if (option == StepOption.None) return finish(AutopilotResult.Status.NEEDS_PLANNER, "no_option")
-                            if (option == StepOption.Wait) StepDecision.Wait
-                            else StepDecision.Act(option, confidence = 1.0,
-                                commits = target != null && StepPolicy.isCommitLike(target))
+                            is PlannerDecision.Act -> {
+                                val option = prompt.options[pd.optionKey]
+                                    ?: return finish(AutopilotResult.Status.NEEDS_PLANNER, "planner_invalid_option")
+                                val target = option.elementId?.let { screen.byId(it) }
+                                if (target != null && StepPolicy.isSensitive(target)) {
+                                    return finish(AutopilotResult.Status.NEEDS_PLANNER, "sensitive")
+                                }
+                                if (option == StepOption.None) return finish(AutopilotResult.Status.NEEDS_PLANNER, "no_option")
+                                if (option == StepOption.Wait) StepDecision.Wait
+                                else StepDecision.Act(option, confidence = 1.0,
+                                    commits = target != null && StepPolicy.isCommitLike(target))
+                            }
                         }
                     }
+                    else -> decision
                 }
-                else -> decision
-            }
 
-            when (resolved) {
-                StepDecision.Done -> {
-                    trace += "done"
-                    return finish(AutopilotResult.Status.SUCCESS, null)
-                }
-                StepDecision.Wait -> {
-                    guard.waited(screen)?.let { return finish(AutopilotResult.Status.NEEDS_PLANNER, it) }
-                    device.waitForSettle()
-                }
-                StepDecision.AdvanceAndReask -> {
-                    emit(AutopilotEvent.Kind.SUBGOAL_DONE)
-                    subgoal = (subgoal + 1).coerceAtMost(plan.steps.lastIndex)
-                    guard.subgoalAdvanced()
-                }
-                StepDecision.Undo -> {
-                    // The previous action did not do what it should. Go back, and make sure it
-                    // is never picked again on the screen where it was taken.
-                    lastActed?.let { (prevScreen, _) -> guard.miss(prevScreen) }
-                    trace += "undo"
-                    history += HistoryEntry("pressed Back to undo the previous action", true)
-                    val outcome = device.perform(StepOption.Back, screen, plan)
-                    steps++
-                    arrivedByAction = true
-                    lastActed = null
-                    lastActionCommitted = false
-                    guard.acted(screen, StepOption.Back, outcome.changedScreen)
-                }
-                is StepDecision.Act -> {
-                    if (resolved.advancesSubgoal) {
-                        emit(AutopilotEvent.Kind.SUBGOAL_DONE)
+                when (resolved) {
+                    StepDecision.Done -> {
+                        trace += "done"
+                        return finish(AutopilotResult.Status.SUCCESS, null)
+                    }
+                    StepDecision.Wait -> {
+                        guard.waited(screen)?.let { return finish(AutopilotResult.Status.NEEDS_PLANNER, it) }
+                        device.waitForSettle()
+                    }
+                    StepDecision.AdvanceAndReask -> {
                         subgoal = (subgoal + 1).coerceAtMost(plan.steps.lastIndex)
                         guard.subgoalAdvanced()
+                        emit(AutopilotEvent.Kind.SUBGOAL_DONE)
                     }
-                    val option = resolved.option
-                    val target = option.elementId?.let { screen.byId(it) }
-                    val source = if (decision is StepDecision.Escalate) AutopilotEvent.Source.PLANNER else AutopilotEvent.Source.JEV
-                    val verb = option.key.substringBefore(':')
-                    emit(AutopilotEvent.Kind.ACTING) {
-                        copy(action = verb, target = target, confidence = resolved.confidence, source = source)
+                    StepDecision.Undo -> {
+                        if (device.stopRequested) return stopped()
+                        // The previous action did not do what it should. Go back, and make sure it
+                        // is never picked again on the screen where it was taken.
+                        lastActed?.let { (prevScreen, _) -> guard.miss(prevScreen) }
+                        trace += "undo"
+                        history += HistoryEntry("pressed Back to undo the previous action", true)
+                        emit(AutopilotEvent.Kind.ACTING) { copy(action = "back", source = AutopilotEvent.Source.JEV) }
+                        val outcome = device.perform(StepOption.Back, screen, plan)
+                        steps++
+                        arrivedByAction = true
+                        // Nothing to judge next time: the Back press is not an action that can
+                        // itself be undone, or undoing walks the run out of the app.
+                        lastActed = null
+                        lastActionCommitted = false
+                        emit(AutopilotEvent.Kind.SETTLED) {
+                            copy(action = "back", source = AutopilotEvent.Source.JEV,
+                                timings = StepTimings(jevMs, outcome.actMs, outcome.settleMs, clock() - stepStart))
+                        }
+                        if (!outcome.ok && device.stopRequested) return stopped()
+                        guard.acted(screen, StepOption.Back, outcome.changedScreen)
                     }
-                    val outcome = device.perform(option, screen, plan)
-                    steps++
-                    arrivedByAction = true
-                    val label = describeAction(option, target, plan)
-                    trace += label
-                    history += HistoryEntry(label, outcome.changedScreen)
-                    actions += ExecutedAction(option, target, (option as? StepOption.Type)?.valueKey,
-                        subgoal, screen, outcome.changedScreen)
-                    lastActed = screen to option
-                    lastActionCommitted = resolved.commits
-                    val timings = StepTimings(jevMs, outcome.actMs, outcome.settleMs, clock() - stepStart)
-                    emit(AutopilotEvent.Kind.SETTLED) {
-                        copy(action = verb, target = target, confidence = resolved.confidence, source = source, timings = timings)
+                    is StepDecision.Act -> {
+                        if (resolved.advancesSubgoal) {
+                            subgoal = (subgoal + 1).coerceAtMost(plan.steps.lastIndex)
+                            guard.subgoalAdvanced()
+                            emit(AutopilotEvent.Kind.SUBGOAL_DONE)
+                        }
+                        if (device.stopRequested) return stopped()
+                        val option = resolved.option
+                        val target = option.elementId?.let { screen.byId(it) }
+                        val source = if (decision is StepDecision.Escalate) AutopilotEvent.Source.PLANNER else AutopilotEvent.Source.JEV
+                        val verb = option.key.substringBefore(':')
+                        emit(AutopilotEvent.Kind.ACTING) {
+                            copy(action = verb, target = target, confidence = resolved.confidence, source = source)
+                        }
+                        val outcome = device.perform(option, screen, plan)
+                        steps++
+                        arrivedByAction = true
+                        val label = describeAction(option, target, plan)
+                        trace += label
+                        history += HistoryEntry(label, outcome.changedScreen)
+                        actions += ExecutedAction(option, target, (option as? StepOption.Type)?.valueKey,
+                            subgoal, screen, outcome.changedScreen)
+                        lastActed = screen to option
+                        lastActionCommitted = resolved.commits
+                        val timings = StepTimings(jevMs, outcome.actMs, outcome.settleMs, clock() - stepStart)
+                        emit(AutopilotEvent.Kind.SETTLED) {
+                            copy(action = verb, target = target, confidence = resolved.confidence, source = source, timings = timings)
+                        }
+                        if (!outcome.ok) {
+                            if (device.stopRequested) return stopped()
+                            return finish(AutopilotResult.Status.NEEDS_PLANNER, "action_failed:${outcome.error ?: verb}")
+                        }
+                        guard.acted(screen, option, outcome.changedScreen)?.let {
+                            return finish(AutopilotResult.Status.NEEDS_PLANNER, it)
+                        }
                     }
-                    if (!outcome.ok) {
-                        return finish(AutopilotResult.Status.NEEDS_PLANNER, "action_failed:${outcome.error ?: verb}")
-                    }
-                    guard.acted(screen, option, outcome.changedScreen)?.let {
-                        return finish(AutopilotResult.Status.NEEDS_PLANNER, it)
-                    }
+                    is StepDecision.Escalate -> error("escalations are resolved above")
                 }
-                is StepDecision.Escalate -> error("escalations are resolved above")
             }
+        } catch (e: CancellationException) {
+            finish(AutopilotResult.Status.FAILED, AutopilotOutcome.REASON_CANCELLED)
+            throw e
+        } catch (e: Exception) {
+            return finish(AutopilotResult.Status.FAILED, "internal_error")
+        } finally {
+            netScope.cancel()
         }
     }
 
@@ -379,13 +504,27 @@ class AutopilotExecutor(
             }
         }
 
-        /** One screen in a few hundred characters, for handing control back to the planner. */
+        /**
+         * One screen in a few hundred characters, for handing control back to the planner —
+         * with each element's view id or centre, so the model can act on it straight away
+         * instead of paying for another read of the screen.
+         */
         fun summarize(screen: ScreenSnapshot): String {
             val items = screen.elements
                 .filter { it.clickable || it.editable }
                 .take(15)
-                .joinToString("; ") { "[${it.id}] ${it.type} ${it.name?.take(30).orEmpty()}".trim() }
+                .joinToString("; ") { e ->
+                    buildString {
+                        append("[${e.id}] ${e.type}")
+                        e.name?.take(30)?.let { append(" \"$it\"") }
+                        e.viewId?.let { append(" viewId:$it") } ?: append(" @(${e.centerX},${e.centerY})")
+                    }
+                }
             return "${screen.packageName} › ${screen.title.orEmpty()} (${screen.elements.size} elements): $items"
         }
+
+        /** How often a Jev or planner call in flight looks for STOP. */
+        const val STOP_POLL_MS = 50L
+        private const val SNAPSHOT_ATTEMPTS = 3
     }
 }

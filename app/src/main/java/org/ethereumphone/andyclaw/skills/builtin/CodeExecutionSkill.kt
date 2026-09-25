@@ -3,6 +3,8 @@ package org.ethereumphone.andyclaw.skills.builtin
 import android.content.Context
 import bsh.EvalError
 import bsh.Interpreter
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
@@ -23,6 +25,8 @@ import java.io.PrintStream
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
+import kotlin.coroutines.ContinuationInterceptor
+import kotlin.coroutines.CoroutineContext
 
 class CodeExecutionSkill(
     private val context: Context,
@@ -118,13 +122,19 @@ class CodeExecutionSkill(
         return when (tool) {
             // Capture provenance here, while still on the agent's coroutine. Below
             // this point execution moves to a BeanShell executor thread and
-            // `runBlocking`, neither of which inherits the coroutine context.
-            "execute_code" -> executeCode(params, currentProvenance())
+            // `runBlocking`, neither of which inherits the coroutine context — so the
+            // run's context goes along explicitly too: its token (the display lease,
+            // STOP), the provenance the tools re-check, the autopilot's handle on the run.
+            "execute_code" -> executeCode(
+                params,
+                currentProvenance(),
+                currentCoroutineContext().minusKey(Job).minusKey(ContinuationInterceptor),
+            )
             else -> SkillResult.Error("Unknown tool: $tool")
         }
     }
 
-    private fun executeCode(params: JsonObject, provenance: Provenance): SkillResult {
+    private fun executeCode(params: JsonObject, provenance: Provenance, runContext: CoroutineContext): SkillResult {
         val code = params["code"]?.jsonPrimitive?.contentOrNull
             ?: return SkillResult.Error("Missing required parameter: code")
         val timeoutMs = params["timeout_ms"]?.jsonPrimitive?.intOrNull?.toLong()
@@ -143,6 +153,7 @@ class CodeExecutionSkill(
                 enabledSkillIds = enabledSkillIdsProvider.invoke(),
                 provenance = provenance,
                 enforceProvenance = enforceProvenanceProvider?.invoke() ?: true,
+                runContext = runContext,
             )
         } else null
 

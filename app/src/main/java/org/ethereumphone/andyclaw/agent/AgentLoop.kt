@@ -21,6 +21,7 @@ import kotlinx.serialization.json.putJsonObject
 import org.ethereumphone.andyclaw.autopilot.AutopilotEvent
 import org.ethereumphone.andyclaw.autopilot.AutopilotEventSink
 import org.ethereumphone.andyclaw.autopilot.AutopilotMetrics
+import org.ethereumphone.andyclaw.autopilot.AutopilotOutcome
 import org.ethereumphone.andyclaw.autopilot.AutopilotRunContext
 import org.ethereumphone.andyclaw.llm.AnthropicApiException
 import org.ethereumphone.andyclaw.llm.AnthropicModels
@@ -55,6 +56,7 @@ import org.ethereumphone.andyclaw.skills.PromptAssembler
 import org.ethereumphone.andyclaw.skills.SkillResult
 import org.ethereumphone.andyclaw.skills.RoutingResult
 import org.ethereumphone.andyclaw.skills.RoutingBudget
+import org.ethereumphone.andyclaw.skills.RunEnd
 import org.ethereumphone.andyclaw.skills.SmartRouter
 import org.ethereumphone.andyclaw.skills.Tier
 import org.ethereumphone.andyclaw.skills.ToolSearchService
@@ -165,6 +167,13 @@ class AgentLoop(
     @Volatile
     private var runStartedMs: Long = 0L
 
+    /**
+     * The current run's token — its claim on the agent display and its target for STOP. Set at
+     * the top of [run] and shared with the run's sub-agents; see [AgentRunToken].
+     */
+    @Volatile
+    private var runToken = AgentRunToken(job = null)
+
     companion object {
         private const val TAG = "AgentLoop"
         /** Tag for the one line per run that the warm-path measurement reads. */
@@ -181,6 +190,8 @@ class AgentLoop(
         private const val MEMORY_CONTEXT_MIN_SCORE = 0.25f
         internal const val SPAWN_SUBAGENT_TOOL_NAME = "spawn_subagent"
         internal const val ASK_USER_TOOL_NAME = "ask_user"
+        /** How a turn the user stopped ends: one line, and no model call to write it. */
+        internal const val STOPPED_REPLY = "Okay — stopped."
 
         /**
          * Builds the spawn_subagent tool JSON for the LLM tool list.
@@ -413,10 +424,12 @@ class AgentLoop(
 
     suspend fun run(userMessage: String, conversationHistory: List<Message>, callbacks: Callbacks) {
         runStartedMs = System.currentTimeMillis()
+        runToken = AgentRunToken(job = currentCoroutineContext()[Job])
         modelCalls.set(0)
         toolsExecuted.set(0); toolsBlocked.set(0); toolErrors.set(0); toolTimeMs.set(0)
         modelIdsUsed.clear()
         var runOutcome = LedgerOutcome.OK
+        var cancelled = false
         val safety = safetyLayer
 
         // Scan inbound message for secrets when safety is enabled
@@ -1018,6 +1031,25 @@ class AgentLoop(
                 Log.i("AGENT_VIRTUAL_SCREEN", "AgentLoop: adding ${allToolResults.size} tool results as user message, imageCount=$imageCount, totalBase64Chars=$totalBase64")
                 messages.add(Message("user", MessageContent.Blocks(allToolResults)))
 
+                // STOP ends the turn here, with no further model call: the model would only go
+                // on driving the display it was just told to leave alone.
+                if (runToken.stopRequested || autopilotStopped(toolUseBlocks, allToolResults)) {
+                    Log.i(TAG, "Stopped by the user; ending the turn")
+                    runOutcome = LedgerOutcome.BLOCKED
+                    val line = if (fullText.isEmpty() || fullText.last().isWhitespace()) STOPPED_REPLY else "\n\n$STOPPED_REPLY"
+                    fullText.append(line)
+                    callbacks.onToken(line)
+                    logRunSummary(iterations, totalInputTokens, totalOutputTokens, totalCacheReadTokens, totalCacheWriteTokens, totalTokensSavedByMaxTokens, totalCharsTruncated, truncationCount, budget)
+                    callbacks.onComplete(fullText.toString(), TokenUsageSnapshot(
+                        lastInputTokens = lastInputTokens,
+                        totalInputTokens = totalInputTokens,
+                        totalOutputTokens = totalOutputTokens,
+                        cacheReadTokens = totalCacheReadTokens,
+                        cacheWriteTokens = totalCacheWriteTokens,
+                    ))
+                    return
+                }
+
                 // The autopilot finished the task and wrote the reply: asking the model to
                 // restate it would be a whole extra round trip for one sentence.
                 autopilotReply(toolUseBlocks, allToolResults)?.let { say ->
@@ -1047,6 +1079,7 @@ class AgentLoop(
             ))
         } catch (e: CancellationException) {
             runOutcome = LedgerOutcome.ERROR
+            cancelled = true
             throw e
         } catch (e: Exception) {
             runOutcome = LedgerOutcome.ERROR
@@ -1059,8 +1092,18 @@ class AgentLoop(
             // covers the runs that finished cleanly is not a record of what the agent did.
             recordTurn(runOutcome, userMessage, iterations, totalInputTokens, totalOutputTokens)
 
-            // Release any resources skills may still hold (e.g. a virtual display
-            // that the LLM never destroyed because of a crash or cancellation).
+            // Give back what this run took — the agent display if it held it, its recording —
+            // and nothing another run is still using.
+            val end = when {
+                // Cancelling is the user (or the launcher) ending the turn, never the run failing.
+                cancelled || runToken.stopRequested || runOutcome == LedgerOutcome.BLOCKED -> RunEnd.STOPPED
+                runOutcome == LedgerOutcome.ERROR -> RunEnd.FAILED
+                else -> RunEnd.OK
+            }
+            skillRegistry.onRunFinished(runToken.id, end)
+            // The display skill has normally done this already; if no skill did, the lease
+            // must still not outlive the run.
+            org.ethereumphone.andyclaw.skills.builtin.AgentDisplayLease.release(runToken.id)
             try {
                 skillRegistry.cleanupAll()
             } catch (e: Exception) {
@@ -1071,7 +1114,11 @@ class AgentLoop(
 
     // ── Autopilot ─────────────────────────────────────────────────
 
-    private fun autopilotRunContext(modelId: String, callbacks: Callbacks) = AutopilotRunContext(
+    /**
+     * What every tool call of this run carries in its coroutine context: the autopilot's handle
+     * on the run's model client and event sink, and the run's token.
+     */
+    private fun autopilotRunContext(modelId: String, callbacks: Callbacks): kotlin.coroutines.CoroutineContext = AutopilotRunContext(
         client = client,
         modelId = modelId,
         onModelCall = {
@@ -1079,7 +1126,19 @@ class AgentLoop(
             modelIdsUsed.add(modelId)
         },
         events = AutopilotEventSink { callbacks.onAgentStep(it) },
-    )
+    ) + runToken
+
+    /** Whether an autopilot run in this batch ended because the user pressed STOP. */
+    private fun autopilotStopped(calls: List<ContentBlock.ToolUseBlock>, results: List<ContentBlock>): Boolean {
+        val ids = calls.filter { it.name == AUTOPILOT_TOOL_NAME }.map { it.id }.toSet()
+        if (ids.isEmpty()) return false
+        return results.filterIsInstance<ContentBlock.ToolResult>().any { r ->
+            r.toolUseId in ids && runCatching {
+                val obj = kotlinx.serialization.json.Json.parseToJsonElement(r.content) as? JsonObject
+                obj?.get("reason")?.jsonPrimitive?.contentOrNull == AutopilotOutcome.REASON_STOPPED
+            }.getOrDefault(false)
+        }
+    }
 
     /**
      * The reply to end the turn with, when every tool this iteration was the autopilot and

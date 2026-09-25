@@ -8,6 +8,7 @@ import android.graphics.Paint
 import android.os.SystemClock
 import org.ethereumphone.andyclaw.autopilot.AutopilotEvent
 import org.ethereumphone.andyclaw.autopilot.ScreenSnapshot
+import org.ethereumphone.andyclaw.autopilot.SensitiveApps
 import java.io.ByteArrayOutputStream
 
 /**
@@ -44,6 +45,7 @@ object ReplayRecorder {
 
     private const val MAX_FRAMES = 80
     private const val JPEG_QUALITY = 70
+    private const val UNBOUNDED_HALF_HEIGHT = 56
 
     private val lock = Any()
     private var runId: String? = null
@@ -85,8 +87,13 @@ object ReplayRecorder {
         }
     }
 
-    /** Adds a frame (a JPEG of the agent display), redacting [screen]'s editable fields first. */
+    /**
+     * Adds a frame (a JPEG of the agent display), redacting [screen]'s editable fields first.
+     * A frame with no screen to redact against, or one showing a private app, is dropped: a
+     * replay is made to be shared.
+     */
     fun addFrame(step: Int, jpeg: ByteArray, screen: ScreenSnapshot?) {
+        if (screen == null || SensitiveApps.isSensitive(screen.packageName)) return
         val redacted = redact(jpeg, screen) ?: return
         synchronized(lock) {
             if (runId == null || frames.size >= MAX_FRAMES) return
@@ -99,20 +106,23 @@ object ReplayRecorder {
 
     fun latest(): Recording? = synchronized(lock) { finished?.takeIf { it.frames.isNotEmpty() } }
 
-    private fun redact(jpeg: ByteArray, screen: ScreenSnapshot?): ByteArray? {
+    private fun redact(jpeg: ByteArray, screen: ScreenSnapshot): ByteArray? {
         val decoded = BitmapFactory.decodeByteArray(jpeg, 0, jpeg.size) ?: return null
         val bmp = decoded.copy(Bitmap.Config.ARGB_8888, true)
         decoded.recycle()
-        if (screen != null) {
+        run {
             val scale = bmp.width / screen.width.toFloat()
             val canvas = Canvas(bmp)
             val paint = Paint().apply { color = Color.rgb(24, 24, 24) }
             for (e in screen.elements) {
                 if (!(e.editable || e.password)) continue
-                val l = e.left ?: continue
-                val t = e.top ?: continue
-                val r = e.right ?: continue
-                val b = e.bottom ?: continue
+                // The tree read through system_server carries centres only. A field with no
+                // bounds is still a field: black out a full-width band around its centre rather
+                // than leave what was typed in it readable.
+                val l = e.left ?: 0
+                val r = e.right ?: screen.width
+                val t = e.top ?: (e.centerY - UNBOUNDED_HALF_HEIGHT)
+                val b = e.bottom ?: (e.centerY + UNBOUNDED_HALF_HEIGHT)
                 canvas.drawRect(l * scale, t * scale, r * scale, b * scale, paint)
             }
         }

@@ -20,8 +20,13 @@ class StepPolicyTest {
     )
     private val prompt = StepPromptBuilder.build(plan, 0, screen, listOf(HistoryEntry("tapped x", true)))
 
-    private fun decide(vararg answers: Pair<String, JevAnswer>, subgoal: Int = 0, bump: Double = 0.0, lastCommitted: Boolean = false) =
-        StepPolicy.decide(T.response(*answers), prompt, plan, subgoal, screen, lastCommitted, bump, config)
+    private fun decide(
+        vararg answers: Pair<String, JevAnswer>,
+        subgoal: Int = 0,
+        bump: Double = 0.0,
+        lastCommitted: Boolean = false,
+        undoable: Boolean = true,
+    ) = StepPolicy.decide(T.response(*answers), prompt, plan, subgoal, screen, lastCommitted, bump, config, undoable)
 
     @Test
     fun `acts on a confident pick with a clear margin`() {
@@ -93,6 +98,12 @@ class StepPolicyTest {
         assertEquals(StepDecision.Undo, decide(Questions.NEXT to T.choice("tap:3", 0.99), Questions.LAST_PROGRESS to JevAnswer.Noul(0.1)))
         assertTrue(decide(Questions.NEXT to T.choice("tap:3", 0.99), Questions.LAST_PROGRESS to JevAnswer.Noul(0.1),
             lastCommitted = true) is StepDecision.Act)
+    }
+
+    @Test
+    fun `nothing is undone when the last move was itself an undo, or there was none`() {
+        val d = decide(Questions.NEXT to T.choice("tap:3", 0.99), Questions.LAST_PROGRESS to JevAnswer.Noul(0.1), undoable = false)
+        assertTrue(d is StepDecision.Act)
     }
 
     @Test

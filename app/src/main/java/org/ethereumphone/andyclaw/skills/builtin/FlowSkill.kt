@@ -22,6 +22,7 @@ import kotlinx.serialization.json.putJsonObject
 import kotlinx.serialization.json.addJsonObject
 import org.ethereumphone.andyclaw.ExecutionEngine.Provenance
 import org.ethereumphone.andyclaw.ExecutionEngine.currentProvenance
+import org.ethereumphone.andyclaw.agent.currentRunToken
 import org.ethereumphone.andyclaw.autopilot.AutopilotToolHandler
 import org.ethereumphone.andyclaw.skills.AndyClawSkill
 import org.ethereumphone.andyclaw.skills.SkillManifest
@@ -95,6 +96,9 @@ class FlowSkill(
         val stored = repository.byToolName(tool)
             ?: return SkillResult.Error("No compiled flow named '$tool'.")
         val flow = stored.flow
+        // A replay drives the same display as everything else: one run at a time.
+        if (!AgentDisplayLease.claimForCaller()) return SkillResult.Error(AgentDisplayLease.BUSY)
+        if (currentRunToken()?.stopRequested == true) return SkillResult.Error(AgentDisplayLease.STOPPED)
 
         val arguments = flow.params.associateWith { name ->
             params[name]?.jsonPrimitive?.contentOrNull.orEmpty()
@@ -136,10 +140,6 @@ class FlowSkill(
                 )
             }
         }
-    }
-
-    override fun cleanup() {
-        driver.release()
     }
 
     // ── Tool definitions ──────────────────────────────────────────────
@@ -254,7 +254,7 @@ class FlowSkill(
             putJsonObject("values") { arguments.forEach { (k, v) -> put(k, v) } }
         }
         Log.i(TAG, "flow '${flow.flow}' falling back to the autopilot")
-        return handler.handle(params) {}
+        return handler.handle(params)
     }
 
     companion object {

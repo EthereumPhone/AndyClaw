@@ -5,8 +5,10 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.doubleOrNull
 import kotlinx.serialization.json.jsonPrimitive
+import org.ethereumphone.andyclaw.agent.currentRunToken
 import org.ethereumphone.andyclaw.flows.FlowRecorder
 import org.ethereumphone.andyclaw.skills.AndyClawSkill
+import org.ethereumphone.andyclaw.skills.RunEnd
 import org.ethereumphone.andyclaw.skills.SkillManifest
 import org.ethereumphone.andyclaw.skills.SkillResult
 import org.ethereumphone.andyclaw.skills.Tier
@@ -35,9 +37,20 @@ class RecordingDisplaySkill(
     override val baseManifest: SkillManifest get() = inner.baseManifest
     override val privilegedManifest: SkillManifest? get() = inner.privilegedManifest
 
+    /** The run whose session is being recorded; a recording belongs to the run that started it. */
+    @Volatile private var recordingFor: String? = null
+
     override suspend fun execute(tool: String, params: JsonObject, tier: Tier): SkillResult {
+        val runId = currentRunToken()?.id
+        if (recorder.isRecording && recordingFor != runId) {
+            // Another run's session, left open: what this run does must not be appended to it,
+            // or a flow could be compiled from two runs' steps as if they were one task.
+            recorder.stop()
+            recordingFor = null
+        }
         if (tool in START_TOOLS && !recorder.isRecording) {
             recorder.start()
+            recordingFor = runId
             Log.i(TAG, "recording started for $tool")
         }
 
@@ -59,13 +72,24 @@ class RecordingDisplaySkill(
             )
         }
 
-        if (tool in STOP_TOOLS) recorder.stop()
+        if (tool in STOP_TOOLS) {
+            recorder.stop()
+            recordingFor = null
+        }
         return result
     }
 
     override fun cleanup() {
-        recorder.stop()
         inner.cleanup()
+    }
+
+    /** The recording ends with the run that started it — not with whichever run ends next. */
+    override fun onRunFinished(runId: String, end: RunEnd) {
+        if (recordingFor == runId) {
+            recorder.stop()
+            recordingFor = null
+        }
+        inner.onRunFinished(runId, end)
     }
 
     private fun rawTree(): String? = try {

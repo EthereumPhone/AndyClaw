@@ -1305,6 +1305,17 @@ class LauncherBindingService : Service() {
         }
 
         /**
+         * The launcher's STOP. Latches the display, so input already queued is dropped, and
+         * stops the run holding it: its autopilot performs nothing more, and the turn ends with
+         * one line instead of another model call. The launcher also calls `stopInference` for
+         * its own session, which cancels that turn outright.
+         */
+        override fun stopAgent() {
+            enforceCallerIsLauncher()
+            org.ethereumphone.andyclaw.autopilot.AgentDisplayCapabilities.requestStop()
+        }
+
+        /**
          * The ledger as JSONL, one row per line, oldest first.
          *
          * Oldest first because that is chain order, and an export whose whole claim is that
@@ -1312,11 +1323,6 @@ class LauncherBindingService : Service() {
          * hashes run. The temp file is unlinked as soon as it is open: the fd keeps it
          * alive for the reader and nothing is left in cacheDir afterwards.
          */
-        override fun stopAgent() {
-            enforceCallerIsLauncher()
-            org.ethereumphone.andyclaw.autopilot.AgentDisplayCapabilities.requestStop()
-        }
-
         override fun exportLedger(): ParcelFileDescriptor? {
             enforceCallerIsLauncher()
             val app = application as? NodeApp ?: return null
@@ -1534,6 +1540,10 @@ class LauncherBindingService : Service() {
         e.confidence?.let { o.put("confidence", it) }
         e.source?.let { o.put("source", it.name) }
         e.reason?.let { o.put("reason", it) }
+        // On DONE/FAILED. A hand-over stays kind FAILED, so an older launcher still finishes its
+        // card; `outcome` is how a newer one tells it from a failure, and `message` is what to say.
+        e.outcome?.let { o.put("outcome", it) }
+        e.message?.let { o.put("message", it) }
         val ms = org.json.JSONObject().put("elapsed", e.elapsedMs)
         e.timings?.let { t -> ms.put("jev", t.jevMs).put("act", t.actMs).put("settle", t.settleMs).put("step", t.stepMs) }
         o.put("ms", ms)

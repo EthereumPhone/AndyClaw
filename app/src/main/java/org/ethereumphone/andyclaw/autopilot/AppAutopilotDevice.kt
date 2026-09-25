@@ -1,5 +1,6 @@
 package org.ethereumphone.andyclaw.autopilot
 
+import android.content.Context
 import android.os.IAgentDisplayService
 import android.os.SystemClock
 import android.util.Log
@@ -20,7 +21,11 @@ import org.ethereumphone.andyclaw.ExecutionEngine.rethrowIfCancelled
  * is followed by an event-driven settle, not a fixed sleep.
  */
 class AppAutopilotDevice(
-    private val onDisplayCreated: () -> Unit = {},
+    private val context: Context? = null,
+    /** Whether STOP was pressed for the run this device drives; see `AgentRunToken`. */
+    private val stopCheck: () -> Boolean = AgentDisplayCapabilities.stopGeneration.let { base ->
+        { AgentDisplayCapabilities.stoppedSince(base) }
+    },
 ) : AutopilotDevice {
 
     private val service: IAgentDisplayService get() = AgentDisplayBinder.service()
@@ -30,12 +35,34 @@ class AppAutopilotDevice(
     /** The last screen read, for redacting the replay frame captured alongside it. */
     @Volatile private var lastSnapshot: ScreenSnapshot? = null
 
+    override suspend fun isLaunchable(packageName: String): Boolean = withContext(Dispatchers.IO) {
+        val pm = context?.packageManager ?: return@withContext true
+        try {
+            pm.getLaunchIntentForPackage(packageName) != null
+        } catch (e: Exception) {
+            true // unknown is not "missing": let the launch itself decide
+        }
+    }
+
+    override suspend fun appLabel(packageName: String): String? = withContext(Dispatchers.IO) {
+        val pm = context?.packageManager ?: return@withContext null
+        try {
+            pm.getApplicationLabel(pm.getApplicationInfo(packageName, 0)).toString().takeIf { it.isNotBlank() }
+        } catch (e: Exception) {
+            null
+        }
+    }
+
     override suspend fun ensureApp(packageName: String): Boolean = withContext(Dispatchers.IO) {
         try {
             val svc = service
-            if (svc.displayId < 0) svc.createAgentDisplay(WIDTH, HEIGHT, DPI)
-            // Claim the display even when a prewarm created it, so the turn's cleanup puts it away.
-            onDisplayCreated()
+            // A display the last STOP left latched drops every input, and one the model resized
+            // would put the annotations, the live view's crop and the replay's redaction boxes
+            // in the wrong place — re-create either. On a live display this is the OS's cheap
+            // reuse path.
+            if (svc.displayId < 0 || AgentDisplayCapabilities.latched() || !hasAutopilotGeometry(svc)) {
+                svc.createAgentDisplay(WIDTH, HEIGHT, DPI)
+            }
             AgentDisplayAccessibilityService.watchedDisplayId = svc.displayId
             if (snapshotNow()?.packageName == packageName) return@withContext true
             val seq = ScreenSettler.mark()
@@ -47,6 +74,13 @@ class AppAutopilotDevice(
             Log.e(TAG, "ensureApp($packageName) failed", e)
             false
         }
+    }
+
+    private fun hasAutopilotGeometry(svc: IAgentDisplayService): Boolean = try {
+        val info = org.json.JSONObject(svc.displayInfo ?: "{}")
+        info.optInt("width", WIDTH) == WIDTH && info.optInt("height", HEIGHT) == HEIGHT && info.optInt("dpi", DPI) == DPI
+    } catch (e: Exception) {
+        true
     }
 
     override suspend fun snapshot(): ScreenSnapshot? = withContext(Dispatchers.IO) { snapshotNow() }
@@ -63,6 +97,8 @@ class AppAutopilotDevice(
 
     /** One frame for the replay, taken while Jev thinks, so it costs no step time. */
     override suspend fun captureFrame(step: Int): Unit = withContext(Dispatchers.IO) {
+        // A private app's screen never goes into a replay the user can share.
+        if (lastSnapshot?.packageName?.let(SensitiveApps::isSensitive) == true) return@withContext
         try {
             val svc = service
             val jpeg = if (AgentDisplayCapabilities.hasV2) svc.captureFrameScaled(REPLAY_WIDTH, 75)
@@ -78,6 +114,9 @@ class AppAutopilotDevice(
 
     override suspend fun perform(option: StepOption, screen: ScreenSnapshot, plan: AutopilotPlan): ActionOutcome =
         withContext(Dispatchers.IO) {
+            // Accessibility clicks do not pass through the OS's input latch, so this check is
+            // what keeps a STOP pressed a moment ago from being followed by one more tap.
+            if (stopRequested) return@withContext ActionOutcome(ok = false, changedScreen = false, error = "stopped")
             val target = option.elementId?.let { screen.byId(it) }
             val uniqueViewId = target?.viewId?.takeIf { vid -> screen.elements.count { it.viewId == vid } == 1 }
             val a11y = AgentDisplayAccessibilityService.instance
@@ -105,6 +144,7 @@ class AppAutopilotDevice(
                             val svc = service
                             svc.tap(target!!.centerX.toFloat(), target.centerY.toFloat())
                             delay(80)
+                            if (stopRequested) return@withContext ActionOutcome(ok = false, changedScreen = false, error = "stopped")
                             svc.pressKeyWithMeta(KEYCODE_A, META_CTRL_ON)
                             svc.inputText(text)
                             OK
@@ -155,7 +195,7 @@ class AppAutopilotDevice(
             ActionOutcome(ok = true, changedScreen = changed, actMs = actMs, settleMs = settleMs)
         }
 
-    override val stopRequested: Boolean get() = AgentDisplayCapabilities.stopRequested
+    override val stopRequested: Boolean get() = stopCheck()
 
     override suspend fun waitForSettle() {
         ScreenSettler.await(ScreenSettler.mark(), ScreenSettler.Kind.TAP)

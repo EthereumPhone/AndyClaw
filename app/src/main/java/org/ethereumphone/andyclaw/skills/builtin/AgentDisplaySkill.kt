@@ -13,9 +13,13 @@ import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.longOrNull
+import org.ethereumphone.andyclaw.agent.currentRunToken
+import org.ethereumphone.andyclaw.autopilot.AgentDisplayCapabilities
+import org.ethereumphone.andyclaw.autopilot.AgentHud
 import org.ethereumphone.andyclaw.autopilot.AutopilotToolHandler
 import org.ethereumphone.andyclaw.autopilot.SensitiveApps
 import org.ethereumphone.andyclaw.skills.AndyClawSkill
+import org.ethereumphone.andyclaw.skills.RunEnd
 import org.ethereumphone.andyclaw.skills.SkillManifest
 import org.ethereumphone.andyclaw.skills.SkillResult
 import org.ethereumphone.andyclaw.skills.Tier
@@ -346,8 +350,6 @@ class AgentDisplaySkill(
         ),
     )
 
-    @Volatile private var displayActive = false
-
     /**
      * The lookup and the reconnect-on-binder-death live in [AgentDisplayBinder] so the
      * flow interpreter's driver shares exactly one connection path with this skill.
@@ -368,11 +370,14 @@ class AgentDisplaySkill(
         Log.i(LTAG, "execute START tool=$tool params=$params tier=$tier")
         Log.i(DTAG, "TOOL_EXECUTE: $tool | params=$params")
         val startMs = System.currentTimeMillis()
-        org.ethereumphone.andyclaw.autopilot.AgentDisplayCapabilities.noteDisplayUse()
+        AgentDisplayCapabilities.ensureListener()
+        // One run drives the display at a time; see AgentDisplayLease.
+        if (!AgentDisplayLease.claimForCaller()) return SkillResult.Error(AgentDisplayLease.BUSY)
+        if (currentRunToken()?.stopRequested == true) return SkillResult.Error(AgentDisplayLease.STOPPED)
         return try {
             val result = when (tool) {
                 // Display lifecycle
-                "agent_display_autopilot" -> autopilot?.handle(params) { displayActive = true }
+                "agent_display_autopilot" -> autopilot?.handle(params)
                     ?: SkillResult.Error("Unknown tool: $tool")
                 "agent_display_create" -> doCreate(params)
                 "agent_display_destroy" -> doDestroy()
@@ -454,15 +459,18 @@ class AgentDisplaySkill(
         }
     }
 
-    override fun cleanup() {
-        if (displayActive) {
-            Log.w(TAG, "cleanup: virtual display still active — destroying")
-            try {
-                getService().destroyAgentDisplay()
-            } catch (e: Exception) {
-                Log.e(TAG, "cleanup: failed to destroy display", e)
-            }
-            displayActive = false
+    /**
+     * The end of a run: if it held the display, end its HUD and put the display away — parked,
+     * so the next run starts warm. A run that never held it leaves it alone, which is what keeps
+     * a heartbeat finishing mid-autopilot from tearing the display out from under the user's task.
+     */
+    override fun onRunFinished(runId: String, end: RunEnd) {
+        if (!AgentDisplayLease.release(runId)) return
+        AgentHud.endRun(runId, end)
+        try {
+            AgentDisplayBinder.serviceOrNull()?.destroyAgentDisplay()
+        } catch (e: Exception) {
+            Log.e(TAG, "failed to park the display at the end of run $runId", e)
         }
     }
 
@@ -683,7 +691,6 @@ class AgentDisplaySkill(
         if (SensitiveApps.isSensitive(pkg)) return SkillResult.Error(SensitiveApps.refusal(pkg))
         val svc = getService()
         svc.createAgentDisplay(DISPLAY_WIDTH, DISPLAY_HEIGHT, DISPLAY_DPI)
-        displayActive = true
         val displayId = svc.displayId
         svc.launchApp(pkg)
         delay(DELAY_LAUNCH)
@@ -698,13 +705,11 @@ class AgentDisplaySkill(
 
     private fun doDestroy(): SkillResult {
         getService().destroyAgentDisplay()
-        displayActive = false
         return SkillResult.Success("Virtual display destroyed.")
     }
 
     private fun doDestroyAndPromote(): SkillResult {
         getService().destroyAgentDisplayAndPromote()
-        displayActive = false
         return SkillResult.Success("Virtual display destroyed and the running app has been moved to the user's main screen.")
     }
 

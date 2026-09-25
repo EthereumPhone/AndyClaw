@@ -714,6 +714,7 @@ class NodeApp : Application() {
             jev = { jevClient },
             enabled = { securePrefs.autopilotEnabled.value },
             flows = { flowRepositoryOrNull },
+            context = this,
         )
     }
 
@@ -1005,6 +1006,11 @@ class NodeApp : Application() {
                 } catch (e: Exception) {
                     Log.w(TAG, "Flow registry init failed: ${e.message}", e)
                 }
+            }
+            // Hear the rear screen's STOP from process start, not from the first autopilot run:
+            // a hold during a run driven by the model's own display tools must reach it too.
+            appScope.launch {
+                org.ethereumphone.andyclaw.autopilot.AgentDisplayCapabilities.ensureListener()
             }
         }
 

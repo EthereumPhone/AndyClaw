@@ -247,4 +247,15 @@ class NativeSkillRegistry {
             skill.cleanup()
         }
     }
+
+    /** One run ended: every skill gives back what that run, and only that run, took. */
+    fun onRunFinished(runId: String, end: RunEnd) {
+        for (skill in skills) {
+            try {
+                skill.onRunFinished(runId, end)
+            } catch (e: Exception) {
+                Log.w(TAG, "onRunFinished failed for ${skill.id}: ${e.message}", e)
+            }
+        }
+    }
 }

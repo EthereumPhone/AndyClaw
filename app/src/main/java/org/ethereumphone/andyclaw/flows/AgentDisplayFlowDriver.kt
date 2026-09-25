@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.pm.PackageManager
 import android.util.Log
 import kotlinx.coroutines.delay
+import org.ethereumphone.andyclaw.autopilot.AgentDisplayCapabilities
 import org.ethereumphone.andyclaw.skills.builtin.AgentDisplayBinder
 import org.json.JSONObject
 import org.ethereumphone.andyclaw.ExecutionEngine.rethrowIfCancelled
@@ -31,16 +32,12 @@ class AgentDisplayFlowDriver(
         null
     }
 
-    /** True when *this* driver created the display, so only it may destroy it. */
-    @Volatile
-    private var createdDisplay = false
-
     override suspend fun ensureApp(packageName: String): Boolean {
         val service = AgentDisplayBinder.serviceOrNull() ?: return false
         return try {
-            if (service.displayId <= 0) {
+            // A display the last STOP left latched would drop every step of the replay.
+            if (service.displayId <= 0 || AgentDisplayCapabilities.latched()) {
                 service.createAgentDisplay(displayWidth, displayHeight, displayDpi)
-                createdDisplay = true
             }
             val current = try {
                 service.currentActivity
@@ -80,20 +77,6 @@ class AgentDisplayFlowDriver(
 
     override suspend fun setNodeText(viewId: String, text: String): Boolean =
         ok(runCatching { AgentDisplayBinder.serviceOrNull()?.setNodeText(viewId, text) }.getOrNull())
-
-    /**
-     * Tear down the display, but only if this driver is what brought it up. A display
-     * the model is driving through `AgentDisplaySkill` belongs to that session.
-     */
-    fun release() {
-        if (!createdDisplay) return
-        createdDisplay = false
-        try {
-            AgentDisplayBinder.serviceOrNull()?.destroyAgentDisplay()
-        } catch (e: Exception) {
-            Log.w(TAG, "release failed: ${e.message}")
-        }
-    }
 
     /** The node actions answer with `{"ok":true,"method":"..."}` or an error object. */
     private fun ok(result: String?): Boolean {

@@ -14,6 +14,7 @@ import org.ethereumphone.andyclaw.llm.Message
 import org.ethereumphone.andyclaw.llm.MessagesRequest
 import org.ethereumphone.andyclaw.llm.MessagesResponse
 import org.ethereumphone.andyclaw.llm.StreamingCallback
+import org.ethereumphone.andyclaw.ExecutionEngine.rethrowIfCancelled
 
 /**
  * The model the user chose, asked one narrow question when Jev is unsure.
@@ -41,19 +42,26 @@ class LlmAutopilotPlanner(
         )
         val text = StringBuilder()
         var streamError: Throwable? = null
-        client.streamMessage(request, object : StreamingCallback {
-            override fun onToken(text: String) {}
-            override fun onToolUse(id: String, name: String, input: JsonObject) {}
-            override fun onComplete(response: MessagesResponse) {
-                response.content.filterIsInstance<ContentBlock.TextBlock>().forEach { text.append(it.text) }
-            }
-            override fun onError(error: Throwable) {
-                streamError = error
-            }
-        })
+        try {
+            client.streamMessage(request, object : StreamingCallback {
+                override fun onToken(text: String) {}
+                override fun onToolUse(id: String, name: String, input: JsonObject) {}
+                override fun onComplete(response: MessagesResponse) {
+                    response.content.filterIsInstance<ContentBlock.TextBlock>().forEach { text.append(it.text) }
+                }
+                override fun onError(error: Throwable) {
+                    streamError = error
+                }
+            })
+        } catch (e: Exception) {
+            // The clients throw on any non-2xx. A failed call is the planner being unavailable,
+            // not the planner deciding the task cannot be done: hand back, don't fail.
+            rethrowIfCancelled(e)
+            streamError = e
+        }
         streamError?.let {
             Log.w(TAG, "planner call failed: ${it.message}")
-            return PlannerDecision.Abort("planner_error")
+            return PlannerDecision.Unusable("planner_error")
         }
         return parse(text.toString(), context)
     }
@@ -88,12 +96,12 @@ class LlmAutopilotPlanner(
     private fun parse(text: String, ctx: PlannerContext): PlannerDecision {
         val start = text.indexOf('{')
         val end = text.lastIndexOf('}')
-        if (start < 0 || end <= start) return PlannerDecision.Abort("planner_no_json")
+        if (start < 0 || end <= start) return PlannerDecision.Unusable("planner_no_json")
         val obj = runCatching { json.parseToJsonElement(text.substring(start, end + 1)).jsonObject }
-            .getOrElse { return PlannerDecision.Abort("planner_bad_json") }
+            .getOrElse { return PlannerDecision.Unusable("planner_bad_json") }
 
         (obj["act"] as? JsonPrimitive)?.contentOrNull?.let { key ->
-            return if (key in ctx.options) PlannerDecision.Act(key) else PlannerDecision.Abort("planner_invalid_option")
+            return if (key in ctx.options) PlannerDecision.Act(key) else PlannerDecision.Unusable("planner_invalid_option")
         }
         if ((obj["done"] as? JsonPrimitive)?.booleanOrNull == true) return PlannerDecision.Done
         (obj["replan"] as? JsonArray)?.let { arr ->
@@ -103,12 +111,12 @@ class LlmAutopilotPlanner(
                 val type = (o["type"] as? JsonPrimitive)?.contentOrNull?.takeIf { it in ctx.plan.values }
                 PlanStep(doText, (o["done_when"] as? JsonPrimitive)?.contentOrNull, listOfNotNull(type))
             }
-            return if (steps.isNotEmpty()) PlannerDecision.Replan(steps) else PlannerDecision.Abort("planner_empty_replan")
+            return if (steps.isNotEmpty()) PlannerDecision.Replan(steps) else PlannerDecision.Unusable("planner_empty_replan")
         }
         (obj["abort"] as? JsonPrimitive)?.contentOrNull?.let { reason ->
             return PlannerDecision.Abort(reason, (obj["say"] as? JsonPrimitive)?.contentOrNull)
         }
-        return PlannerDecision.Abort("planner_unrecognised")
+        return PlannerDecision.Unusable("planner_unrecognised")
     }
 
     companion object {

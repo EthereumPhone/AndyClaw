@@ -16,6 +16,8 @@ import org.ethereumphone.andyclaw.safety.ToolEffects
 import org.ethereumphone.andyclaw.skills.NativeSkillRegistry
 import org.ethereumphone.andyclaw.skills.SkillResult
 import org.ethereumphone.andyclaw.skills.Tier
+import kotlin.coroutines.CoroutineContext
+import kotlin.coroutines.EmptyCoroutineContext
 
 /**
  * Bridge object injected into BeanShell as `tools`, enabling code to call
@@ -49,6 +51,13 @@ class ToolBridge(
     private val provenance: Provenance = Provenance.UNTRUSTED,
     /** false makes the provenance gate log-only here too, matching the engine. */
     private val enforceProvenance: Boolean = true,
+    /**
+     * The coroutine context of the run that invoked `execute_code`, minus its job and
+     * dispatcher. Every call made from code runs in it, so a display tool reached from code
+     * belongs to the same run as one called directly: same display lease, same STOP, same
+     * provenance for the checks inside the skills.
+     */
+    private val runContext: CoroutineContext = EmptyCoroutineContext,
 ) {
     companion object {
         private const val TAG = "ToolBridge"
@@ -127,7 +136,7 @@ class ToolBridge(
         Log.d(TAG, "Programmatic call: $toolName(${jsonParams.toString().take(100)})")
 
         // Execute on IO dispatcher to avoid blocking the BeanShell executor thread
-        val result = runBlocking(Dispatchers.IO) {
+        val result = runBlocking(Dispatchers.IO + runContext) {
             registry.executeTool(toolName, jsonParams, tier)
         }
 
@@ -190,7 +199,7 @@ class ToolBridge(
         Log.d(TAG, "Programmatic callParallel: $toolName x${paramsList.size}")
         val startMs = System.currentTimeMillis()
 
-        val results = runBlocking(Dispatchers.IO) {
+        val results = runBlocking(Dispatchers.IO + runContext) {
             paramsList.map { params ->
                 async {
                     val jsonParams = mapToJsonObject(params)

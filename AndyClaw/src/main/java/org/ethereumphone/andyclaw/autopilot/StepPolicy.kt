@@ -66,6 +66,12 @@ object StepPolicy {
         lastActionCommitted: Boolean,
         thresholdBump: Double,
         config: AutopilotConfig,
+        /**
+         * Whether the last thing done was a forward action that could be undone. False after an
+         * Undo — LAST_PROGRESS would then be judging the Back press itself, and undoing that
+         * walks the run out of the app — and before the first action, when there is nothing.
+         */
+        undoable: Boolean = true,
     ): StepDecision {
         val isLastSubgoal = subgoalIndex == plan.steps.lastIndex
 
@@ -82,7 +88,7 @@ object StepPolicy {
         }
 
         val lastProgress = response.noul(Questions.LAST_PROGRESS)
-        if (lastProgress != null && lastProgress < config.lastProgressFailed && !lastActionCommitted) {
+        if (undoable && lastProgress != null && lastProgress < config.lastProgressFailed && !lastActionCommitted) {
             return StepDecision.Undo
         }
 

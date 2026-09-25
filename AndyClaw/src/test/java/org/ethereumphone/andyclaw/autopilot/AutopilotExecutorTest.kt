@@ -1,9 +1,17 @@
 package org.ethereumphone.andyclaw.autopilot
 
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.io.IOException
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * The whole loop against a fake messaging app: Jev drives, the planner is only asked when Jev
@@ -209,5 +217,240 @@ class AutopilotExecutorTest {
             .run(plan.copy(packageName = "com.shop"))
         assertEquals("sensitive", result.reason)
         assertTrue(device.performed.isEmpty())
+    }
+
+    // ---- STOP ----
+
+    /** The fake device, with STOP wired to a flag the test flips. */
+    private class Stoppable(val fake: FakeDevice, val stop: AtomicBoolean = AtomicBoolean(false)) :
+        AutopilotDevice by fake {
+        override val stopRequested get() = stop.get()
+    }
+
+    @Test
+    fun `STOP while Jev is still thinking abandons the call and nothing is tapped`() = runTest {
+        val device = Stoppable(device())
+        val jev = JevClient {
+            device.stop.set(true)
+            awaitCancellation()
+        }
+        val events = mutableListOf<AutopilotEvent>()
+        val result = AutopilotExecutor(device, jev, noPlanner, events = { events += it }).run(plan)
+
+        assertEquals("stopped_by_user", result.reason)
+        assertEquals(AutopilotOutcome.Outcome.STOPPED, result.outcome)
+        assertTrue(device.fake.performed.isEmpty())
+        assertEquals("stopped", events.last().outcome)
+    }
+
+    @Test
+    fun `STOP pressed while Jev answered means its pick is never performed`() = runTest {
+        val device = Stoppable(device())
+        val jev = ScriptedJev { req ->
+            device.stop.set(true)
+            competentAnswers(req)
+        }
+        val result = AutopilotExecutor(device, jev, noPlanner).run(plan)
+        assertEquals("stopped_by_user", result.reason)
+        assertTrue(device.fake.performed.isEmpty())
+    }
+
+    @Test
+    fun `STOP while the planner is deciding means its pick is never performed`() = runTest {
+        val device = Stoppable(device())
+        val planner = AutopilotPlanner { ctx ->
+            device.stop.set(true)
+            PlannerDecision.Act(ctx.options.entries.first { it.value.contains("\"Anna\"") }.key)
+        }
+        val result = AutopilotExecutor(device, jev = null, planner = planner).run(plan)
+        assertEquals("stopped_by_user", result.reason)
+        assertTrue(device.fake.performed.isEmpty())
+    }
+
+    @Test
+    fun `STOP between steps ends the run before the next action`() = runTest {
+        val device = Stoppable(device())
+        val result = AutopilotExecutor(device, ScriptedJev { req ->
+            if (device.fake.performed.size == 1) device.stop.set(true)
+            competentAnswers(req)
+        }, noPlanner).run(plan)
+        assertEquals("stopped_by_user", result.reason)
+        assertEquals(listOf("tap:Anna"), device.fake.performed)
+    }
+
+    // ---- Every way out ends the run ----
+
+    @Test
+    fun `a planner that throws hands the task back with a terminal event`() = runTest {
+        val events = mutableListOf<AutopilotEvent>()
+        val planner = AutopilotPlanner { throw RuntimeException("HTTP 500") }
+        val result = AutopilotExecutor(device(), jev = null, planner = planner, events = { events += it }).run(plan)
+
+        assertEquals(AutopilotResult.Status.NEEDS_PLANNER, result.status)
+        assertEquals("planner_error", result.reason)
+        assertEquals(AutopilotOutcome.Outcome.HANDOFF, result.outcome)
+        assertEquals(AutopilotEvent.Kind.FAILED, events.last().kind)
+        assertEquals("handoff", events.last().outcome)
+        assertTrue(result.toToolResultJson().contains("\"outcome\":\"handoff\""))
+    }
+
+    @Test
+    fun `a planner answer that makes no sense hands back instead of failing`() = runTest {
+        val planner = AutopilotPlanner { PlannerDecision.Unusable("planner_bad_json") }
+        val result = AutopilotExecutor(device(), jev = null, planner = planner).run(plan)
+        assertEquals(AutopilotResult.Status.NEEDS_PLANNER, result.status)
+        assertEquals("planner_bad_json", result.reason)
+    }
+
+    @Test
+    fun `a cancelled run still tells every view it ended`() = runTest {
+        val events = java.util.Collections.synchronizedList(mutableListOf<AutopilotEvent>())
+        val inFlight = CompletableDeferred<Unit>()
+        val jev = JevClient {
+            inFlight.complete(Unit)
+            awaitCancellation()
+        }
+        val job = launch { AutopilotExecutor(device(), jev, noPlanner, events = { events += it }).run(plan) }
+        inFlight.await()
+        job.cancelAndJoin()
+
+        assertEquals(AutopilotEvent.Kind.FAILED, events.last().kind)
+        assertEquals("cancelled", events.last().reason)
+        assertEquals("cancelled", events.last().outcome)
+    }
+
+    @Test
+    fun `an unexpected exception ends the run as a failure, not a hang`() = runTest {
+        val device = object : AutopilotDevice by device() {
+            override suspend fun snapshot(): ScreenSnapshot = throw IllegalStateException("binder died")
+        }
+        val events = mutableListOf<AutopilotEvent>()
+        val result = AutopilotExecutor(device, competentJev(), noPlanner, events = { events += it }).run(plan)
+        assertEquals(AutopilotResult.Status.FAILED, result.status)
+        assertEquals("internal_error", result.reason)
+        assertEquals(AutopilotEvent.Kind.FAILED, events.last().kind)
+    }
+
+    @Test
+    fun `an app that is not installed fails at once and says so`() = runTest {
+        val fake = device()
+        val device = object : AutopilotDevice by fake {
+            override suspend fun isLaunchable(packageName: String) = false
+        }
+        val result = AutopilotExecutor(device, competentJev(), noPlanner).run(plan)
+        assertEquals("app_not_installed", result.reason)
+        assertNull("never launched", fake.launched)
+        assertTrue(result.say!!.contains("com.msg"))
+    }
+
+    // ---- Undo, reads, Jev outages ----
+
+    @Test
+    fun `an undo is never itself undone`() = runTest {
+        val device = device()
+        var sawBob = false
+        val jev = ScriptedJev { req ->
+            val s = req.state
+            when {
+                s.contains("title=\"Bob\"") -> {
+                    sawBob = true
+                    mapOf(Questions.LAST_PROGRESS to JevAnswer.Noul(0.05))
+                }
+                s.contains("title=\"Chats\"") && !sawBob ->
+                    mapOf(Questions.NEXT to T.choice(ScriptedJev.keyFor(req, Questions.NEXT, "Tap", "Bob")!!, 0.9))
+                // Back on the list, Jev judges the Back press as "no progress" too.
+                s.contains("title=\"Chats\"") -> competentAnswers(req) + (Questions.LAST_PROGRESS to JevAnswer.Noul(0.05))
+                else -> competentAnswers(req)
+            }
+        }
+        val result = AutopilotExecutor(device, jev, noPlanner).run(plan)
+        assertEquals(AutopilotResult.Status.SUCCESS, result.status)
+        assertEquals(listOf("tap:Bob", "back", "tap:Anna", "type:Message", "tap:Send"), device.performed)
+    }
+
+    @Test
+    fun `a screen that cannot be read once is read again, not failed`() = runTest {
+        val fake = device()
+        var misses = 2
+        val device = object : AutopilotDevice by fake {
+            override suspend fun snapshot(): ScreenSnapshot? = if (misses-- > 0) null else fake.snapshot()
+        }
+        val result = AutopilotExecutor(device, competentJev(), noPlanner).run(plan)
+        assertEquals(AutopilotResult.Status.SUCCESS, result.status)
+    }
+
+    @Test
+    fun `with Jev down the planner drives every step of the task`() = runTest {
+        val device = device()
+        val jev = JevClient { throw JevUnavailableException("no wallet sign-in") }
+        val planner = AutopilotPlanner { ctx ->
+            fun pick(verb: String, label: String) =
+                PlannerDecision.Act(ctx.options.entries.first { it.value.startsWith(verb) && it.value.contains("\"$label\"") }.key)
+            when {
+                ctx.screen.elements.any { it.label?.contains("Sent") == true } -> PlannerDecision.Done
+                ctx.screen.title == "Chats" -> pick("Tap", "Anna")
+                ctx.screen.elements.any { it.value == "hi" } -> pick("Tap", "Send")
+                else -> pick("Type", "Message")
+            }
+        }
+        val result = AutopilotExecutor(device, jev, planner).run(plan)
+        assertEquals(AutopilotResult.Status.SUCCESS, result.status)
+        assertEquals("more calls than the three escalations a Jev-driven run gets", 4, result.plannerCalls)
+    }
+
+    // ---- The event stream ----
+
+    @Test
+    fun `SUBGOAL_DONE names the sub-goal the run moved to`() = runTest {
+        val events = mutableListOf<AutopilotEvent>()
+        AutopilotExecutor(device(), competentJev(), noPlanner, events = { events += it }).run(plan)
+        val done = events.filter { it.kind == AutopilotEvent.Kind.SUBGOAL_DONE }.map { it.subgoalIndex }
+        assertEquals(listOf(1, 2), done)
+    }
+
+    @Test
+    fun `a replan announces the new sub-goals`() = runTest {
+        val events = mutableListOf<AutopilotEvent>()
+        var replanned = false
+        val planner = AutopilotPlanner {
+            if (!replanned) {
+                replanned = true
+                PlannerDecision.Replan(listOf(PlanStep("Find Anna"), PlanStep("Say hi")))
+            } else PlannerDecision.Done
+        }
+        AutopilotExecutor(device(), jev = null, planner = planner, events = { events += it }).run(plan)
+        val announced = events.first { it.kind == AutopilotEvent.Kind.SUBGOAL_DONE }
+        assertEquals(listOf("Find Anna", "Say hi"), announced.subgoals)
+        assertEquals(0, announced.subgoalIndex)
+    }
+
+    @Test
+    fun `one transient Jev error is retried without saying the model was asked`() = runTest {
+        val events = mutableListOf<AutopilotEvent>()
+        var failed = false
+        val jev = object : JevClient {
+            val inner = competentJev()
+            override suspend fun evaluate(request: JevRequest): JevResponse {
+                if (!failed) {
+                    failed = true
+                    throw IOException("reset")
+                }
+                return inner.evaluate(request)
+            }
+        }
+        val result = AutopilotExecutor(device(), jev, noPlanner, events = { events += it }).run(plan)
+        assertEquals(AutopilotResult.Status.SUCCESS, result.status)
+        assertFalse(events.any { it.kind == AutopilotEvent.Kind.ESCALATED })
+        assertTrue(result.escalations.isEmpty())
+    }
+
+    @Test
+    fun `a hand-over tells the model where things are on screen`() {
+        val summary = AutopilotExecutor.summarize(T.screen("com.msg", "Chats",
+            T.button(1, "Search", viewId = "com.msg:id/search"),
+            T.button(2, "Anna", y = 280, x = 360),
+        ))
+        assertTrue(summary.contains("viewId:com.msg:id/search"))
+        assertTrue(summary.contains("\"Anna\" @(360,280)"))
     }
 }

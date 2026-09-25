@@ -11,6 +11,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import org.ethereumphone.andyclaw.services.AgentDisplayAccessibilityService
 import org.ethereumphone.andyclaw.skills.builtin.AgentDisplayBinder
+import org.ethereumphone.andyclaw.skills.builtin.AgentDisplayLease
 
 /**
  * Hides app launch behind the planner.
@@ -77,16 +78,23 @@ class JevTurnRouter(
     }
 
     private suspend fun prelaunch(packageName: String) {
+        // Another run is driving the display (a heartbeat mid-autopilot): launching an app on
+        // it now would pull the screen out from under that task.
+        if (AgentDisplayLease.isHeld()) return
         val svc = AgentDisplayBinder.serviceOrNull() ?: return
-        val usesBefore = AgentDisplayCapabilities.displayUses
-        if (svc.displayId < 0) svc.createAgentDisplay(AppAutopilotDevice.WIDTH, AppAutopilotDevice.HEIGHT, AppAutopilotDevice.DPI)
+        val claimsBefore = AgentDisplayLease.claims
+        if (svc.displayId < 0 || AgentDisplayCapabilities.latched()) {
+            svc.createAgentDisplay(AppAutopilotDevice.WIDTH, AppAutopilotDevice.HEIGHT, AppAutopilotDevice.DPI)
+        }
         AgentDisplayAccessibilityService.watchedDisplayId = svc.displayId
         svc.launchApp(packageName)
         Log.i(TAG, "prelaunched $packageName")
         delay(UNUSED_DISPLAY_MS)
-        if (AgentDisplayCapabilities.displayUses == usesBefore) {
+        if (AgentDisplayLease.claims == claimsBefore && !AgentDisplayLease.isHeld()) {
             // Nothing used it: the turn did not need the app after all. Park the display so
-            // the app does not linger there, suppressed from the rear screen.
+            // the app does not linger there, suppressed from the rear screen. Anything that did
+            // use it — a display tool, the autopilot, a flow replay — claimed it, and puts it
+            // away itself when its run ends.
             try { svc.destroyAgentDisplay() } catch (_: Exception) {}
             Log.i(TAG, "prewarmed display unused; parked")
         }
