@@ -100,8 +100,7 @@ class HeartbeatRunner(
             while (isActive) {
                 delay(config.intervalMs)
                 if (!isActive) break
-                val result = runOnce()
-                onResult(result)
+                runNow()
             }
         }
     }
@@ -113,10 +112,43 @@ class HeartbeatRunner(
 
     /**
      * Run a single heartbeat cycle. Can also be called on-demand.
+     *
+     * [eventDriven] runs answer something that happened, so the backstop window — which exists
+     * to suppress *scheduled* ticks after such a run — never stops them; they used to open the
+     * window and then skip themselves inside it. A successful event-driven run is what opens it.
      */
-    suspend fun runOnce(): HeartbeatResult {
+    suspend fun runOnce(eventDriven: Boolean = false): HeartbeatResult {
+        val result = runOnceInner(eventDriven)
+        if (eventDriven && (result.outcome == HeartbeatOutcome.OK || result.outcome == HeartbeatOutcome.ALERT)) {
+            noteEventTrigger()
+        }
+        return result
+    }
+
+    private val pending = java.util.concurrent.atomic.AtomicInteger(0)
+
+    /**
+     * One heartbeat now — or, while one is already running, exactly one more right after it,
+     * however many ask in the meantime. Returns this call's result, or null when the request
+     * was folded into the trailing run of the one already going.
+     */
+    suspend fun runNow(eventDriven: Boolean = false): HeartbeatResult? {
+        if (pending.getAndIncrement() > 0) return null
+        var last: HeartbeatResult? = null
+        var driven = eventDriven
+        do {
+            pending.set(1) // everything that asked until now is answered by this run
+            last = runOnce(driven)
+            onResult(last)
+            // A run somebody asked for while another was going answers that request.
+            driven = true
+        } while (pending.decrementAndGet() > 0)
+        return last
+    }
+
+    private suspend fun runOnceInner(eventDriven: Boolean): HeartbeatResult {
         // Check skip conditions
-        val skipReason = shouldSkip()
+        val skipReason = shouldSkip(eventDriven)
         if (skipReason != null) {
             Log.i(TAG, "Heartbeat skipped: $skipReason")
             return HeartbeatResult(HeartbeatOutcome.SKIPPED, skipReason = skipReason)
@@ -165,10 +197,13 @@ class HeartbeatRunner(
     }
 
     /**
-     * Something happened that the agent should know about, and it was not the clock.
+     * An event-driven run just looked at the world with HEARTBEAT.md in hand.
      *
-     * Marks the backstop window so the next scheduled tick inside it is skipped. Safe to
-     * call from anywhere and from any thread; it is one write.
+     * Marks the backstop window so the next scheduled tick inside it is skipped. [runOnce]
+     * calls it after a successful event-driven run; nothing else should. A reminder or a
+     * message that ran the agent without HEARTBEAT.md covered nothing on the user's list, and
+     * letting those mark the window meant a stranger writing every nine minutes suppressed the
+     * user's own tasks for good. Safe from any thread; it is one write.
      */
     fun noteEventTrigger() {
         lastEventTriggerMs = clock()
@@ -183,11 +218,9 @@ class HeartbeatRunner(
      */
     fun requestNow(eventDriven: Boolean = false) {
         Log.i(TAG, "requestNow: launching immediate heartbeat (eventDriven=$eventDriven)")
-        if (eventDriven) noteEventTrigger()
         scope.launch {
-            val result = runOnce()
-            Log.i(TAG, "requestNow: result=${result.outcome}, text=${result.text?.take(100)}, error=${result.error?.take(100)}")
-            onResult(result)
+            val result = runNow(eventDriven)
+            Log.i(TAG, "requestNow: result=${result?.outcome ?: "folded into the running one"}")
         }
     }
 
@@ -204,19 +237,19 @@ class HeartbeatRunner(
         provenance: Provenance = Provenance.UNTRUSTED,
         conversationId: String? = null,
     ) {
-        // Context only ever arrives because something happened, so this path is always
-        // event-driven — an inbound message, a notification, a fired reminder.
-        noteEventTrigger()
+        // Never opens the backstop window: the run is the sender's, under their provenance, so
+        // it did not do the user's list with the user's authority — and a stranger writing
+        // every few minutes would otherwise keep the user's own tasks from ever running.
         scope.launch {
             val result = runOnceWithContext(extraContext, provenance, conversationId)
             onResult(result)
         }
     }
 
-    private fun shouldSkip(): HeartbeatSkipReason? {
+    private fun shouldSkip(eventDriven: Boolean = false): HeartbeatSkipReason? {
         if (!config.enabled) return HeartbeatSkipReason.DISABLED
         if (!isWithinActiveHours()) return HeartbeatSkipReason.QUIET_HOURS
-        if (isInsideBackstopWindow()) return HeartbeatSkipReason.RECENT_EVENT_TRIGGER
+        if (!eventDriven && isInsideBackstopWindow()) return HeartbeatSkipReason.RECENT_EVENT_TRIGGER
 
         // Check if heartbeat file is effectively empty
         val file = resolveHeartbeatFile()

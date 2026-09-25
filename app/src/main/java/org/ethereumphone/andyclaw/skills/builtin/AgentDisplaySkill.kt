@@ -74,6 +74,8 @@ class AgentDisplaySkill(
     /** The name the user knows the app on the display by, for the rear HUD. */
     private fun appLabelOnDisplay(): String? {
         val pkg = runCatching { getService().currentActivity }.getOrNull()?.substringBefore('/') ?: return null
+        // The app the agent is driving will post its own notifications about it.
+        org.ethereumphone.andyclaw.agent.RecentAgentActions.notePackage(pkg)
         labelFor?.let { (p, label) -> if (p == pkg) return label }
         val pm = context?.packageManager ?: return null
         val label = runCatching { pm.getApplicationLabel(pm.getApplicationInfo(pkg, 0)).toString() }.getOrNull()

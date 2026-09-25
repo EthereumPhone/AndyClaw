@@ -1,8 +1,11 @@
 package org.ethereumphone.andyclaw.heartbeat
 
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.async
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.yield
 import org.ethereumphone.andyclaw.ExecutionEngine.Provenance
 import org.ethereumphone.andyclaw.agent.AgentResponse
 import org.ethereumphone.andyclaw.agent.AgentRunner
@@ -141,5 +144,103 @@ class HeartbeatBackstopTest {
         // can act on, and a log full of EMPTY_HEARTBEAT_FILE would hide the inversion
         // working.
         assertEquals(HeartbeatSkipReason.RECENT_EVENT_TRIGGER, result.skipReason)
+    }
+
+    // ── The backstop, honestly ─────────────────────────────────────────
+
+    @Test
+    fun `an event-driven run is never stopped by the window`() = runTest {
+        val results = mutableListOf<HeartbeatResult>()
+        val agent = RecordingRunner()
+        val hb = runner(workspaceWithTasks(), HeartbeatConfig.DEFAULT_BACKSTOP_QUIET_MS, agent, results)
+
+        hb.runNow(eventDriven = true)
+        now += 60_000
+        val second = hb.runNow(eventDriven = true)
+
+        assertEquals(2, agent.prompts.size)
+        assertNull(second?.skipReason)
+    }
+
+    @Test
+    fun `a successful event-driven run covers the next tick, a failed one does not`() = runTest {
+        val results = mutableListOf<HeartbeatResult>()
+        var fail = true
+        val agent = object : AgentRunner {
+            var calls = 0
+            override suspend fun run(
+                prompt: String,
+                systemPrompt: String?,
+                skillsPrompt: String?,
+                provenance: Provenance,
+                conversationId: String?,
+            ): AgentResponse {
+                calls++
+                return if (fail) AgentResponse("boom", isError = true) else AgentResponse("done")
+            }
+        }
+        val hb = runner(workspaceWithTasks(), HeartbeatConfig.DEFAULT_BACKSTOP_QUIET_MS, agent, results)
+
+        hb.runNow(eventDriven = true) // fails
+        now += 60_000
+        assertNull("a failed run covered nothing", hb.runOnce().skipReason)
+
+        fail = false
+        hb.runNow(eventDriven = true)
+        now += 60_000
+        assertEquals(HeartbeatSkipReason.RECENT_EVENT_TRIGGER, hb.runOnce().skipReason)
+    }
+
+    @Test
+    fun `requests while a run is going fold into one more run`() = runTest {
+        val results = mutableListOf<HeartbeatResult>()
+        val gate = CompletableDeferred<Unit>()
+        val agent = object : AgentRunner {
+            var calls = 0
+            override suspend fun run(
+                prompt: String,
+                systemPrompt: String?,
+                skillsPrompt: String?,
+                provenance: Provenance,
+                conversationId: String?,
+            ): AgentResponse {
+                calls++
+                if (calls == 1) gate.await()
+                return AgentResponse("done")
+            }
+        }
+        val hb = runner(workspaceWithTasks(), 0L, agent, results)
+
+        val first = async { hb.runNow(eventDriven = true) }
+        yield()
+        assertNull(hb.runNow(eventDriven = true))
+        assertNull(hb.runNow(eventDriven = true))
+        gate.complete(Unit)
+        first.await()
+
+        assertEquals("one run, plus one trailing run for everything that asked meanwhile", 2, agent.calls)
+    }
+
+    @Test
+    fun `a message from somebody else does not suppress the user's own list`() = runTest {
+        val results = mutableListOf<HeartbeatResult>()
+        val agent = RecordingRunner()
+        val scope = TestScope(StandardTestDispatcher(testScheduler))
+        val hb = HeartbeatRunner(
+            scope = scope,
+            agentRunner = agent,
+            workspaceDir = temp.root.absolutePath,
+            onResult = { results += it },
+            clock = { now },
+        )
+        val ws = workspaceWithTasks()
+        hb.updateConfig(HeartbeatConfig(heartbeatFilePath = File(ws, "HEARTBEAT.md").absolutePath,
+            backstopQuietMs = HeartbeatConfig.DEFAULT_BACKSTOP_QUIET_MS))
+
+        hb.requestNowWithContext("gm from 0xabc", Provenance.UNTRUSTED, "0xabc")
+        scope.testScheduler.advanceUntilIdle()
+        now += 60_000
+
+        assertNull(hb.runOnce().skipReason)
     }
 }

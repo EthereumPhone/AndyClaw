@@ -15,15 +15,10 @@ class AndyClawNotificationListener : NotificationListenerService() {
     companion object {
         private const val TAG = "NotificationListener"
 
-        /** Minimum interval between notification-triggered heartbeats. */
-        private const val HEARTBEAT_COOLDOWN_MS = 60_000L
-
         @Volatile
         var instance: AndyClawNotificationListener? = null
             private set
     }
-
-    private var lastHeartbeatTriggerMs = 0L
 
     override fun onListenerConnected() {
         super.onListenerConnected()
@@ -58,10 +53,19 @@ class AndyClawNotificationListener : NotificationListenerService() {
         // Gate: user must have the notification trigger enabled
         if (!app.securePrefs.heartbeatOnNotificationEnabled.value) return
 
-        // Throttle: honour cooldown to avoid spamming heartbeats
-        val now = System.currentTimeMillis()
-        if (now - lastHeartbeatTriggerMs < HEARTBEAT_COOLDOWN_MS) return
-        lastHeartbeatTriggerMs = now
+        // Only something new and worth waking for, not too often, and not the echo of what the
+        // agent itself just did (see NotificationTriggerPolicy).
+        val n = sbn.notification
+        val posted = org.ethereumphone.andyclaw.heartbeat.NotificationTriggerPolicy.Posted(
+            key = sbn.key,
+            packageName = sbn.packageName,
+            ongoing = sbn.isOngoing,
+            groupSummary = (n.flags and android.app.Notification.FLAG_GROUP_SUMMARY) != 0,
+            onlyAlertOnce = (n.flags and android.app.Notification.FLAG_ONLY_ALERT_ONCE) != 0,
+            category = n.category,
+            agentActedHere = org.ethereumphone.andyclaw.agent.RecentAgentActions.actedOnRecently(sbn.packageName),
+        )
+        if (!app.notificationTriggerPolicy.shouldTrigger(posted)) return
 
         Log.d(TAG, "Notification from ${sbn.packageName} — triggering heartbeat")
         // Event-driven: this run covers the next scheduled tick, which is the whole point

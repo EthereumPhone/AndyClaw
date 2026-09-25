@@ -48,6 +48,7 @@ class HeartbeatBindingService : Service() {
 
     companion object {
         private const val TAG = "HeartbeatBindingService"
+        private const val HEARTBEAT_SEEDED_KEY = "heartbeat.seededDefaults"
         private const val HEARTBEAT_TIMEOUT_MS = 55_000L // 55s (OS typically holds 60s wake lock)
         private const val WAKE_LOCK_TAG = "AndyClaw:heartbeat"
         private const val LOW_BALANCE_CHANNEL_ID = "andyclaw_low_balance"
@@ -281,10 +282,7 @@ class HeartbeatBindingService : Service() {
         runtime.llmClient = app.getLlmClient()
         runtime.agentRunner = HeartbeatAgentRunner(app, app.heartbeatLogStore)
 
-        runtime.heartbeatConfig = HeartbeatConfig(
-            heartbeatFilePath = File(filesDir, "HEARTBEAT.md").absolutePath,
-            backstopQuietMs = app.heartbeatBackstopQuietMs,
-        )
+        runtime.heartbeatConfig = heartbeatConfig(app)
 
         seedHeartbeatFile()
         runtime.initialize()
@@ -364,9 +362,14 @@ class HeartbeatBindingService : Service() {
         serviceScope.launch {
             checkPaymasterBalance()
             runWithWakeLock {
-                Log.i(TAG, "performHeartbeat: calling runtime.requestHeartbeatNow()")
-                (application as NodeApp).runtime.requestHeartbeatNow()
-                Log.i(TAG, "performHeartbeat: requestHeartbeatNow() returned")
+                val app = application as NodeApp
+                // Each tick reads the settings as they are now: a toggle changed since the
+                // runtime started must reach the runner that actually runs.
+                app.runtime.heartbeatConfig = heartbeatConfig(app)
+                Log.i(TAG, "performHeartbeat: running the heartbeat")
+                // Awaited, so the wake lock covers the run itself and not just its launch.
+                val result = app.runtime.runHeartbeatNow()
+                Log.i(TAG, "performHeartbeat: ${result?.outcome ?: "folded into a run already going"}")
             }
         }
     }
@@ -403,7 +406,6 @@ class HeartbeatBindingService : Service() {
                 val key = org.ethereumphone.andyclaw.safety.TriggerProvenanceStore.reminderKey(reminderId)
                 val provenance = app.triggerProvenanceStore.provenanceFor(key)
                 app.triggerProvenanceStore.forget(key) // one-shot
-                app.runtime.noteAmbientActivity()
                 val response = app.runtime.agentRunner.run(prompt, provenance = provenance)
                 Log.i(TAG, "Reminder agent response (error=${response.isError}): " +
                         "\"${response.text.take(100)}\"")
@@ -440,7 +442,6 @@ class HeartbeatBindingService : Service() {
                 val provenance = app.triggerProvenanceStore.provenanceFor(
                     org.ethereumphone.andyclaw.safety.TriggerProvenanceStore.cronKey(cronjobId)
                 )
-                app.runtime.noteAmbientActivity()
                 val response = app.runtime.agentRunner.run(prompt, provenance = provenance)
                 Log.i(TAG, "Cronjob agent response (error=${response.isError}): " +
                         "\"${response.text.take(100)}\"")
@@ -487,13 +488,20 @@ class HeartbeatBindingService : Service() {
                     return@launch
                 }
 
+                // Anyone but the owner writing in a loop must not become a stream of paid runs.
+                if (app.telegramChatStore.getOwnerChatId() != chatId &&
+                    !app.triggerBudget.tryAcquire("telegram:$chatId")
+                ) {
+                    Log.w(TAG, "Telegram chat $chatId is over its message budget; not running the agent")
+                    return@launch
+                }
+
                 // Regular messages: acquire per-chat mutex to prevent interleaving
                 val mutex = synchronized(telegramChatMutexes) {
                     telegramChatMutexes.getOrPut(chatId) { Mutex() }
                 }
                 mutex.withLock {
                     client.sendChatAction(chatId)
-                    app.runtime.noteAmbientActivity()
                     val response = runner.run(chatId, text)
                     if (response.isNotBlank()) {
                         client.sendMessage(chatId, response)
@@ -514,6 +522,11 @@ class HeartbeatBindingService : Service() {
             return
         }
         if (!isWalletAuthReady()) return
+        // A stranger writing in a loop must not become a stream of paid runs.
+        if (!(application as NodeApp).triggerBudget.tryAcquire("xmtp:${senderAddress.lowercase()}")) {
+            Log.w(TAG, "performHeartbeatWithXmtp: $senderAddress is over its message budget; not running the agent")
+            return
+        }
         serviceScope.launch {
             // Prevent duplicate processing (OS may relay the same event twice)
             if (!xmtpMutex.tryLock()) {
@@ -597,7 +610,6 @@ class HeartbeatBindingService : Service() {
         // messages, so the whole run is UNTRUSTED and is confined to replying to
         // this sender.
         Log.i(TAG, "XMTP: running agent for $senderAddress (UNTRUSTED)...")
-        app.runtime.noteAmbientActivity()
         val response = app.runtime.agentRunner.run(
             prompt = prompt,
             provenance = Provenance.UNTRUSTED,
@@ -780,14 +792,32 @@ class HeartbeatBindingService : Service() {
         Log.i(TAG, "Low balance notification shown (balance=$${"%.2f".format(balance)})")
     }
 
+    /** The heartbeat's configuration from the settings as they are right now. */
+    private fun heartbeatConfig(app: NodeApp) = HeartbeatConfig(
+        heartbeatFilePath = File(filesDir, "HEARTBEAT.md").absolutePath,
+        backstopQuietMs = app.heartbeatBackstopQuietMs,
+    )
+
     private fun seedHeartbeatFile() {
         val file = File(filesDir, "HEARTBEAT.md")
+        val prefs = (application as NodeApp).securePrefs
         if (!file.exists()) {
             file.writeText(HeartbeatInstructions.CONTENT)
             Log.i(TAG, "Seeded HEARTBEAT.md")
         } else if (file.readText().contains("Gather fresh info the user might care about")) {
             file.writeText(HeartbeatInstructions.CONTENT)
             Log.i(TAG, "Migrated HEARTBEAT.md: removed legacy proactive instructions")
+        } else if (
+            prefs.heartbeatIntervalMinutes.value > 0 &&
+            prefs.getString(HEARTBEAT_SEEDED_KEY) != "true" &&
+            org.ethereumphone.andyclaw.heartbeat.HeartbeatPrompt.isContentEffectivelyEmpty(file.readText())
+        ) {
+            // Phones from before the file was seeded carry a header and nothing else, so every
+            // tick skipped as EMPTY_HEARTBEAT_FILE with the heartbeat switched on. Seeded once;
+            // a file the user empties afterwards stays empty.
+            file.writeText(HeartbeatInstructions.CONTENT)
+            Log.i(TAG, "Seeded an empty HEARTBEAT.md")
         }
+        prefs.putString(HEARTBEAT_SEEDED_KEY, "true")
     }
 }

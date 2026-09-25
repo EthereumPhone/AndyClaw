@@ -267,6 +267,20 @@ class NodeApp : Application() {
         }.onFailure { Log.w(TAG, "could not record approval decision", it) }
     }
 
+    /** How often one outside sender (XMTP, a Telegram chat not the owner's) may wake the agent. */
+    val triggerBudget: org.ethereumphone.andyclaw.heartbeat.TriggerBudget by lazy {
+        org.ethereumphone.andyclaw.heartbeat.TriggerBudget()
+    }
+
+    /** Which notifications wake the agent, and how often. */
+    val notificationTriggerPolicy: org.ethereumphone.andyclaw.heartbeat.NotificationTriggerPolicy by lazy {
+        org.ethereumphone.andyclaw.heartbeat.NotificationTriggerPolicy(
+            minGapMs = {
+                maxOf(heartbeatBackstopQuietMs, org.ethereumphone.andyclaw.heartbeat.NotificationTriggerPolicy.MIN_GAP_MS)
+            },
+        )
+    }
+
     /** Who created each cron job and reminder; a fired one runs with that provenance. */
     val triggerProvenanceStore: org.ethereumphone.andyclaw.safety.TriggerProvenanceStore by lazy {
         org.ethereumphone.andyclaw.safety.TriggerProvenanceStore(this)

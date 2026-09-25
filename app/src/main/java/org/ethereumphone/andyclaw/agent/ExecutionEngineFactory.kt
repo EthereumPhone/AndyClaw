@@ -563,6 +563,7 @@ object ExecutionEngineFactory {
         }
 
         override fun onToolCompleted(toolName: String, result: ToolCallResult) {
+            if (!result.isError) RecentAgentActions.noteTool(toolName)
             // Map back to SkillResult for the existing callback interface
             val img = result.imageData
             val skillResult = if (result.isError) {

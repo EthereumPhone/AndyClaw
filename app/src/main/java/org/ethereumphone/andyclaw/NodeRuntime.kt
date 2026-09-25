@@ -56,12 +56,12 @@ class NodeRuntime(private val context: Context) {
         get() = llmClient as? AnthropicClient
         set(value) { llmClient = value }
 
-    /** The agent runner - override this to provide a real LLM backend. */
+    /**
+     * The agent runner - override this to provide a real LLM backend. The heartbeat reaches it
+     * through [delegatingRunner], so setting it no longer rebuilds the heartbeat — which used to
+     * throw away the configured one and its state.
+     */
     var agentRunner: AgentRunner = NoOpAgentRunner()
-        set(value) {
-            field = value
-            heartbeatRunner = createHeartbeatRunner()
-        }
 
     /** Current heartbeat configuration. */
     var heartbeatConfig = HeartbeatConfig()
@@ -135,15 +135,6 @@ class NodeRuntime(private val context: Context) {
         heartbeatRunner?.requestNow(eventDriven)
     }
 
-    /**
-     * Something event-driven woke the agent — an ingest, a notification, an inbound message.
-     *
-     * Recorded even when no heartbeat is run, because the point of the backstop window is
-     * that the agent has recently looked at the world, not that it did so via this class.
-     */
-    fun noteAmbientActivity() {
-        heartbeatRunner?.noteEventTrigger()
-    }
 
     /**
      * Trigger an immediate heartbeat run with extra context injected into the prompt.
@@ -249,10 +240,30 @@ class NodeRuntime(private val context: Context) {
         )
     }
 
+    /** Always the current [agentRunner]. */
+    private val delegatingRunner = object : AgentRunner {
+        override suspend fun run(
+            prompt: String,
+            systemPrompt: String?,
+            skillsPrompt: String?,
+            provenance: Provenance,
+            conversationId: String?,
+        ): AgentResponse = agentRunner.run(prompt, systemPrompt, skillsPrompt, provenance, conversationId)
+    }
+
+    /**
+     * Runs a heartbeat now and waits for it, so a caller holding a wake lock holds it for the
+     * whole run. Null when it was folded into one already running.
+     */
+    suspend fun runHeartbeatNow(eventDriven: Boolean = false): org.ethereumphone.andyclaw.heartbeat.HeartbeatResult? =
+        heartbeatRunner?.runNow(eventDriven)
+
     private fun createHeartbeatRunner(): HeartbeatRunner {
+        // With the configuration already set. Built bare, the runner that actually ran on every
+        // dGEN1 had a backstop of zero: every tick ran and was billed.
         return HeartbeatRunner(
             scope = scope,
-            agentRunner = agentRunner,
+            agentRunner = delegatingRunner,
             workspaceDir = workspaceDir.absolutePath,
             onResult = { result ->
                 when (result.outcome) {
@@ -273,7 +284,7 @@ class NodeRuntime(private val context: Context) {
                     }
                 }
             },
-        )
+        ).also { it.updateConfig(heartbeatConfig) }
     }
 
     /**

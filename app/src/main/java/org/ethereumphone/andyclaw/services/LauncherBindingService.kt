@@ -1222,6 +1222,9 @@ class LauncherBindingService : Service() {
                         e.expiresMs?.let { put("expiresMs", it) }
                         put("count", e.count)
                         put("executable", store.isExecutable(e))
+                        // RUNNING: an approved call is executing (it answered RUNNING to the
+                        // launcher). Not a card to act on again, and not one that "can't run".
+                        put("state", if (e.state == org.ethereumphone.andyclaw.safety.PendingApprovalStore.State.EXECUTING) "RUNNING" else "PENDING")
                         e.toolReason?.let { put("toolReason", it) }
                     })
                 }
