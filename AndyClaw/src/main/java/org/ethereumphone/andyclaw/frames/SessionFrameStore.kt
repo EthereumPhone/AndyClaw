@@ -10,8 +10,17 @@ data class FrameRetention(
     val maxSessions: Int = 20,
     /** Total bytes across every session. */
     val maxBytes: Long = 64L * 1024 * 1024,
-    /** Frames in one session. At one frame a second this is a ten-minute session. */
+    /**
+     * Frames in one recording. At one frame a second this is ten minutes of display. Per
+     * recording, not per conversation: counted per conversation, one long autopilot run left
+     * every later recording in that chat silently empty.
+     */
     val maxFramesPerSession: Int = 600,
+    /**
+     * Bytes in one conversation's recordings. Without it one runaway session could exceed
+     * [maxBytes] on its own, and pruning would then delete that very session.
+     */
+    val maxBytesPerSession: Long = 16L * 1024 * 1024,
 )
 
 /** One stored frame: where it is, when it was taken, and how big it is. */
@@ -64,9 +73,13 @@ class SessionFrameStore(
     fun beginSession(sessionId: String): FrameSession {
         val dir = sessionDir(sessionId)
         runCatching { dir.mkdirs() }
-        val existing = frameFiles(dir).size
-        return FrameSession(sessionId, dir, existing)
+        val existing = frameFiles(dir)
+        synchronized(openDirs) { openDirs.add(dir.name) }
+        return FrameSession(sessionId, dir, existing.size, existing.sumOf { it.length() })
     }
+
+    /** Sessions a recording is writing to right now; pruning never touches them. */
+    private val openDirs = HashSet<String>()
 
     /** Every frame of a session, in the order it was captured. */
     fun frames(sessionId: String): List<FrameRef> {
@@ -117,16 +130,21 @@ class SessionFrameStore(
      * walk, and doing one per frame would put it on a once-a-second timer for the whole
      * length of a session.
      */
-    fun prune() {
-        var dirs = sessionDirs()
+    fun prune(keep: Set<String> = emptySet()) {
+        val protected = synchronized(openDirs) { openDirs.toSet() } + keep
+        // Oldest by last activity, and never a session being written or just finished: ordered
+        // by its first frame, a conversation that had been going for a while was the "oldest"
+        // at the moment its newest recording closed, and was evicted by its own close.
+        var dirs = sessionDirs().filterNot { it.name in protected }
+        val protectedCount = sessionDirs().size - dirs.size
 
-        while (dirs.size > retention.maxSessions) {
+        while (dirs.size + protectedCount > retention.maxSessions && dirs.isNotEmpty()) {
             val oldest = dirs.first()
             runCatching { oldest.deleteRecursively() }
             dirs = dirs.drop(1)
         }
 
-        var total = dirs.sumOf { dir -> frameFiles(dir).sumOf { it.length() } }
+        var total = totalBytes()
         while (total > retention.maxBytes && dirs.isNotEmpty()) {
             val oldest = dirs.first()
             total -= frameFiles(oldest).sumOf { it.length() }
@@ -137,29 +155,37 @@ class SessionFrameStore(
 
     // ── Writing ───────────────────────────────────────────────────────
 
-    /** A session open for writing. Not thread-safe; one capture loop owns one of these. */
+    /**
+     * One recording, open for writing. Safe to write from a capture loop while another thread
+     * closes it: after [close] every write is refused, and [close] answers with exactly the
+     * frames that made it in — the list a ledger row then names.
+     */
     inner class FrameSession internal constructor(
         val sessionId: String,
         private val dir: File,
         startIndex: Int,
+        private var sessionBytes: Long,
     ) {
         private var index = startIndex
         private val written = mutableListOf<String>()
+        private var closed = false
 
-        /** True once the per-session cap stopped the recording short. */
+        /** True once a cap stopped the recording short. */
+        @Volatile
         var truncated: Boolean = false
             private set
 
         /** Frame ids written by this handle, in order. */
-        val frameIds: List<String> get() = written.toList()
+        val frameIds: List<String> get() = synchronized(this) { written.toList() }
 
         /** Store one JPEG. Returns its id, or null if it was refused or failed. */
+        @Synchronized
         fun write(jpeg: ByteArray): String? {
-            if (jpeg.isEmpty()) return null
-            if (index >= retention.maxFramesPerSession) {
+            if (closed || jpeg.isEmpty()) return null
+            if (written.size >= retention.maxFramesPerSession || sessionBytes + jpeg.size > retention.maxBytesPerSession) {
                 if (!truncated) {
                     truncated = true
-                    log.info("session $sessionId hit the ${retention.maxFramesPerSession}-frame cap")
+                    log.info("recording for $sessionId hit its cap")
                 }
                 return null
             }
@@ -168,6 +194,7 @@ class SessionFrameStore(
             return try {
                 File(dir, name).writeBytes(jpeg)
                 index++
+                sessionBytes += jpeg.size
                 val id = "${dir.name}/$name"
                 written += id
                 id
@@ -177,14 +204,21 @@ class SessionFrameStore(
             }
         }
 
-        /** Stop writing and apply the caps. */
-        fun close() {
-            if (written.isEmpty() && frameFiles(dir).isEmpty()) {
+        /** Stop writing and apply the caps. Returns the frames this recording kept. */
+        fun close(): List<String> {
+            val ids = synchronized(this) {
+                if (closed) return written.toList()
+                closed = true
+                written.toList()
+            }
+            synchronized(openDirs) { openDirs.remove(dir.name) }
+            if (ids.isEmpty() && frameFiles(dir).isEmpty()) {
                 // Nothing was captured — leaving an empty directory behind would make it
                 // count against the session cap and evict a real recording.
                 runCatching { dir.delete() }
             }
-            prune()
+            prune(keep = setOf(dir.name))
+            return ids
         }
     }
 
@@ -211,9 +245,10 @@ class SessionFrameStore(
 
     private fun sessionDir(sessionId: String) = File(root, dirNameFor(sessionId))
 
+    /** Session directories, least recently written first. */
     private fun sessionDirs(): List<File> =
         (root.listFiles { f: File -> f.isDirectory } ?: emptyArray())
-            .sortedBy { dir -> frameFiles(dir).firstOrNull()?.let { parseTimestamp(it.name) } ?: dir.lastModified() }
+            .sortedBy { dir -> frameFiles(dir).lastOrNull()?.let { parseTimestamp(it.name) } ?: dir.lastModified() }
 
     private fun frameFiles(dir: File): List<File> =
         (dir.listFiles { f: File -> f.isFile && f.name.endsWith(FRAME_SUFFIX) } ?: emptyArray())

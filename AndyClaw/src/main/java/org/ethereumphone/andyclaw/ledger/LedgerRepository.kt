@@ -129,6 +129,9 @@ class LedgerRepository(
     /** Walk the whole retained chain. */
     suspend fun verify(): LedgerVerification = LedgerChain.verify(dao.getAll())
 
+    /** Every retained row exactly as stored, oldest first — what an export must carry to be re-verified. */
+    suspend fun allStored(): List<LedgerEntryEntity> = dao.getAll()
+
     suspend fun recent(limit: Int = 200): List<LedgerEntry> =
         dao.getRecent(limit).map(LedgerEntry::from)
 

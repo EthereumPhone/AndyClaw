@@ -1,5 +1,7 @@
 package org.ethereumphone.andyclaw.agent
 
+import org.ethereumphone.andyclaw.ledger.LedgerDigest
+
 /**
  * What set a background run off, read from the header its prompt starts with.
  *
@@ -8,9 +10,9 @@ package org.ethereumphone.andyclaw.agent
  * which, for a message, is somebody else's words.
  */
 enum class BackgroundTrigger(val source: String, val header: String?) {
-    REMINDER("reminder", "## Reminder Fired"),
-    CRON("cron", "## Cron Job Fired"),
-    XMTP("xmtp", "## New incoming XMTP message"),
+    REMINDER("reminder", LedgerDigest.HEADER_REMINDER),
+    CRON("cron", LedgerDigest.HEADER_CRON),
+    XMTP("xmtp", LedgerDigest.HEADER_XMTP),
     HEARTBEAT("heartbeat", null),
     ;
 

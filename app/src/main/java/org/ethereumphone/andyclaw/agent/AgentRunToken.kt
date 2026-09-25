@@ -26,6 +26,10 @@ class AgentRunToken(
     /** The run's [Job], so a lease held by a run that was cancelled or finished never blocks. */
     val job: Job?,
     val id: String = UUID.randomUUID().toString(),
+    /** The ledger session the run writes to, or null when it keeps no record. */
+    val ledgerSessionId: String? = null,
+    /** The run's provenance, as its ledger rows carry it. */
+    val provenance: String = "USER",
 ) : AbstractCoroutineContextElement(Key) {
 
     /** STOP was pressed — rear screen, launcher or live view — while this run held the display. */

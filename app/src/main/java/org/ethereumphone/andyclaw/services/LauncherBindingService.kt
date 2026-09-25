@@ -87,6 +87,10 @@ class LauncherBindingService : Service() {
          * rather than a literal inside the loop.
          */
         private const val DISPLAY_FRAME_INTERVAL_MS = 1000L
+        /** How far past the rows asked for a ledger read looks, to find the oldest turns' steps. */
+        private const val ATTRIBUTION_LOOKBACK = 300
+        /** Rows a session read returns at most, to stay well inside a binder transaction. */
+        private const val MAX_SESSION_ROWS = 400
         /** While the autopilot runs the preview is the show: ~5 fps instead of 1. */
         private const val AUTOPILOT_FRAME_INTERVAL_MS = 200L
         private const val DISPLAY_FRAME_MAX_WIDTH = 480
@@ -146,17 +150,16 @@ class LauncherBindingService : Service() {
     /** A running capture: the loop, and the recording it is writing. */
     private class DisplayCapture(
         val job: Job,
-        val frames: SessionFrameStore.FrameSession?,
     )
 
     /** Active prompt jobs keyed by launcher sessionId, so we can cancel inference. */
-    private val activePromptJobs = mutableMapOf<String, Job>()
+    private val activePromptJobs = java.util.concurrent.ConcurrentHashMap<String, Job>()
 
     /** Per-session conversation histories for multi-turn support. */
-    private val sessionHistories = mutableMapOf<String, MutableList<Message>>()
+    private val sessionHistories = java.util.concurrent.ConcurrentHashMap<String, MutableList<Message>>()
 
     /** Maps launcher sessionId → Room database sessionId for persistence. */
-    private val dbSessionIds = mutableMapOf<String, String>()
+    private val dbSessionIds = java.util.concurrent.ConcurrentHashMap<String, String>()
 
     /** Tracks whether a memory reindex is in progress. */
     private val isReindexingFlag = AtomicBoolean(false)
@@ -194,7 +197,9 @@ class LauncherBindingService : Service() {
                         callback.onError(e.message ?: "Unknown error")
                     } catch (_: RemoteException) {}
                 } finally {
-                    activePromptJobs.remove(sessionId)
+                    // Only this job's own entry: a newer prompt for the same session may have
+                    // replaced it, and removing that one would leave it impossible to stop.
+                    coroutineContext[Job]?.let { activePromptJobs.remove(sessionId, it) }
                 }
             }
             activePromptJobs[sessionId] = job
@@ -255,7 +260,9 @@ class LauncherBindingService : Service() {
                         callback.onError(e.message ?: "Unknown error")
                     } catch (_: RemoteException) {}
                 } finally {
-                    activePromptJobs.remove(sessionId)
+                    // Only this job's own entry: a newer prompt for the same session may have
+                    // replaced it, and removing that one would leave it impossible to stop.
+                    coroutineContext[Job]?.let { activePromptJobs.remove(sessionId, it) }
                 }
             }
             activePromptJobs[sessionId] = job
@@ -1260,9 +1267,12 @@ class LauncherBindingService : Service() {
             val app = application as? NodeApp ?: return "[]"
             val n = limit.coerceIn(1, 1000)
             return try {
-                val rows = runBlocking { app.ledgerRepository.recent(n) }
+                // A turn's steps are written before it, so read a little further back than asked
+                // to give the oldest turns shown their steps too.
+                val rows = runBlocking { app.ledgerRepository.recent(n + ATTRIBUTION_LOOKBACK) }
+                val steps = org.ethereumphone.andyclaw.ledger.LedgerDigest.attribute(rows)
                 val arr = JSONArray()
-                for (row in rows) arr.put(ledgerEntryJson(row))
+                for (row in rows.take(n)) arr.put(ledgerEntryJson(row, steps[row.id]))
                 arr.toString()
             } catch (e: Exception) {
                 Log.w(TAG, "getLedgerEntries failed", e)
@@ -1276,8 +1286,12 @@ class LauncherBindingService : Service() {
             val app = application as? NodeApp ?: return "{}"
             return try {
                 val replay = runBlocking { app.sessionReplay.of(sessionId) }
+                val steps = org.ethereumphone.andyclaw.ledger.LedgerDigest.attribute(replay.entries)
+                // A Telegram chat is one session for every message it ever sent, and a binder
+                // reply over a megabyte fails outright: the newest rows, and say so.
+                val shown = replay.entries.takeLast(MAX_SESSION_ROWS)
                 val entries = JSONArray()
-                for (row in replay.entries) entries.put(ledgerEntryJson(row))
+                for (row in shown) entries.put(ledgerEntryJson(row, steps[row.id]))
                 val frames = JSONArray()
                 for (f in replay.frames) {
                     frames.put(JSONObject().apply {
@@ -1291,7 +1305,8 @@ class LauncherBindingService : Service() {
                 for (m in replay.missingFrames) missing.put(m)
                 JSONObject().apply {
                     put("sessionId", replay.sessionId)
-                    put("intent", replay.intent)
+                    put("intent", replay.turn?.let { org.ethereumphone.andyclaw.ledger.LedgerDigest.displayIntent(it) } ?: "")
+                    put("truncated", replay.entries.size > shown.size)
                     put("startedMs", replay.startedMs)
                     put("endedMs", replay.endedMs)
                     put("entries", entries)
@@ -1360,21 +1375,19 @@ class LauncherBindingService : Service() {
         override fun exportLedger(): ParcelFileDescriptor? {
             enforceCallerIsLauncher()
             val app = application as? NodeApp ?: return null
+            var tmp: File? = null
             return try {
-                val rows = runBlocking { app.ledgerRepository.recent(Int.MAX_VALUE) }.reversed()
-                val tmp = File.createTempFile("ledger-export", ".jsonl", cacheDir)
-                tmp.bufferedWriter().use { w ->
-                    for (row in rows) {
-                        w.write(ledgerEntryJson(row).toString())
-                        w.write("\n")
-                    }
+                val exporter = org.ethereumphone.andyclaw.ledger.LedgerExporter(app.ledgerRepository) {
+                    app.ledgerRecorder.drain()
                 }
-                val fd = ParcelFileDescriptor.open(tmp, ParcelFileDescriptor.MODE_READ_ONLY)
-                tmp.delete()
-                fd
+                tmp = runBlocking { exporter.export(cacheDir) }
+                ParcelFileDescriptor.open(tmp, ParcelFileDescriptor.MODE_READ_ONLY)
             } catch (e: Exception) {
                 Log.w(TAG, "exportLedger failed", e)
                 null
+            } finally {
+                // The fd keeps an open file alive; nothing is left behind in cacheDir either way.
+                tmp?.delete()
             }
         }
     }
@@ -1387,7 +1400,20 @@ class LauncherBindingService : Service() {
      * viewer that renders that as free is lying in the one screen whose entire job is being
      * trustworthy -- so the null has to survive the wire.
      */
-    private fun ledgerEntryJson(row: org.ethereumphone.andyclaw.ledger.LedgerEntry): JSONObject {
+    /** A step that changed something outside the process: anything not a pure read. */
+    private fun isSideEffect(tool: String): Boolean =
+        tool != "agent_display_capture" &&
+            org.ethereumphone.andyclaw.safety.ToolEffects.of(tool) != org.ethereumphone.andyclaw.skills.ToolEffect.READ
+
+    /**
+     * One ledger row for the launcher. [steps] are the TOOL rows a TURN row owns
+     * ([org.ethereumphone.andyclaw.ledger.LedgerDigest.attribute]); with them a turn also says what
+     * it did. The derived keys are computed here and never stored or exported.
+     */
+    private fun ledgerEntryJson(
+        row: org.ethereumphone.andyclaw.ledger.LedgerEntry,
+        steps: List<org.ethereumphone.andyclaw.ledger.LedgerEntry>? = null,
+    ): JSONObject {
         val actions = JSONArray()
         for (a in row.actions) {
             actions.put(JSONObject().apply {
@@ -1421,6 +1447,22 @@ class LauncherBindingService : Service() {
             put("durationMs", row.durationMs)
             put("prevHash", row.prevHash)
             put("hash", row.hash)
+            // Derived. `intent` stays as stored, for an older launcher and for the chain; what
+            // to show is `displayIntent`, which is never somebody else's message.
+            put("displayIntent", org.ethereumphone.andyclaw.ledger.LedgerDigest.displayIntent(row))
+            put("trigger", org.ethereumphone.andyclaw.ledger.LedgerDigest.trigger(row).wire)
+            if (row.kind == org.ethereumphone.andyclaw.ledger.LedgerKind.TURN && steps != null) {
+                val summary = org.ethereumphone.andyclaw.ledger.LedgerDigest.summary(row, steps, ::isSideEffect)
+                put("actedOnBehalf", org.ethereumphone.andyclaw.ledger.LedgerDigest.actedOnBehalf(row, summary))
+                put("summary", JSONObject().apply {
+                    put("toolsRun", summary.toolsRun)
+                    put("toolsBlocked", summary.toolsBlocked)
+                    put("toolErrors", summary.toolErrors)
+                    put("sideEffects", summary.sideEffects)
+                    put("sideEffectTools", JSONArray(summary.sideEffectTools))
+                    put("frames", summary.frames)
+                })
+            }
         }
     }
 
@@ -1594,13 +1636,8 @@ class LauncherBindingService : Service() {
             callback.onDisplayCreated()
         } catch (_: RemoteException) {}
 
-        val app = application as? NodeApp
-        val recording = if (app?.securePrefs?.displayFrameCaptureEnabled?.value == true) {
-            runCatching { app.sessionFrameStore.beginSession(sessionId) }.getOrNull()
-        } else {
-            null
-        }
-
+        // Only the stream to the launcher lives here. What is kept for the ledger is recorded by
+        // AgentDisplayRecording, for whichever run holds the display — launcher or not.
         val job = scope.launch {
             val svc = try {
                 val smClass = Class.forName("android.os.ServiceManager")
@@ -1613,7 +1650,7 @@ class LauncherBindingService : Service() {
             } ?: return@launch
 
             var clientAlive = true
-            while (isActive) {
+            while (isActive && clientAlive) {
                 try {
                     val displayId = svc.displayId
                     // No display yet (the run has not created it) or parked: nothing to show,
@@ -1629,16 +1666,11 @@ class LauncherBindingService : Service() {
                             svc.captureFrameWithQuality(DISPLAY_FRAME_QUALITY)
                         }
                         if (frame != null && frame.isNotEmpty()) {
-                            // Persist first, and keep persisting if the launcher goes away: a dead
-                            // client must not be the reason the recording has a hole in it.
-                            recording?.write(frame)
-                            if (clientAlive) {
-                                try {
-                                    callback.onDisplayFrame(frame)
-                                } catch (e: RemoteException) {
-                                    Log.w(TAG, "Launcher went away during display capture; still recording")
-                                    clientAlive = false
-                                }
+                            try {
+                                callback.onDisplayFrame(frame)
+                            } catch (e: RemoteException) {
+                                Log.w(TAG, "Launcher went away during display capture")
+                                clientAlive = false
                             }
                         }
                     }
@@ -1651,7 +1683,7 @@ class LauncherBindingService : Service() {
                 delay(intervalMs)
             }
         }
-        displayCaptures[sessionId] = DisplayCapture(job, recording)
+        displayCaptures[sessionId] = DisplayCapture(job)
     }
 
     /**
@@ -1674,47 +1706,7 @@ class LauncherBindingService : Service() {
      * carries, so the two join without either side knowing about the other.
      */
     private fun finishDisplayCapture(sessionId: String) {
-        val capture = displayCaptures.remove(sessionId) ?: return
-        capture.job.cancel()
-
-        val recording = capture.frames ?: return
-        val frameIds = recording.frameIds
-        runCatching { recording.close() }
-
-        if (frameIds.isEmpty()) return
-        val app = application as? NodeApp ?: return
-        // The frames are the user's either way, but the ledger is a thing they can switch
-        // off — and writing into it anyway would make the switch a lie.
-        if (!app.securePrefs.ledgerEnabled.value) {
-            Log.i(TAG, "kept ${frameIds.size} frame(s) for session $sessionId (ledger off)")
-            return
-        }
-        runCatching {
-            app.ledgerRecorder.record(
-                LedgerDraft(
-                    sessionId = sessionId,
-                    kind = LedgerKind.TOOL,
-                    intent = "agent display session",
-                    provenance = Provenance.USER.name,
-                    outcome = LedgerOutcome.OK,
-                    routeRung = RUNG_DISPLAY,
-                    actions = listOf(
-                        LedgerAction(
-                            tool = "agent_display_capture",
-                            ok = true,
-                            durationMs = frameIds.size * DISPLAY_FRAME_INTERVAL_MS,
-                            note = if (recording.truncated) {
-                                "${frameIds.size} frame(s); recording hit the per-session cap"
-                            } else {
-                                "${frameIds.size} frame(s)"
-                            },
-                        )
-                    ),
-                    frames = frameIds,
-                )
-            )
-        }
-        Log.i(TAG, "kept ${frameIds.size} frame(s) for session $sessionId")
+        displayCaptures.remove(sessionId)?.job?.cancel()
     }
 
     /**

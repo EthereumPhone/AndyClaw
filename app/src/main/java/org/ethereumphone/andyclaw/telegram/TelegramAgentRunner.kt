@@ -116,6 +116,7 @@ class TelegramAgentRunner(
             } else {
                 org.ethereumphone.andyclaw.safety.ReplyAudience.STRANGER
             },
+            ledgerIntent = org.ethereumphone.andyclaw.agent.BackgroundIntent.telegram(isOwnerChat),
         )
 
         val ledController = app.ledController

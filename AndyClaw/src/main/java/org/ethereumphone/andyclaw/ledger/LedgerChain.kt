@@ -105,6 +105,16 @@ object LedgerChain {
         if (entries.isEmpty()) return LedgerVerification(ok = true, checkedLinks = 0)
 
         val ordered = entries.sortedBy { it.seq }
+        // Retention only ever drops a prefix, so a chain that still starts at row 1 must start
+        // at GENESIS. Anything else there is not an aged-out link but a rewritten beginning.
+        ordered.first().takeIf { it.seq == 1L && it.prevHash != GENESIS }?.let {
+            return LedgerVerification(
+                ok = false,
+                checkedLinks = 0,
+                brokenAtSeq = it.seq,
+                reason = "row 1 does not start from the genesis hash",
+            )
+        }
         var previous: LedgerEntryEntity? = null
         var links = 0
 

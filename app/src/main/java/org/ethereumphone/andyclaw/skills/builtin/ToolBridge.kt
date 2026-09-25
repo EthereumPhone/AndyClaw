@@ -95,6 +95,9 @@ class ToolBridge(
         Log.w(TAG, "Provenance gate: refusing '$toolName' ($effect) under $provenance" +
             if (enforceProvenance) "" else " [LOG-ONLY, not enforced]")
         if (!enforceProvenance) return
+        runContext[org.ethereumphone.andyclaw.agent.LedgerContext]?.recordStep(
+            toolName, org.ethereumphone.andyclaw.ledger.LedgerOutcome.BLOCKED, 0L, "refused from execute_code",
+        )
 
         val privacy = if (provenance == Provenance.UNTRUSTED) {
             ProvenanceGate.privacyVerdict(toolName, runContext[ReplyAudience], token?.readPrivateData == true)
@@ -157,6 +160,14 @@ class ToolBridge(
         }
 
         val durationMs = System.currentTimeMillis() - startMs
+        // One ledger row per call made from code, as the engine writes one per direct call.
+        runContext[org.ethereumphone.andyclaw.agent.LedgerContext]?.recordStep(
+            toolName,
+            if (result is SkillResult.Success || result is SkillResult.ImageSuccess) org.ethereumphone.andyclaw.ledger.LedgerOutcome.OK
+            else org.ethereumphone.andyclaw.ledger.LedgerOutcome.ERROR,
+            durationMs,
+            "called from execute_code",
+        )
 
         return when (result) {
             is SkillResult.Success -> {
@@ -226,6 +237,17 @@ class ToolBridge(
 
         val durationMs = System.currentTimeMillis() - startMs
         Log.i(TAG, "Programmatic callParallel $toolName x${paramsList.size} completed in ${durationMs}ms")
+        runContext[org.ethereumphone.andyclaw.agent.LedgerContext]?.let { l ->
+            for (r in results) {
+                l.recordStep(
+                    toolName,
+                    if (r is SkillResult.Success || r is SkillResult.ImageSuccess) org.ethereumphone.andyclaw.ledger.LedgerOutcome.OK
+                    else org.ethereumphone.andyclaw.ledger.LedgerOutcome.ERROR,
+                    durationMs / paramsList.size,
+                    "called from execute_code",
+                )
+            }
+        }
 
         // Process results — collect successes, throw on first error
         return results.mapIndexed { index, result ->

@@ -38,6 +38,9 @@ class LeakDetector(
         val matches = mutableListOf<LeakMatch>()
 
         val candidatePatterns = if (prefixes.isNotEmpty()) {
+            // Both sides lower-cased. The content was, the prefixes were not — so every pattern
+            // whose prefix has a capital in it (AWS "AKIA", Google "AIza", PEM "-----BEGIN",
+            // Twilio, SendGrid, Bearer) was filtered out before it could ever match.
             val lower = content.lowercase()
             val matchedPrefixes = prefixes.filter { lower.contains(it) }.toSet()
             patterns.filter { p ->
@@ -95,7 +98,7 @@ class LeakDetector(
         return Result.success(result.redactedContent ?: content)
     }
 
-    private val prefixes: List<String> = patterns.mapNotNull { it.prefix }
+    private val prefixes: List<String> = patterns.mapNotNull { it.prefix?.lowercase() }
 
     companion object {
         private const val TAG = "LeakDetector"

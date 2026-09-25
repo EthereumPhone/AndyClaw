@@ -494,6 +494,9 @@ object ExecutionEngineFactory {
         tools: () -> Map<String, ToolDefinition>,
     ) = PostProcessor { call, result ->
         val isError = result is ToolExecResult.Error || result is ToolExecResult.RequiresApproval
+        // A call the user did not approve after it asked (RequiresApproval) was stopped short,
+        // not broken.
+        val notApproved = result is ToolExecResult.Error && result.message == ParallelExecutionEngine.NOT_APPROVED
         runCatching {
             ledger.sink.record(
                 LedgerDraft(
@@ -501,7 +504,11 @@ object ExecutionEngineFactory {
                     kind = LedgerKind.TOOL,
                     intent = intent,
                     provenance = provenance.name,
-                    outcome = if (isError) LedgerOutcome.ERROR else LedgerOutcome.OK,
+                    outcome = when {
+                        notApproved -> LedgerOutcome.BLOCKED
+                        isError -> LedgerOutcome.ERROR
+                        else -> LedgerOutcome.OK
+                    },
                     routeRung = rungOf(call.name, tools()),
                     flowRef = ledger.flowRef(call.name),
                     actions = listOf(

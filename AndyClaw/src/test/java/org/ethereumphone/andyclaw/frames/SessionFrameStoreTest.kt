@@ -154,4 +154,62 @@ class SessionFrameStoreTest {
         assertTrue(b.startsWith("chat_1-"))
         assertFalse("the hash suffix is what keeps them apart", a == b)
     }
+
+    @Test
+    fun `a closed recording refuses writes and reports exactly what it kept`() {
+        val s = store()
+        val session = s.beginSession("closing")
+        val a = session.write(jpeg(1))!!
+        val b = session.write(jpeg(2))!!
+        assertEquals(listOf(a, b), session.close())
+        assertNull("a capture loop still running after close writes nothing", session.write(jpeg(3)))
+        assertEquals(2, s.frames("closing").size)
+    }
+
+    @Test
+    fun `the frame cap is per recording, not per conversation`() {
+        val s = store(FrameRetention(maxFramesPerSession = 2))
+        val first = s.beginSession("chat")
+        repeat(3) { first.write(jpeg(it)) }
+        first.close()
+        val second = s.beginSession("chat")
+        assertTrue("a later recording in the same chat still records", second.write(jpeg(9)) != null)
+        second.close()
+        assertEquals(3, s.frames("chat").size)
+    }
+
+    @Test
+    fun `a recording being written is never pruned, and closing never evicts itself`() {
+        val s = store(FrameRetention(maxSessions = 1))
+        val open = s.beginSession("still-writing")
+        open.write(jpeg(1))
+        val other = s.beginSession("finished")
+        other.write(jpeg(2))
+        other.close()
+        assertTrue("the open recording survived the other one's prune", s.frames("still-writing").isNotEmpty())
+        assertTrue("the one just closed survived its own prune", s.frames("finished").isNotEmpty())
+        open.close()
+    }
+
+    @Test
+    fun `the oldest by last activity goes first`() {
+        val s = store(FrameRetention(maxSessions = 2))
+        val a = s.beginSession("a"); a.write(jpeg(1)); a.close()
+        val b = s.beginSession("b"); b.write(jpeg(2)); b.close()
+        val a2 = s.beginSession("a"); a2.write(jpeg(3)); a2.close() // a is the most recent now
+        val c = s.beginSession("c"); c.write(jpeg(4)); c.close()
+        assertTrue(s.frames("a").isNotEmpty())
+        assertTrue("b was the least recently written", s.frames("b").isEmpty())
+        assertTrue(s.frames("c").isNotEmpty())
+    }
+
+    @Test
+    fun `one conversation cannot outgrow its byte share`() {
+        val s = store(FrameRetention(maxBytesPerSession = 100))
+        val session = s.beginSession("big")
+        assertTrue(session.write(jpeg(1, size = 60)) != null)
+        assertNull(session.write(jpeg(2, size = 60)))
+        assertTrue(session.truncated)
+        session.close()
+    }
 }

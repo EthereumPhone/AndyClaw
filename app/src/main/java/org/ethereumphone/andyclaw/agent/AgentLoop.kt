@@ -139,6 +139,13 @@ class AgentLoop(
      * background run). Decides what an untrusted run may read — see `ProvenanceGate`.
      */
     private val replyAudience: org.ethereumphone.andyclaw.safety.ReplyAudience? = null,
+    /**
+     * What this run is recorded as in the ledger. The ledger is the screen the user is invited to
+     * read and export, so for a run somebody else's message set off this is a label the runner
+     * writes ("XMTP message from 0x12…cd"), never that message. Null means the user's own
+     * request, kept with any secret in it redacted.
+     */
+    private val ledgerIntent: String? = null,
 ) {
     /**
      * Model calls made by this run, sub-agents included.
@@ -165,6 +172,12 @@ class AgentLoop(
     private val toolErrors = java.util.concurrent.atomic.AtomicInteger(0)
     private val toolTimeMs = java.util.concurrent.atomic.AtomicLong(0)
 
+    /**
+     * Model calls whose tokens are not in the run's totals — sub-agents, the autopilot's planner,
+     * the flow compiler. With any of them, the run's cost cannot be told from its totals.
+     */
+    private val untrackedModelCalls = java.util.concurrent.atomic.AtomicInteger(0)
+
     /** Every model id this run actually used, sub-agents and the flow compiler included. */
     private val modelIdsUsed = java.util.Collections.newSetFromMap(
         java.util.concurrent.ConcurrentHashMap<String, Boolean>()
@@ -179,6 +192,10 @@ class AgentLoop(
      */
     @Volatile
     private var runToken = AgentRunToken(job = null)
+
+    /** This run's intent as the ledger keeps it; see [ledgerIntent]. */
+    @Volatile
+    private var recordedIntent = ""
 
     companion object {
         private const val TAG = "AgentLoop"
@@ -198,6 +215,17 @@ class AgentLoop(
         internal const val ASK_USER_TOOL_NAME = "ask_user"
         /** How a turn the user stopped ends: one line, and no model call to write it. */
         internal const val STOPPED_REPLY = "Okay — stopped."
+
+        /**
+         * The user's request as the ledger keeps it: their words, with anything that looks like
+         * a key, a seed or a token blanked out. The ledger is exported and shown on the home
+         * screen, and a request that pasted a secret must not put it there.
+         */
+        internal fun redactedForLedger(text: String): String {
+            val scan = org.ethereumphone.andyclaw.safety.LeakDetector().scan(text)
+            val secrets = scan.matches.filter { it.action != org.ethereumphone.andyclaw.safety.LeakAction.WARN }
+            return org.ethereumphone.andyclaw.safety.LeakDetector.applyRedactions(text, secrets)
+        }
 
         /**
          * Builds the spawn_subagent tool JSON for the LLM tool list.
@@ -430,8 +458,14 @@ class AgentLoop(
 
     suspend fun run(userMessage: String, conversationHistory: List<Message>, callbacks: Callbacks) {
         runStartedMs = System.currentTimeMillis()
-        runToken = AgentRunToken(job = currentCoroutineContext()[Job])
+        runToken = AgentRunToken(
+            job = currentCoroutineContext()[Job],
+            ledgerSessionId = ledger?.sessionId,
+            provenance = provenance.name,
+        )
+        recordedIntent = ledgerIntent ?: redactedForLedger(userMessage)
         modelCalls.set(0)
+        untrackedModelCalls.set(0)
         toolsExecuted.set(0); toolsBlocked.set(0); toolErrors.set(0); toolTimeMs.set(0)
         modelIdsUsed.clear()
         var runOutcome = LedgerOutcome.OK
@@ -729,7 +763,7 @@ class AgentLoop(
                             triggerConversationId = triggerConversationId,
                             enforceProvenance = enforceProvenance,
                             ledger = ledger,
-                            intent = userMessage,
+                            intent = recordedIntent,
                             runContext = runContext,
                         )
                         val calls = ExecutionEngineFactory.toToolCalls(listOf(block))
@@ -965,7 +999,7 @@ class AgentLoop(
                             triggerConversationId = triggerConversationId,
                             enforceProvenance = enforceProvenance,
                             ledger = ledger,
-                            intent = userMessage,
+                            intent = recordedIntent,
                             runContext = runContext,
                         )
                         val engineCalls = ExecutionEngineFactory.toToolCalls(regularNotInExecutor)
@@ -1093,13 +1127,9 @@ class AgentLoop(
         } finally {
             toolScope.cancel()
 
-            // The turn row goes in `finally` so there is exactly one per run however the
-            // run ended — completed, thrown, or cancelled mid-tool. A record that only
-            // covers the runs that finished cleanly is not a record of what the agent did.
-            recordTurn(runOutcome, userMessage, iterations, totalInputTokens, totalOutputTokens)
-
             // Give back what this run took — the agent display if it held it, its recording —
-            // and nothing another run is still using.
+            // and nothing another run is still using. Before the turn row: the recording is a
+            // step of this run, and a step belongs to the first turn written after it.
             val end = when {
                 // Cancelling is the user (or the launcher) ending the turn, never the run failing.
                 cancelled || runToken.stopRequested || runOutcome == LedgerOutcome.BLOCKED -> RunEnd.STOPPED
@@ -1110,6 +1140,12 @@ class AgentLoop(
             // The display skill has normally done this already; if no skill did, the lease
             // must still not outlive the run.
             org.ethereumphone.andyclaw.skills.builtin.AgentDisplayLease.release(runToken.id)
+
+            // The turn row goes in `finally` so there is exactly one per run however the
+            // run ended — completed, thrown, or cancelled mid-tool. A record that only
+            // covers the runs that finished cleanly is not a record of what the agent did.
+            recordTurn(runOutcome, recordedIntent, iterations, totalInputTokens, totalOutputTokens)
+
             try {
                 skillRegistry.cleanupAll()
             } catch (e: Exception) {
@@ -1129,10 +1165,12 @@ class AgentLoop(
         modelId = modelId,
         onModelCall = {
             modelCalls.incrementAndGet()
+            untrackedModelCalls.incrementAndGet()
             modelIdsUsed.add(modelId)
         },
         events = AutopilotEventSink { callbacks.onAgentStep(it) },
-    ) + runToken + (replyAudience ?: kotlin.coroutines.EmptyCoroutineContext)
+    ) + runToken + (replyAudience ?: kotlin.coroutines.EmptyCoroutineContext) +
+        (ledger?.let { LedgerContext(it, provenance.name, recordedIntent) } ?: kotlin.coroutines.EmptyCoroutineContext)
 
     /** Whether an autopilot run in this batch ended because the user pressed STOP. */
     private fun autopilotStopped(calls: List<ContentBlock.ToolUseBlock>, results: List<ContentBlock>): Boolean {
@@ -1209,7 +1247,11 @@ class AgentLoop(
                         )
                     ),
                     modelIds = models,
-                    costUsd = l.costOf(models, inputTokens, outputTokens),
+                    // Known only when one model did all the work and every call's tokens are in
+                    // the totals; otherwise pricing the totals at one model's rate is a guess.
+                    costUsd = if (models.size == 1 && untrackedModelCalls.get() == 0) {
+                        l.costOf(models, inputTokens, outputTokens)
+                    } else null,
                     inputTokens = inputTokens,
                     outputTokens = outputTokens,
                     durationMs = System.currentTimeMillis() - runStartedMs,
@@ -1320,6 +1362,7 @@ class AgentLoop(
             val responseBlocks = mutableListOf<ContentBlock>()
             var streamError: Throwable? = null
             modelCalls.incrementAndGet()
+            untrackedModelCalls.incrementAndGet()
             modelIdsUsed.add(effectiveModelId)
             client.streamMessage(request, object : StreamingCallback {
                 override fun onToken(text: String) { /* buffered, not streamed to user */ }
@@ -1377,10 +1420,10 @@ class AgentLoop(
                     triggerConversationId = triggerConversationId,
                     enforceProvenance = enforceProvenance,
                     ledger = ledger,
-                    // A sub-agent's steps belong to the turn that spawned it — same
-                    // session, same chain — but the intent is the delegated task, because
-                    // that is what those particular steps were for.
-                    intent = taskDescription,
+                    // A sub-agent's steps belong to the turn that spawned it — same session,
+                    // same chain, same intent. Not the delegated task: that is text the model
+                    // wrote as a tool input, and a tool input is never written to the ledger.
+                    intent = recordedIntent,
                     runContext = autopilotRunContext(effectiveModelId, callbacks),
                 )
                 val engineCalls = ExecutionEngineFactory.toToolCalls(execCalls)
@@ -1503,6 +1546,7 @@ class AgentLoop(
         val text = StringBuilder()
         var streamError: Throwable? = null
         modelCalls.incrementAndGet()
+        untrackedModelCalls.incrementAndGet()
         modelIdsUsed.add(modelId)
         client.streamMessage(request, object : StreamingCallback {
             override fun onToken(token: String) { /* buffered */ }

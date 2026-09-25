@@ -191,10 +191,12 @@ object ProvenanceGate {
             // Replying to the thread the message arrived on is explicitly allowed.
             PreflightVerdict.Pass
         } else {
+            // The refused recipient stays out of the reason: it is recorded in the ledger,
+            // which never holds a tool's input.
             PreflightVerdict.Block(
                 "[Provenance] This request came from a message in conversation " +
-                    "'$triggerConversationId', so '${call.name}' may only reply there — " +
-                    "not to '$target'. Blocked."
+                    "'$triggerConversationId', so '${call.name}' may only reply there, not to " +
+                    "anyone else. Blocked."
             )
         }
     }

@@ -4,6 +4,7 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import java.util.logging.Logger
 
 /**
@@ -60,22 +61,32 @@ class LedgerRecorder(
         synchronized(this) { dropped++ }
     }
 
-    /** Wait until everything handed in so far has been written. Tests, and export. */
-    suspend fun drain() {
+    /**
+     * Wait until everything handed in so far has been written — at most [timeoutMs]. Tests, and
+     * export. A suspending send, not `trySend`: with the buffer full, `trySend` used to return at
+     * once, and the export that trusted it went out without the rows still queued.
+     */
+    suspend fun drain(timeoutMs: Long = DRAIN_TIMEOUT_MS): Boolean {
         val done = CompletableDeferred<Unit>()
-        if (ops.trySend(Op.Flush(done)).isSuccess) done.await()
+        return withTimeoutOrNull(timeoutMs) {
+            ops.send(Op.Flush(done))
+            done.await()
+            true
+        } ?: false
     }
 
     private suspend fun writeRow(draft: LedgerDraft) {
         val lost = synchronized(this) { val n = dropped; dropped = 0; n }
         if (lost > 0) {
             runCatching {
+                // Its own session: the rows that were lost could have belonged to any run, and
+                // filed under the next row's session it read as a step of that run.
                 repository.append(
                     LedgerDraft(
-                        sessionId = draft.sessionId,
+                        sessionId = LedgerDigest.SYSTEM_SESSION,
                         kind = LedgerKind.TOOL,
                         intent = "ledger overflow",
-                        provenance = draft.provenance,
+                        provenance = "TRUSTED",
                         outcome = LedgerOutcome.ERROR,
                         actions = listOf(
                             LedgerAction(
@@ -95,5 +106,6 @@ class LedgerRecorder(
 
     companion object {
         private const val DEFAULT_BUFFER = 512
+        const val DRAIN_TIMEOUT_MS = 2_000L
     }
 }

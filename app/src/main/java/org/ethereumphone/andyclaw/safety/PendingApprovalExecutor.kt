@@ -106,11 +106,15 @@ class PendingApprovalExecutor(
 
     private suspend fun execute(entry: PendingApprovalStore.Entry, input: JsonObject, requestId: String): Resolution {
         val title = ApprovalSummaries.of(entry.toolName, input).title
-        val token = AgentRunToken(job = kotlinx.coroutines.currentCoroutineContext()[kotlinx.coroutines.Job])
+        val token = AgentRunToken(
+            job = kotlinx.coroutines.currentCoroutineContext()[kotlinx.coroutines.Job],
+            ledgerSessionId = entry.ledgerSessionId,
+            provenance = entry.provenance,
+        )
         var end = RunEnd.FAILED
         val session = entry.ledgerSessionId
+        var recorded: String? = null
         try {
-            recordDecision(entry, "APPROVED", title)
             val result = withTimeout(EXEC_TIMEOUT_MS) { runCall(entry, input, token) }
             val resolution = when {
                 token.stopRequested -> Resolution("STOPPED", "Stopped.", session, requestId).also { end = RunEnd.STOPPED }
@@ -120,25 +124,32 @@ class PendingApprovalExecutor(
                 else -> Resolution("DONE", "Done: $title.", session, requestId).also { end = RunEnd.OK }
             }
             store.finish(entry.id, resolution.state, resolution.message, session, requestId)
+            recorded = resolution.state
             return resolution
         } catch (e: TimeoutCancellationException) {
             val r = Resolution(PendingApprovalStore.UNKNOWN,
                 "It took too long and was stopped, so it may have partly run. Check the ledger before trying again.",
                 session, requestId)
             store.finish(entry.id, r.state, r.message, session, requestId)
+            recorded = r.state
             return r
         } catch (e: CancellationException) {
             store.finish(entry.id, PendingApprovalStore.UNKNOWN,
                 "It was interrupted, so it may have partly run. Check the ledger before trying again.", session, requestId)
+            recorded = PendingApprovalStore.UNKNOWN
             throw e
         } catch (e: Exception) {
             Log.w(TAG, "approved call ${entry.toolName} threw", e)
             val r = Resolution("FAILED", "It didn't work: ${reason(e.message.orEmpty())}", session, requestId)
             store.finish(entry.id, r.state, r.message, session, requestId)
+            recorded = r.state
             return r
         } finally {
+            // The display (and its recording) first, then the turn row: both are this run's.
             onRunFinished(token.id, end)
             AgentDisplayLease.release(token.id)
+            // Nothing ran for a "try later": no turn to record, the card is still waiting.
+            recorded?.let { recordDecision(entry, it, title) }
         }
     }
 

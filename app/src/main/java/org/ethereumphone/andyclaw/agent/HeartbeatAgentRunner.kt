@@ -95,6 +95,7 @@ class HeartbeatAgentRunner(
             flowRepository = app.flowRepositoryOrNull,
             ledger = app.agentLedger(ledgerSessionId),
             replyAudience = if (repliesToStranger) org.ethereumphone.andyclaw.safety.ReplyAudience.STRANGER else null,
+            ledgerIntent = BackgroundIntent.label(trigger, provenance, prompt, conversationId),
         )
 
         val ledController = app.ledController

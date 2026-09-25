@@ -1,6 +1,7 @@
 package org.ethereumphone.andyclaw.skills.builtin
 
 import kotlinx.coroutines.Job
+import org.ethereumphone.andyclaw.agent.AgentRunToken
 import org.ethereumphone.andyclaw.agent.currentRunToken
 
 /**
@@ -18,6 +19,14 @@ import org.ethereumphone.andyclaw.agent.currentRunToken
  * UI at once, and the user's next message must be able to take the display straight away.
  */
 object AgentDisplayLease {
+
+    /** Told when a run takes the display and when it gives it back (the recording). */
+    interface Listener {
+        fun onClaimed(token: AgentRunToken)
+        fun onReleased(runId: String)
+    }
+
+    @Volatile var listener: Listener? = null
 
     private class Owner(val token: String, val job: Job?)
 
@@ -40,8 +49,11 @@ object AgentDisplayLease {
     }
 
     /** Ends [token]'s lease. True when it was the owner, so the caller puts the display away. */
-    @Synchronized
-    fun release(token: String): Boolean = (owner?.token == token).also { if (it) owner = null }
+    fun release(token: String): Boolean {
+        val released = synchronized(this) { (owner?.token == token).also { if (it) owner = null } }
+        if (released) runCatching { listener?.onReleased(token) }
+        return released
+    }
 
     /** Whether a live run holds the display. */
     fun isHeld(): Boolean = owner?.job?.isActive == true
@@ -75,7 +87,10 @@ object AgentDisplayLease {
      */
     suspend fun claimForCaller(): Boolean {
         val token = currentRunToken() ?: return !isHeld()
-        return claim(token.id, token.job)
+        val fresh = !isOwner(token.id)
+        val ok = claim(token.id, token.job)
+        if (ok && fresh) runCatching { listener?.onClaimed(token) }
+        return ok
     }
 
     const val BUSY = "The agent display is busy with another task right now. Try again when it is done."

@@ -146,6 +146,19 @@ class NodeApp : Application() {
         org.ethereumphone.andyclaw.safety.PendingApprovalStore(this)
     }
 
+    /**
+     * Keeps the frames of whatever run holds the agent display, into that run's ledger session.
+     * Listens to the display lease; see [org.ethereumphone.andyclaw.frames.AgentDisplayRecording].
+     */
+    val agentDisplayRecording: org.ethereumphone.andyclaw.frames.AgentDisplayRecording by lazy {
+        org.ethereumphone.andyclaw.frames.AgentDisplayRecording(
+            scope = appScope,
+            store = { sessionFrameStore },
+            ledger = { if (securePrefs.ledgerEnabled.value) ledgerRecorder else null },
+            enabled = { securePrefs.displayFrameCaptureEnabled.value && securePrefs.ledgerEnabled.value },
+        )
+    }
+
     /** APPROVE on a pending card: runs exactly the stored call, once. */
     val pendingApprovalExecutor: org.ethereumphone.andyclaw.safety.PendingApprovalExecutor by lazy {
         org.ethereumphone.andyclaw.safety.PendingApprovalExecutor(
@@ -203,35 +216,43 @@ class NodeApp : Application() {
         return engine.executeBatch(listOf(call)).results.single()
     }
 
-    /** The owner's decision on a card, as its own ledger row next to the refusal that raised it. */
+    /**
+     * The owner's decision on a card, as a TURN row in the session of the run that asked. For an
+     * approval it is written after the call ran, with how it ended, so the call's own step is the
+     * turn's step: a step belongs to the first turn written after it.
+     */
     fun recordApprovalDecision(
         entry: org.ethereumphone.andyclaw.safety.PendingApprovalStore.Entry,
         state: String,
         title: String,
     ) {
         if (!securePrefs.ledgerEnabled.value) return
-        val approved = state == "APPROVED"
+        val ran = state !in setOf("DECLINED", "ACKNOWLEDGED")
+        val outcome = when (state) {
+            "DONE" -> org.ethereumphone.andyclaw.ledger.LedgerOutcome.OK
+            "FAILED", org.ethereumphone.andyclaw.safety.PendingApprovalStore.UNKNOWN -> org.ethereumphone.andyclaw.ledger.LedgerOutcome.ERROR
+            else -> org.ethereumphone.andyclaw.ledger.LedgerOutcome.BLOCKED
+        }
         runCatching {
             ledgerRecorder.record(
                 org.ethereumphone.andyclaw.ledger.LedgerDraft(
                     sessionId = entry.ledgerSessionId ?: entry.conversationId ?: "approval:${entry.id}",
                     kind = org.ethereumphone.andyclaw.ledger.LedgerKind.TURN,
-                    intent = when (state) {
-                        "APPROVED" -> "Approved: $title"
-                        "DECLINED" -> "Declined: $title"
+                    intent = when {
+                        ran -> "Approved: $title"
+                        state == "DECLINED" -> "Declined: $title"
                         else -> "Acknowledged, not run: $title"
                     },
                     provenance = org.ethereumphone.andyclaw.ExecutionEngine.Provenance.USER.name,
-                    outcome = if (approved) org.ethereumphone.andyclaw.ledger.LedgerOutcome.OK
-                    else org.ethereumphone.andyclaw.ledger.LedgerOutcome.BLOCKED,
+                    outcome = outcome,
                     actions = listOf(
                         org.ethereumphone.andyclaw.ledger.LedgerAction(
-                            tool = entry.toolName,
-                            ok = approved,
+                            tool = "approval",
+                            ok = outcome == org.ethereumphone.andyclaw.ledger.LedgerOutcome.OK,
                             durationMs = 0L,
-                            note = when (state) {
-                                "APPROVED" -> "approved by user"
-                                "DECLINED" -> "declined by user"
+                            note = when {
+                                ran -> "approved by user; ${state.lowercase()}"
+                                state == "DECLINED" -> "declined by user"
                                 else -> "acknowledged by user, not run"
                             },
                         )
@@ -1112,6 +1133,8 @@ class NodeApp : Application() {
             appScope.launch {
                 org.ethereumphone.andyclaw.autopilot.AgentDisplayCapabilities.ensureListener()
             }
+            // Whatever run takes the display is recorded, launcher chat or not.
+            org.ethereumphone.andyclaw.skills.builtin.AgentDisplayLease.listener = agentDisplayRecording
         }
 
         // Pre-load the Whisper model into RAM so voice transcription is instant.
