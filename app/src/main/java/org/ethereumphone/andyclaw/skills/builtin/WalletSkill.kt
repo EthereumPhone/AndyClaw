@@ -3,6 +3,7 @@ package org.ethereumphone.andyclaw.skills.builtin
 import android.content.Context
 import android.util.Log
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
@@ -17,6 +18,7 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import org.ethereumphone.andyclaw.BuildConfig
+import org.ethereumphone.andyclaw.ExecutionEngine.rethrowIfCancelled
 import org.ethereumphone.andyclaw.agentwallet.AgentWalletChains
 import org.ethereumphone.andyclaw.agentwallet.SubWalletResult
 import org.ethereumphone.andyclaw.skills.AndyClawSkill
@@ -902,6 +904,7 @@ class WalletSkill(
                 buildJsonObject { put("address", address) }.toString()
             )
         } catch (e: Exception) {
+            rethrowIfCancelled(e)
             SkillResult.Error("Failed to get wallet address: ${e.message}")
         }
     }
@@ -933,6 +936,7 @@ class WalletSkill(
             }
             SkillResult.Success(result.toString())
         } catch (e: Exception) {
+            rethrowIfCancelled(e)
             SkillResult.Error("Failed to get owned tokens: ${e.message}")
         }
     }
@@ -989,6 +993,7 @@ class WalletSkill(
                 put("liquidity_available", quote.liquidityAvailable)
             }.toString())
         } catch (e: Exception) {
+            rethrowIfCancelled(e)
             SkillResult.Error("Failed to get swap quote: ${e.message}")
         }
     }
@@ -1040,6 +1045,7 @@ class WalletSkill(
                 }.toString())
             }
         } catch (e: Exception) {
+            rethrowIfCancelled(e)
             SkillResult.Error("Failed to send transaction: ${e.message}")
         }
     }
@@ -1111,6 +1117,7 @@ class WalletSkill(
                 }.toString())
             }
         } catch (e: Exception) {
+            rethrowIfCancelled(e)
             SkillResult.Error("Failed to transfer token: ${e.message}")
         }
     }
@@ -1124,6 +1131,7 @@ class WalletSkill(
                 buildJsonObject { put("address", address) }.toString()
             )
         } catch (e: Exception) {
+            rethrowIfCancelled(e)
             SkillResult.Error("Failed to get agent wallet address: ${e.message}")
         }
     }
@@ -1148,23 +1156,27 @@ class WalletSkill(
             ?: return subWalletUnavailableError()
 
         return try {
-            val result = withContext(Dispatchers.IO) {
-                if (chainId != sw.getChainId()) {
-                    sw.changeChain(
+            val outcome = submitAgentSend(
+                chainId = chainId,
+                submit = {
+                    if (chainId != sw.getChainId()) {
+                        sw.changeChain(
+                            chainId = chainId,
+                            rpcEndpoint = rpcEndpoint,
+                            mBundlerRPCUrl = chainIdToBundler(chainId),
+                        )
+                    }
+                    sw.sendTransaction(
+                        to = to,
+                        value = value,
+                        data = data,
+                        callGas = null,
                         chainId = chainId,
-                        rpcEndpoint = rpcEndpoint,
-                        mBundlerRPCUrl = chainIdToBundler(chainId),
                     )
-                }
-                sw.sendTransaction(
-                    to = to,
-                    value = value,
-                    data = data,
-                    callGas = null,
-                    chainId = chainId,
-                )
-            }
-            when (val outcome = parseSendResult(result, chainId)) {
+                },
+                record = { hash -> saveAgentTx(hash, chainId, to, value, "RAW", "agent_send_transaction") },
+            )
+            when (outcome) {
                 is SubWalletResult.Failure ->
                     SkillResult.Error("Failed to send agent transaction: ${outcome.message}")
 
@@ -1173,16 +1185,27 @@ class WalletSkill(
                         put("user_op_hash", outcome.userOpHash)
                         put("status", "submitted")
                         put("chain_id", chainId)
-                    }.toString()).also {
-                        saveAgentTx(
-                            outcome.userOpHash, chainId, to, value, "RAW",
-                            "agent_send_transaction",
-                        )
-                    }
+                    }.toString())
             }
         } catch (e: Exception) {
+            rethrowIfCancelled(e)
             SkillResult.Error("Failed to send agent transaction: ${e.message}")
         }
+    }
+
+    /**
+     * Submit one agent-wallet send and interpret the bundler's answer — without letting a
+     * cancel split the two. Once the SDK call starts the money may already be moving, so the
+     * submit, the parse and the history row ([record], on success only) all run to completion
+     * even if the turn is cancelled meanwhile. Before, a cancel landing after submission
+     * reported the send as failed and skipped the history row, inviting the same payment twice.
+     */
+    private suspend fun submitAgentSend(
+        chainId: Int,
+        submit: suspend () -> String,
+        record: (userOpHash: String) -> Unit,
+    ): SubWalletResult = withContext(NonCancellable + Dispatchers.IO) {
+        parseSendResult(submit(), chainId).also { if (it is SubWalletResult.Success) record(it.userOpHash) }
     }
 
     /**
@@ -1234,31 +1257,31 @@ class WalletSkill(
             ?: return subWalletUnavailableError()
 
         return try {
-            val result = withContext(Dispatchers.IO) {
-                if (chainId != sw.getChainId()) {
-                    sw.changeChain(
+            val outcome = submitAgentSend(
+                chainId = chainId,
+                submit = {
+                    if (chainId != sw.getChainId()) {
+                        sw.changeChain(
+                            chainId = chainId,
+                            rpcEndpoint = rpcEndpoint,
+                            mBundlerRPCUrl = chainIdToBundler(chainId),
+                        )
+                    }
+                    sw.sendTransaction(
+                        to = contractAddress,
+                        value = "0",
+                        data = encodedData,
+                        callGas = null,
                         chainId = chainId,
-                        rpcEndpoint = rpcEndpoint,
-                        mBundlerRPCUrl = chainIdToBundler(chainId),
                     )
-                }
-                sw.sendTransaction(
-                    to = contractAddress,
-                    value = "0",
-                    data = encodedData,
-                    callGas = null,
-                    chainId = chainId,
-                )
-            }
-            when (val outcome = parseSendResult(result, chainId)) {
+                },
+                record = { hash -> saveAgentTx(hash, chainId, to, amount, contractAddress, "agent_transfer_token") },
+            )
+            when (outcome) {
                 is SubWalletResult.Failure ->
                     SkillResult.Error("Failed to transfer token from agent wallet: ${outcome.message}")
 
                 is SubWalletResult.Success -> {
-                    saveAgentTx(
-                        outcome.userOpHash, chainId, to, amount, contractAddress,
-                        "agent_transfer_token",
-                    )
                     SkillResult.Success(buildJsonObject {
                         put("user_op_hash", outcome.userOpHash)
                         put("status", "submitted")
@@ -1270,6 +1293,7 @@ class WalletSkill(
                 }
             }
         } catch (e: Exception) {
+            rethrowIfCancelled(e)
             SkillResult.Error("Failed to transfer token from agent wallet: ${e.message}")
         }
     }
@@ -1519,6 +1543,7 @@ class WalletSkill(
                 }.toString())
             }
         } catch (e: Exception) {
+            rethrowIfCancelled(e)
             SkillResult.Error("Failed to transfer token: ${e.message}")
         }
     }
@@ -1632,31 +1657,33 @@ class WalletSkill(
             ?: return subWalletUnavailableError()
 
         return try {
-            val result = withContext(Dispatchers.IO) {
-                if (chainId != sw.getChainId()) {
-                    sw.changeChain(
+            val outcome = submitAgentSend(
+                chainId = chainId,
+                submit = {
+                    if (chainId != sw.getChainId()) {
+                        sw.changeChain(
+                            chainId = chainId,
+                            rpcEndpoint = rpcEndpoint,
+                            mBundlerRPCUrl = chainIdToBundler(chainId),
+                        )
+                    }
+                    sw.sendTransaction(
+                        to = contractAddress,
+                        value = "0",
+                        data = encodedData,
+                        callGas = null,
                         chainId = chainId,
-                        rpcEndpoint = rpcEndpoint,
-                        mBundlerRPCUrl = chainIdToBundler(chainId),
                     )
-                }
-                sw.sendTransaction(
-                    to = contractAddress,
-                    value = "0",
-                    data = encodedData,
-                    callGas = null,
-                    chainId = chainId,
-                )
-            }
-            when (val outcome = parseSendResult(result, chainId)) {
+                },
+                record = { hash ->
+                    saveAgentTx(hash, chainId, to, amount, symbol?.uppercase() ?: contractAddress, "agent_send_token")
+                },
+            )
+            when (outcome) {
                 is SubWalletResult.Failure ->
                     SkillResult.Error("Failed to transfer token from agent wallet: ${outcome.message}")
 
                 is SubWalletResult.Success -> {
-                    saveAgentTx(
-                        outcome.userOpHash, chainId, to, amount,
-                        symbol?.uppercase() ?: contractAddress, "agent_send_token",
-                    )
                     SkillResult.Success(buildJsonObject {
                         put("user_op_hash", outcome.userOpHash)
                         put("status", "submitted")
@@ -1670,6 +1697,7 @@ class WalletSkill(
                 }
             }
         } catch (e: Exception) {
+            rethrowIfCancelled(e)
             SkillResult.Error("Failed to transfer token from agent wallet: ${e.message}")
         }
     }
@@ -1876,17 +1904,25 @@ class WalletSkill(
             // Add swap transaction
             txList.add(SubWalletSDK.TxParams(to = txTo, value = txValue, data = txData))
 
-            // Execute batch via SubWalletSDK
-            val result = withContext(Dispatchers.IO) {
-                if (chainId != sw.getChainId()) {
-                    sw.changeChain(chainId, rpcEndpoint, chainIdToBundler(chainId))
-                }
-                sw.sendTransaction(
-                    txParamsList = txList,
-                    callGas = null,
-                    chainId = chainId,
-                )
-            }
+            // Execute batch via SubWalletSDK. Like every agent send, the bundler's answer is
+            // parsed rather than trusted for starting with "0x", and a cancel cannot split the
+            // submit from its history row.
+            val outcome = submitAgentSend(
+                chainId = chainId,
+                submit = {
+                    if (chainId != sw.getChainId()) {
+                        sw.changeChain(chainId, rpcEndpoint, chainIdToBundler(chainId))
+                    }
+                    sw.sendTransaction(
+                        txParamsList = txList,
+                        callGas = null,
+                        chainId = chainId,
+                    )
+                },
+                record = { hash ->
+                    saveAgentTx(hash, chainId, "", sellAmount, "$sellTokenParam->$buyTokenParam", "agent_swap")
+                },
+            )
 
             // Format buy amount for response
             val rawBuyAmount = json["buyAmount"]?.jsonPrimitive?.contentOrNull ?: "0"
@@ -1897,11 +1933,10 @@ class WalletSkill(
                     .toPlainString()
             } catch (_: Exception) { rawBuyAmount }
 
-            when {
-                result.startsWith("0x") -> {
-                    saveAgentTx(result, chainId, "", sellAmount, "$sellTokenParam->$buyTokenParam", "agent_swap")
+            when (outcome) {
+                is SubWalletResult.Success -> {
                     SkillResult.Success(buildJsonObject {
-                        put("user_op_hash", result)
+                        put("user_op_hash", outcome.userOpHash)
                         put("status", "submitted")
                         put("chain_id", chainId)
                         put("sell_token", sellTokenParam)
@@ -1910,12 +1945,10 @@ class WalletSkill(
                         put("expected_buy_amount", humanBuyAmount)
                     }.toString())
                 }
-                result.contains("AA21") -> SkillResult.Error(
-                    "Insufficient gas in agent wallet to execute swap on chain $chainId."
-                )
-                else -> SkillResult.Error("Swap failed: $result")
+                is SubWalletResult.Failure -> SkillResult.Error("Swap failed: ${outcome.message}")
             }
         } catch (e: Exception) {
+            rethrowIfCancelled(e)
             Log.e(TAG, "agent_swap failed", e)
             SkillResult.Error("Failed to execute agent swap: ${e.message}")
         }
@@ -1944,6 +1977,7 @@ class WalletSkill(
         val agentAddress = try {
             withContext(Dispatchers.IO) { sw.getAddress() }
         } catch (e: Exception) {
+            rethrowIfCancelled(e)
             return SkillResult.Error("Failed to get agent wallet address: ${e.message}")
         }
 
@@ -2049,6 +2083,7 @@ class WalletSkill(
                 SkillResult.Success(result.toString())
             }
         } catch (e: Exception) {
+            rethrowIfCancelled(e)
             SkillResult.Error("Failed to query balance: ${e.message}")
         } finally {
             web3j.shutdown()

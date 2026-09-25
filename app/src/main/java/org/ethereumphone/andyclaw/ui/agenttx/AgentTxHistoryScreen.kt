@@ -1,5 +1,6 @@
 package org.ethereumphone.andyclaw.ui.agenttx
 
+import android.widget.Toast
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -18,7 +19,10 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -28,8 +32,11 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.dgenlibrary.SystemColorManager
 import com.example.dgenlibrary.ui.theme.dgenWhite
 import org.ethereumphone.andyclaw.agenttx.db.entity.AgentTxEntity
+import kotlinx.coroutines.launch
 import org.ethereumphone.andyclaw.agentwallet.AgentWalletChains
+import org.ethereumphone.andyclaw.agentwallet.UserOpLookup
 import org.ethereumphone.andyclaw.ui.components.AppTextStyles
+import org.ethereumphone.andyclaw.ui.components.ChadAlertDialog
 import org.ethereumphone.andyclaw.ui.components.DgenBackNavigationBackground
 import org.ethereumphone.andyclaw.ui.components.DgenSmallPrimaryButton
 import java.text.SimpleDateFormat
@@ -51,6 +58,39 @@ fun AgentTxHistoryScreen(
     val sectionTitleStyle = AppTextStyles.sectionTitle(primaryColor)
     val contentTitleStyle = AppTextStyles.contentTitle(primaryColor)
     val contentBodyStyle = AppTextStyles.contentBody(primaryColor)
+
+    var confirmClear by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+    val uriHandler = LocalUriHandler.current
+
+    fun openExplorer(tx: AgentTxEntity) {
+        if (tx.userOpHash.isBlank()) return
+        scope.launch {
+            when (val lookup = viewModel.lookUpTransaction(tx)) {
+                is UserOpLookup.Included -> uriHandler.openUri(AgentWalletChains.explorerTxUrl(lookup.transactionHash))
+                UserOpLookup.Pending ->
+                    Toast.makeText(context, "Not on-chain yet — try again in a moment.", Toast.LENGTH_SHORT).show()
+                UserOpLookup.Unavailable ->
+                    Toast.makeText(context, "Couldn't look the transaction up. Try again.", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
+    if (confirmClear) {
+        ChadAlertDialog(
+            onDismissRequest = { confirmClear = false },
+            title = "Clear history?",
+            message = "This removes the list of agent wallet transactions from this phone. " +
+                "It cannot be undone. Nothing on-chain changes.",
+            confirmButtonText = "CLEAR",
+            dismissButtonText = "CANCEL",
+            onConfirm = {
+                confirmClear = false
+                viewModel.clearAll()
+            },
+            onDismiss = { confirmClear = false },
+        )
+    }
 
     DgenBackNavigationBackground(
         title = "Agent TX History",
@@ -95,7 +135,7 @@ fun AgentTxHistoryScreen(
                     DgenSmallPrimaryButton(
                         text = "Clear",
                         primaryColor = primaryColor,
-                        onClick = { viewModel.clearAll() },
+                        onClick = { confirmClear = true },
                     )
                 }
                 Spacer(Modifier.height(12.dp))
@@ -112,6 +152,7 @@ fun AgentTxHistoryScreen(
                             primaryColor = primaryColor,
                             contentTitleStyle = contentTitleStyle,
                             contentBodyStyle = contentBodyStyle,
+                            onOpen = { openExplorer(tx) },
                         )
                     }
                 }
@@ -126,8 +167,8 @@ private fun AgentTxRow(
     primaryColor: androidx.compose.ui.graphics.Color,
     contentTitleStyle: androidx.compose.ui.text.TextStyle,
     contentBodyStyle: androidx.compose.ui.text.TextStyle,
+    onOpen: () -> Unit,
 ) {
-    val uriHandler = LocalUriHandler.current
     val timeText = remember(tx.timestamp) {
         SimpleDateFormat("MMM d, HH:mm", Locale.getDefault()).format(Date(tx.timestamp))
     }
@@ -136,11 +177,7 @@ private fun AgentTxRow(
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable {
-                if (tx.userOpHash.isNotBlank()) {
-                    uriHandler.openUri("https://blockscan.com/tx/${tx.userOpHash}")
-                }
-            }
+            .clickable(onClick = onOpen)
             .padding(vertical = 12.dp, horizontal = 8.dp),
     ) {
         Row(

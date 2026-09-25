@@ -55,6 +55,12 @@ object AgentWalletChains {
     }
 
     /**
+     * An explorer page for a *transaction* hash, on whichever chain it is. A userOpHash is not
+     * one — resolve it first with [AgentWalletRepository.transactionFor].
+     */
+    fun explorerTxUrl(transactionHash: String): String = "https://blockscan.com/tx/$transactionHash"
+
+    /**
      * Chains where Alchemy serves `alchemy_getTokenBalances`. Everywhere else the
      * balance scan falls back to iterating [WELL_KNOWN_TOKENS] with `balanceOf`.
      */

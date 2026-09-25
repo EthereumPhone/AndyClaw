@@ -23,6 +23,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -36,9 +37,12 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.dgenlibrary.SystemColorManager
 import com.example.dgenlibrary.ui.theme.dgenWhite
+import kotlinx.coroutines.launch
 import org.ethereumphone.andyclaw.agentwallet.AgentWalletChains
+import org.ethereumphone.andyclaw.agentwallet.AmountFormat
 import org.ethereumphone.andyclaw.agentwallet.EthAddress
-import org.ethereumphone.andyclaw.agentwallet.TokenBalance
+import org.ethereumphone.andyclaw.agentwallet.SendRequest
+import org.ethereumphone.andyclaw.agentwallet.UserOpLookup
 import org.ethereumphone.andyclaw.ui.components.AppTextStyles
 import org.ethereumphone.andyclaw.ui.components.DgenBackNavigationBackground
 import org.ethereumphone.andyclaw.ui.components.DgenCursorTextfield
@@ -73,26 +77,50 @@ fun AgentWalletSendScreen(
     val contentTitleStyle = AppTextStyles.contentTitle(primaryColor)
     val contentBodyStyle = AppTextStyles.contentBody(primaryColor)
 
-    var showTypedConfirm by remember { mutableStateOf(false) }
+    /** The send awaiting the no-lock-screen confirmation dialog, frozen when it opened. */
+    var pendingRequest by remember { mutableStateOf<SendRequest?>(null) }
+    val scope = rememberCoroutineScope()
+    var explorerNote by remember { mutableStateOf<String?>(null) }
 
     fun beginConfirmation() {
+        // Freeze the send now: the prompt shows exactly this, and exactly this is sent.
+        val request = state.sendRequest() ?: return
         val activity = context as? Activity
         if (activity == null) {
-            showTypedConfirm = true
+            pendingRequest = request
             return
         }
-        val token = state.selectedToken?.symbol ?: "tokens"
         SpendAuthGate.authenticate(
             activity = activity,
             title = "Send from agent wallet",
-            subtitle = "${state.amount} $token on ${state.chainName}",
-            description = "To ${EthAddress.shorten(state.effectiveRecipient.orEmpty())}",
-            onSuccess = { viewModel.confirmSend() },
+            subtitle = "${request.amountDisplay} ${request.tokenSymbol} on ${request.chainName}",
+            // The whole address: the last chance to catch a wrong recipient is not the place
+            // to shorten it.
+            description = buildString {
+                append("To ${request.recipient}")
+                request.ensName?.let { append(" ($it)") }
+                request.warning?.let { append("\n\n$it") }
+            },
+            onSuccess = { viewModel.confirmSend(request) },
             onCancelled = { },
             // No lock screen on this device — fall back to an explicit typed confirmation
             // rather than sending on a single unauthenticated tap.
-            onUnavailable = { showTypedConfirm = true },
+            onUnavailable = { pendingRequest = request },
         )
+    }
+
+    fun openExplorer(chainId: Int, userOpHash: String) {
+        scope.launch {
+            explorerNote = "Looking up the transaction…"
+            explorerNote = when (val lookup = viewModel.lookUpTransaction(chainId, userOpHash)) {
+                is UserOpLookup.Included -> {
+                    uriHandler.openUri(AgentWalletChains.explorerTxUrl(lookup.transactionHash))
+                    null
+                }
+                UserOpLookup.Pending -> "Not on-chain yet — try again in a moment."
+                UserOpLookup.Unavailable -> "Couldn't reach the bundler to look it up. Try again."
+            }
+        }
     }
 
     DgenBackNavigationBackground(
@@ -146,11 +174,11 @@ fun AgentWalletSendScreen(
             state.balances.forEach { chain ->
                 PickerRow(
                     label = chain.chainName,
-                    detail = if (chain.hasFunds) {
-                        chain.all.filter { it.raw.signum() > 0 }
+                    detail = when {
+                        !chain.nativeKnown -> "couldn't load"
+                        chain.hasFunds -> chain.all.filter { it.raw.signum() > 0 }
                             .joinToString("  ") { "${it.display()} ${it.symbol}" }
-                    } else {
-                        "empty"
+                        else -> "empty"
                     },
                     selected = chain.chainId == state.selectedChainId,
                     primaryColor = primaryColor,
@@ -166,7 +194,22 @@ fun AgentWalletSendScreen(
             Text("TOKEN", style = sectionTitleStyle, color = primaryColor)
             Spacer(Modifier.height(6.dp))
             val chain = state.selectedChain
-            if (chain == null || chain.all.none { it.raw.signum() > 0 }) {
+            if (state.balanceUnknown) {
+                // A failed read is not an empty wallet: say so, and never offer a paid top-up
+                // on the strength of it.
+                Text(
+                    "Couldn't load the agent wallet's balance on ${state.chainName}.",
+                    style = contentBodyStyle,
+                    color = WarnAmber,
+                )
+                Spacer(Modifier.height(6.dp))
+                DgenSmallPrimaryButton(
+                    text = if (state.loading) "Loading…" else "Retry",
+                    primaryColor = primaryColor,
+                    onClick = { viewModel.refresh(force = true) },
+                    enabled = !state.loading,
+                )
+            } else if (chain == null || chain.all.none { it.raw.signum() > 0 }) {
                 Text(
                     "The agent wallet holds nothing on ${state.chainName}.",
                     style = contentBodyStyle,
@@ -177,7 +220,7 @@ fun AgentWalletSendScreen(
                     PickerRow(
                         label = token.symbol,
                         detail = "${token.display()} available",
-                        selected = token.sameAs(state.selectedToken),
+                        selected = token.sameAsset(state.selectedToken),
                         primaryColor = primaryColor,
                         contentTitleStyle = contentTitleStyle,
                         contentBodyStyle = contentBodyStyle,
@@ -199,7 +242,9 @@ fun AgentWalletSendScreen(
                     text = "Max",
                     primaryColor = primaryColor,
                     onClick = { viewModel.setMaxAmount() },
-                    enabled = state.selectedToken != null,
+                    // For the native token Max has to leave gas behind, so it waits for the
+                    // estimate rather than guess.
+                    enabled = state.maxSendable != null && !state.sending,
                 )
             }
             Spacer(Modifier.height(6.dp))
@@ -247,16 +292,21 @@ fun AgentWalletSendScreen(
                     text = if (state.resolvingEns) "Resolving…" else "Resolve",
                     primaryColor = primaryColor,
                     onClick = { viewModel.resolveEns() },
-                    enabled = !state.resolvingEns,
+                    enabled = !state.resolvingEns && state.ensName != null && !state.sending,
                 )
-                state.resolvedRecipient?.let {
+                // Only an answer for the name as it is typed now.
+                state.effectiveRecipient?.let {
                     Spacer(Modifier.height(4.dp))
-                    Text("→ $it", style = contentBodyStyle, color = dgenWhite)
+                    Text("→ $it", style = contentBodyStyle.copy(fontFamily = FontFamily.Monospace, fontSize = 12.sp), color = dgenWhite)
                 }
             }
             state.recipientError?.let {
                 Spacer(Modifier.height(4.dp))
                 Text(it, style = contentBodyStyle, color = ErrorRed)
+            }
+            state.recipientWarning?.let {
+                Spacer(Modifier.height(4.dp))
+                Text(it, style = contentBodyStyle, color = WarnAmber)
             }
 
             // ── Gas ────────────────────────────────────────────────────
@@ -264,13 +314,20 @@ fun AgentWalletSendScreen(
                 Spacer(Modifier.height(20.dp))
                 Text(warning, style = contentBodyStyle, color = WarnAmber)
                 Spacer(Modifier.height(8.dp))
+                val topUp = state.gasTopUpWei
+                val estimateFailed = state.selectedChainId in state.gasReserveFailed
                 DgenSmallPrimaryButton(
-                    text = if (state.fundingGas) "Sending…" else
-                        "Send ${AgentWalletSendViewModel.DEFAULT_GAS_TOP_UP_ETH.toPlainString()} " +
-                            "${state.nativeSymbol} for gas",
+                    // Sized to this chain's gas price: a fixed amount that covers a few sends on
+                    // Base does not cover one on Polygon.
+                    text = when {
+                        state.fundingGas -> "Sending…"
+                        topUp != null -> "Send ${AmountFormat.formatForDisplay(topUp, 18)} ${state.nativeSymbol} for gas"
+                        estimateFailed -> "Couldn't estimate gas — retry"
+                        else -> "Estimating gas…"
+                    },
                     primaryColor = primaryColor,
-                    onClick = { viewModel.fundGas() },
-                    enabled = !state.fundingGas,
+                    onClick = { if (topUp != null) viewModel.fundGas() else viewModel.retryGasEstimate() },
+                    enabled = !state.fundingGas && (topUp != null || estimateFailed),
                 )
                 Spacer(Modifier.height(4.dp))
                 Text(
@@ -279,14 +336,22 @@ fun AgentWalletSendScreen(
                     color = dgenWhite.copy(alpha = 0.7f),
                 )
             }
+            state.gasLowWarning?.let { warning ->
+                Spacer(Modifier.height(20.dp))
+                Text(warning, style = contentBodyStyle, color = WarnAmber)
+            }
 
             // ── Review + send ──────────────────────────────────────────
             if (state.canSend) {
                 Spacer(Modifier.height(24.dp))
                 Text("REVIEW", style = sectionTitleStyle, color = primaryColor)
                 Spacer(Modifier.height(6.dp))
-                SmallDetailItem("AMOUNT", "${state.amount} ${state.selectedToken?.symbol}", primaryColor)
-                SmallDetailItem("TO", state.effectiveRecipient.orEmpty(), primaryColor)
+                SmallDetailItem("AMOUNT", "${state.canonicalAmount} ${state.selectedToken?.symbol}", primaryColor)
+                SmallDetailItem(
+                    "TO",
+                    state.effectiveRecipient.orEmpty() + (state.ensName?.let { "\n($it)" } ?: ""),
+                    primaryColor,
+                )
                 SmallDetailItem("CHAIN", state.chainName, primaryColor)
                 if (state.selectedChain?.native?.raw?.signum() == 1) {
                     SmallDetailItem(
@@ -322,10 +387,13 @@ fun AgentWalletSendScreen(
                             text = "View on explorer",
                             style = contentBodyStyle,
                             color = primaryColor,
-                            modifier = Modifier.clickable {
-                                uriHandler.openUri("https://blockscan.com/tx/${outcome.userOpHash}")
-                            },
+                            // A userOpHash is not a transaction hash; look the transaction up first.
+                            modifier = Modifier.clickable { openExplorer(outcome.chainId, outcome.userOpHash) },
                         )
+                        explorerNote?.let {
+                            Spacer(Modifier.height(4.dp))
+                            Text(it, style = contentBodyStyle, color = dgenWhite.copy(alpha = 0.7f))
+                        }
                     }
 
                     is SendOutcome.GasFunded -> Text(
@@ -346,29 +414,24 @@ fun AgentWalletSendScreen(
         }
     }
 
-    if (showTypedConfirm) {
+    pendingRequest?.let { request ->
         ChadAlertDialog(
-            onDismissRequest = { showTypedConfirm = false },
+            onDismissRequest = { pendingRequest = null },
             title = "Confirm send",
-            message = "Send ${state.amount} ${state.selectedToken?.symbol} on ${state.chainName} " +
-                "to ${state.effectiveRecipient.orEmpty()}.\n\n" +
-                "This device has no screen lock, so this cannot be confirmed biometrically.",
+            message = "Send ${request.amountDisplay} ${request.tokenSymbol} on ${request.chainName} " +
+                "to ${request.recipient}${request.ensName?.let { " ($it)" } ?: ""}." +
+                (request.warning?.let { "\n\n$it" } ?: "") +
+                "\n\nThis device has no screen lock, so this cannot be confirmed biometrically.",
             confirmButtonText = "SEND",
             dismissButtonText = "CANCEL",
             onConfirm = {
-                showTypedConfirm = false
-                viewModel.confirmSend()
+                pendingRequest = null
+                viewModel.confirmSend(request)
             },
-            onDismiss = { showTypedConfirm = false },
+            onDismiss = { pendingRequest = null },
         )
     }
 }
-
-/** Two token entries are the same asset when the chain-scoped contract matches. */
-private fun TokenBalance.sameAs(other: TokenBalance?): Boolean =
-    other != null &&
-        symbol == other.symbol &&
-        contractAddress?.lowercase() == other.contractAddress?.lowercase()
 
 @Composable
 private fun PickerRow(
