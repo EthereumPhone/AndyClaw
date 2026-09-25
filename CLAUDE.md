@@ -244,12 +244,17 @@ trusted on sight — a flow whose hash or MAC does not verify is ignored, not re
   can record what really happened — refusal happens here, not by pretending.
 - **`FlowInterpreter` never guesses.** Version pin, per-step perceptual checksum, bounded
   waits, postconditions, a wall-clock budget. Any mismatch aborts and the VLM path takes over —
-  unless the flow has **committed**: once it has acted past its checkpoint, an abort is reported
-  as "performed X but could not confirm — do not repeat it" and nothing falls back
-  (`FlowRunAccounting.mayFallBack`). Postconditions are polled for up to 3 s, because a slow
-  app's "sent" bubble arriving late used to send the message twice.
-- **The right row, never a payment.** A target that matches more than one live node must be
-  followed by a passing identity assert before the checkpoint, or the replay aborts
+  unless the flow has **committed**: once it has acted past its checkpoint, performed an
+  irreversible step, or sent out its **last action** (a flow ending on "Save" has done its task
+  there), an abort is reported as "performed X but could not confirm — do not repeat it" and
+  nothing falls back (`FlowRunAccounting.mayFallBack`). An action counts only once it may have
+  happened (`FlowDispatch`: a certain "never reached the app" is not a commit, an unclear answer
+  is). Postconditions are polled for up to 3 s, because a slow app's "sent" bubble arriving late
+  used to send the message twice.
+- **The right row, never a payment, never blind.** A target not on the screen yet is waited for
+  (1.5 s, stop-aware) and never clicked blind; the checks run on the very tree the action acts
+  on. A target that matches more than one live node must be followed by a passing identity
+  assert — the value as a whole word, polled — before the checkpoint, or the replay aborts
   `AMBIGUOUS_TARGET`. A live target that reads as payment, login or a password field, or a
   private app on screen, aborts `SENSITIVE_TARGET`, which never falls back.
 - **STOP aborts a replay** (`STOPPED`, checked before every step and inside every wait). It is
@@ -294,8 +299,10 @@ backend's `/api/jev` with the wallet sign-in (`JevHttpClient`).
 - Screen reads are in-process (`AgentDisplayAccessibilityService.snapshot`, all windows);
   settling is event-driven (`ScreenSettler`) plus the OS frame-quiet check.
 - `AgentLoop` ends a turn with the autopilot's `say` (no extra model call) and elides old UI
-  trees from history (`pruneOldUiTrees`). A matching compiled flow is replayed first
-  (`FlowFirst.select`).
+  trees from history (`pruneOldUiTrees`). A compiled flow for the same task is replayed first
+  (`FlowFirst.select`) — matched on the app, the stored goal and exactly the plan's value keys,
+  **never on the id**, which is a 40-character slug that collided ("turn Wi-Fi on"/"off", every
+  non-Latin goal). New ids carry a hash of the task; a recompile replaces the older flow.
 - **One run owns the display.** `AgentDisplayLease.claim` on the first display tool call; only
   the owner puts the display away, when its run ends (`AgentDisplaySkill.onRunFinished`); while
   a live owner holds it, other runs' display tools answer "busy". Ownership follows the owner's
