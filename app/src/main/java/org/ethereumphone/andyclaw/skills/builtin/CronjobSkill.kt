@@ -13,6 +13,7 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.long
 import kotlinx.serialization.json.put
 import org.ethereumphone.andyclaw.ExecutionEngine.currentProvenance
+import org.ethereumphone.andyclaw.agent.currentRunToken
 import org.ethereumphone.andyclaw.safety.TriggerProvenanceStore
 import org.ethereumphone.andyclaw.skills.AndyClawSkill
 import org.ethereumphone.andyclaw.skills.SkillManifest
@@ -106,7 +107,12 @@ class CronjobSkill(private val context: Context) : AndyClawSkill {
                 // The job will run later with nobody watching: remember whose authority it has.
                 if (result is SkillResult.Success) {
                     createdId(result.data)?.let {
-                        triggers.record(TriggerProvenanceStore.cronKey(it), currentProvenance())
+                        triggers.record(
+                            TriggerProvenanceStore.cronKey(it),
+                            TriggerProvenanceStore.creatorProvenance(
+                                currentProvenance(), currentRunToken()?.readThirdPartyContent == true,
+                            ),
+                        )
                     }
                 }
             }

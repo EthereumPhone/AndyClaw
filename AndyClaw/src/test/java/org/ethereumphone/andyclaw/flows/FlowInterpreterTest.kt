@@ -271,10 +271,14 @@ class FlowInterpreterSafetyTest {
         var nullReadsAfterAction: Int = 0,
         private val answers: Map<String, FlowDispatch> = emptyMap(),
         private val throwsOn: Set<String> = emptySet(),
+        /** Reads after an action that still return the screen acted on, like a lagging a11y cache. */
+        private val staleReadsAfterAction: Int = 0,
     ) : FlowDisplayDriver {
         var current = start
         private var readsSinceArrival = 0
         private var nullReads = 0
+        private var staleReads = 0
+        private var previous = start
         val clicks = mutableListOf<String>()
         val typed = mutableListOf<String>()
         var onRead: () -> Unit = {}
@@ -287,6 +291,10 @@ class FlowInterpreterSafetyTest {
                 nullReads--
                 return null
             }
+            if (staleReads > 0) {
+                staleReads--
+                return screens.getValue(previous).json()
+            }
             readsSinceArrival++
             val wait = settlesAfterReads[current] ?: 0
             return if (readsSinceArrival <= wait && unsettled != null) unsettled.json() else screens.getValue(current).json()
@@ -295,11 +303,13 @@ class FlowInterpreterSafetyTest {
         private fun act(viewId: String): FlowDispatch {
             if (answers[viewId] == FlowDispatch.NOT_DISPATCHED) return FlowDispatch.NOT_DISPATCHED
             if (screens.getValue(current).nodes.none { it.viewId == viewId }) return FlowDispatch.NOT_DISPATCHED
+            previous = current
             transitions["$current|$viewId"]?.let {
                 current = it
                 readsSinceArrival = 0
             }
             nullReads = nullReadsAfterAction
+            staleReads = staleReadsAfterAction
             return answers[viewId] ?: FlowDispatch.DONE
         }
         override suspend fun clickNode(viewId: String, index: Int): FlowDispatch {
@@ -729,6 +739,28 @@ class FlowInterpreterSafetyTest {
         val result = interpreter(driver).run(flow(sendSteps), emptyMap())
         assertTrue("expected completion, got $result", result is FlowRunResult.Completed)
         assertEquals(listOf("row", "send_button"), driver.clicks)
+    }
+
+    @Test
+    fun `an identity assert is not judged on the screen the tap left`() = runTest {
+        // The list's rows carry the name under the same view id the thread's title uses. Bob is
+        // first now; the first reads after the tap still return the list, which names Anna too.
+        val namedList = Screen("list", "com.msg", Node("conversation_list", "list"),
+            Node("row", "list_item"), Node("name", "text", "Bob"),
+            Node("row", "list_item"), Node("name", "text", "Anna"))
+        val bobThread = Screen("thread", "com.msg",
+            Node("name", "text", "Bob"), Node("compose_text", "text_field"), Node("send_button"))
+        val steps = listOf(
+            TapStep(viewId = "row"),
+            AssertStep(viewId = "name", nodeTextContains = "Anna"),
+            CheckpointStep("send"),
+            TapStep(viewId = "send_button"),
+        )
+        val driver = Driver(mapOf("list" to namedList, "thread" to bobThread, "sent" to sent), graph, "list",
+            staleReadsAfterAction = 2)
+        val result = interpreter(driver).run(flow(steps), emptyMap()) as FlowRunResult.Aborted
+        assertEquals(FlowAbortReason.ASSERT_FAILED, result.reason)
+        assertFalse("send_button" in driver.clicks)
     }
 
     @Test

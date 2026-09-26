@@ -87,7 +87,7 @@ class ToolBridge(
                 readThirdPartyContent = token?.readThirdPartyContent == true,
             )
         ) {
-            if (provenance == Provenance.UNTRUSTED && toolName in ToolEffects.PRIVATE_DATA_TOOLS) {
+            if (provenance != Provenance.USER && toolName in ToolEffects.PRIVATE_DATA_TOOLS) {
                 token?.readPrivateData = true
             }
             return
@@ -102,7 +102,9 @@ class ToolBridge(
 
         val privacy = if (provenance == Provenance.UNTRUSTED) {
             ProvenanceGate.privacyVerdict(toolName, runContext[ReplyAudience], token?.readPrivateData == true)
-        } else null
+        } else ProvenanceGate.taintedTrustedEgressVerdict(
+            provenance, toolName, token?.readPrivateData == true, token?.readThirdPartyContent == true,
+        )
         throw RuntimeException(
             privacy?.reason ?: ("Tool '$toolName' is $effect and this code is running for a request that " +
                 "came from untrusted content, so it cannot be called from code. " +
@@ -124,7 +126,7 @@ class ToolBridge(
      * Code can read and then act in one tool call, so the bridge marks it call by call.
      */
     private fun noteResultSeen(toolName: String) {
-        if (provenance == Provenance.TRUSTED && ToolEffects.taintsTrustedRun(toolName)) {
+        if (provenance != Provenance.UNTRUSTED && ToolEffects.taintsTrustedRun(toolName)) {
             runContext[AgentRunToken]?.readThirdPartyContent = true
         }
     }

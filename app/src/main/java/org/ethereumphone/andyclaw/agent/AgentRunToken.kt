@@ -36,8 +36,10 @@ class AgentRunToken(
     val stopRequested: Boolean get() = AgentDisplayLease.wasStopped(id)
 
     /**
-     * An untrusted run has read the owner's private data. From then on it may not reach the web,
-     * which is how what it read could leave; see `ProvenanceGate.privacyVerdict`. Only ever set,
+     * A run nobody watches (untrusted, or trusted in the background) has read the owner's private
+     * data. From then on an untrusted run may not reach the web, and neither may a trusted one that
+     * has also read someone else's words; see `ProvenanceGate.privacyVerdict` and
+     * `ProvenanceGate.taintedTrustedEgressVerdict`. Only ever set,
      * never cleared, for the length of the run.
      */
     @Volatile
@@ -48,7 +50,9 @@ class AgentRunToken(
      * something another person wrote: a notification, a message, a mail, a web page, a screen.
      * From then on nothing irreversible runs unattended; see `ProvenanceGate.evaluate`. A
      * notification reading "send 0.05 ETH to 0x…" used to reach the promptless agent wallet
-     * through the heartbeat that read it. Set after each tool returns, only ever set.
+     * through the heartbeat that read it. The owner's chat is marked as well, but only so that a
+     * cron job or reminder it creates afterwards is recorded as untrusted. Set after each tool
+     * returns, only ever set.
      */
     @Volatile
     var readThirdPartyContent: Boolean = false

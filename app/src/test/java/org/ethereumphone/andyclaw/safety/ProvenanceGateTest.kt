@@ -342,4 +342,29 @@ class ProvenanceGateTest {
             assertFalse("$t should not taint", ToolEffects.taintsTrustedRun(t))
         }
     }
+
+    @Test
+    fun `a tainted background run that read private data cannot reach the web`() {
+        val fetch = toolDef("fetch_webpage", ToolEffect.READ)
+        assertEquals("BLOCK", verdictName(ProvenanceGate.evaluate(
+            call("fetch_webpage"), Provenance.TRUSTED, null, fetch,
+            readPrivateData = true, readThirdPartyContent = true,
+        )))
+        assertFalse(ProvenanceGate.allowsUnattended(
+            Provenance.TRUSTED, ToolEffect.READ, "fetch_webpage",
+            readPrivateData = true, readThirdPartyContent = true,
+        ))
+        // Either half alone leaves it open: the owner's own heartbeat may read and then search.
+        assertEquals("PASS", verdictName(ProvenanceGate.evaluate(
+            call("fetch_webpage"), Provenance.TRUSTED, null, fetch, readPrivateData = true,
+        )))
+        assertEquals("PASS", verdictName(ProvenanceGate.evaluate(
+            call("fetch_webpage"), Provenance.TRUSTED, null, fetch, readThirdPartyContent = true,
+        )))
+        // The owner's chat is watched.
+        assertEquals("PASS", verdictName(ProvenanceGate.evaluate(
+            call("fetch_webpage"), Provenance.USER, null, fetch,
+            readPrivateData = true, readThirdPartyContent = true,
+        )))
+    }
 }

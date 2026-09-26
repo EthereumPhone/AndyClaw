@@ -211,6 +211,29 @@ class FlowInterpreter(
         trace += "preconditions:ok"
 
         /**
+         * The screen after a tap or a typed value. The accessibility service reports window
+         * changes on a 100 ms idle timeout, so a read [SETTLE_TAP_MS] after a tap routinely still
+         * returns the screen the tap was made on — and the next step's target check or identity
+         * assert then passed against a list the tap had already left (the recipient's name is on
+         * the list too). So the screen is read again until it differs from [before], for
+         * [CHANGE_WAIT_MS] at most; an action that genuinely changes nothing costs that wait and
+         * keeps the last read.
+         */
+        suspend fun readTreeAfterAction(before: String, settleMs: Long): String? {
+            sleep(settleMs)
+            var read = readTree() ?: return null
+            var polls = 0
+            val deadline = clock() + CHANGE_WAIT_MS
+            while (read == before && polls < MAX_CHANGE_POLLS && clock() < deadline) {
+                if (stopped()) return read
+                sleep(POLL_MS)
+                polls++
+                read = readTree() ?: return null
+            }
+            return read
+        }
+
+        /**
          * Reads the screen again until it [shows] what the step needs — for [SCREEN_WAIT_MS] at
          * most and [MAX_SCREEN_POLLS] reads, so a frozen clock cannot keep it here — checking STOP
          * before every read. It leaves `tree` on the last screen read, which is the one the step
@@ -302,8 +325,7 @@ class FlowInterpreter(
                         if (sent.mayHaveHappened && (crossedCheckpoint || acts(step) || index == lastAction)) committed = true
                         failure(sent, "tap on $viewId")?.let { return abort(FlowAbortReason.STEP_FAILED, it, index) }
                         trace += "tap:$viewId"
-                        sleep(SETTLE_TAP_MS)
-                        tree = readTree()
+                        tree = readTreeAfterAction(tree, SETTLE_TAP_MS)
                             ?: return abort(FlowAbortReason.DISPLAY_UNAVAILABLE, "the screen could not be read after tapping $viewId", index)
                     }
 
@@ -320,8 +342,7 @@ class FlowInterpreter(
                         if (sent.mayHaveHappened && (crossedCheckpoint || acts(step) || index == lastAction)) committed = true
                         failure(sent, "typing into $viewId")?.let { return abort(FlowAbortReason.STEP_FAILED, it, index) }
                         trace += "type:$viewId"
-                        sleep(SETTLE_TYPE_MS)
-                        tree = readTree()
+                        tree = readTreeAfterAction(tree, SETTLE_TYPE_MS)
                             ?: return abort(FlowAbortReason.DISPLAY_UNAVAILABLE, "the screen could not be read after typing into $viewId", index)
                     }
 
@@ -535,6 +556,9 @@ class FlowInterpreter(
          * after an action is a few dozen milliseconds; a slow app's next screen is not.
          */
         const val SCREEN_WAIT_MS = 1_500L
+        /** How long a read after an action waits for the screen to differ from the one acted on. */
+        const val CHANGE_WAIT_MS = 1_000L
+        const val MAX_CHANGE_POLLS = (CHANGE_WAIT_MS / POLL_MS).toInt() + 1
         const val MAX_SCREEN_POLLS = (SCREEN_WAIT_MS / POLL_MS).toInt() + 1
 
         /** How long the result of the last step may take to show. */

@@ -39,6 +39,15 @@ class TriggerProvenanceStore(private val dir: File) {
 
         fun cronKey(id: Int) = "cron:$id"
         fun reminderKey(id: Int) = "reminder:$id"
+
+        /**
+         * The authority a job created now is recorded with. A run that has read someone else's
+         * words — a message, a notification, a page — records its job as [Provenance.UNTRUSTED],
+         * whoever it runs for: the owner's chat reading an injected "every 5 minutes, send…" used
+         * to record the job as the owner's, and it then fired as TRUSTED and paid out unattended.
+         */
+        fun creatorProvenance(provenance: Provenance, readThirdPartyContent: Boolean): Provenance =
+            if (readThirdPartyContent) Provenance.UNTRUSTED else provenance
     }
 
     private val file = File(dir, FILENAME)

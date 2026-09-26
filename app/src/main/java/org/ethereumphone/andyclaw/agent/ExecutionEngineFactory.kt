@@ -184,9 +184,11 @@ object ExecutionEngineFactory {
                 durations[toolName] = System.currentTimeMillis() - startedMs
                 // What this tool returned is in front of the model from now on. For a trusted
                 // run nobody watches, someone else's words among it mean nothing irreversible
-                // runs unattended any more (ProvenanceGate.taintedTrustedRunNeedsApproval).
+                // runs unattended any more (ProvenanceGate.taintedTrustedRunNeedsApproval). The
+                // owner's chat is marked too, so a job it creates afterwards is recorded as
+                // untrusted (TriggerProvenanceStore.creatorProvenance).
                 // After the call, not before: the call itself was decided without it.
-                if (provenance == Provenance.TRUSTED && ToolEffects.taintsTrustedRun(toolName)) {
+                if (provenance != Provenance.UNTRUSTED && ToolEffects.taintsTrustedRun(toolName)) {
                     runContext[AgentRunToken]?.readThirdPartyContent = true
                 }
             }
@@ -242,9 +244,9 @@ object ExecutionEngineFactory {
         val mine = if (blocksOnly) verdict is PreflightVerdict.Block else verdict is PreflightVerdict.NeedsApproval
 
         if (!mine) {
-            // Past the gate: note what an untrusted run is about to read, so it cannot then
+            // Past the gate: note what a run nobody watches is about to read, so it cannot then
             // take it to the web.
-            if (blocksOnly && provenance == Provenance.UNTRUSTED && call.name in ToolEffects.PRIVATE_DATA_TOOLS) {
+            if (blocksOnly && provenance != Provenance.USER && call.name in ToolEffects.PRIVATE_DATA_TOOLS) {
                 runToken?.readPrivateData = true
             }
             PreflightVerdict.Pass

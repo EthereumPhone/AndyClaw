@@ -94,6 +94,8 @@ object ProvenanceGate {
             )
         }
 
+        taintedTrustedEgressVerdict(provenance, call.name, readPrivateData, readThirdPartyContent)?.let { return it }
+
         if (provenance == Provenance.UNTRUSTED) {
             privacyVerdict(call.name, audience, readPrivateData)?.let { return it }
 
@@ -137,6 +139,7 @@ object ProvenanceGate {
     ): Boolean =
         matrix(provenance, effect) is PreflightVerdict.Pass &&
             !taintedTrustedRunNeedsApproval(provenance, effect, toolName, readThirdPartyContent) &&
+            taintedTrustedEgressVerdict(provenance, toolName, readPrivateData, readThirdPartyContent) == null &&
             (provenance != Provenance.UNTRUSTED || privacyVerdict(toolName, audience, readPrivateData) == null)
 
     /**
@@ -155,6 +158,27 @@ object ProvenanceGate {
     ): Boolean =
         provenance == Provenance.TRUSTED && readThirdPartyContent &&
             effect == ToolEffect.IRREVERSIBLE && toolName !in ToolEffects.OWNER_ONLY_MESSAGE_TOOLS
+
+    /**
+     * The egress half of [taintedTrustedRunNeedsApproval]. A web fetch is READ, so the taint rule
+     * never saw it: a notification telling a heartbeat to read the SMS inbox and fetch
+     * `evil?d=<code>` got the code out with nobody watching. Once a trusted run nobody watches has
+     * read both someone else's words and the owner's private data, it may not reach the web — a
+     * block, not an approval, because the heartbeat answers approvals by itself.
+     */
+    fun taintedTrustedEgressVerdict(
+        provenance: Provenance,
+        toolName: String,
+        readPrivateData: Boolean,
+        readThirdPartyContent: Boolean,
+    ): PreflightVerdict.Block? {
+        if (provenance != Provenance.TRUSTED || !readPrivateData || !readThirdPartyContent) return null
+        if (toolName !in ToolEffects.NETWORK_EGRESS) return null
+        return PreflightVerdict.Block(
+            "[Provenance] This run has read something written by someone else and the owner's " +
+                "private data, so it cannot send anything to the web. Finish without it."
+        )
+    }
 
     // ── What an untrusted run may read, and what it may do after ──────
 

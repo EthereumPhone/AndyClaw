@@ -57,4 +57,11 @@ class TriggerProvenanceStoreTest {
         assertEquals(Provenance.UNTRUSTED, s.firedProvenanceFor(TriggerProvenanceStore.cronKey(11)))
         assertEquals(Provenance.UNTRUSTED, s.firedProvenanceFor(TriggerProvenanceStore.cronKey(12)))
     }
+
+    @Test
+    fun `a job created after reading someone else's words is recorded as untrusted`() {
+        assertEquals(Provenance.UNTRUSTED, TriggerProvenanceStore.creatorProvenance(Provenance.USER, true))
+        assertEquals(Provenance.UNTRUSTED, TriggerProvenanceStore.creatorProvenance(Provenance.TRUSTED, true))
+        assertEquals(Provenance.USER, TriggerProvenanceStore.creatorProvenance(Provenance.USER, false))
+    }
 }
