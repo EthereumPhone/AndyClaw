@@ -109,6 +109,7 @@ object ApprovalSummaries {
         "create_cronjob" to "Schedule a recurring task",
         "cancel_cronjob" to "Cancel a recurring task",
         "create_reminder" to "Set a reminder",
+        "set_alarm" to "Set an alarm",
         "cancel_reminder" to "Cancel a reminder",
         "memory_store" to "Remember something",
         "memory_delete" to "Forget a memory",

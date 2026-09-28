@@ -200,7 +200,8 @@ object SearchHints {
         "install_app" to "play store download APK sideload",
 
         // ── Reminder ──
-        "create_reminder" to "alarm timer schedule alert notify later",
+        "create_reminder" to "remind me later notification schedule alert",
+        "set_alarm" to "alarm clock wake up ring morning",
         "list_reminders" to "pending scheduled alarms upcoming",
         "cancel_reminder" to "delete remove alarm timer",
 

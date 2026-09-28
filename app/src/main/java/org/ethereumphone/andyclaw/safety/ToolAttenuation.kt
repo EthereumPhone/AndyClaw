@@ -45,7 +45,7 @@ object ToolAttenuation {
         "install_app", "uninstall_app",
         "take_screenshot", "record_screen",
         "memory_write", "memory_delete",
-        "create_reminder", "create_cronjob", "delete_cronjob",
+        "create_reminder", "set_alarm", "create_cronjob", "delete_cronjob",
         "clawhub_install", "clawhub_uninstall",
         "execute_code", "run_termux_command",
         "agent_display_create", "agent_display_click", "agent_display_type",

@@ -137,7 +137,7 @@ object ToolEffects {
      */
     val NO_THIRD_PARTY_TEXT: Set<String> = setOf(
         "get_audio_state", "get_connectivity_status", "get_device_info", "get_storage_info",
-        "get_system_setting", "list_settings", "termux_check_status", "led_list_patterns",
+        "get_system_setting", "list_settings", "termux_check_status", "led_list_patterns", "set_alarm",
         "get_user_wallet_address", "get_agent_wallet_address", "read_agent_balance",
         "agent_display_get_info",
     ) + OWNER_ONLY_MESSAGE_TOOLS
@@ -339,6 +339,8 @@ object ToolEffects {
         // ── ReminderSkill ────────────────────────────────────────────
         // Same as a cron job: the reminder later runs the agent unattended.
         "create_reminder" eff ToolEffect.IRREVERSIBLE,
+        // An alarm in the clock app: the user sees it there and can delete it; it runs no agent.
+        "set_alarm" eff ToolEffect.REVERSIBLE,
         "list_reminders" eff ToolEffect.READ,
         "cancel_reminder" eff ToolEffect.IRREVERSIBLE,
 

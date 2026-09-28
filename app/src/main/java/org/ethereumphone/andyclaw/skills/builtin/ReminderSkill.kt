@@ -6,6 +6,7 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.os.Build
+import android.provider.AlarmClock
 import android.util.Log
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
@@ -42,14 +43,17 @@ class ReminderSkill(private val context: Context) : AndyClawSkill {
         private const val PREFS_NAME = "andyclaw_reminders"
         private const val ACTION_REMINDER_SCHEDULE = "org.ethereumphone.andyclaw.REMINDER_SCHEDULE"
         private const val ACTION_REMINDER_CANCEL = "org.ethereumphone.andyclaw.REMINDER_CANCEL"
+        /** The dgen1's own alarm app, preferred when more than one app takes alarms. */
+        private const val ETHOS_ALARM_PACKAGE = "com.dgen.alarm"
     }
 
     override val baseManifest = SkillManifest(
-        description = "Create, list, and cancel reminders. Reminders fire a notification at the scheduled time.",
+        description = "Create, list, and cancel reminders, and set alarms. Reminders fire a notification at the scheduled time; alarms ring in the phone's alarm clock app.",
         tools = listOf(
             ToolDefinition(
                 name = "create_reminder",
-                description = "Schedule a reminder that fires a notification at the specified time. Use epoch milliseconds for the time. The current device time is included below so you can calculate offsets.",
+                description = "Schedule a reminder that fires a notification at the specified time. Use epoch milliseconds for the time. The current device time is included below so you can calculate offsets. " +
+                    "A reminder is only a notification: it does not ring and will not wake anyone. For an alarm or a wake-up, use set_alarm.",
                 inputSchema = JsonObject(mapOf(
                     "type" to JsonPrimitive("object"),
                     "properties" to JsonObject(mapOf(
@@ -70,6 +74,26 @@ class ReminderSkill(private val context: Context) : AndyClawSkill {
                         JsonPrimitive("time"),
                         JsonPrimitive("message"),
                     )),
+                )),
+            ),
+            ToolDefinition(
+                name = "set_alarm",
+                description = "Set an alarm in the phone's alarm clock app, the one that rings. Use for any request to set an alarm or be woken up. " +
+                    "Takes the local time of day; the alarm app rings at the next occurrence (today if still ahead, else tomorrow), " +
+                    "or on the given weekdays when `days` is set.",
+                inputSchema = JsonObject(mapOf(
+                    "type" to JsonPrimitive("object"),
+                    "properties" to JsonObject(mapOf(
+                        "hour" to JsonObject(mapOf("type" to JsonPrimitive("integer"), "description" to JsonPrimitive("Hour, 0-23, local time"))),
+                        "minutes" to JsonObject(mapOf("type" to JsonPrimitive("integer"), "description" to JsonPrimitive("Minutes, 0-59"))),
+                        "label" to JsonObject(mapOf("type" to JsonPrimitive("string"), "description" to JsonPrimitive("Optional alarm label"))),
+                        "days" to JsonObject(mapOf(
+                            "type" to JsonPrimitive("array"),
+                            "items" to JsonObject(mapOf("type" to JsonPrimitive("integer"))),
+                            "description" to JsonPrimitive("Optional repeat weekdays, 1=Sunday … 7=Saturday"),
+                        )),
+                    )),
+                    "required" to JsonArray(listOf(JsonPrimitive("hour"), JsonPrimitive("minutes"))),
                 )),
             ),
             ToolDefinition(
@@ -115,6 +139,7 @@ class ReminderSkill(private val context: Context) : AndyClawSkill {
                     }
                 }
             }
+            "set_alarm" -> setAlarm(params)
             "list_reminders" -> listReminders()
             "cancel_reminder" -> cancelReminder(params).also { result ->
                 if (result is SkillResult.Success) {
@@ -241,6 +266,47 @@ class ReminderSkill(private val context: Context) : AndyClawSkill {
         } catch (e: Exception) {
             Log.e(TAG, "Failed to create reminder", e)
             SkillResult.Error("Failed to create reminder: ${e.message}")
+        }
+    }
+
+    /**
+     * AlarmClock.ACTION_SET_ALARM with the app's UI skipped. Resolved to one app first: two alarm
+     * apps (the emulator's DeskClock and the dgen1's Alarm) would otherwise put a chooser on screen.
+     */
+    private fun setAlarm(params: JsonObject): SkillResult {
+        val hour = params["hour"]?.jsonPrimitive?.contentOrNull?.toIntOrNull()?.takeIf { it in 0..23 }
+            ?: return SkillResult.Error("Missing or invalid parameter: hour (0-23)")
+        val minutes = params["minutes"]?.jsonPrimitive?.contentOrNull?.toIntOrNull()?.takeIf { it in 0..59 }
+            ?: return SkillResult.Error("Missing or invalid parameter: minutes (0-59)")
+        val label = params["label"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
+        val days = (params["days"] as? JsonArray)?.mapNotNull { it.jsonPrimitive.contentOrNull?.toIntOrNull()?.takeIf { d -> d in 1..7 } }
+        val intent = Intent(AlarmClock.ACTION_SET_ALARM).apply {
+            putExtra(AlarmClock.EXTRA_HOUR, hour)
+            putExtra(AlarmClock.EXTRA_MINUTES, minutes)
+            putExtra(AlarmClock.EXTRA_SKIP_UI, true)
+            label?.let { putExtra(AlarmClock.EXTRA_MESSAGE, it) }
+            if (!days.isNullOrEmpty()) putIntegerArrayListExtra(AlarmClock.EXTRA_DAYS, ArrayList(days))
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        val pm = context.packageManager
+        val handlers = pm.queryIntentActivities(intent, 0).map { it.activityInfo.packageName }.distinct()
+        val default = pm.resolveActivity(intent, 0)?.activityInfo?.packageName?.takeIf { it in handlers }
+        val target = default ?: handlers.firstOrNull { it == ETHOS_ALARM_PACKAGE } ?: handlers.firstOrNull()
+            ?: return SkillResult.Error("No alarm clock app on this phone accepts alarms from other apps. " +
+                "Set it in the clock app on the agent display instead.")
+        return try {
+            context.startActivity(intent.setPackage(target))
+            Log.i(TAG, "set_alarm ${"%02d:%02d".format(hour, minutes)} via $target")
+            SkillResult.Success(buildJsonObject {
+                put("alarm_set", true)
+                put("time", "%02d:%02d".format(hour, minutes))
+                label?.let { put("label", it) }
+                if (!days.isNullOrEmpty()) put("days", JsonArray(days.map { JsonPrimitive(it) }))
+                put("app", target)
+            }.toString())
+        } catch (e: Exception) {
+            Log.e(TAG, "set_alarm failed", e)
+            SkillResult.Error("Failed to set the alarm: ${e.message}")
         }
     }
 
