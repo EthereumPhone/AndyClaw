@@ -36,6 +36,19 @@ class ToolSearchService(
         private const val MAX_SELECT_RESULTS = 20
         /** Max sibling tools to auto-load schemas for. Rest are listed by name only. */
         private const val MAX_AUTO_LOAD_SIBLINGS = 5
+        /** Tools loaded from the user's own words before the first model call ([prefetch]). */
+        const val PREFETCH_TOOLS = 6
+        /** Words of a request that say how it is asked, not what for. Mirrored in agentbench. */
+        val PREFETCH_STOPWORDS = setOf(
+            "a", "an", "the", "my", "me", "i", "im", "it", "its", "is", "are", "be", "to", "for", "of", "on", "off",
+            "in", "at", "by", "and", "or", "so", "if", "up", "down", "can", "could", "would", "should", "you",
+            "please", "make", "set", "turn", "put", "get", "switch", "change", "want", "like", "just", "all",
+            "this", "that", "what", "how", "much", "many", "do", "does", "did", "have", "has", "there", "when",
+            "then", "too", "very", "some", "any", "now", "phone", "tell", "use", "don", "t", "going", "back",
+        )
+
+        /** A pasted page is not a request; its first words are. */
+        private const val PREFETCH_QUERY_CHARS = 500
         private val DEFAULT_CORE_SKILL_IDS = setOf("code_execution", "memory")
         private val DEFAULT_DGEN1_CORE_SKILL_IDS = emptySet<String>()
 
@@ -610,6 +623,10 @@ class ToolSearchService(
         sb.appendLine("## Tool Discovery")
         sb.appendLine("Not all tools are loaded. Use `search_available_tools` to discover tools when needed.")
         sb.appendLine("Once discovered, tools remain available for the rest of this conversation.")
+        if (discoveredToolNames.isNotEmpty()) {
+            sb.appendLine("Already loaded, call directly without searching: " +
+                discoveredToolNames.sorted().joinToString(", ") + ".")
+        }
         sb.appendLine()
         sb.appendLine("Searchable tool categories:")
         for ((key, entries) in bySkill) {
@@ -620,6 +637,31 @@ class ToolSearchService(
         }
         sb.appendLine()
         return sb.toString()
+    }
+
+    /**
+     * Loads the tools the request itself names, before the model is asked anything. The same
+     * local index a search would use, on the user's words: "Turn on dark mode" spent two of its
+     * four model calls finding and then loading write_secure_setting (agentbench dark_mode_on),
+     * ~1.8 s each. Loading a tool grants nothing: every call still goes through the provenance,
+     * effect and approval gates.
+     */
+    fun prefetch(request: String, maxTools: Int = PREFETCH_TOOLS): List<String> {
+        if (request.isBlank()) return emptyList()
+        // The request's own function words ("turn", "my", "off", "please") match tools by
+        // accident: "turn off" ranked lock_screen and led_clear first for every setting.
+        val query = tokenize(request.take(PREFETCH_QUERY_CHARS)).filter { it !in PREFETCH_STOPWORDS }
+        if (query.isEmpty()) return emptyList()
+        val found = search(query.joinToString(" "), maxTools).map { it.toolName }
+        discoveredToolNames.addAll(found)
+        Log.i(TAG, "prefetch -> ${found.joinToString()}")
+        return found
+    }
+
+    /** Every discoverable tool with its search hint, as the index sees it (agentbench's offline eval). */
+    fun catalogSnapshot(): List<CatalogEntry> {
+        ensureIndexCurrent()
+        return catalog
     }
 
     /** Returns whether a tool name is the search meta-tool. */

@@ -291,4 +291,38 @@ class ToolSearchServiceTest {
         assertTrue("Pre-seeded send_sms should be present", "send_sms" in names)
         assertTrue("Pre-seeded resolve_ens should be present", "resolve_ens" in names)
     }
+
+    // ── Prefetch ─────────────────────────────────────────────────────
+
+    @Test
+    fun `prefetch loads the tools a request names before any model call`() {
+        val service = createService()
+        val loaded = service.prefetch("Please turn on my wifi")
+        assertEquals("toggle_wifi", loaded.first())
+        assertTrue("toggle_wifi" in service.getDiscoveredToolNames())
+        // The model is told, so it does not search for what it already has.
+        assertTrue(service.buildCatalogSummary().contains("Already loaded, call directly without searching: "))
+    }
+
+    @Test
+    fun `a request of nothing but function words loads nothing`() {
+        val service = createService()
+        assertEquals(emptyList<String>(), service.prefetch("Can you please turn it on for me?"))
+        assertTrue(service.getDiscoveredToolNames().isEmpty())
+    }
+
+    @Test
+    fun `settings writers answer to what they control`() {
+        // agentbench: "Turn on dark mode" never ranked write_secure_setting, whose hint said only
+        // "change android secure preference", and cost a search round trip every time.
+        registry.register(skill("settings", "Settings",
+            tool("write_system_setting", "Write a system setting"),
+            tool("write_secure_setting", "Write a secure setting"),
+            tool("write_global_setting", "Write a global setting"),
+        ))
+        val service = createService(enabledSkillIds = registry.getAll().map { it.id }.toSet())
+        assertEquals("write_secure_setting", service.prefetch("Turn on dark mode.").first())
+        assertEquals("write_system_setting", service.prefetch("Set the font size to the largest option").first())
+        assertEquals("write_global_setting", service.prefetch("Keep the screen on while charging").first())
+    }
 }

@@ -45,6 +45,17 @@ class AgentBenchSeedProvider : ContentProvider() {
                 out.putString("result", state(app).toString())
             }
             "state" -> out.putString("result", state(app).toString())
+            // The tool catalog exactly as ToolSearchService indexes it, so the harness can replay
+            // discovery offline over every task prompt without a model call.
+            "catalog" -> {
+                val search = app.createToolSearchService(OsCapabilities.currentTier(), app.securePrefs.enabledSkills.value)
+                val arr = org.json.JSONArray()
+                search?.catalogSnapshot().orEmpty().forEach { e ->
+                    arr.put(JSONObject().put("tool", e.toolName).put("skill", e.skillId)
+                        .put("description", e.description).put("hint", e.searchHint ?: JSONObject.NULL))
+                }
+                out.putString("result", arr.toString())
+            }
             else -> throw IllegalArgumentException("unknown method $method")
         }
         return out

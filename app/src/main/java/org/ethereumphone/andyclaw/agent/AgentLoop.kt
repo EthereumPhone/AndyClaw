@@ -528,8 +528,12 @@ class AgentLoop(
                 (allowedTools?.let { ", ${it.size} tools filtered" } ?: ", no tool filtering"))
         }
 
-        // Warm up the search index eagerly so first search doesn't stall
-        if (useToolSearch) toolSearchService!!.warmUp()
+        // Warm up the search index eagerly so first search doesn't stall, and load what the
+        // request itself names so a simple task needs no search round trip at all.
+        if (useToolSearch) {
+            toolSearchService!!.warmUp()
+            toolSearchService.prefetch(userMessage)
+        }
 
         // Memory injection: only on first turn (cold start) or after compaction
         // (context loss). Mid-conversation, everything is already in the prompt —

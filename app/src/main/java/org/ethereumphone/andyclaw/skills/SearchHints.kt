@@ -93,7 +93,7 @@ object SearchHints {
         "cancel_bankr_order" to "revoke cancel trade order bankr",
 
         // ── Contacts ──
-        "search_contacts" to "find person phone number address book",
+        "search_contacts" to "find person phone number address book who whose lookup contact",
         "get_contact_details" to "person info phone email address",
         "get_eth_contacts" to "ethereum wallet contacts addresses",
         "create_contact" to "add new person phone number save",
@@ -126,8 +126,8 @@ object SearchHints {
 
         // ── Storage ──
         "list_storage_directory" to "external SD card shared browse",
-        "read_storage_file" to "external shared file content read",
-        "search_files" to "find locate glob pattern recursive",
+        "read_storage_file" to "external shared file content read downloads folder txt document what does it say",
+        "search_files" to "find locate glob pattern recursive count files downloads folder pdf documents photos",
         "get_storage_info" to "disk space free used capacity",
 
         // ── Shell ──
@@ -141,7 +141,7 @@ object SearchHints {
         "execute_code" to "run java beanshell script evaluate compute",
 
         // ── Connectivity ──
-        "get_connectivity_status" to "wifi bluetooth mobile data network",
+        "get_connectivity_status" to "wifi bluetooth mobile data network ip address connected ssid data saver internet online",
         "toggle_wifi" to "wireless network enable disable on off",
         "connect_wifi_network" to "join SSID password wireless",
         "forget_wifi_network" to "remove saved wireless SSID",
@@ -159,20 +159,25 @@ object SearchHints {
         // ── Audio ──
         "get_audio_state" to "volume level ringer mode sound",
         "set_volume" to "loudness media ring alarm level",
-        "set_ringer_mode" to "silent vibrate normal sound mode",
+        "set_ringer_mode" to "silent vibrate normal sound mode quiet mute ringer meeting no noise",
 
         // ── Screen ──
         "read_screen" to "screenshot capture current display UI",
 
         // ── Device Info ──
-        "get_device_info" to "battery model OS version hardware specs",
+        "get_device_info" to "battery model OS version hardware specs security patch update build number android version",
 
         // ── Settings ──
-        "get_system_setting" to "android system preference value read",
+        "get_system_setting" to "android system preference value read current screen timeout brightness font size dark mode " +
+            "how long stays turns",
         "list_settings" to "all android settings preferences browse",
-        "write_system_setting" to "change android system preference update",
-        "write_secure_setting" to "change android secure preference update",
-        "write_global_setting" to "change android global preference device name phone name battery saver airplane",
+        "write_system_setting" to "change android system preference update screen timeout sleep brightness font size text size " +
+            "auto rotate rotation rotating haptic vibration touch feedback clicking sounds ringtone adaptive brightness " +
+            "bright dim darker eyes stays longer quickly turns timeout",
+        "write_secure_setting" to "change android secure preference update dark mode night mode theme light mode " +
+            "night light blue light filter eye comfort location gps tracking accessibility",
+        "write_global_setting" to "change android global preference device name phone name battery saver airplane " +
+            "stay awake charging plugged in keep screen on mobile data roaming animations rename phone called",
 
         // ── Screen Time ──
         "get_usage_stats" to "screen time daily weekly statistics",
