@@ -164,6 +164,9 @@ data class AutopilotResult(
         reason?.let { put("reason", it) }
         put("trace", trace.takeLast(12).joinToString(" → "))
         if (status != Status.SUCCESS) screenSummary?.let { put("screen", it) }
+        // A task that was to find something out ends on the screen that shows it. Without a
+        // reply written in advance, that screen's text is what the model answers from.
+        if (status == Status.SUCCESS && say.isNullOrBlank()) finalScreen?.let { put("screen_text", AutopilotExecutor.screenText(it)) }
     }.toString()
 }
 
@@ -414,7 +417,6 @@ class AutopilotExecutor(
                 if (device.stopRequested) return stopped()
                 if (steps >= plan.maxSteps) return finish(AutopilotResult.Status.NEEDS_PLANNER, "step_budget")
                 if (elapsed() >= config.wallClockBudgetMs) return finish(AutopilotResult.Status.NEEDS_PLANNER, "time_budget")
-                if (guard.subgoalBudgetExceeded()) return finish(AutopilotResult.Status.NEEDS_PLANNER, "subgoal_budget")
 
                 val stepStart = clock()
                 var screen = readScreen()
@@ -587,6 +589,10 @@ class AutopilotExecutor(
                             guard.subgoalAdvanced()
                             emit(AutopilotEvent.Kind.SUBGOAL_DONE)
                         }
+                        // Checked before acting, not before reading: the screen the last allowed
+                        // action led to still gets asked whether the goal is done. Checked at the
+                        // top of the loop, the run ended on the tap that had just finished it.
+                        if (guard.subgoalBudgetExceeded()) return finish(AutopilotResult.Status.NEEDS_PLANNER, "subgoal_budget")
                         if (device.stopRequested) return stopped()
                         val option = resolved.option
                         val target = option.elementId?.let { screen.byId(it) }
@@ -653,6 +659,14 @@ class AutopilotExecutor(
          * with each element's view id or centre, so the model can act on it straight away
          * instead of paying for another read of the screen.
          */
+        /** Everything [screen] says, in reading order, capped: for answering a question from it. */
+        fun screenText(screen: ScreenSnapshot): String =
+            screen.elements.filter { !it.password }
+                .mapNotNull { e -> listOfNotNull(e.label, e.value, e.summary?.takeIf { it != e.label }).joinToString(" — ").ifBlank { null } }
+                .distinct()
+                .joinToString("\n")
+                .take(SCREEN_TEXT_CHARS)
+
         fun summarize(screen: ScreenSnapshot): String {
             val items = screen.elements
                 .filter { it.clickable || it.editable }
@@ -670,6 +684,7 @@ class AutopilotExecutor(
         /** How often a Jev or planner call in flight looks for STOP. */
         const val STOP_POLL_MS = 50L
         private const val SNAPSHOT_ATTEMPTS = 4
+        private const val SCREEN_TEXT_CHARS = 2000
         /** Re-reads of a screen that looks unchanged after an action that changed the display. */
         private const val STALE_REREADS = 5
         /** Escalations a page scan may answer: Jev unsure, or seeing nothing that helps. */

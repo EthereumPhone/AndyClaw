@@ -22,6 +22,9 @@ sealed interface StepOption {
     data object Wait : StepOption { override val key = "wait" }
     data object None : StepOption { override val key = "none" }
 
+    /** Only moves the page (scroll, reveal): changes nothing in the app. */
+    val movesOnly: Boolean get() = this is ScrollForward || this is ScrollBackward || this is Reveal
+
     /** Kind + target identity; stable across snapshots, unlike [key]. */
     fun actionSignature(screen: ScreenSnapshot): String {
         val target = elementId?.let { screen.byId(it)?.signature } ?: ""

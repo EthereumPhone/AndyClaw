@@ -489,6 +489,39 @@ class AutopilotExecutorTest {
     }
 
     @Test
+    fun `scrolling to a row does not use up the sub-goal's actions, and the last one is judged`() = runTest {
+        val device = longPage()
+        val jev = ScriptedJev { req ->
+            when {
+                req.state.contains("title=\"D page\"") -> mapOf(Questions.GOAL_DONE to JevAnswer.Noul(0.97))
+                ScriptedJev.keyFor(req, Questions.NEXT, "Tap", "D") != null ->
+                    mapOf(Questions.NEXT to T.choice(ScriptedJev.keyFor(req, Questions.NEXT, "Tap", "D")!!, 0.95))
+                else -> mapOf(Questions.NEXT to T.choice("scroll_fwd:9", 0.9))
+            }
+        }
+        // One action per sub-goal: the tap that opens D. The scroll before it is not an action.
+        val result = AutopilotExecutor(device, jev, noPlanner, config = AutopilotConfig(maxStepsPerSubgoal = 1)).run(openD)
+        assertEquals(AutopilotResult.Status.SUCCESS, result.status)
+        assertEquals(listOf("scroll_fwd:9", "tap:D"), device.performed)
+    }
+
+    @Test
+    fun `a run without a reply hands back the text of the screen it ended on`() = runTest {
+        val jev = ScriptedJev { req ->
+            when {
+                req.state.contains("title=\"D page\"") -> mapOf(Questions.GOAL_DONE to JevAnswer.Noul(0.97))
+                ScriptedJev.keyFor(req, Questions.NEXT, "Tap", "D") != null ->
+                    mapOf(Questions.NEXT to T.choice(ScriptedJev.keyFor(req, Questions.NEXT, "Tap", "D")!!, 0.95))
+                else -> mapOf(Questions.NEXT to T.choice("scroll_fwd:9", 0.9))
+            }
+        }
+        val result = AutopilotExecutor(longPage(), jev, noPlanner).run(openD)
+        assertTrue(result.toToolResultJson().contains("\"screen_text\":\"Inside D\""))
+        val said = AutopilotExecutor(longPage(), jev, noPlanner).run(openD.copy(say = "Opened D."))
+        assertFalse(said.toToolResultJson().contains("screen_text"))
+    }
+
+    @Test
     fun `Jev is told the app was opened for it`() = runTest {
         val jev = competentJev()
         AutopilotExecutor(device(), jev, noPlanner).run(plan)

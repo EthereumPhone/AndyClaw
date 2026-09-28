@@ -33,6 +33,12 @@ data class AutopilotConfig(
     /** Raise the bar on a state each time an action there turned out wrong. */
     val thresholdBumpPerMiss: Double = 0.05,
     val maxStepsPerSubgoal: Int = 8,
+    /**
+     * Scrolls and reveals, counted apart: reaching the last row of a long page took seven
+     * scrolls in Firefox's settings, and counted with the taps they ended the run on the very
+     * step that finished it. Scrolling in circles is caught by the no-effect and visit guards.
+     */
+    val maxMovesPerSubgoal: Int = 16,
     val maxWaitsPerState: Int = 3,
     val maxVisitsPerState: Int = 3,
     val maxNoEffectStreak: Int = 2,
@@ -148,7 +154,7 @@ object StepPolicy {
 
         val commits = (response.noul(Questions.COMMITS) ?: 0.0) >= config.commitsLikely ||
             (target != null && isCommitLike(target))
-        val moves = option is StepOption.ScrollForward || option is StepOption.ScrollBackward || option is StepOption.Reveal
+        val moves = option.movesOnly
         val needed = when {
             commits -> config.commitConfidence
             moves -> config.movementConfidence
@@ -188,6 +194,7 @@ class LoopGuard(private val config: AutopilotConfig) {
     private val bumps = HashMap<String, Double>()
     private var noEffectStreak = 0
     private var stepsInSubgoal = 0
+    private var movesInSubgoal = 0
 
     /** Returns a loop reason, or null. Call once per fresh snapshot. */
     fun visit(screen: ScreenSnapshot): String? {
@@ -203,7 +210,7 @@ class LoopGuard(private val config: AutopilotConfig) {
     /** Records an action; returns "stuck" after too many that changed nothing. */
     fun acted(screen: ScreenSnapshot, option: StepOption, changedScreen: Boolean): String? {
         tried.getOrPut(screen.stateSignature) { HashSet() } += option.actionSignature(screen)
-        stepsInSubgoal++
+        if (option.movesOnly) movesInSubgoal++ else stepsInSubgoal++
         noEffectStreak = if (changedScreen) 0 else noEffectStreak + 1
         return if (noEffectStreak >= config.maxNoEffectStreak) "stuck" else null
     }
@@ -221,7 +228,9 @@ class LoopGuard(private val config: AutopilotConfig) {
 
     fun subgoalAdvanced() {
         stepsInSubgoal = 0
+        movesInSubgoal = 0
     }
 
-    fun subgoalBudgetExceeded(): Boolean = stepsInSubgoal >= config.maxStepsPerSubgoal
+    fun subgoalBudgetExceeded(): Boolean =
+        stepsInSubgoal >= config.maxStepsPerSubgoal || movesInSubgoal >= config.maxMovesPerSubgoal
 }

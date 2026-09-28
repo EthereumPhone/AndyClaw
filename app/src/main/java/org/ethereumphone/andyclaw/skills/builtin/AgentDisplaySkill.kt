@@ -1171,7 +1171,7 @@ class AgentDisplaySkill(
                 "put every piece of text that must be typed in `values` (the autopilot never invents text). It opens the app, " +
                 "then picks and performs each tap/type/scroll itself (~0.3-0.6 s per step), asking you only if it is unsure. " +
                 "Returns {status: success|needs_planner|failed, steps, ms, say, trace, screen?}. On success, reply to the user " +
-                "with `say`. On needs_planner, continue with the individual agent_display tools from the `screen` it describes. " +
+                "with `say`, or answer from `screen_text` when you gave no `say`. On needs_planner, continue with the individual agent_display tools from the `screen` it describes. " +
                 "Never plan a payment, password or login step — it will not perform those.",
             props = mapOf(
                 "package_name" to propString("The app to operate, e.g. org.ethereumhpone.messenger"),
@@ -1186,7 +1186,9 @@ class AgentDisplaySkill(
                     "description" to JsonPrimitive("Literal text to type, by key, e.g. {\"body\": \"hi\"}"),
                     "additionalProperties" to JsonObject(mapOf("type" to JsonPrimitive("string"))),
                 )),
-                "say" to propString("What to tell the user when it succeeds, e.g. \"Sent 'hi' to Anna.\""),
+                "say" to propString("What to tell the user when it succeeds, e.g. \"Sent 'hi' to Anna.\" " +
+                    "Leave it out when the user wants something read off the app (a version, a balance, " +
+                    "a message): the result then carries the final screen's text as screen_text, to answer from."),
                 "finish" to propEnum("What to do with the display afterwards: keep (default), destroy, or promote the app to the main screen",
                     listOf("keep", "destroy", "promote")),
                 "max_steps" to propNumber("Step budget, default 25"),
