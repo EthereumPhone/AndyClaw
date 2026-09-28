@@ -1,5 +1,5 @@
 {
-  "about": "Tasks that need the dgen1's own apps (Calculator, Notes), which crash on a stock emulator image because they use ethOS framework classes. Kept for a real-device run and for when the emulator image grows those classes.",
+  "about": "Tasks that need the dgen1's own apps (Calculator, Notes), which crash on a stock emulator image because they use ethOS framework classes. Kept for a real-device run and for when the emulator image grows those classes. budget_s is how long a user should wait for the answer: a pass over it is reported as SLOW.",
   "tasks": [
     {
       "id": "calculator_multiply",
@@ -7,7 +7,7 @@
         "ui",
         "medium"
       ],
-      "prompt": "Use the calculator app to work out 1234 \u00d7 56 and tell me the result.",
+      "prompt": "Use the calculator app to work out 1234 × 56 and tell me the result.",
       "reset_apps": [
         "com.dgen.dgencalculator"
       ],
@@ -20,7 +20,8 @@
           "type": "launched",
           "regex": "^com\\.dgen\\.dgencalculator/"
         }
-      ]
+      ],
+      "budget_s": 20
     },
     {
       "id": "note_groceries",
@@ -48,7 +49,8 @@
           "type": "launched",
           "regex": "^com\\.dgen\\.note/"
         }
-      ]
+      ],
+      "budget_s": 30
     },
     {
       "id": "vibrate_mode",
@@ -70,7 +72,8 @@
       "teardown": [
         "cmd audio set-ringer-mode NORMAL"
       ],
-      "device_only_reason": "the emulator has no vibrator: AudioService keeps mode_ringer at 2 when VIBRATE is set"
+      "device_only_reason": "the emulator has no vibrator: AudioService keeps mode_ringer at 2 when VIBRATE is set",
+      "budget_s": 8
     }
   ]
 }

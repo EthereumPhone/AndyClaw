@@ -1,5 +1,5 @@
 {
-  "about": "Harder agentbench tasks (iteration 2), added once core.json reached 14/14. Each is just past what the agent did reliably: ambiguous phrasing, answers several screens deep that the model cannot know in advance, a condition to judge, settings with no obvious tool, and multi-step edits. Same rules as core.json: safe on a real phone, checked against device state.",
+  "about": "Harder agentbench tasks (iteration 2), added once core.json reached 14/14. Each is just past what the agent did reliably: ambiguous phrasing, answers several screens deep that the model cannot know in advance, a condition to judge, settings with no obvious tool, and multi-step edits. Same rules as core.json: safe on a real phone, checked against device state. budget_s is how long a user should wait for the answer: a pass over it is reported as SLOW.",
   "tasks": [
     {
       "id": "screen_stay_on_longer",
@@ -21,7 +21,8 @@
       ],
       "teardown": [
         "settings put system screen_off_timeout 1800000"
-      ]
+      ],
+      "budget_s": 8
     },
     {
       "id": "too_bright",
@@ -44,7 +45,8 @@
       ],
       "teardown": [
         "settings put system screen_brightness 102"
-      ]
+      ],
+      "budget_s": 10
     },
     {
       "id": "location_off",
@@ -66,7 +68,8 @@
       ],
       "teardown": [
         "settings put secure location_mode 3"
-      ]
+      ],
+      "budget_s": 8
     },
     {
       "id": "stay_awake_charging",
@@ -88,7 +91,8 @@
       ],
       "teardown": [
         "settings put global stay_on_while_plugged_in 7"
-      ]
+      ],
+      "budget_s": 10
     },
     {
       "id": "conditional_battery_saver",
@@ -115,7 +119,8 @@
       ],
       "teardown": [
         "settings put global low_power 0"
-      ]
+      ],
+      "budget_s": 8
     },
     {
       "id": "build_number_deep",
@@ -138,7 +143,8 @@
           "type": "launched",
           "regex": "^com\\.android\\.settings/"
         }
-      ]
+      ],
+      "budget_s": 20
     },
     {
       "id": "contact_edit_number",
@@ -170,7 +176,8 @@
       ],
       "teardown": [
         "content delete --uri content://com.android.contacts/raw_contacts --where \"display_name='Grace Hopper'\""
-      ]
+      ],
+      "budget_s": 10
     },
     {
       "id": "contacts_count_g",
@@ -209,7 +216,8 @@
       ],
       "teardown": [
         "content delete --uri content://com.android.contacts/raw_contacts --where \"display_name IN ('Grace Hopper','Gordon Moore','Linus Torvalds','Gary Kildall')\""
-      ]
+      ],
+      "budget_s": 8
     },
     {
       "id": "contact_copy_number",
@@ -237,7 +245,8 @@
       ],
       "teardown": [
         "content delete --uri content://com.android.contacts/raw_contacts --where \"display_name IN ('Grace Hopper','Grace Work')\""
-      ]
+      ],
+      "budget_s": 10
     },
     {
       "id": "alarm_then_dark",
@@ -271,7 +280,8 @@
       ],
       "teardown": [
         "cmd uimode night no"
-      ]
+      ],
+      "budget_s": 12
     },
     {
       "id": "chrome_iana_link",
@@ -298,7 +308,8 @@
           "type": "launched",
           "regex": "^com\\.android\\.chrome/"
         }
-      ]
+      ],
+      "budget_s": 45
     }
   ]
 }

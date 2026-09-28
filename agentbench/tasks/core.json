@@ -1,5 +1,5 @@
 {
-  "about": "Core agentbench suite. Prompts are phrased the way a person types them into the launcher's dGENT tab. Every task is safe to run on a real phone (nothing sends, posts or buys) and is checked against device state rather than the agent's own claim wherever the state is readable. Check types: setting, shell_regex (adb shell as root), reply_regex, tool_used, tool_not_used, launched (an app was brought up on the agent display, from AgentDisplayService's log).",
+  "about": "Core agentbench suite. Prompts are phrased the way a person types them into the launcher's dGENT tab. Every task is safe to run on a real phone (nothing sends, posts or buys) and is checked against device state rather than the agent's own claim wherever the state is readable. Check types: setting, shell_regex (adb shell as root), reply_regex, tool_used, tool_not_used, launched (an app was brought up on the agent display, from AgentDisplayService's log). budget_s is how long a user should wait for the answer: a pass over it is reported as SLOW.",
   "tasks": [
     {
       "id": "dark_mode_on",
@@ -21,7 +21,8 @@
       ],
       "teardown": [
         "cmd uimode night no"
-      ]
+      ],
+      "budget_s": 8
     },
     {
       "id": "screen_timeout_5m",
@@ -43,7 +44,8 @@
       ],
       "teardown": [
         "settings put system screen_off_timeout 1800000"
-      ]
+      ],
+      "budget_s": 8
     },
     {
       "id": "battery_saver_on",
@@ -65,7 +67,8 @@
       ],
       "teardown": [
         "settings put global low_power 0"
-      ]
+      ],
+      "budget_s": 8
     },
     {
       "id": "dnd_on",
@@ -86,7 +89,8 @@
       ],
       "teardown": [
         "cmd notification set_dnd off"
-      ]
+      ],
+      "budget_s": 12
     },
     {
       "id": "font_size_largest",
@@ -108,7 +112,8 @@
       ],
       "teardown": [
         "settings put system font_scale 1.0"
-      ]
+      ],
+      "budget_s": 8
     },
     {
       "id": "dark_mode_and_timeout",
@@ -139,7 +144,8 @@
       "teardown": [
         "cmd uimode night no",
         "settings put system screen_off_timeout 1800000"
-      ]
+      ],
+      "budget_s": 12
     },
     {
       "id": "battery_level",
@@ -154,7 +160,8 @@
           "type": "reply_regex",
           "regex": "\\b100\\s?%|\\b100 percent"
         }
-      ]
+      ],
+      "budget_s": 6
     },
     {
       "id": "android_version_from_settings",
@@ -176,7 +183,8 @@
           "type": "launched",
           "regex": "^com\\.android\\.settings/"
         }
-      ]
+      ],
+      "budget_s": 15
     },
     {
       "id": "wifi_network_name",
@@ -194,7 +202,8 @@
           "type": "reply_regex",
           "regex": "AndroidWifi"
         }
-      ]
+      ],
+      "budget_s": 15
     },
     {
       "id": "contact_ada",
@@ -215,7 +224,8 @@
       ],
       "teardown": [
         "content delete --uri content://com.android.contacts/raw_contacts --where \"display_name='Ada Lovelace'\""
-      ]
+      ],
+      "budget_s": 8
     },
     {
       "id": "alarm_0730",
@@ -238,7 +248,8 @@
       ],
       "setup": [
         "pm clear com.dgen.alarm"
-      ]
+      ],
+      "budget_s": 8
     },
     {
       "id": "contacts_read_ui",
@@ -265,13 +276,24 @@
           "regex": "555.?0199"
         },
         {
-          "type": "launched",
-          "regex": "^com\\.google\\.android\\.contacts/"
+          "type": "any_of",
+          "checks": [
+            {
+              "type": "launched",
+              "regex": "^com\\.google\\.android\\.contacts/"
+            },
+            {
+              "type": "tool_used",
+              "regex": "^(search_contacts|get_contact_details)$"
+            }
+          ]
         }
       ],
       "teardown": [
         "content delete --uri content://com.android.contacts/raw_contacts --where \"display_name='Grace Hopper'\""
-      ]
+      ],
+      "budget_s": 20,
+      "check_note": "The answer must come from the phone: the Contacts app or the contacts API. The launched check alone failed a correct, faster answer read through search_contacts."
     },
     {
       "id": "rename_device",
@@ -293,7 +315,8 @@
       ],
       "teardown": [
         "settings put global device_name 'sdk_gphone64_x86_64'"
-      ]
+      ],
+      "budget_s": 8
     },
     {
       "id": "chrome_example_heading",
@@ -315,7 +338,8 @@
       ],
       "setup": [
         "pm clear com.android.chrome"
-      ]
+      ],
+      "budget_s": 40
     }
   ]
 }

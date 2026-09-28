@@ -1,0 +1,811 @@
+{
+  "about": "Breadth suite (iteration 3): one task per everyday request a phone owner makes, across settings, sound, reading the device, contacts, alarms and reminders, files, notifications, apps and judgement. Same rules as core.json: safe on a real phone, checked against device state (reply_contains_shell when the answer is a live device value the model cannot know). budget_s is how long a user should wait: a pass over it is reported as SLOW.",
+  "tasks": [
+    {
+      "id": "media_volume_mute",
+      "tags": [
+        "sound",
+        "easy"
+      ],
+      "prompt": "Mute the music volume.",
+      "budget_s": 8,
+      "setup": [
+        "cmd media_session volume --stream 3 --set 8"
+      ],
+      "checks": [
+        {
+          "type": "shell_regex",
+          "cmd": "cmd media_session volume --stream 3 --get | tail -1",
+          "regex": "volume is 0 "
+        }
+      ],
+      "teardown": [
+        "cmd media_session volume --stream 3 --set 5"
+      ]
+    },
+    {
+      "id": "ring_volume_max",
+      "tags": [
+        "sound",
+        "easy"
+      ],
+      "prompt": "Turn my ringtone volume all the way up.",
+      "budget_s": 8,
+      "setup": [
+        "cmd media_session volume --stream 2 --set 3"
+      ],
+      "checks": [
+        {
+          "type": "shell_regex",
+          "cmd": "cmd media_session volume --stream 2 --get | tail -1",
+          "regex": "volume is 7 in range \\[0\\.\\.7\\]"
+        }
+      ],
+      "teardown": [
+        "cmd media_session volume --stream 2 --set 5"
+      ]
+    },
+    {
+      "id": "silent_for_meeting",
+      "tags": [
+        "sound",
+        "ambiguous",
+        "medium"
+      ],
+      "prompt": "I'm walking into a meeting, make sure my phone won't make any noise.",
+      "budget_s": 12,
+      "setup": [
+        "cmd audio set-ringer-mode NORMAL",
+        "cmd notification set_dnd off"
+      ],
+      "checks": [
+        {
+          "type": "shell_regex",
+          "cmd": "echo ringer=$(settings get global mode_ringer) zen=$(settings get global zen_mode)",
+          "regex": "ringer=[01]|zen=[123]"
+        }
+      ],
+      "teardown": [
+        "cmd audio set-ringer-mode NORMAL",
+        "cmd notification set_dnd off"
+      ]
+    },
+    {
+      "id": "auto_rotate_off",
+      "tags": [
+        "settings",
+        "easy"
+      ],
+      "prompt": "Stop the screen from rotating when I turn the phone.",
+      "budget_s": 8,
+      "setup": [
+        "settings put system accelerometer_rotation 1"
+      ],
+      "checks": [
+        {
+          "type": "setting",
+          "ns": "system",
+          "key": "accelerometer_rotation",
+          "equals": "0"
+        }
+      ],
+      "teardown": [
+        "settings put system accelerometer_rotation 1"
+      ]
+    },
+    {
+      "id": "adaptive_brightness_on",
+      "tags": [
+        "settings",
+        "easy"
+      ],
+      "prompt": "Turn on adaptive brightness.",
+      "budget_s": 8,
+      "setup": [
+        "settings put system screen_brightness_mode 0"
+      ],
+      "checks": [
+        {
+          "type": "setting",
+          "ns": "system",
+          "key": "screen_brightness_mode",
+          "equals": "1"
+        }
+      ],
+      "teardown": [
+        "settings put system screen_brightness_mode 0"
+      ]
+    },
+    {
+      "id": "haptics_off",
+      "tags": [
+        "settings",
+        "hidden",
+        "medium"
+      ],
+      "prompt": "Turn off the little vibration I feel when I tap the screen.",
+      "budget_s": 10,
+      "setup": [
+        "settings put system haptic_feedback_enabled 1"
+      ],
+      "checks": [
+        {
+          "type": "setting",
+          "ns": "system",
+          "key": "haptic_feedback_enabled",
+          "equals": "0"
+        }
+      ],
+      "teardown": [
+        "settings put system haptic_feedback_enabled 1"
+      ]
+    },
+    {
+      "id": "touch_sounds_off",
+      "tags": [
+        "settings",
+        "hidden",
+        "medium"
+      ],
+      "prompt": "Turn off the clicking sound when I touch things.",
+      "budget_s": 10,
+      "setup": [
+        "settings put system sound_effects_enabled 1"
+      ],
+      "checks": [
+        {
+          "type": "setting",
+          "ns": "system",
+          "key": "sound_effects_enabled",
+          "equals": "0"
+        }
+      ],
+      "teardown": [
+        "settings put system sound_effects_enabled 1"
+      ]
+    },
+    {
+      "id": "night_light_on",
+      "tags": [
+        "settings",
+        "medium"
+      ],
+      "prompt": "Turn on the blue light filter.",
+      "budget_s": 10,
+      "setup": [
+        "settings put secure night_display_activated 0"
+      ],
+      "checks": [
+        {
+          "type": "setting",
+          "ns": "secure",
+          "key": "night_display_activated",
+          "equals": "1"
+        }
+      ],
+      "teardown": [
+        "settings put secure night_display_activated 0"
+      ]
+    },
+    {
+      "id": "text_size_reset",
+      "tags": [
+        "settings",
+        "easy"
+      ],
+      "prompt": "Put the text size back to normal.",
+      "budget_s": 8,
+      "setup": [
+        "settings put system font_scale 1.3"
+      ],
+      "checks": [
+        {
+          "type": "shell_regex",
+          "cmd": "settings get system font_scale",
+          "regex": "^1(\\.0)?$"
+        }
+      ],
+      "teardown": [
+        "settings put system font_scale 1.0"
+      ]
+    },
+    {
+      "id": "dark_mode_off",
+      "tags": [
+        "settings",
+        "easy"
+      ],
+      "prompt": "Switch back to light mode.",
+      "budget_s": 8,
+      "setup": [
+        "cmd uimode night yes"
+      ],
+      "checks": [
+        {
+          "type": "setting",
+          "ns": "secure",
+          "key": "ui_night_mode",
+          "equals": "1"
+        }
+      ],
+      "teardown": [
+        "cmd uimode night no"
+      ]
+    },
+    {
+      "id": "timeout_fastest",
+      "tags": [
+        "settings",
+        "ambiguous",
+        "easy"
+      ],
+      "prompt": "Make my screen turn off as quickly as possible when I'm not using it.",
+      "budget_s": 8,
+      "setup": [
+        "settings put system screen_off_timeout 600000"
+      ],
+      "checks": [
+        {
+          "type": "shell_regex",
+          "cmd": "settings get system screen_off_timeout",
+          "regex": "^15000$"
+        }
+      ],
+      "teardown": [
+        "settings put system screen_off_timeout 1800000"
+      ]
+    },
+    {
+      "id": "dnd_off",
+      "tags": [
+        "settings",
+        "medium"
+      ],
+      "prompt": "Turn Do Not Disturb off.",
+      "budget_s": 12,
+      "setup": [
+        "cmd notification set_dnd on"
+      ],
+      "checks": [
+        {
+          "type": "shell_regex",
+          "cmd": "settings get global zen_mode",
+          "regex": "^0$"
+        }
+      ],
+      "teardown": [
+        "cmd notification set_dnd off"
+      ]
+    },
+    {
+      "id": "data_saver_on",
+      "tags": [
+        "settings",
+        "hidden",
+        "hard"
+      ],
+      "prompt": "Turn on data saver.",
+      "budget_s": 15,
+      "setup": [
+        "cmd netpolicy set restrict-background false"
+      ],
+      "checks": [
+        {
+          "type": "shell_regex",
+          "cmd": "cmd netpolicy get restrict-background",
+          "regex": "enabled"
+        }
+      ],
+      "teardown": [
+        "cmd netpolicy set restrict-background false"
+      ]
+    },
+    {
+      "id": "timeout_read",
+      "tags": [
+        "read",
+        "easy"
+      ],
+      "prompt": "How long does my screen stay on before it turns off?",
+      "budget_s": 6,
+      "setup": [
+        "settings put system screen_off_timeout 120000"
+      ],
+      "checks": [
+        {
+          "type": "reply_regex",
+          "regex": "\\b(2|two)[ -]?min|120 ?s"
+        }
+      ],
+      "teardown": [
+        "settings put system screen_off_timeout 1800000"
+      ]
+    },
+    {
+      "id": "ip_address",
+      "tags": [
+        "read",
+        "live",
+        "easy"
+      ],
+      "prompt": "What's my phone's IP address on the Wi-Fi?",
+      "budget_s": 8,
+      "checks": [
+        {
+          "type": "reply_contains_shell",
+          "cmd": "ip -4 addr show wlan0 | grep -o 'inet [0-9.]*' | cut -d' ' -f2"
+        }
+      ]
+    },
+    {
+      "id": "security_patch",
+      "tags": [
+        "read",
+        "live",
+        "medium"
+      ],
+      "prompt": "When was this phone's last security update?",
+      "budget_s": 15,
+      "checks": [
+        {
+          "type": "reply_regex",
+          "regex": "September 5,? 2024|5 September 2024|2024-09-05|Sept?\\.? 5,? 2024"
+        }
+      ]
+    },
+    {
+      "id": "kernel_version_ui",
+      "tags": [
+        "read",
+        "ui",
+        "deep",
+        "live",
+        "hard"
+      ],
+      "prompt": "Look up the kernel version in Settings and tell me exactly what it says.",
+      "budget_s": 25,
+      "reset_apps": [
+        "com.android.settings"
+      ],
+      "checks": [
+        {
+          "type": "reply_contains_shell",
+          "cmd": "uname -r | cut -d- -f1-3"
+        },
+        {
+          "type": "launched",
+          "regex": "^com\\.android\\.settings/"
+        }
+      ]
+    },
+    {
+      "id": "storage_free",
+      "tags": [
+        "read",
+        "easy"
+      ],
+      "prompt": "How much free storage space do I have?",
+      "budget_s": 8,
+      "checks": [
+        {
+          "type": "reply_regex",
+          "regex": "\\d+([.,]\\d+)?\\s?(GB|gigabytes|MB)"
+        }
+      ]
+    },
+    {
+      "id": "notification_read",
+      "tags": [
+        "read",
+        "notifications",
+        "medium"
+      ],
+      "prompt": "What did my latest notification say?",
+      "budget_s": 10,
+      "setup": [
+        "su shell cmd notification post -t 'Parcel update' agentbench_parcel3 'Your parcel is waiting at the Blue Door locker on Kestrel Street'"
+      ],
+      "checks": [
+        {
+          "type": "reply_regex",
+          "regex": "Blue Door|Kestrel"
+        }
+      ],
+      "check_note": "Not a code-like string: Android 15 hides content that looks like a one-time code from ordinary notification listeners ('Sensitive notification content hidden'), which is the OS protecting OTPs, not the agent failing to read."
+    },
+    {
+      "id": "contact_lookup_reverse",
+      "tags": [
+        "read",
+        "contacts",
+        "medium"
+      ],
+      "prompt": "Whose number is 555-0171?",
+      "budget_s": 10,
+      "setup": [
+        "content delete --uri content://com.android.contacts/raw_contacts --where \"display_name IN ('Gordon Moore','Linus Torvalds')\""
+      ],
+      "setup_contacts": [
+        {
+          "name": "Gordon Moore",
+          "phone": "555-0171"
+        },
+        {
+          "name": "Linus Torvalds",
+          "phone": "555-0172"
+        }
+      ],
+      "checks": [
+        {
+          "type": "reply_regex",
+          "regex": "Gordon Moore"
+        }
+      ],
+      "teardown": [
+        "content delete --uri content://com.android.contacts/raw_contacts --where \"display_name IN ('Gordon Moore','Linus Torvalds')\""
+      ]
+    },
+    {
+      "id": "contact_add_email",
+      "tags": [
+        "edit",
+        "contacts",
+        "medium"
+      ],
+      "prompt": "Add the email address grace@navy.example to Grace Hopper's contact.",
+      "budget_s": 10,
+      "setup": [
+        "content delete --uri content://com.android.contacts/raw_contacts --where \"display_name='Grace Hopper'\""
+      ],
+      "setup_contacts": [
+        {
+          "name": "Grace Hopper",
+          "phone": "555-0199"
+        }
+      ],
+      "checks": [
+        {
+          "type": "shell_regex",
+          "cmd": "content query --uri content://com.android.contacts/data --projection data1 --where \"display_name='Grace Hopper' AND mimetype='vnd.android.cursor.item/email_v2'\"",
+          "regex": "grace@navy\\.example"
+        },
+        {
+          "type": "shell_regex",
+          "cmd": "content query --uri content://com.android.contacts/data --projection data1 --where \"display_name='Grace Hopper' AND mimetype='vnd.android.cursor.item/phone_v2'\"",
+          "regex": "555.?0199"
+        }
+      ],
+      "teardown": [
+        "content delete --uri content://com.android.contacts/raw_contacts --where \"display_name='Grace Hopper'\""
+      ]
+    },
+    {
+      "id": "contact_rename",
+      "tags": [
+        "edit",
+        "contacts",
+        "medium"
+      ],
+      "prompt": "Rename my contact \"Gary K\" to Gary Kildall.",
+      "budget_s": 10,
+      "setup": [
+        "content delete --uri content://com.android.contacts/raw_contacts --where \"display_name IN ('Gary K','Gary Kildall')\""
+      ],
+      "setup_contacts": [
+        {
+          "name": "Gary K",
+          "phone": "555-0173"
+        }
+      ],
+      "checks": [
+        {
+          "type": "shell_regex",
+          "cmd": "content query --uri content://com.android.contacts/data --projection data1 --where \"display_name='Gary Kildall' AND mimetype='vnd.android.cursor.item/phone_v2'\"",
+          "regex": "555.?0173"
+        }
+      ],
+      "teardown": [
+        "content delete --uri content://com.android.contacts/raw_contacts --where \"display_name IN ('Gary K','Gary Kildall')\""
+      ]
+    },
+    {
+      "id": "contact_full_create",
+      "tags": [
+        "create",
+        "contacts",
+        "easy"
+      ],
+      "prompt": "Save Alan Turing as a contact: phone 555-0112, email alan@bletchley.example.",
+      "budget_s": 8,
+      "setup": [
+        "content delete --uri content://com.android.contacts/raw_contacts --where \"display_name='Alan Turing'\""
+      ],
+      "checks": [
+        {
+          "type": "shell_regex",
+          "cmd": "content query --uri content://com.android.contacts/data --projection data1 --where \"display_name='Alan Turing'\"",
+          "regex": "555.?0112"
+        },
+        {
+          "type": "shell_regex",
+          "cmd": "content query --uri content://com.android.contacts/data --projection data1 --where \"display_name='Alan Turing'\"",
+          "regex": "alan@bletchley\\.example"
+        }
+      ],
+      "teardown": [
+        "content delete --uri content://com.android.contacts/raw_contacts --where \"display_name='Alan Turing'\""
+      ]
+    },
+    {
+      "id": "contact_delete",
+      "tags": [
+        "edit",
+        "contacts",
+        "ui",
+        "hard"
+      ],
+      "prompt": "Delete the contact \"Test Person\" from my phone.",
+      "budget_s": 20,
+      "setup": [
+        "content delete --uri content://com.android.contacts/raw_contacts --where \"display_name='Test Person'\""
+      ],
+      "setup_contacts": [
+        {
+          "name": "Test Person",
+          "phone": "555-0150"
+        }
+      ],
+      "checks": [
+        {
+          "type": "shell_regex",
+          "cmd": "echo n=$(content query --uri content://com.android.contacts/raw_contacts --projection _id --where \"display_name='Test Person' AND deleted=0\" | grep -c _id=)",
+          "regex": "^n=0$"
+        }
+      ],
+      "teardown": [
+        "content delete --uri content://com.android.contacts/raw_contacts --where \"display_name='Test Person'\""
+      ]
+    },
+    {
+      "id": "alarm_evening",
+      "tags": [
+        "create",
+        "alarm",
+        "easy"
+      ],
+      "prompt": "Set an alarm for quarter past six in the evening.",
+      "budget_s": 8,
+      "setup": [
+        "pm clear com.dgen.alarm"
+      ],
+      "checks": [
+        {
+          "type": "shell_regex",
+          "cmd": "v=$(grep -o 'alarmTime\" value=\"[0-9]*' /data/data/com.dgen.alarm/shared_prefs/AlarmPrefs.xml | grep -o '[0-9]*$'); [ -n \"$v\" ] && date -d @${v%???} +%H:%M",
+          "regex": "^18:15$"
+        },
+        {
+          "type": "tool_not_used",
+          "regex": "^create_reminder$"
+        }
+      ]
+    },
+    {
+      "id": "reminder_relative",
+      "tags": [
+        "create",
+        "reminder",
+        "easy"
+      ],
+      "prompt": "Remind me in 20 minutes to take the laundry out.",
+      "budget_s": 8,
+      "checks": [
+        {
+          "type": "tool_used",
+          "regex": "^create_reminder$"
+        },
+        {
+          "type": "tool_not_used",
+          "regex": "^set_alarm$"
+        },
+        {
+          "type": "shell_regex",
+          "cmd": "grep -rl -i 'laundry' /data/data/org.ethereumphone.andyclaw/shared_prefs/ 2>/dev/null | head -1",
+          "regex": "\\.xml"
+        }
+      ]
+    },
+    {
+      "id": "file_read_downloads",
+      "tags": [
+        "read",
+        "files",
+        "medium"
+      ],
+      "prompt": "What does the file notes.txt in my Downloads folder say?",
+      "budget_s": 10,
+      "setup": [
+        "mkdir -p /sdcard/Download",
+        "echo 'Locker code: 4471-ZEBRA' > /sdcard/Download/notes.txt"
+      ],
+      "checks": [
+        {
+          "type": "reply_regex",
+          "regex": "4471-?ZEBRA"
+        }
+      ],
+      "teardown": [
+        "rm -f /sdcard/Download/notes.txt"
+      ]
+    },
+    {
+      "id": "file_count_downloads",
+      "tags": [
+        "read",
+        "files",
+        "judgement",
+        "medium"
+      ],
+      "prompt": "How many PDF files are in my Downloads folder?",
+      "budget_s": 10,
+      "setup": [
+        "mkdir -p /sdcard/Download",
+        "rm -f /sdcard/Download/*.pdf",
+        "for f in invoice_march receipt_42 ticket; do echo x > /sdcard/Download/$f.pdf; done",
+        "echo x > /sdcard/Download/photo.jpg"
+      ],
+      "checks": [
+        {
+          "type": "reply_regex",
+          "regex": "\\b(3|three)\\b"
+        }
+      ],
+      "teardown": [
+        "rm -f /sdcard/Download/invoice_march.pdf /sdcard/Download/receipt_42.pdf /sdcard/Download/ticket.pdf /sdcard/Download/photo.jpg"
+      ]
+    },
+    {
+      "id": "force_stop_chrome",
+      "tags": [
+        "apps",
+        "medium"
+      ],
+      "prompt": "Chrome is acting up. Force stop it.",
+      "budget_s": 8,
+      "setup": [
+        "am start -W -n com.android.chrome/com.google.android.apps.chrome.Main about:blank >/dev/null 2>&1; sleep 2"
+      ],
+      "checks": [
+        {
+          "type": "shell_regex",
+          "cmd": "pidof com.android.chrome >/dev/null && echo running || echo stopped",
+          "regex": "^stopped$"
+        }
+      ]
+    },
+    {
+      "id": "app_installed_question",
+      "tags": [
+        "read",
+        "apps",
+        "easy"
+      ],
+      "prompt": "Do I have YouTube Music installed?",
+      "budget_s": 6,
+      "checks": [
+        {
+          "type": "reply_regex",
+          "regex": "\\byes\\b|is installed|have YouTube Music"
+        }
+      ]
+    },
+    {
+      "id": "already_dark",
+      "tags": [
+        "settings",
+        "judgement",
+        "easy"
+      ],
+      "prompt": "Turn on dark mode.",
+      "budget_s": 8,
+      "setup": [
+        "cmd uimode night yes"
+      ],
+      "checks": [
+        {
+          "type": "setting",
+          "ns": "secure",
+          "key": "ui_night_mode",
+          "equals": "2"
+        },
+        {
+          "type": "reply_regex",
+          "regex": "already"
+        }
+      ],
+      "teardown": [
+        "cmd uimode night no"
+      ]
+    },
+    {
+      "id": "three_settings_at_once",
+      "tags": [
+        "settings",
+        "multi",
+        "medium"
+      ],
+      "prompt": "Turn on dark mode, turn off auto-rotate, and set the screen to turn off after 1 minute.",
+      "budget_s": 12,
+      "setup": [
+        "cmd uimode night no",
+        "settings put system accelerometer_rotation 1",
+        "settings put system screen_off_timeout 1800000"
+      ],
+      "checks": [
+        {
+          "type": "setting",
+          "ns": "secure",
+          "key": "ui_night_mode",
+          "equals": "2"
+        },
+        {
+          "type": "setting",
+          "ns": "system",
+          "key": "accelerometer_rotation",
+          "equals": "0"
+        },
+        {
+          "type": "setting",
+          "ns": "system",
+          "key": "screen_off_timeout",
+          "equals": "60000"
+        }
+      ],
+      "teardown": [
+        "cmd uimode night no",
+        "settings put system accelerometer_rotation 1",
+        "settings put system screen_off_timeout 1800000"
+      ]
+    },
+    {
+      "id": "bedtime_routine",
+      "tags": [
+        "multi",
+        "ambiguous",
+        "hard"
+      ],
+      "prompt": "I'm going to bed. Set an alarm for 7, and make the phone quiet and easy on the eyes until then.",
+      "budget_s": 20,
+      "setup": [
+        "pm clear com.dgen.alarm",
+        "cmd uimode night no",
+        "cmd notification set_dnd off",
+        "cmd audio set-ringer-mode NORMAL",
+        "settings put secure night_display_activated 0"
+      ],
+      "checks": [
+        {
+          "type": "shell_regex",
+          "cmd": "v=$(grep -o 'alarmTime\" value=\"[0-9]*' /data/data/com.dgen.alarm/shared_prefs/AlarmPrefs.xml | grep -o '[0-9]*$'); [ -n \"$v\" ] && date -d @${v%???} +%H:%M",
+          "regex": "^07:00$"
+        },
+        {
+          "type": "shell_regex",
+          "cmd": "echo ringer=$(settings get global mode_ringer) zen=$(settings get global zen_mode)",
+          "regex": "ringer=[01]|zen=[123]"
+        },
+        {
+          "type": "shell_regex",
+          "cmd": "echo night=$(settings get secure ui_night_mode) nd=$(settings get secure night_display_activated)",
+          "regex": "night=2|nd=1"
+        }
+      ],
+      "teardown": [
+        "cmd uimode night no",
+        "cmd notification set_dnd off",
+        "cmd audio set-ringer-mode NORMAL",
+        "settings put secure night_display_activated 0"
+      ]
+    }
+  ]
+}

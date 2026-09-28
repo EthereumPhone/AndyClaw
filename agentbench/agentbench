@@ -17,6 +17,7 @@ import base64
 import datetime as dt
 import hashlib
 import json
+import math
 import os
 import re
 import shlex
@@ -646,6 +647,11 @@ def print_summary(s):
 
 def run_check(c, summary, run_dir=None):
     kind = c["type"]
+    if kind == "any_of":
+        # Several ways to show the same thing: the answer came from the phone, whether by its app
+        # or by the API behind it.
+        parts = [run_check(sub, summary, run_dir) for sub in c["checks"]]
+        return any(p[0] for p in parts), [p[1] for p in parts], " or ".join(p[2] for p in parts)
     if kind == "launched":
         # AgentDisplayService logs every launch it performs: "Launched <component> on display N".
         text = (run_dir / "logcat.txt").read_text(errors="replace") if run_dir else ""
@@ -660,6 +666,13 @@ def run_check(c, summary, run_dir=None):
     if kind == "shell_regex":
         got = sh(c["cmd"])
         return bool(re.search(c["regex"], got, re.I | re.S)), got[:200], f"`{c['cmd']}` ~ /{c['regex']}/"
+    if kind == "reply_contains_shell":
+        # The answer is a live device value the model cannot know in advance (an IP address,
+        # the kernel version): run the command and look for its output in the reply.
+        want = sh(c["cmd"])
+        norm = (lambda t: re.sub(r"\D", "", t)) if c.get("normalize") == "digits" else (lambda t: re.sub(r"\s+", " ", t).lower())
+        got = summary["reply"] or ""
+        return bool(want) and norm(want) in norm(got), f"{want[:60]} in reply", f"reply contains `{c['cmd']}`"
     if kind == "tool_used":
         hit = [t for t in summary["tools"] if re.search(c["regex"], t)]
         return bool(hit), hit[:5], f"used tool /{c['regex']}/"
@@ -699,6 +712,9 @@ def run_task(task, suite_dir, rep, settings, timeout):
         checks.append({"ok": ok, "got": got, "desc": desc})
     s["checks"] = checks
     s["ok"] = s["outcome"] == "complete" and all(c["ok"] for c in checks) and not s["crashes"]
+    # How long a user should have to wait for this. A pass over budget is a finding, not a pass.
+    s["budget_s"] = task.get("budget_s")
+    s["over_budget"] = bool(s["budget_s"] and s["wall_s"] and s["wall_s"] > s["budget_s"])
     s["task"], s["rep"] = task["id"], rep
     (run_dir / "summary.json").write_text(json.dumps(s, indent=2))
     write_transcript(run_dir, s, read_events(run_dir), parse_logcat(run_dir / "logcat.txt"))
@@ -749,6 +765,8 @@ def cmd_suite(args):
             results.append(s)
             mark = "\033[32mPASS\033[0m" if s["ok"] else "\033[31mFAIL\033[0m"
             failed = [c["desc"] for c in s["checks"] if not c["ok"]]
+            if s["ok"] and s["over_budget"]:
+                mark = "\033[33mSLOW\033[0m"
             print(f"  {mark} {task['id']:<24} #{rep} {time.time() - t0:5.0f}s calls={s['model_calls']} "
                   f"tools={s['tool_count']} ap={s['autopilot_outcomes']} {s['outcome'] if s['outcome'] != 'complete' else ''} "
                   f"{('failed: ' + '; '.join(failed)) if failed else ''}", flush=True)
@@ -777,7 +795,8 @@ def aggregate(results):
             return statistics.median(vals) if vals else None
         agg[task] = {"n": len(rs), "pass": sum(r["ok"] for r in rs), "wall": med("wall_s"), "calls": med("model_calls"),
                      "tools": med("tool_count"), "in_tok": med("input_tokens"), "out_tok": med("output_tokens"),
-                     "searches": med("search_calls"), "cache": med("cache_hit")}
+                     "searches": med("search_calls"), "cache": med("cache_hit"),
+                     "budget": next((r.get("budget_s") for r in rs if r.get("budget_s")), None)}
     return agg
 
 
@@ -805,14 +824,25 @@ def suite_report(suite_dir, baseline=None):
     L = [f"# agentbench — {m['name']}", "",
          f"AndyClaw `{m['andyclaw']}` · ethOS `{m['ethos']}` · {m.get('started', '')[:16]} · settings {m.get('launcher_settings')}", "",
          f"**{total}/{n} passed**" + (f" (baseline `{baseline.name}`: {sum(a['pass'] for a in base.values())}/{sum(a['n'] for a in base.values())})" if base else ""), "",
-         "| task | pass | wall s (med) | model calls | tools (searches) | prompt tok | cache hit | out tok |", "|---|---|---|---|---|---|---|---|"]
+         ]
+    budgeted = [(t, a) for t, a in agg.items() if a.get("budget") and a["wall"] is not None]
+    if budgeted:
+        fast = sum(1 for _, a in budgeted if a["pass"] == a["n"] and a["wall"] <= a["budget"])
+        L += [f"**{fast}/{len(budgeted)} passed within budget** (median wall time ≤ the task's `budget_s`)", ""]
+    L += ["| task | pass | wall s (med) | budget | model calls | tools (searches) | prompt tok | cache hit | out tok |",
+          "|---|---|---|---|---|---|---|---|---|"]
     for task, a in agg.items():
         b = base.get(task, {})
         L.append(f"| {task} | {a['pass']}/{a['n']}{delta(a['pass'], b.get('pass'), lower_better=False) if b else ''} "
                  f"| {fmt(a['wall'], 1)}{delta(a['wall'], b.get('wall'), 1) if b else ''} "
+                 f"| {fmt(a.get('budget'))}{' ⚠' if a.get('budget') and a['wall'] and a['wall'] > a['budget'] else ''} "
                  f"| {fmt(a['calls'])}{delta(a['calls'], b.get('calls'), 1) if b else ''} "
                  f"| {fmt(a['tools'])} ({fmt(a.get('searches'))}) | {fmt(a['in_tok'])}{delta(a['in_tok'], b.get('in_tok')) if b else ''} "
                  f"| {fmt(a.get('cache'), 2)} | {fmt(a['out_tok'])} |")
+    slow = [(t, a) for t, a in budgeted if a["pass"] and a["wall"] > a["budget"]]
+    if slow:
+        L += ["", "## Over budget", ""] + [f"- **{t}**: {a['wall']:.1f} s against {a['budget']} s, {fmt(a['calls'])} model calls"
+                                            for t, a in sorted(slow, key=lambda x: x[1]['budget'] - x[1]['wall'])]
     L += ["", "## Failures", ""]
     for r in data["results"]:
         if not r["ok"]:
@@ -867,6 +897,116 @@ def cmd_build(args):
             install_if_changed(ANDYCLAW_APK, "agentbench.andyclaw.sha")
 
 
+# ---------------------------------------------------------------- discovery (offline)
+
+def fetch_catalog():
+    out = sh(f"content call --uri {SEED_URI} --method catalog")
+    m = re.search(r"result=(\[.*\])\}\]", out, re.S)
+    if not m:
+        raise RuntimeError(f"no catalog in {out[:200]} (a debug build of AndyClaw is needed)")
+    return json.loads(m.group(1))
+
+
+class Bm25:
+    """ToolSearchService's index and scoring, line for line: name 3x, hint 2x, description 1x."""
+
+    def __init__(self, catalog):
+        tok = self.tokenize
+        self.entries = []
+        for e in catalog:
+            name, hint, desc = tok(e["tool"]), tok(e.get("hint") or ""), tok(e["description"])
+            names, hints = set(name), set(hint)
+            tf = {}
+            for t in name + hint + desc:
+                tf[t] = tf.get(t, 0.0) + (3.0 if t in names else 2.0 if t in hints else 1.0)
+            self.entries.append((e, tf, len(name + hint + desc), names | hints | set(desc)))
+        n = len(self.entries)
+        df = {}
+        for _, _, _, uniq in self.entries:
+            for t in uniq:
+                df[t] = df.get(t, 0) + 1
+        self.idf = {t: math.log((n - c + 0.5) / (c + 0.5) + 1.0) for t, c in df.items()}
+        self.avg = sum(e[2] for e in self.entries) / max(n, 1)
+
+    @staticmethod
+    def tokenize(text):
+        return [t for t in re.split(r"\s+", re.sub(r"[^a-z0-9_]", " ", text.lower())) if len(t) > 1]
+
+    def search(self, query, k=5):
+        q = query.strip().lower()
+        exact = [e for e, *_ in self.entries if e["tool"].lower() == q]
+        if exact:
+            return [exact[0]["tool"]]
+        qt = self.tokenize(query)
+        scored = []
+        for e, tf, dl, _ in self.entries:
+            sc = 0.0
+            for t in qt:
+                if t in self.idf and t in tf:
+                    f = tf[t]
+                    sc += self.idf[t] * (f * 2.2) / (f + 1.2 * (0.25 + 0.75 * dl / self.avg))
+            if sc > 0:
+                scored.append((sc, e["tool"]))
+        scored.sort(key=lambda x: -x[0])
+        return [t for _, t in scored[:k]]
+
+
+def source_hints():
+    """SearchHints.kt as it is in the tree, so hints can be tuned without a rebuild."""
+    text = (REPO / "app/src/main/java/org/ethereumphone/andyclaw/skills/SearchHints.kt").read_text()
+    text = re.sub(r'"\s*\+\s*\n\s*"', "", text)  # join "…" +\n "…" continuations
+    return dict(re.findall(r'"([a-z0-9_]+)" to "([^"]*)"', text))
+
+
+def prefetch_stopwords():
+    text = (REPO / "app/src/main/java/org/ethereumphone/andyclaw/skills/ToolSearchService.kt").read_text()
+    block = re.search(r"PREFETCH_STOPWORDS = setOf\((.*?)\)", text, re.S).group(1)
+    return set(re.findall(r'"([^"]*)"', block))
+
+
+META_TOOLS = re.compile(r"^(search_available_tools|agent_display_.*|spawn_subagent|ask_user|execute_code)$")
+
+
+def cmd_discovery(args):
+    """How well the user's own words find the tools a task needs, with no model in the loop."""
+    catalog = fetch_catalog()
+    if args.source_hints:
+        hints = source_hints()
+        for e in catalog:
+            e["hint"] = hints.get(e["tool"], e.get("hint"))
+    bm = Bm25(catalog)
+    stop = prefetch_stopwords()
+    known = {e["tool"] for e in catalog}
+    tasks = load_tasks(args.tasks or [str(HERE / "tasks" / f) for f in ("core.json", "hard.json", "breadth.json")])
+    used = {}
+    if args.suite:
+        for r in json.loads((Path(args.suite) / "results.json").read_text())["results"]:
+            if r["ok"]:
+                used.setdefault(r["task"], set()).update(t for t in r["tools"] if not META_TOOLS.match(t))
+    ks = [3, 5, 8, 12]
+    hits = {k: 0 for k in ks}
+    n = 0
+    rows = []
+    for t in tasks:
+        want = set(t.get("expect_tools") or used.get(t["id"], set())) & known
+        if not want:
+            continue
+        n += 1
+        # What ToolSearchService.prefetch runs: the request minus its function words.
+        ranked = bm.search(" ".join(w for w in bm.tokenize(t["prompt"][:500]) if w not in stop), k=50)
+        ranks = {w: (ranked.index(w) + 1 if w in ranked else None) for w in sorted(want)}
+        for k in ks:
+            hits[k] += all(r and r <= k for r in ranks.values())
+        rows.append((t["id"], ranks, ranked[:5]))
+    print(f"catalog: {len(catalog)} tools · tasks with a known tool: {n}")
+    print("  all needed tools in the top k: " + "  ".join(f"k={k}: {hits[k]}/{n}" for k in ks))
+    for tid, ranks, top in rows:
+        worst = max((r or 99) for r in ranks.values())
+        if worst > args.k:
+            needs = ", ".join(f"{w}@{r if r else '-'}" for w, r in ranks.items())
+            print(f"  ✗ {tid:<28} needs {needs}  top: {', '.join(top)}")
+
+
 def cmd_status(args):
     if not device_online():
         print(f"{SERIAL}: offline (agentbench up)")
@@ -908,6 +1048,10 @@ def main():
     p = sub.add_parser("compare"); p.add_argument("a"); p.add_argument("b"); p.set_defaults(f=cmd_compare)
     p = sub.add_parser("build"); p.add_argument("what", nargs="?", default="all", choices=["andyclaw", "client", "daemon", "all"]); p.set_defaults(f=cmd_build)
     sub.add_parser("status").set_defaults(f=cmd_status)
+    p = sub.add_parser("discovery"); p.add_argument("tasks", nargs="*"); p.add_argument("--suite", help="take each task's tools from this suite's passing runs")
+    p.add_argument("--k", type=int, default=5, help="list tasks whose tools rank below this")
+    p.add_argument("--source-hints", action="store_true", help="use SearchHints.kt from the tree instead of the installed build's")
+    p.set_defaults(f=cmd_discovery)
     sub.add_parser("selftest").set_defaults(f=cmd_selftest)
     sub.add_parser("down").set_defaults(f=cmd_down)
     args = ap.parse_args()
