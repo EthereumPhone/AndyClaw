@@ -119,9 +119,27 @@ class AutopilotToolHandler(
      */
     private fun onInstalledApp(plan: AutopilotPlan): AutopilotPlan {
         if (context == null || isLaunchable(plan.packageName)) return plan
-        val routed = routedApp()?.takeIf { it != plan.packageName && isLaunchable(it) } ?: return plan
-        Log.i(TAG, "plan names ${plan.packageName}, which is not installed; using the routed $routed")
-        return plan.copy(packageName = routed)
+        routedApp()?.takeIf { it != plan.packageName && isLaunchable(it) }?.let { routed ->
+            Log.i(TAG, "plan names ${plan.packageName}, which is not installed; using the routed $routed")
+            return plan.copy(packageName = routed)
+        }
+        // The router did not pick one. A guessed package usually names a role — the AOSP
+        // contacts, dialer or calculator — and the phone knows which installed app fills it:
+        // com.android.contacts is com.google.android.contacts here and ethOS Contacts on a dgen1.
+        val byRole = roleApp(plan.packageName)?.takeIf { it != plan.packageName && isLaunchable(it) } ?: return plan
+        Log.i(TAG, "plan names ${plan.packageName}, which is not installed; using $byRole, which fills its role")
+        return plan.copy(packageName = byRole)
+    }
+
+    /** The installed app that fills the role [guess] is named for, when exactly one does. */
+    private fun roleApp(guess: String): String? {
+        val pm = context?.packageManager ?: return null
+        val words = guess.lowercase().split('.').toSet()
+        val intent = ROLES.entries.firstOrNull { (keys, _) -> keys.any { it in words } }?.value?.invoke() ?: return null
+        val info = pm.resolveActivity(intent, android.content.pm.PackageManager.MATCH_DEFAULT_ONLY)?.activityInfo ?: return null
+        // Several candidates and no default: the resolver's chooser, which is no app at all.
+        if (info.packageName == "android" || SensitiveApps.isSensitive(info.packageName)) return null
+        return info.packageName
     }
 
     private fun isLaunchable(packageName: String): Boolean =
@@ -240,6 +258,26 @@ class AutopilotToolHandler(
     companion object {
         private const val TAG = "AutopilotTool"
         private const val STEP_TAG = "AutopilotStep"
+        /** Words in a guessed package name, and the intent the app for that role answers. */
+        private val ROLES: Map<Set<String>, () -> android.content.Intent> = linkedMapOf(
+            setOf("contacts", "people") to { selector(android.content.Intent.CATEGORY_APP_CONTACTS) },
+            setOf("calculator", "calculator2") to { selector(android.content.Intent.CATEGORY_APP_CALCULATOR) },
+            setOf("calendar") to { selector(android.content.Intent.CATEGORY_APP_CALENDAR) },
+            setOf("browser", "chrome") to { selector(android.content.Intent.CATEGORY_APP_BROWSER) },
+            setOf("email", "gm", "mail") to { selector(android.content.Intent.CATEGORY_APP_EMAIL) },
+            setOf("gallery", "gallery3d", "photos") to { selector(android.content.Intent.CATEGORY_APP_GALLERY) },
+            setOf("maps") to { selector(android.content.Intent.CATEGORY_APP_MAPS) },
+            setOf("mms", "messaging", "messages") to { selector(android.content.Intent.CATEGORY_APP_MESSAGING) },
+            setOf("music") to { selector(android.content.Intent.CATEGORY_APP_MUSIC) },
+            setOf("files", "documentsui", "filemanager") to { selector(android.content.Intent.CATEGORY_APP_FILES) },
+            setOf("dialer", "phone") to { android.content.Intent(android.content.Intent.ACTION_DIAL) },
+            setOf("deskclock", "clock", "alarm", "alarmclock") to { android.content.Intent(android.provider.AlarmClock.ACTION_SHOW_ALARMS) },
+            setOf("camera", "camera2") to { android.content.Intent(android.provider.MediaStore.INTENT_ACTION_STILL_IMAGE_CAMERA) },
+        )
+
+        private fun selector(category: String) =
+            android.content.Intent.makeMainSelectorActivity(android.content.Intent.ACTION_MAIN, category)
+
         /** Enough for every app a phone shows in its drawer, well inside the tool-result cap. */
         private const val MAX_LISTED_APPS = 60
     }
