@@ -258,3 +258,34 @@ Open for iteration 3:
 - **Chrome first run** (`More` / `No thanks` sheets) still hands over. Not seen on a phone after the
   first day, so low priority.
 - **Verify `MANAGE_NOTIFICATIONS` on a dgen1** (`set_dnd_mode` should succeed with no UI at all).
+
+---
+
+## Iteration 3: breadth and speed
+
+58 tasks (`tasks/breadth.json` adds 33) and a time budget on each. The baseline passed 56/58 but only
+**41/58 within budget**. The budgets, not the pass rate, showed where users wait.
+
+| Finding | Evidence | Root cause | Fix | Result |
+|---|---|---|---|---|
+| Every setting cost a discovery round trip or two | `dark_mode_on`: search, `select:`, write, reply; 4 calls, 8 s | settings writers' hints named the mechanism, not what they control; function words ranked `lock_screen` | hints in users' words; `prefetch` loads the top 6 before the first call | discovery top-5: suite 21 → 46/50, held-out 14 → 21/30; median calls 3 → 2 |
+| "Is YouTube Music installed?" → "Nope" | `list_installed_apps("YouTube Music")` → `[]` | substring match; the app is "YT Music" | word match; no-match lists all apps | ✅ |
+| IP address via `execute_code` ×2 | 13.6 s against 8 | no tool had it | `get_connectivity_status` gains IPs, network type, data saver | ✅ |
+| Start intent reached DND, then left it | `ZenModeSettingsActivity` launched, then `.Settings` | one tree read after the settle, too early | read up to 1.5 s; fall back only for another app | ✅ |
+| Jev: ~50% of calls hang | 16 timeouts beside 25 successes; host: 8/16 `504` at 4.06 s | **backend gateway/upstream** | client hedges at 0.8 s | failed steps 16 → 7 |
+
+Suite, baseline → after: within budget **41 → 49–50/58**, median task **7.4 → 5.2 s**, model calls **280 → 204**.
+
+Not changed, needs a decision (see the report to the owner):
+- **Jev 504s** at `api.markushaas.com/api/jev`: about half of all calls, a fixed ~4 s gateway timeout. Fixing
+  it server-side would recover most of the remaining UI-task time.
+- **Semantic tool routing.** Words cannot reach "bigger letters" → font size. Jev could rank the catalog
+  in the call `JevTurnRouter` already makes, but that router sends a request off the device only when it
+  names an installed app, deliberately. Widening that is a privacy decision.
+- **Data saver** has no tool (`NetworkPolicyManager.setRestrictBackground`, signature permission): untestable
+  on the emulator. Without it the model guessed `data_roaming=0` first, a collateral write.
+- **OTP-like notification text** is hidden from AndyClaw by Android 15. Reading it needs
+  `RECEIVE_SENSITIVE_NOTIFICATIONS`: a product call, not a bug.
+
+Open for iteration 4: the UI-driven reads (`kernel_version_ui` 106 s, `chrome_*` 45–88 s,
+`wifi_network_name` 42 s) and the stale-sub-goal undo from iteration 2.

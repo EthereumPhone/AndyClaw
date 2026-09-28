@@ -79,6 +79,23 @@ force-stops apps first. `checks` can be `setting`, `shell_regex`, `reply_regex`,
 checks on device state over the reply: the agent saying "done" is the thing under test.
 Keep tasks safe on a real phone (nothing that sends, posts or buys).
 
+## Speed and discovery
+
+Every task has `budget_s`, how long a user should wait for it. A pass over budget prints `SLOW`,
+and `report.md` leads with "N/M passed within budget" and lists the slow passes. Pass rate alone
+hides a 45 s answer to "turn on the blue light filter".
+
+```bash
+agentbench/agentbench discovery --suite suites/<dir>            # what prefetch would load, per task
+agentbench/agentbench discovery --source-hints --k 5            # with SearchHints.kt from the tree, no rebuild
+agentbench/agentbench discovery tasks/discovery-heldout.json --source-hints   # phrasings never tuned on
+```
+
+`discovery` replays ToolSearchService's tokenizer, BM25 and prefetch stopwords over each prompt,
+with the catalog read from the installed build (debug seed provider, `--method catalog`). It takes
+seconds and makes no model call. Tune hints against the suite, then check them on the held-out
+file: a change that helps only the suite's own sentences is overfitting.
+
 ## Improvement loop
 
 1. `agentbench suite` → read `report.md`, then the failing runs' `transcript.md` and `contact.jpg`.
