@@ -675,6 +675,7 @@ class AutopilotExecutor(
                     buildString {
                         append("[${e.id}] ${e.type}")
                         e.name?.take(30)?.let { append(" \"$it\"") }
+                        e.summary?.takeIf { it != e.name && !e.password }?.take(40)?.let { append(" — \"$it\"") }
                         e.viewId?.let { append(" viewId:$it") } ?: append(" @(${e.centerX},${e.centerY})")
                     }
                 }

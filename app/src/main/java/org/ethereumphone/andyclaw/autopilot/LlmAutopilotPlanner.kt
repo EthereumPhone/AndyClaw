@@ -72,7 +72,7 @@ class LlmAutopilotPlanner(
         return decision
     }
 
-    private fun prompt(ctx: PlannerContext): String = buildString {
+    internal fun prompt(ctx: PlannerContext): String = buildString {
         appendLine("GOAL: ${ctx.plan.goal}")
         ctx.plan.steps.forEachIndexed { i, s ->
             val marker = if (i == ctx.subgoalIndex) "→" else " "
@@ -91,6 +91,9 @@ class LlmAutopilotPlanner(
         ctx.screen.elements.filter { !it.name.isNullOrBlank() || it.clickable || it.editable }.take(MAX_ELEMENTS).forEach { e ->
             append("[${e.id}] ${e.type}")
             e.name?.let { append(" \"${it.take(60)}\"") }
+            // What a settings row says under its title ("Android version" — 15) is often the
+            // very answer; without it the planner tapped the row over and over to "see" it.
+            e.summary?.takeIf { it != e.name && !e.password }?.let { append(" — \"${it.take(80)}\"") }
             e.value?.let { append(" value:\"${it.take(40)}\"") }
             if (e.checked == true) append(" [checked]") else if (e.checked == false) append(" [unchecked]")
             if (e.selected) append(" [selected]")

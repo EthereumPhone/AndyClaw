@@ -2,6 +2,7 @@ package org.ethereumphone.andyclaw.autopilot
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class LlmAutopilotPlannerJsonTest {
@@ -51,5 +52,24 @@ class LlmAutopilotPlannerJsonTest {
     fun `no object or an unclosed one is nothing`() {
         assertNull(first("no json here"))
         assertNull(first("""{"act": "tap:3""""))
+    }
+
+    @Test
+    fun `the planner sees what a row says under its title`() {
+        // agentbench build_number_deep: "Build number" was on screen with its value as the
+        // summary, and the planner, shown only the title, scrolled on to find the value.
+        val never = object : org.ethereumphone.andyclaw.llm.LlmClient {
+            override suspend fun sendMessage(request: org.ethereumphone.andyclaw.llm.MessagesRequest) = error("not called")
+            override suspend fun streamMessage(request: org.ethereumphone.andyclaw.llm.MessagesRequest,
+                callback: org.ethereumphone.andyclaw.llm.StreamingCallback) = error("not called")
+        }
+        val screen = ScreenSnapshot(packageName = "com.android.settings", elements = listOf(
+            ScreenElement(1, "menu_item", label = "Build number", summary = "AE3A.240806.043", actions = listOf("click")),
+            ScreenElement(2, "text_field", label = "PIN", summary = "1234", password = true, actions = listOf("set_text")),
+        ))
+        val plan = AutopilotPlan(packageName = "com.android.settings", goal = "g", steps = listOf(PlanStep("s")))
+        val prompt = LlmAutopilotPlanner(never, "m").prompt(PlannerContext(plan, 0, screen, emptyList(), "low_confidence", mapOf("tap:1" to "Tap [1]")))
+        assertTrue(prompt.contains("\"Build number\" — \"AE3A.240806.043\""))
+        assertTrue("a password field's text never goes out", !prompt.contains("1234"))
     }
 }
