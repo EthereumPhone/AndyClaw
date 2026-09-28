@@ -106,6 +106,12 @@ data class AutopilotEvent(
     val reason: String? = null,
     /** On ESCALATED: Jev's own pick that was too unsure to act on. Logged only, never shown. */
     val jevPick: String? = null,
+    /**
+     * On SETTLED and ESCALATED: Jev's answers that step, compactly ([jevAnswerSummary]). Logged
+     * only, never shown: without them a run that never left its first sub-goal could not say
+     * whether Jev judged it unmet or the policy ignored it.
+     */
+    val jevAnswers: String? = null,
     /** On DONE and FAILED: how the run ended, as [AutopilotOutcome.Outcome.wire]. */
     val outcome: String? = null,
     /** On DONE and FAILED: one short sentence for the user, never a reason code. */
@@ -219,7 +225,17 @@ class AutopilotExecutor(
         var subgoal = 0
         var steps = 0
         var plannerCalls = 0
+        // Consecutive transient Jev failures. Past maxJevFailures the run leaves Jev alone for a
+        // few steps and then tries it once more: two timeouts on one step used to hand every
+        // remaining step of the run to the planner, a model call each (14 in one Settings run).
         var jevFailures = 0
+        var jevResumeAtStep = 0
+        var jevPauseSteps = 1
+        // Jev refused outright (disabled, no balance, sign-in): it will not be back this run.
+        var jevOff = false
+        // Planner calls that stood in for Jev while it was down. They are the step budget's to
+        // spend, not the escalation budget's, or Jev coming back would end the run at once.
+        var plannerCallsForJev = 0
         var lastScreen: ScreenSnapshot? = null
         var lastActionCommitted = false
         var lastActed: Pair<ScreenSnapshot, StepOption>? = null
@@ -451,11 +467,12 @@ class AutopilotExecutor(
                 // With Jev out of the picture the planner drives every step. Its calls are small
                 // next to a round trip of the main loop, so it gets the whole step budget rather
                 // than the three escalations that make sense when Jev is doing the work.
-                val jevDown = jev == null || jevFailures >= config.maxJevFailures
+                val jevDown = jev == null || jevOff || (jevFailures >= config.maxJevFailures && steps < jevResumeAtStep)
                 val plannerBudget = if (jevDown) plan.maxSteps else config.maxPlannerEscalations
 
                 // Ask Jev (unless this sub-goal needs reasoning Jev cannot do).
                 var jevMs = 0L
+                var jevAnswers: String? = null
                 val decision: StepDecision = if (plan.steps[subgoal].needsPlanner || jev == null) {
                     StepDecision.Escalate(if (jev == null) "jev_unavailable" else "needs_planner")
                 } else if (jevDown) {
@@ -470,11 +487,16 @@ class AutopilotExecutor(
                     } ?: return stopped()
                     val response = answer.getOrElse { e ->
                         if (e is JevUnavailableException) {
-                            jevFailures = config.maxJevFailures
+                            jevOff = true
                             failure = "jev_unavailable"
                         } else {
                             jevFailures++
+                            if (jevFailures >= config.maxJevFailures) {
+                                jevResumeAtStep = steps + jevPauseSteps
+                                jevPauseSteps = (jevPauseSteps * 2).coerceAtMost(MAX_JEV_PAUSE_STEPS)
+                            }
                         }
+                        jevAnswers = "error: ${e.javaClass.simpleName}${e.message?.let { " ${it.take(80)}" } ?: ""}"
                         null
                     }
                     if (device.stopRequested) return stopped()
@@ -482,8 +504,10 @@ class AutopilotExecutor(
                         StepDecision.Escalate(failure)
                     } else {
                         jevFailures = 0
+                        jevPauseSteps = 1
                         jevMs = response.rttMs
                         jevTimes += response.rttMs
+                        jevAnswers = jevAnswerSummary(response)
                         StepPolicy.decide(response, prompt, plan, subgoal, screen, lastActionCommitted,
                             guard.thresholdBump(screen), config, undoable = lastActed != null)
                     }
@@ -505,11 +529,13 @@ class AutopilotExecutor(
                             }
                         }
                         escalations += decision.reason
-                        emit(AutopilotEvent.Kind.ESCALATED) { copy(reason = decision.reason, jevPick = decision.jevPick) }
-                        if (planner == null || plannerCalls >= plannerBudget) {
+                        emit(AutopilotEvent.Kind.ESCALATED) { copy(reason = decision.reason, jevPick = decision.jevPick, jevAnswers = jevAnswers) }
+                        val spent = if (jevDown) plannerCalls else plannerCalls - plannerCallsForJev
+                        if (planner == null || spent >= plannerBudget) {
                             return finish(AutopilotResult.Status.NEEDS_PLANNER, decision.reason)
                         }
                         plannerCalls++
+                        if (jevDown) plannerCallsForJev++
                         val options = prompt.options.mapValues { (_, o) -> StepPromptBuilder.describe(o, screen, plan) }
                         val context = PlannerContext(plan, subgoal, screen, history, decision.reason, options)
                         val answer = untilStopped { planner.decide(context) } ?: return stopped()
@@ -615,7 +641,8 @@ class AutopilotExecutor(
                         lastActionCommitted = resolved.commits
                         val timings = StepTimings(jevMs, outcome.actMs, outcome.settleMs, clock() - stepStart)
                         emit(AutopilotEvent.Kind.SETTLED) {
-                            copy(action = verb, target = target, confidence = resolved.confidence, source = source, timings = timings)
+                            copy(action = verb, target = target, confidence = resolved.confidence, source = source, timings = timings,
+                                jevAnswers = jevAnswers)
                         }
                         if (!outcome.ok) {
                             if (device.stopRequested) return stopped()
@@ -639,6 +666,18 @@ class AutopilotExecutor(
     }
 
     companion object {
+        /** `sub=0.12 goal=0.40 prog=0.91 next=tap:3@0.84 fol=reveal:1001@0.70 blk=none@0.98 commit=0.02`. */
+        fun jevAnswerSummary(r: JevResponse): String = buildList {
+            fun p(v: Double) = String.format(java.util.Locale.ROOT, "%.2f", v)
+            r.noul(Questions.SUBGOAL_DONE)?.let { add("sub=${p(it)}") }
+            r.noul(Questions.GOAL_DONE)?.let { add("goal=${p(it)}") }
+            r.noul(Questions.LAST_PROGRESS)?.let { add("prog=${p(it)}") }
+            r.choice(Questions.NEXT)?.let { add("next=${it.choice}@${p(it.confidence)}") }
+            r.choice(Questions.NEXT_FOLLOWING)?.let { add("fol=${it.choice}@${p(it.confidence)}") }
+            r.choice(Questions.BLOCKER)?.let { add("blk=${it.choice}@${p(it.confidence)}") }
+            r.noul(Questions.COMMITS)?.let { add("commit=${p(it)}") }
+        }.joinToString(" ")
+
         fun describeAction(option: StepOption, target: ScreenElement?, plan: AutopilotPlan): String {
             val what = target?.let { "${it.type} \"${it.name ?: it.viewId?.substringAfter('/') ?: "#${it.id}"}\"" } ?: ""
             return when (option) {
@@ -685,6 +724,8 @@ class AutopilotExecutor(
         /** How often a Jev or planner call in flight looks for STOP. */
         const val STOP_POLL_MS = 50L
         private const val SNAPSHOT_ATTEMPTS = 4
+        /** Longest a run leaves Jev alone after transient failures before trying it again. */
+        private const val MAX_JEV_PAUSE_STEPS = 8
         private const val SCREEN_TEXT_CHARS = 2000
         /** Re-reads of a screen that looks unchanged after an action that changed the display. */
         private const val STALE_REREADS = 5

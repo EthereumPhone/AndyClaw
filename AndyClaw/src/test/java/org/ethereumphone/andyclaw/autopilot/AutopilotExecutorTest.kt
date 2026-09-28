@@ -602,4 +602,49 @@ class AutopilotExecutorTest {
         assertTrue(summary.contains("viewId:com.msg:id/search"))
         assertTrue(summary.contains("\"Anna\" @(360,280)"))
     }
+
+    @Test
+    fun `two Jev timeouts on one screen do not hand the rest of the run to the planner`() = runTest {
+        // agentbench android_version_from_settings: one slow step and the planner then made
+        // every remaining decision, a model call each (14), for ~25 s of a 42 s turn.
+        val device = device()
+        var calls = 0
+        val competent = competentJev()
+        val jev = JevClient { req ->
+            calls++
+            if (calls <= 2) throw IOException("timeout") else competent.evaluate(req)
+        }
+        val planner = AutopilotPlanner { ctx -> PlannerDecision.Act(ctx.options.entries.first { it.value.contains("\"Anna\"") }.key) }
+        val events = mutableListOf<AutopilotEvent>()
+        val result = AutopilotExecutor(device, jev, planner, events = { events += it }).run(plan)
+
+        assertEquals(AutopilotResult.Status.SUCCESS, result.status)
+        assertEquals(listOf("tap:Anna", "type:Message", "tap:Send"), device.performed)
+        assertEquals("the planner covers the one step Jev missed, no more", 1, result.plannerCalls)
+        assertEquals(listOf("jev_error"), result.escalations)
+        // Why it escalated is in the step log.
+        assertTrue(events.first { it.kind == AutopilotEvent.Kind.ESCALATED }.jevAnswers!!.startsWith("error: IOException"))
+    }
+
+    @Test
+    fun `a Jev that keeps failing is tried again less and less often`() = runTest {
+        val device = device()
+        var calls = 0
+        val jev = JevClient { calls++; throw IOException("timeout") }
+        val planner = AutopilotPlanner { ctx ->
+            fun pick(verb: String, label: String) = PlannerDecision.Act(ctx.options.entries.first { (_, d) -> d.startsWith(verb) && d.contains("\"$label\"") }.key)
+            when {
+                ctx.screen.elements.any { it.label == "hi · Sent" } -> PlannerDecision.Done
+                ctx.screen.title == "Chats" -> pick("Tap", "Anna")
+                ctx.screen.elements.any { it.value == "hi" } -> pick("Tap", "Send")
+                else -> pick("Type", "Message")
+            }
+        }
+        val result = AutopilotExecutor(device, jev, planner).run(plan)
+
+        assertEquals(AutopilotResult.Status.SUCCESS, result.status)
+        assertEquals(4, result.plannerCalls)
+        // Two on the first screen (a retry), then one probe after 1 step, then after 2 more.
+        assertEquals(4, calls)
+    }
 }

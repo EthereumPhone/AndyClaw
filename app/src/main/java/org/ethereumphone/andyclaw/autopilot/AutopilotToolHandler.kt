@@ -233,7 +233,8 @@ class AutopilotToolHandler(
         Log.i(STEP_TAG, "run=${e.runId} step=${e.step} sub=${e.subgoalIndex + 1}/${e.subgoals.size} " +
             "kind=${e.kind} action=${e.action} target=${e.target?.name?.take(30)} conf=${e.confidence?.let { "%.2f".format(it) }} " +
             "src=${e.source} jev=${t?.jevMs} act=${t?.actMs} settle=${t?.settleMs} step=${t?.stepMs} " +
-            "elapsed=${e.elapsedMs} reason=${e.reason}" + (e.jevPick?.let { " jevPick=$it" } ?: ""))
+            "elapsed=${e.elapsedMs} reason=${e.reason}" + (e.jevPick?.let { " jevPick=$it" } ?: "") +
+            (e.jevAnswers?.let { " jev{$it}" } ?: ""))
     }
 
     companion object {
