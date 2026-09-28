@@ -63,7 +63,13 @@ class LlmAutopilotPlanner(
             Log.w(TAG, "planner call failed: ${it.message}")
             return PlannerDecision.Unusable("planner_error")
         }
-        return parse(text.toString(), context)
+        val decision = parse(text.toString(), context)
+        // The reply is a decision over the listed options, not screen content; without it an
+        // Unusable answer on a device could only be guessed at.
+        Log.i(TAG, "sub=${context.subgoalIndex + 1}/${context.plan.steps.size} why=${context.reason} " +
+            "options=${context.options.size} (${context.options.keys.count { it.startsWith("scroll") }} scroll) " +
+            "-> $decision | reply=${text.toString().replace('\n', ' ').take(REPLY_LOG_CHARS)}")
+        return decision
     }
 
     private fun prompt(ctx: PlannerContext): String = buildString {
@@ -148,6 +154,7 @@ class LlmAutopilotPlanner(
 
         private const val TAG = "AutopilotPlanner"
         private const val MAX_TOKENS = 400
+        private const val REPLY_LOG_CHARS = 400
         private const val MAX_ELEMENTS = 80
         private const val MAX_OPTIONS = 120
         private val json = Json { ignoreUnknownKeys = true; isLenient = true }
