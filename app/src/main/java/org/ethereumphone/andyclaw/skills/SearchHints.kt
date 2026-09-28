@@ -105,7 +105,7 @@ object SearchHints {
         "analyze_image" to "vision describe photo OCR recognize",
 
         // ── Apps ──
-        "list_installed_apps" to "all applications packages installed",
+        "list_installed_apps" to "all applications packages installed find app name",
         "launch_app" to "open start run application",
         "get_app_info" to "application details version size package",
         "force_stop_app" to "kill terminate close application process",

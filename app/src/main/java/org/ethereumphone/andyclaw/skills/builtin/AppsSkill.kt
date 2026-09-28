@@ -26,8 +26,17 @@ class AppsSkill(private val context: Context) : AndyClawSkill {
         tools = listOf(
             ToolDefinition(
                 name = "list_installed_apps",
-                description = "List all installed apps on the device with package names and labels.",
-                inputSchema = JsonObject(mapOf("type" to JsonPrimitive("object"), "properties" to JsonObject(emptyMap()))),
+                description = "List the apps a user can open (the app drawer), with package names and labels, " +
+                    "sorted by label. Use this to find an app's real package name before launching or driving it; " +
+                    "don't guess package names. `query` filters by label or package (e.g. \"notes\"); " +
+                    "`include_all` lists every installed package, background and system ones included.",
+                inputSchema = JsonObject(mapOf(
+                    "type" to JsonPrimitive("object"),
+                    "properties" to JsonObject(mapOf(
+                        "query" to JsonObject(mapOf("type" to JsonPrimitive("string"), "description" to JsonPrimitive("Case-insensitive text to match against the label or package name"))),
+                        "include_all" to JsonObject(mapOf("type" to JsonPrimitive("boolean"), "description" to JsonPrimitive("Every installed package, not only launchable apps (default false)"))),
+                    )),
+                )),
             ),
             ToolDefinition(
                 name = "launch_app",
@@ -74,7 +83,7 @@ class AppsSkill(private val context: Context) : AndyClawSkill {
 
     override suspend fun execute(tool: String, params: JsonObject, tier: Tier): SkillResult {
         return when (tool) {
-            "list_installed_apps" -> listApps()
+            "list_installed_apps" -> listApps(params)
             "launch_app" -> launchApp(params)
             "get_app_info" -> getAppInfo(params)
             "force_stop_app" -> {
@@ -85,10 +94,22 @@ class AppsSkill(private val context: Context) : AndyClawSkill {
         }
     }
 
-    private fun listApps(): SkillResult {
+    /**
+     * Launchable apps by default. Every package on a phone is 200+ entries, mostly overlays and
+     * services nobody has heard of; as JSON that is ~27k characters, which the tool-result cap
+     * cut to the first ~25 in PackageManager order, so the app the user named was usually not
+     * among them (agentbench: the dgen1's own Notes app, never seen, and a note written to a
+     * file in the sandbox instead).
+     */
+    private fun listApps(params: JsonObject): SkillResult {
+        val query = params["query"]?.jsonPrimitive?.contentOrNull?.trim()?.lowercase()?.takeIf { it.isNotEmpty() }
+        val includeAll = params["include_all"]?.jsonPrimitive?.contentOrNull?.toBooleanStrictOrNull() ?: false
+        if (!includeAll) return listLaunchableApps(query)
         return try {
             val pm = context.packageManager
             val packages = pm.getInstalledPackages(PackageManager.PackageInfoFlags.of(0))
+                .filter { query == null || it.packageName.lowercase().contains(query) ||
+                    (it.applicationInfo?.let { a -> pm.getApplicationLabel(a).toString().lowercase().contains(query) } ?: false) }
             val apps = packages.map { pkgInfo ->
                 val appInfo = pkgInfo.applicationInfo
                 val isSystemApp = appInfo != null &&
@@ -103,6 +124,19 @@ class AppsSkill(private val context: Context) : AndyClawSkill {
         } catch (e: Exception) {
             SkillResult.Error("Failed to list apps: ${e.message}")
         }
+    }
+
+    private fun listLaunchableApps(query: String?): SkillResult = try {
+        val pm = context.packageManager
+        val apps = pm.queryIntentActivities(Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER), 0)
+            .map { it.activityInfo.packageName to it.loadLabel(pm).toString() }
+            .distinctBy { it.first }
+            .filter { (pkg, label) -> query == null || pkg.lowercase().contains(query) || label.lowercase().contains(query) }
+            .sortedBy { it.second.lowercase() }
+            .map { (pkg, label) -> buildJsonObject { put("package_name", pkg); put("label", label) } }
+        SkillResult.Success(JsonArray(apps).toString())
+    } catch (e: Exception) {
+        SkillResult.Error("Failed to list apps: ${e.message}")
     }
 
     private fun launchApp(params: JsonObject): SkillResult {
