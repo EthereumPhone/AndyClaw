@@ -172,6 +172,12 @@ class NotificationSkill(private val context: Context) : AndyClawSkill {
                 else -> NotificationManager.INTERRUPTION_FILTER_NONE
             }
             nm.setInterruptionFilter(filter)
+            // A denied call throws, but an accepted one can still leave the filter where it was
+            // (a zen policy the OS applies as an app rule): report what the phone now does.
+            if (nm.currentInterruptionFilter != filter) {
+                return SkillResult.Error("DND did not change (the phone's filter is still " +
+                    "${nm.currentInterruptionFilter}). $DND_BY_UI")
+            }
             val modeName = when (filter) {
                 NotificationManager.INTERRUPTION_FILTER_ALL -> "off"
                 NotificationManager.INTERRUPTION_FILTER_PRIORITY -> "priority_only"
@@ -182,8 +188,17 @@ class NotificationSkill(private val context: Context) : AndyClawSkill {
                 put("dnd_enabled", enabled)
                 put("mode", modeName)
             }.toString())
+        } catch (e: SecurityException) {
+            // Without DND access every model tried Settings' menus next, for up to 17 calls.
+            SkillResult.Error("Failed to set DND mode: ${e.message}. $DND_BY_UI")
         } catch (e: Exception) {
             SkillResult.Error("Failed to set DND mode: ${e.message}")
         }
+    }
+
+    private companion object {
+        const val DND_BY_UI = "Do it in Settings instead: agent_display_autopilot with package_name " +
+            "com.android.settings and start_intent android.settings.ZEN_MODE_SETTINGS opens the " +
+            "Do Not Disturb page directly."
     }
 }

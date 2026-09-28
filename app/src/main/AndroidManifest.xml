@@ -62,6 +62,11 @@
 
     <!-- Notification DND -->
     <uses-permission android:name="android.permission.ACCESS_NOTIFICATION_POLICY" />
+    <!-- Signature-only, so granted by the platform certificate the ethOS build signs AndyClaw
+         with, and needing no privapp allowlist entry. With it NotificationManagerService lets
+         setInterruptionFilter through; without it, DND access can only be granted by system or
+         shell (setNotificationPolicyAccessGranted), which nothing on a dgen1 does. -->
+    <uses-permission android:name="android.permission.MANAGE_NOTIFICATIONS" />
 
     <!-- Reminders, and alarms set in the clock app (AlarmClock.ACTION_SET_ALARM) -->
     <uses-permission android:name="com.android.alarm.permission.SET_ALARM" />
