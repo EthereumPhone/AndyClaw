@@ -758,7 +758,8 @@ class AgentLoop(
                 // Streaming tool executor: starts executing tools as they arrive from the stream
                 val streamingExecutor = StreamingToolExecutor(
                     executeToolCall = { block ->
-                        callbacks.onToolExecution(block.name)
+                        // Not announced here: the engine's onToolStarted does, once the call has
+                        // passed the gates, so a refused call never shows as running.
                         val engine = ExecutionEngineFactory.create(
                             skillRegistry = skillRegistry,
                             tier = tier,
