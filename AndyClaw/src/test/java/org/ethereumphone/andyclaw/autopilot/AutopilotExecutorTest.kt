@@ -425,7 +425,8 @@ class AutopilotExecutorTest {
         val list = ScreenElement(id = 9, type = "list", label = "scrollable list",
             actions = listOf("scroll_forward", "scroll_backward"), centerX = 360, centerY = 400,
             left = 0, top = 100, right = 720, bottom = 700)
-        fun part(vararg rows: String) = T.screen("com.app", "Home",
+        // A search bar that stays put while the list scrolls under it.
+        fun part(vararg rows: String) = T.screen("com.app", "Home", T.button(0, "Search", y = 40, type = "search_bar"),
             *rows.mapIndexed { i, r -> T.button(i + 1, r, y = 200 + i * 100, type = "menu_item") }.toTypedArray(), list)
         return FakeDevice(
             screens = mapOf("top" to part("A", "B"), "mid" to part("C", "D"), "end" to part("E", "F"),

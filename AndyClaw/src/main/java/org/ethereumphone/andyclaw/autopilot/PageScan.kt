@@ -21,7 +21,12 @@ class PageScan(
     val listSignature: String,
     val rows: LinkedHashMap<String, Row>,
 ) {
-    data class Row(val element: ScreenElement, val index: Int)
+    /**
+     * [index] is the scroll at which the row first showed. [sticky] means it showed at every
+     * scroll: a toolbar or search bar that does not move with the list. It says nothing about
+     * where the list is, so it is left out of that reckoning and never offered as off-screen.
+     */
+    data class Row(val element: ScreenElement, val index: Int, val sticky: Boolean = false)
 
     /**
      * The rows of this page that [screen] does not show, nearest first, numbered from
@@ -29,7 +34,9 @@ class PageScan(
      */
     fun offscreen(screen: ScreenSnapshot): List<OffscreenRow> {
         val visible = screen.elements.map { it.signature }.toSet()
-        val here = rows.values.filter { it.element.signature in visible }.map { it.index }
+        // A search bar that stays at the top while the list scrolls looked like the page's first
+        // row still being on screen, which put every row above the view "further down".
+        val here = rows.values.filter { !it.sticky && it.element.signature in visible }.map { it.index }
         // Nothing of the page is on screen (a dialog over it, a different page after all).
         if (here.isEmpty()) return emptyList()
         val lo = here.min()
@@ -39,7 +46,7 @@ class PageScan(
         fun below(index: Int) = index > hi || (index >= lo && index * 2 >= lo + hi && index != lo)
         fun distance(index: Int) = if (below(index)) index - hi else lo - index
         return rows.values
-            .filter { it.element.signature !in visible && it.element.isRow }
+            .filter { !it.sticky && it.element.signature !in visible && it.element.isRow }
             .sortedBy { distance(it.index) }
             .mapIndexed { i, row -> OffscreenRow(OFFSCREEN_ID_BASE + i, row.element, below(row.index)) }
     }

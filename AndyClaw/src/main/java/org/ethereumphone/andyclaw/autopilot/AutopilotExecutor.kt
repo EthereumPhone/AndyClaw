@@ -318,9 +318,14 @@ class AutopilotExecutor(
             val list = PageScan.primaryList(screen) ?: return null
             val key = PageScan.key(screen, list)
             val rows = LinkedHashMap<String, PageScan.Row>()
+            val seen = HashMap<String, Int>()
+            var snapshots = 0
             fun absorb(s: ScreenSnapshot, index: Int) {
-                s.elements.filter { !it.scrollable && !it.name.isNullOrBlank() }
-                    .forEach { rows.putIfAbsent(it.signature, PageScan.Row(it, index)) }
+                snapshots++
+                s.elements.filter { !it.scrollable && !it.name.isNullOrBlank() }.forEach {
+                    rows.putIfAbsent(it.signature, PageScan.Row(it, index))
+                    seen[it.signature] = (seen[it.signature] ?: 0) + 1
+                }
             }
             absorb(screen, 0)
             var current = screen
@@ -339,6 +344,8 @@ class AutopilotExecutor(
                 current = next
                 if (rows.size == before) break
             }
+            // Whatever showed at every scroll did not move with the list.
+            if (snapshots > 1) rows.replaceAll { sig, row -> if (seen[sig] == snapshots) row.copy(sticky = true) else row }
             val scan = PageScan(key, list.signature, rows)
             scans[key] = scan
             trace += "scanned the page (${scrolls} scroll${if (scrolls == 1) "" else "s"}, ${rows.size} rows)"
@@ -353,7 +360,11 @@ class AutopilotExecutor(
             val started = clock()
             var current = screen
             var settle = 0L
-            repeat(config.maxScanScrolls + 2) {
+            var forward = option.below
+            var turned = false
+            // Each way the page can go, as far as it goes: the direction is what the scan implies,
+            // and a page that has stopped moving without showing the row is searched the other way.
+            repeat(2 * (config.maxScanScrolls + 2)) {
                 if (device.stopRequested) return ActionOutcome(ok = false, changedScreen = current !== screen)
                 if (current.elements.any { it.signature == option.rowSignature }) {
                     return ActionOutcome(ok = true, changedScreen = current !== screen, actMs = clock() - started - settle, settleMs = settle)
@@ -361,12 +372,18 @@ class AutopilotExecutor(
                 val l = current.elements.firstOrNull { it.signature == scan?.listSignature }
                     ?: PageScan.primaryList(current)
                     ?: return ActionOutcome(ok = false, changedScreen = current !== screen, error = "no_list")
-                val scroll = if (option.below) StepOption.ScrollForward(l.id) else StepOption.ScrollBackward(l.id)
+                val scroll = if (forward) StepOption.ScrollForward(l.id) else StepOption.ScrollBackward(l.id)
                 val outcome = device.perform(scroll, current, plan)
                 settle += outcome.settleMs
                 if (!outcome.ok) return outcome.copy(changedScreen = current !== screen)
-                current = readScreen() ?: return ActionOutcome(ok = false, changedScreen = true, error = "screen_unreadable")
-                if (current.packageName != screen.packageName) return ActionOutcome(ok = false, changedScreen = true, error = "left_the_app")
+                val next = readScreen() ?: return ActionOutcome(ok = false, changedScreen = true, error = "screen_unreadable")
+                if (next.packageName != screen.packageName) return ActionOutcome(ok = false, changedScreen = true, error = "left_the_app")
+                if (next.elements.map { it.signature } == current.elements.map { it.signature }) {
+                    if (turned) return ActionOutcome(ok = false, changedScreen = current !== screen, error = "row_not_found")
+                    turned = true
+                    forward = !forward
+                }
+                current = next
             }
             val found = current.elements.any { it.signature == option.rowSignature }
             return ActionOutcome(ok = found, changedScreen = current !== screen, actMs = clock() - started - settle,
