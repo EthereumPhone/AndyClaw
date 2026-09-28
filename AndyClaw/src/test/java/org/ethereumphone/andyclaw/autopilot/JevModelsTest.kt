@@ -83,4 +83,17 @@ class JevModelsTest {
             """{"package_name":"com.android.settings","goal":"Turn on dark mode"}""").jsonObject).getOrThrow()
         assertEquals(listOf("Turn on dark mode"), plan.steps.map { it.doText })
     }
+
+    @Test
+    fun `a start intent is an action or an intent URI`() {
+        fun parse(v: String) = AutopilotPlan.fromToolInput(kotlinx.serialization.json.Json.parseToJsonElement(
+            """{"package_name":"com.android.settings","goal":"g","start_intent":"$v"}""").jsonObject)
+        assertEquals("intent:#Intent;action=android.settings.ZEN_MODE_SETTINGS;end",
+            parse("android.settings.ZEN_MODE_SETTINGS").getOrThrow().startIntent)
+        val uri = "intent://example.com#Intent;scheme=https;package=com.android.chrome;end"
+        assertEquals(uri, parse(uri).getOrThrow().startIntent)
+        assertTrue(parse("open the wifi page").isFailure)
+        assertEquals(null, AutopilotPlan.fromToolInput(kotlinx.serialization.json.Json.parseToJsonElement(
+            """{"package_name":"com.android.settings","goal":"g"}""").jsonObject).getOrThrow().startIntent)
+    }
 }

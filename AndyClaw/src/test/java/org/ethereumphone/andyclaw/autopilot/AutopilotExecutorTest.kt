@@ -647,4 +647,22 @@ class AutopilotExecutorTest {
         // Two on the first screen (a retry), then one probe after 1 step, then after 2 more.
         assertEquals(4, calls)
     }
+
+    @Test
+    fun `a start intent reaches the device and Jev is told where the app opened`() = runTest {
+        var started: Pair<String, String?>? = null
+        val base = device()
+        val device = object : AutopilotDevice by base {
+            override suspend fun ensureApp(packageName: String, startIntent: String?): Boolean {
+                started = packageName to startIntent
+                return base.ensureApp(packageName)
+            }
+        }
+        val jev = competentJev()
+        val uri = "intent:#Intent;action=android.settings.WIFI_SETTINGS;end"
+        AutopilotExecutor(device, jev, noPlanner).run(plan.copy(startIntent = uri))
+
+        assertEquals("com.msg" to uri, started)
+        assertTrue(jev.requests.first().state.contains("opened com.msg at android.settings.WIFI_SETTINGS"))
+    }
 }

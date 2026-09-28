@@ -41,6 +41,8 @@ object AutopilotFlowCompiler {
         val actions = result.actions
         if (actions.isEmpty()) return Result.Skipped("no_actions")
         if (result.escalations.isNotEmpty()) return Result.Skipped("needed_the_planner")
+        // A flow replays from the app's own start; its first target would not be there.
+        if (plan.startIntent != null) return Result.Skipped("started_at_intent")
 
         val steps = ArrayList<FlowStep>()
         for (a in actions) {

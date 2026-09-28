@@ -20,6 +20,12 @@ data class AutopilotPlan(
     val say: String? = null,
     val finish: Finish = Finish.KEEP,
     val maxSteps: Int = DEFAULT_MAX_STEPS,
+    /**
+     * Where in the app to start, as an intent URI (`intent:#Intent;action=…;end`). A settings
+     * page has a public action; opening it directly skips the navigation the plan would
+     * otherwise guess at (DND took 17 model calls through Settings' menus, one intent here).
+     */
+    val startIntent: String? = null,
 ) {
     enum class Finish { KEEP, DESTROY, PROMOTE }
 
@@ -74,8 +80,22 @@ data class AutopilotPlan(
             }
             val maxSteps = ((input["max_steps"] as? JsonPrimitive)?.intOrNull ?: DEFAULT_MAX_STEPS)
                 .coerceIn(1, HARD_MAX_STEPS)
-            return Result.success(AutopilotPlan(pkg, goal, effectiveSteps, values, input.str("say"), finish, maxSteps))
+            val startIntent = input.str("start_intent")?.let { raw ->
+                startIntentUri(raw) ?: return Result.failure(IllegalArgumentException(
+                    "start_intent must be an intent action such as android.settings.WIFI_SETTINGS, " +
+                        "or an intent: URI"))
+            }
+            return Result.success(AutopilotPlan(pkg, goal, effectiveSteps, values, input.str("say"), finish, maxSteps, startIntent))
         }
+
+        /** `android.settings.X` becomes `intent:#Intent;action=android.settings.X;end`; an intent: URI is kept. */
+        fun startIntentUri(raw: String): String? = when {
+            raw.startsWith("intent:") -> raw
+            ACTION.matches(raw) -> "intent:#Intent;action=$raw;end"
+            else -> null
+        }
+
+        private val ACTION = Regex("[A-Za-z][A-Za-z0-9_]*(\\.[A-Za-z0-9_]+)+")
 
         private fun JsonObject.str(key: String): String? =
             (this[key] as? JsonPrimitive)?.takeIf { it.isString }?.content?.trim()?.takeIf { it.isNotEmpty() }

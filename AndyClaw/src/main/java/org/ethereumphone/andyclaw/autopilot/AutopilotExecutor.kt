@@ -19,6 +19,13 @@ interface AutopilotDevice {
     /** Create the display if needed and bring [packageName] to the front of it. */
     suspend fun ensureApp(packageName: String): Boolean
 
+    /**
+     * As [ensureApp], but opened at [startIntent] when that leads into [packageName]. False
+     * from here means the app could not be brought up at all; an intent that does not work
+     * falls back to the app's own launcher entry.
+     */
+    suspend fun ensureApp(packageName: String, startIntent: String?): Boolean = ensureApp(packageName)
+
     /** Whether [packageName] is installed with something to launch. */
     suspend fun isLaunchable(packageName: String): Boolean = true
 
@@ -421,13 +428,14 @@ class AutopilotExecutor(
                 return finish(AutopilotResult.Status.FAILED, "app_not_installed",
                     "I can't find ${device.appLabel(plan.packageName) ?: plan.packageName} on this phone.")
             }
-            if (!device.ensureApp(plan.packageName)) {
+            if (!device.ensureApp(plan.packageName, plan.startIntent)) {
                 return if (device.stopRequested) stopped() else finish(AutopilotResult.Status.FAILED, "app_unavailable")
             }
             // Jev reads only the state text: without this, a plan that begins "Open <app>" left it
             // unsure whether that had happened, and the first step cost a planner call every time.
-            history += HistoryEntry("opened ${device.appLabel(plan.packageName) ?: plan.packageName}; " +
-                "the app is on screen now", changedScreen = true)
+            history += HistoryEntry("opened ${device.appLabel(plan.packageName) ?: plan.packageName}" +
+                (plan.startIntent?.let { " at ${startIntentAction(it)}" } ?: "") +
+                "; the app is on screen now", changedScreen = true)
 
             while (true) {
                 if (device.stopRequested) return stopped()
@@ -677,6 +685,10 @@ class AutopilotExecutor(
             r.choice(Questions.BLOCKER)?.let { add("blk=${it.choice}@${p(it.confidence)}") }
             r.noul(Questions.COMMITS)?.let { add("commit=${p(it)}") }
         }.joinToString(" ")
+
+        /** `android.settings.WIFI_SETTINGS` out of an intent URI, or the URI itself. */
+        fun startIntentAction(uri: String): String =
+            Regex("action=([^;]+)").find(uri)?.groupValues?.get(1) ?: uri
 
         fun describeAction(option: StepOption, target: ScreenElement?, plan: AutopilotPlan): String {
             val what = target?.let { "${it.type} \"${it.name ?: it.viewId?.substringAfter('/') ?: "#${it.id}"}\"" } ?: ""

@@ -1192,6 +1192,10 @@ class AgentDisplaySkill(
                 "finish" to propEnum("What to do with the display afterwards: keep (default), destroy, or promote the app to the main screen",
                     listOf("keep", "destroy", "promote")),
                 "max_steps" to propNumber("Step budget, default 25"),
+                "start_intent" to propString("Optional. Open the app at this screen instead of its start page: an " +
+                    "intent action such as android.settings.ZEN_MODE_SETTINGS, android.settings.WIFI_SETTINGS or " +
+                    "android.settings.DEVICE_INFO_SETTINGS, or an intent: URI. Must lead into package_name; when it " +
+                    "does not, the app opens normally. Plan the sub-goals from that screen."),
             ),
             required = listOf("package_name", "goal", "steps"),
         )

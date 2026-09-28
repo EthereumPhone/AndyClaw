@@ -57,7 +57,9 @@ class AppAutopilotDevice(
         }
     }
 
-    override suspend fun ensureApp(packageName: String): Boolean = withContext(Dispatchers.IO) {
+    override suspend fun ensureApp(packageName: String): Boolean = ensureApp(packageName, null)
+
+    override suspend fun ensureApp(packageName: String, startIntent: String?): Boolean = withContext(Dispatchers.IO) {
         try {
             val svc = service
             // A display the last STOP left latched drops every input, and one the model resized
@@ -68,6 +70,7 @@ class AppAutopilotDevice(
                 svc.createAgentDisplay(WIDTH, HEIGHT, DPI)
             }
             AgentDisplayAccessibilityService.watchedDisplayId = svc.displayId
+            if (startIntent != null && launchAt(svc, packageName, startIntent)) return@withContext true
             if (snapshotNow()?.packageName == packageName) return@withContext true
             val seq = ScreenSettler.mark()
             svc.launchApp(packageName)
@@ -76,6 +79,38 @@ class AppAutopilotDevice(
         } catch (e: Exception) {
             rethrowIfCancelled(e)
             Log.e(TAG, "ensureApp($packageName) failed", e)
+            false
+        }
+    }
+
+    /**
+     * Opens [startIntent] when it resolves into [packageName], and says whether the app is then
+     * on screen. Anything else — an intent into another app, one that does not resolve, one the
+     * OS refuses — is left for the normal launch: the plan was written for [packageName].
+     */
+    private suspend fun launchAt(svc: IAgentDisplayService, packageName: String, startIntent: String): Boolean {
+        val target = try {
+            val intent = android.content.Intent.parseUri(startIntent, 0)
+            intent.`package` ?: intent.component?.packageName ?: context?.packageManager
+                ?.resolveActivity(intent, android.content.pm.PackageManager.MATCH_DEFAULT_ONLY)
+                ?.activityInfo?.packageName
+        } catch (e: Exception) {
+            null
+        }
+        if (target != packageName || SensitiveApps.isSensitive(target)) {
+            Log.i(TAG, "start intent $startIntent leads to $target, not $packageName; launching normally")
+            return false
+        }
+        return try {
+            val seq = ScreenSettler.mark()
+            svc.launchIntentUri(startIntent)
+            ScreenSettler.await(seq, ScreenSettler.Kind.LAUNCH, packageName)
+            (snapshotNow()?.packageName == packageName).also {
+                Log.i(TAG, "started $packageName at $startIntent: ${if (it) "on screen" else "not on screen, launching normally"}")
+            }
+        } catch (e: Exception) {
+            rethrowIfCancelled(e)
+            Log.w(TAG, "start intent $startIntent refused: ${e.message}; launching normally")
             false
         }
     }

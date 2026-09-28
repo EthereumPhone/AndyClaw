@@ -134,4 +134,14 @@ class AutopilotFlowCompilerTest {
             assertTrue(id, Regex("^[a-z0-9]+(?:[._-][a-z0-9]+)*$").matches(id))
         }
     }
+
+    @Test
+    fun `a run that started at an intent is not compiled`() = runTest {
+        // A flow replays from the app's start page, where its first target would not be.
+        val result = AutopilotExecutor(device(), jev, planner = null)
+            .run(plan.copy(startIntent = "intent:#Intent;action=android.settings.WIFI_SETTINGS;end"))
+        assertEquals(AutopilotResult.Status.SUCCESS, result.status)
+        assertEquals(AutopilotFlowCompiler.Result.Skipped("started_at_intent"),
+            AutopilotFlowCompiler.compile(result, "msg.x", ">=1"))
+    }
 }
