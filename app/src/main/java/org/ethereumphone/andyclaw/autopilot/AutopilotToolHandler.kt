@@ -27,6 +27,8 @@ class AutopilotToolHandler(
     private val config: AutopilotConfig = AutopilotConfig(),
     /** For whether the app is installed and what it is called; null leaves both unchecked. */
     private val context: Context? = null,
+    /** The installed app the turn router chose for this request ([JevTurnRouter.routedApp]). */
+    private val routedApp: () -> String? = { null },
 ) {
 
     /**
@@ -40,7 +42,7 @@ class AutopilotToolHandler(
         }
         val plan = AutopilotPlan.fromToolInput(params).getOrElse {
             return SkillResult.Error("Invalid autopilot plan: ${it.message}")
-        }
+        }.let(::onInstalledApp)
         AgentDisplayCapabilities.ensureListener()
         if (!AgentDisplayLease.claimForCaller()) return SkillResult.Error(AgentDisplayLease.BUSY)
         val token = currentRunToken()
@@ -97,11 +99,48 @@ class AutopilotToolHandler(
             rethrowIfCancelled(e)
             Log.w(TAG, "after-run step failed: ${e.message}", e)
         }
-        val json = if (flowTool == null) result.toToolResultJson() else {
+        val extra = buildMap {
+            if (flowTool != null) put("flow", JsonPrimitive(flowTool))
+            // Without this the model's next move was list_installed_apps, whose answer is hundreds
+            // of packages cut to the first few, or giving up on the app altogether.
+            if (result.reason == "app_not_installed") launchableApps(plan.goal)?.let { put("installed_apps", JsonPrimitive(it)) }
+        }
+        val json = if (extra.isEmpty()) result.toToolResultJson() else {
             val obj = kotlinx.serialization.json.Json.parseToJsonElement(result.toToolResultJson()) as JsonObject
-            JsonObject(obj + ("flow" to JsonPrimitive(flowTool))).toString()
+            JsonObject(obj + extra).toString()
         }
         return SkillResult.Success(json)
+    }
+
+    /**
+     * The plan as given when its app is installed. When it is not, the app the turn router chose
+     * from what *is* installed, if it chose one — the model names packages from memory, and a
+     * calculator or notes app that is not Google's used to end the run before it began.
+     */
+    private fun onInstalledApp(plan: AutopilotPlan): AutopilotPlan {
+        if (context == null || isLaunchable(plan.packageName)) return plan
+        val routed = routedApp()?.takeIf { it != plan.packageName && isLaunchable(it) } ?: return plan
+        Log.i(TAG, "plan names ${plan.packageName}, which is not installed; using the routed $routed")
+        return plan.copy(packageName = routed)
+    }
+
+    private fun isLaunchable(packageName: String): Boolean =
+        context?.packageManager?.getLaunchIntentForPackage(packageName) != null
+
+    /** "Label (package)" for every launchable app, those the goal names first; null without a context. */
+    private fun launchableApps(goal: String): String? {
+        val pm = context?.packageManager ?: return null
+        val words = ElementRanker.tokens(goal)
+        return pm.queryIntentActivities(android.content.Intent(android.content.Intent.ACTION_MAIN)
+            .addCategory(android.content.Intent.CATEGORY_LAUNCHER), 0)
+            .map { it.activityInfo.packageName to it.loadLabel(pm).toString() }
+            .distinctBy { it.first }
+            .filter { it.first != context.packageName && !SensitiveApps.isSensitive(it.first) }
+            .sortedWith(compareByDescending<Pair<String, String>> { (pkg, label) ->
+                ElementRanker.tokens("$label ${pkg.replace('.', ' ')}").count { it in words }
+            }.thenBy { it.second.lowercase() })
+            .take(MAX_LISTED_APPS)
+            .joinToString(", ") { (pkg, label) -> "$label ($pkg)" }
     }
 
     /**
@@ -200,6 +239,8 @@ class AutopilotToolHandler(
     companion object {
         private const val TAG = "AutopilotTool"
         private const val STEP_TAG = "AutopilotStep"
+        /** Enough for every app a phone shows in its drawer, well inside the tool-result cap. */
+        private const val MAX_LISTED_APPS = 60
     }
 }
 

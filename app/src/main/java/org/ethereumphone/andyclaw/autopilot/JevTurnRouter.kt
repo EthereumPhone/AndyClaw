@@ -35,21 +35,35 @@ class JevTurnRouter(
     @Volatile private var apps: List<Pair<String, String>> = emptyList()
     @Volatile private var appsLoadedUptime = 0L
 
+    /**
+     * The installed app Jev chose for the current turn's request, confident enough to act on,
+     * whether or not the request looked UI-bound enough to prelaunch it. The autopilot falls back
+     * to it when the plan names a package that is not installed: the model guesses package names
+     * (`com.google.android.calculator` on a phone whose calculator is `com.dgen.dgencalculator`),
+     * and this is the one place that chose from what is actually on the phone.
+     */
+    @Volatile var routedApp: String? = null
+        private set
+    private val turn = java.util.concurrent.atomic.AtomicInteger()
+
     /** Fire-and-forget. Never blocks or fails the turn. */
     fun prewarm(userMessage: String) {
+        // A new request: the previous one's app must never be carried over to it.
+        routedApp = null
+        val thisTurn = turn.incrementAndGet()
         if (!enabled()) return
         val client = jev() ?: return
         if (userMessage.isBlank()) return
         scope.launch {
             try {
-                route(client, userMessage)
+                route(client, userMessage, thisTurn)
             } catch (e: Exception) {
                 Log.d(TAG, "prewarm skipped: ${e.message}")
             }
         }
     }
 
-    private suspend fun route(client: JevHttpClient, message: String) {
+    private suspend fun route(client: JevHttpClient, message: String, thisTurn: Int) {
         val candidates = rankedApps(message)
         // Only a message that names an installed app goes to Jev here. Everything else is not
         // an app task worth prewarming, and need not leave the device for this.
@@ -73,6 +87,10 @@ class JevTurnRouter(
         val app = response.choice(APP)
         Log.i(TAG, "route needsUi=${"%.2f".format(needsUi)} app=${app?.choice} " +
             "conf=${app?.confidence?.let { "%.2f".format(it) }} in ${SystemClock.elapsedRealtime() - started}ms")
+        // Only for the turn that asked: a slow answer must not land on the next request.
+        if (app != null && app.choice != NONE && app.confidence >= THRESHOLD && turn.get() == thisTurn) {
+            routedApp = app.choice
+        }
         if (needsUi < THRESHOLD || app == null || app.choice == NONE || app.confidence < THRESHOLD) return
         prelaunch(app.choice)
     }

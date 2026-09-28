@@ -933,6 +933,7 @@ class NodeApp : Application() {
             enabled = { securePrefs.autopilotEnabled.value },
             flows = { flowRepositoryOrNull },
             context = this,
+            routedApp = { jevTurnRouter?.routedApp },
         )
     }
 
