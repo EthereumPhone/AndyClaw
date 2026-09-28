@@ -108,8 +108,8 @@ class AppsSkill(private val context: Context) : AndyClawSkill {
         return try {
             val pm = context.packageManager
             val packages = pm.getInstalledPackages(PackageManager.PackageInfoFlags.of(0))
-                .filter { query == null || it.packageName.lowercase().contains(query) ||
-                    (it.applicationInfo?.let { a -> pm.getApplicationLabel(a).toString().lowercase().contains(query) } ?: false) }
+                .filter { query == null || AppQuery.matches(query, it.packageName,
+                    it.applicationInfo?.let { a -> pm.getApplicationLabel(a).toString() }.orEmpty()) }
             val apps = packages.map { pkgInfo ->
                 val appInfo = pkgInfo.applicationInfo
                 val isSystemApp = appInfo != null &&
@@ -128,13 +128,27 @@ class AppsSkill(private val context: Context) : AndyClawSkill {
 
     private fun listLaunchableApps(query: String?): SkillResult = try {
         val pm = context.packageManager
-        val apps = pm.queryIntentActivities(Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER), 0)
+        val all = pm.queryIntentActivities(Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER), 0)
             .map { it.activityInfo.packageName to it.loadLabel(pm).toString() }
             .distinctBy { it.first }
-            .filter { (pkg, label) -> query == null || pkg.lowercase().contains(query) || label.lowercase().contains(query) }
             .sortedBy { it.second.lowercase() }
-            .map { (pkg, label) -> buildJsonObject { put("package_name", pkg); put("label", label) } }
-        SkillResult.Success(JsonArray(apps).toString())
+        fun json(apps: List<Pair<String, String>>) =
+            JsonArray(apps.map { (pkg, label) -> buildJsonObject { put("package_name", pkg); put("label", label) } })
+        val matches = if (query == null) all else all.filter { (pkg, label) -> AppQuery.matches(query, pkg, label) }
+        if (query != null && matches.isEmpty()) {
+            // An empty list read as "not installed": YouTube Music is labelled "YT Music" and its
+            // package has no "youtube music" in it (agentbench app_installed_question). Say that
+            // nothing matched the words, and show what is there.
+            SkillResult.Success(buildJsonObject {
+                put("matches", JsonArray(emptyList()))
+                put("note", "No app's name or package contains every word of '$query'. Names can differ from " +
+                    "what people call an app (YouTube Music is 'YT Music'), so check this list of every app " +
+                    "that can be opened before saying it is not installed.")
+                put("all_launchable_apps", json(all))
+            }.toString())
+        } else {
+            SkillResult.Success(json(matches).toString())
+        }
     } catch (e: Exception) {
         SkillResult.Error("Failed to list apps: ${e.message}")
     }
@@ -195,4 +209,22 @@ class AppsSkill(private val context: Context) : AndyClawSkill {
             SkillResult.Error("Failed to force stop app: ${e.message}")
         }
     }
+}
+
+/**
+ * Whether an app answers to [query]: every word of it appears in the label or the package, as a
+ * word or inside one ("music" in "com.google.android.apps.youtube.music", "maps" in "Google
+ * Maps"). A plain substring test on the whole query missed an app whose label and package spell
+ * the words apart.
+ */
+internal object AppQuery {
+    fun matches(query: String, packageName: String, label: String): Boolean {
+        val words = tokens(query)
+        if (words.isEmpty()) return true
+        val haystack = (tokens(packageName) + tokens(label)).toSet()
+        val flat = "${packageName.lowercase()} ${label.lowercase()}"
+        return words.all { w -> w in haystack || flat.contains(w) }
+    }
+
+    private fun tokens(s: String) = s.lowercase().split(Regex("[^\\p{L}\\p{N}]+")).filter { it.isNotEmpty() }
 }
