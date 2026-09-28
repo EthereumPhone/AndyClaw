@@ -507,6 +507,13 @@ class AgentDisplayAccessibilityService : AccessibilityService() {
                 root.recycle()
                 return found[0]
             }
+            // The platform lookup resolves "package:id/name". Compose apps report a test tag as
+            // the id instead ("homepage.view" in Firefox), which it never matches, so every
+            // click, text and scroll by such an id failed. Walk the tree and compare.
+            findByResourceName(root, viewId, 0)?.let { node ->
+                root.recycle()
+                return node
+            }
             root.recycle()
         }
         return null
@@ -666,6 +673,19 @@ class AgentDisplayAccessibilityService : AccessibilityService() {
             width = width,
             height = height,
         )
+    }
+
+    /** The first node under [node] whose resource name is exactly [viewId]; the caller recycles it. */
+    private fun findByResourceName(node: AccessibilityNodeInfo, viewId: String, depth: Int): AccessibilityNodeInfo? {
+        if (depth > 60) return null
+        for (i in 0 until node.childCount) {
+            val child = node.getChild(i) ?: continue
+            if (child.viewIdResourceName == viewId) return child
+            val deeper = findByResourceName(child, viewId, depth + 1)
+            try { child.recycle() } catch (_: Exception) {}
+            if (deeper != null) return deeper
+        }
+        return null
     }
 
     /**

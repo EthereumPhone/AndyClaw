@@ -220,6 +220,8 @@ class AutopilotExecutor(
         var lastScreen: ScreenSnapshot? = null
         var lastActionCommitted = false
         var lastActed: Pair<ScreenSnapshot, StepOption>? = null
+        // Whether the last action visibly changed the display (events or new frames).
+        var lastChangedScreen = false
         // Only arriving at a screen by acting counts as a visit; re-reading it after a wait, a
         // retry or a finished sub-goal is not going in circles.
         var arrivedByAction = true
@@ -415,8 +417,21 @@ class AutopilotExecutor(
                 if (guard.subgoalBudgetExceeded()) return finish(AutopilotResult.Status.NEEDS_PLANNER, "subgoal_budget")
 
                 val stepStart = clock()
-                val screen = readScreen()
+                var screen = readScreen()
                     ?: return if (device.stopRequested) stopped() else finish(AutopilotResult.Status.FAILED, "screen_unreadable")
+                // The display changed but the reading did not: the new window (a popup menu, a
+                // dialog) is not in the accessibility window list yet. It joins once its opening
+                // animation ends, ~0.3-0.5 s on device - after the settle. Read on until it does.
+                val before = lastActed?.first
+                if (arrivedByAction && lastChangedScreen && before != null) {
+                    var rereads = 0
+                    while (rereads < STALE_REREADS && screen.stateSignature == before.stateSignature) {
+                        if (device.stopRequested) return stopped()
+                        device.waitForSettle()
+                        readScreen()?.let { screen = it }
+                        rereads++
+                    }
+                }
                 // Before the screen is kept anywhere: lastScreen ends up in the tool result's summary.
                 if (SensitiveApps.isSensitive(screen.packageName)) {
                     return finish(AutopilotResult.Status.FAILED, "sensitive_app", SensitiveApps.refusal(screen.packageName))
@@ -590,6 +605,7 @@ class AutopilotExecutor(
                         actions += ExecutedAction(option, target, (option as? StepOption.Type)?.valueKey,
                             subgoal, screen, outcome.changedScreen)
                         lastActed = screen to option
+                        lastChangedScreen = outcome.changedScreen
                         lastActionCommitted = resolved.commits
                         val timings = StepTimings(jevMs, outcome.actMs, outcome.settleMs, clock() - stepStart)
                         emit(AutopilotEvent.Kind.SETTLED) {
@@ -654,6 +670,8 @@ class AutopilotExecutor(
         /** How often a Jev or planner call in flight looks for STOP. */
         const val STOP_POLL_MS = 50L
         private const val SNAPSHOT_ATTEMPTS = 4
+        /** Re-reads of a screen that looks unchanged after an action that changed the display. */
+        private const val STALE_REREADS = 5
         /** Escalations a page scan may answer: Jev unsure, or seeing nothing that helps. */
         private val SCAN_REASONS = setOf("low_confidence", "no_option")
     }

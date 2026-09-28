@@ -48,6 +48,9 @@ class AgentDisplaySkill(
         /** Re-reads of a tree that came back empty right after an action; see [actionWithUiTree]. */
         private const val EMPTY_TREE_RETRIES = 4
         private const val EMPTY_TREE_RETRY_MS = 150L
+        /** Re-reads of a tree identical to the one before the action (~1 s in all). */
+        private const val STALE_TREE_RETRIES = 4
+        private const val STALE_TREE_RETRY_MS = 250L
         /** Tools that put input on the display: the ones the OS's STOP latch drops. */
         private val INPUT_TOOLS = setOf(
             "agent_display_tap", "agent_display_long_press", "agent_display_double_tap",
@@ -580,12 +583,25 @@ class AgentDisplaySkill(
     ): SkillResult {
         Log.i(DTAG, "ACTION_WITH_TREE: $description (settle=$kind)")
         watchDisplay()
+        // What the screen read before, to tell "nothing happened" from "not in the tree yet".
+        // A private screen throws here as it would after; the action is refused elsewhere.
+        val treeBefore = runCatching { readTree() }.getOrNull()
         val seq = ScreenSettler.mark()
         action()
         if (extraWaitMs > 0) delay(extraWaitMs)
         ScreenSettler.await(seq, kind)
         Log.d(LTAG, "actionWithUiTree: settled, fetching UI tree")
         var tree = readTree()
+        // A window the action opened (Firefox's menu is a PopupWindow) joins the accessibility
+        // window list only after its opening animation, later than the settle. The model got
+        // the old screen back and tapped where it thought the menu button was - on the menu.
+        var stale = 0
+        while (stale < STALE_TREE_RETRIES && treeBefore != null && tree == treeBefore) {
+            delay(STALE_TREE_RETRY_MS)
+            tree = readTree()
+            stale++
+        }
+        if (stale > 0) Log.i(DTAG, "ACTION_WITH_TREE: tree unchanged after the action; re-read $stale time(s)")
         // A tap that starts an activity transition can settle on the gap between the two screens:
         // the old window gone, the new one not yet listed. That read as "No elements found", which
         // tells the model to take a screenshot. Give the next screen a moment to appear.

@@ -468,6 +468,27 @@ class AutopilotExecutorTest {
     }
 
     @Test
+    fun `a screen that lags behind the display is read until it catches up`() = runTest {
+        val fake = device()
+        // The new window reaches accessibility late: the first two reads after an action that
+        // changed the display still show the screen the action was taken on.
+        var stale: ScreenSnapshot? = null
+        var lag = 0
+        val device = object : AutopilotDevice by fake {
+            override suspend fun perform(option: StepOption, screen: ScreenSnapshot, plan: AutopilotPlan): ActionOutcome {
+                val outcome = fake.perform(option, screen, plan)
+                if (outcome.changedScreen) { stale = screen; lag = 2 }
+                return outcome
+            }
+            override suspend fun snapshot(): ScreenSnapshot? =
+                if (lag-- > 0) stale else fake.snapshot()
+        }
+        val result = AutopilotExecutor(device, competentJev(), noPlanner).run(plan)
+        assertEquals(AutopilotResult.Status.SUCCESS, result.status)
+        assertEquals("nothing was done twice", listOf("tap:Anna", "type:Message", "tap:Send"), fake.performed)
+    }
+
+    @Test
     fun `Jev is told the app was opened for it`() = runTest {
         val jev = competentJev()
         AutopilotExecutor(device(), jev, noPlanner).run(plan)
