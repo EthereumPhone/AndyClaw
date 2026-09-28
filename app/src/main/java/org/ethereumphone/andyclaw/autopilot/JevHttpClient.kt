@@ -54,6 +54,13 @@ class JevHttpClient(
         if (SystemClock.elapsedRealtime() < unavailableUntil) throw JevUnavailableException("recently unavailable")
 
         val body = gzip(request.toJson().toString().toByteArray())
+        // Half of all calls hung to the backend's 504 on 2026-09-28 while the rest answered in
+        // ~360 ms (see Hedge): a second request after HEDGE_AFTER_MS turns a 3.5 s hang into ~1.2 s.
+        Hedge.firstSuccess(HEDGE_AFTER_MS, fatal = { it is JevUnavailableException }) { attempt(uid, sig, body, request) }
+    }
+
+    private suspend fun attempt(uid: String, sig: String, body: ByteArray, request: JevRequest): JevResponse {
+        if (SystemClock.elapsedRealtime() < unavailableUntil) throw JevUnavailableException("recently unavailable")
         val httpRequest = Request.Builder()
             .url(url)
             .addHeader("X-User-Id", uid)
@@ -66,7 +73,7 @@ class JevHttpClient(
         // Enqueued rather than executed, so that STOP — which cancels this coroutine — cancels
         // the HTTP call with it instead of waiting out the network.
         val call = http.newCall(httpRequest)
-        suspendCancellableCoroutine { cont ->
+        return suspendCancellableCoroutine { cont ->
             cont.invokeOnCancellation { call.cancel() }
             call.enqueue(object : Callback {
                 override fun onFailure(call: Call, e: IOException) {
@@ -114,5 +121,7 @@ class JevHttpClient(
         private const val TAG = "JevHttpClient"
         private val JSON = "application/json".toMediaType()
         private const val UNAVAILABLE_BACKOFF_MS = 5 * 60_000L
+        /** Past Jev's p95 on device (~1 s with the settle overlapping), well short of a hang. */
+        private const val HEDGE_AFTER_MS = 800L
     }
 }
