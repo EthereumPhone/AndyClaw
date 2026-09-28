@@ -418,6 +418,61 @@ class AutopilotExecutorTest {
         assertEquals("asked about the stale sub-goal once", 1, asked.count { it == 0 })
     }
 
+    // ---- Pages longer than the screen ----
+
+    /** A page of six rows, two at a time, and a list that scrolls between the three positions. */
+    private fun longPage(): FakeDevice {
+        val list = ScreenElement(id = 9, type = "list", label = "scrollable list",
+            actions = listOf("scroll_forward", "scroll_backward"), centerX = 360, centerY = 400,
+            left = 0, top = 100, right = 720, bottom = 700)
+        fun part(vararg rows: String) = T.screen("com.app", "Home",
+            *rows.mapIndexed { i, r -> T.button(i + 1, r, y = 200 + i * 100, type = "menu_item") }.toTypedArray(), list)
+        return FakeDevice(
+            screens = mapOf("top" to part("A", "B"), "mid" to part("C", "D"), "end" to part("E", "F"),
+                "d" to T.screen("com.app", "D page", T.text(1, "Inside D"))),
+            transitions = mapOf(
+                "top|scroll_fwd:9" to "mid", "mid|scroll_fwd:9" to "end",
+                "end|scroll_back:9" to "mid", "mid|scroll_back:9" to "top",
+                "mid|tap:D" to "d",
+            ),
+            start = "top",
+        )
+    }
+
+    private val openD = AutopilotPlan(packageName = "com.app", goal = "Open D",
+        steps = listOf(PlanStep("Open the D page", doneWhen = "the D page shows")))
+
+    @Test
+    fun `an unsure step on a long page is answered by scanning it, not by the planner`() = runTest {
+        val device = longPage()
+        val jev = ScriptedJev { req ->
+            val s = req.state
+            when {
+                s.contains("title=\"D page\"") -> mapOf(Questions.GOAL_DONE to JevAnswer.Noul(0.97))
+                ScriptedJev.keyFor(req, Questions.NEXT, "Tap", "D") != null ->
+                    mapOf(Questions.NEXT to T.choice(ScriptedJev.keyFor(req, Questions.NEXT, "Tap", "D")!!, 0.95))
+                ScriptedJev.keyFor(req, Questions.NEXT, "Scroll to bring", "D") != null ->
+                    mapOf(Questions.NEXT to T.choice(ScriptedJev.keyFor(req, Questions.NEXT, "Scroll to bring", "D")!!, 0.93))
+                // Only part of the page seen: a guess, and Jev knows it.
+                else -> mapOf(Questions.NEXT to T.choice("scroll_fwd:9", 0.6, runnerUp = 0.3))
+            }
+        }
+        val result = AutopilotExecutor(device, jev, noPlanner).run(openD)
+        assertEquals(AutopilotResult.Status.SUCCESS, result.status)
+        assertEquals(0, result.plannerCalls)
+        // Scanned to the end (and one scroll that moved nothing), came back up to D, tapped it.
+        assertEquals(listOf("scroll_fwd:9", "scroll_fwd:9", "scroll_fwd:9", "scroll_back:9", "tap:D"), device.performed)
+        val offered = jev.requests.first { it.state.contains("Further up this page") }.state
+        assertTrue("rows above are listed once the page is scanned", offered.contains("\"D\""))
+    }
+
+    @Test
+    fun `Jev is told the app was opened for it`() = runTest {
+        val jev = competentJev()
+        AutopilotExecutor(device(), jev, noPlanner).run(plan)
+        assertTrue(jev.requests.first().state.contains("opened com.msg"))
+    }
+
     @Test
     fun `with Jev down the planner drives every step of the task`() = runTest {
         val device = device()

@@ -184,6 +184,8 @@ class AppAutopilotDevice(
                         service.pressBack()
                         OK to ScreenSettler.Kind.BACK
                     }
+                    // The executor carries out a reveal itself, as scrolls; it never reaches here.
+                    is StepOption.Reveal -> """{"ok":false,"error":"reveal is performed by the executor"}""" to ScreenSettler.Kind.TAP
                     StepOption.Wait, StepOption.None -> OK to ScreenSettler.Kind.TAP
                 }
             } catch (e: Exception) {

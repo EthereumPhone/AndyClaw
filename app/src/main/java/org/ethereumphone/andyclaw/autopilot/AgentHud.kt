@@ -81,7 +81,7 @@ object AgentHud {
         // HOLD is new in OS v3; an older one would drop the field, so say TAP there.
         "long", "long_press", "long_click_node" -> if (AgentDisplayCapabilities.hasV3) "HOLD" else "TAP"
         "type", "type_text", "set_node_text" -> "TYPE"
-        "scroll_fwd", "scroll_back", "swipe", "fling", "drag", "pinch", "gesture", "scroll_node" -> "SCROLL"
+        "scroll_fwd", "scroll_back", "reveal", "swipe", "fling", "drag", "pinch", "gesture", "scroll_node" -> "SCROLL"
         "back", "press_back" -> "BACK"
         "create", "launch_activity", "launch_intent" -> "OPEN"
         else -> "KEY"

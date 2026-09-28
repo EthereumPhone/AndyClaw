@@ -121,7 +121,7 @@ data class AutopilotUiState(
             "tap" -> "TAP"
             "long" -> "HOLD"
             "type" -> "TYPE"
-            "scroll_fwd", "scroll_back" -> "SCROLL"
+            "scroll_fwd", "scroll_back", "reveal" -> "SCROLL"
             "back" -> "BACK"
             else -> action?.uppercase() ?: ""
         }

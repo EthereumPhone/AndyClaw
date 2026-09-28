@@ -30,6 +30,8 @@ data class AutopilotConfig(
     val maxVisitsPerState: Int = 3,
     val maxNoEffectStreak: Int = 2,
     val maxPlannerEscalations: Int = 3,
+    /** Scrolls a page scan makes at most; a feed never ends, a settings page does in a few. */
+    val maxScanScrolls: Int = 6,
     val maxJevFailures: Int = 2,
     val wallClockBudgetMs: Long = 60_000,
 )

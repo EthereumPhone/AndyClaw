@@ -223,6 +223,8 @@ class AutopilotExecutor(
         // Only arriving at a screen by acting counts as a visit; re-reading it after a wait, a
         // retry or a finished sub-goal is not going in circles.
         var arrivedByAction = true
+        // Pages scrolled through once this run, by PageScan.key. A page is scanned at most once.
+        val scans = HashMap<String, PageScan>()
         // Network calls STOP can abandon. Not a child of this run on purpose: a blocking call
         // that ignores cancellation must not hold the run open after STOP.
         val netScope = CoroutineScope(SupervisorJob() + netDispatcher)
@@ -297,6 +299,80 @@ class AutopilotExecutor(
             return device.snapshot() ?: empty
         }
 
+        /** The scan of the page [screen] is on, if it has been scanned. */
+        fun scanOf(screen: ScreenSnapshot): PageScan? =
+            PageScan.primaryList(screen)?.let { scans[PageScan.key(screen, it)] }
+                // Scrolled to its end, the page's list can no longer scroll forward.
+                ?: scans.values.firstOrNull { scan ->
+                    scan.key.startsWith("${screen.packageName}|${screen.title.orEmpty()}|") &&
+                        screen.elements.any { it.signature == scan.listSignature }
+                }
+
+        /**
+         * Scrolls [screen]'s page to its end (or [AutopilotConfig.maxScanScrolls]) and records
+         * every row it passes, so Jev can be told what is out of view. Scrolling changes nothing
+         * in the app, so it needs no decision; the page is left where the scan ended and the
+         * rows now above it are reported as such. Null when the page has no list to scroll.
+         */
+        suspend fun scanPage(screen: ScreenSnapshot): PageScan? {
+            val list = PageScan.primaryList(screen) ?: return null
+            val key = PageScan.key(screen, list)
+            val rows = LinkedHashMap<String, PageScan.Row>()
+            fun absorb(s: ScreenSnapshot, index: Int) {
+                s.elements.filter { !it.scrollable && !it.name.isNullOrBlank() }
+                    .forEach { rows.putIfAbsent(it.signature, PageScan.Row(it, index)) }
+            }
+            absorb(screen, 0)
+            var current = screen
+            var scrolls = 0
+            while (scrolls < config.maxScanScrolls && !device.stopRequested) {
+                val l = current.elements.firstOrNull { it.signature == list.signature && "scroll_forward" in it.actions } ?: break
+                val outcome = device.perform(StepOption.ScrollForward(l.id), current, plan)
+                if (!outcome.ok) break
+                scrolls++
+                val next = readScreen() ?: break
+                // A scroll that took the run off the page (or into a private app) ends the scan
+                // there; nothing on that screen belongs to this page.
+                if (next.packageName != screen.packageName || SensitiveApps.isSensitive(next.packageName)) break
+                val before = rows.size
+                absorb(next, scrolls)
+                current = next
+                if (rows.size == before) break
+            }
+            val scan = PageScan(key, list.signature, rows)
+            scans[key] = scan
+            trace += "scanned the page (${scrolls} scroll${if (scrolls == 1) "" else "s"}, ${rows.size} rows)"
+            return scan
+        }
+
+        /**
+         * Scrolls toward [option]'s row until it is on screen. The page was scanned, so the
+         * direction is known; the count is not, since a scroll moves as far as the app decides.
+         */
+        suspend fun reveal(option: StepOption.Reveal, screen: ScreenSnapshot, scan: PageScan?): ActionOutcome {
+            val started = clock()
+            var current = screen
+            var settle = 0L
+            repeat(config.maxScanScrolls + 2) {
+                if (device.stopRequested) return ActionOutcome(ok = false, changedScreen = current !== screen)
+                if (current.elements.any { it.signature == option.rowSignature }) {
+                    return ActionOutcome(ok = true, changedScreen = current !== screen, actMs = clock() - started - settle, settleMs = settle)
+                }
+                val l = current.elements.firstOrNull { it.signature == scan?.listSignature }
+                    ?: PageScan.primaryList(current)
+                    ?: return ActionOutcome(ok = false, changedScreen = current !== screen, error = "no_list")
+                val scroll = if (option.below) StepOption.ScrollForward(l.id) else StepOption.ScrollBackward(l.id)
+                val outcome = device.perform(scroll, current, plan)
+                settle += outcome.settleMs
+                if (!outcome.ok) return outcome.copy(changedScreen = current !== screen)
+                current = readScreen() ?: return ActionOutcome(ok = false, changedScreen = true, error = "screen_unreadable")
+                if (current.packageName != screen.packageName) return ActionOutcome(ok = false, changedScreen = true, error = "left_the_app")
+            }
+            val found = current.elements.any { it.signature == option.rowSignature }
+            return ActionOutcome(ok = found, changedScreen = current !== screen, actMs = clock() - started - settle,
+                settleMs = settle, error = if (found) null else "row_not_found")
+        }
+
         emit(AutopilotEvent.Kind.STARTED)
         try {
             if (SensitiveApps.isSensitive(plan.packageName)) {
@@ -310,6 +386,10 @@ class AutopilotExecutor(
             if (!device.ensureApp(plan.packageName)) {
                 return if (device.stopRequested) stopped() else finish(AutopilotResult.Status.FAILED, "app_unavailable")
             }
+            // Jev reads only the state text: without this, a plan that begins "Open <app>" left it
+            // unsure whether that had happened, and the first step cost a planner call every time.
+            history += HistoryEntry("opened ${device.appLabel(plan.packageName) ?: plan.packageName}; " +
+                "the app is on screen now", changedScreen = true)
 
             while (true) {
                 if (device.stopRequested) return stopped()
@@ -330,7 +410,9 @@ class AutopilotExecutor(
                 }
                 arrivedByAction = false
 
-                val prompt = StepPromptBuilder.build(plan, subgoal, screen, history, guard.triedOn(screen))
+                val scan = scanOf(screen)
+                val prompt = StepPromptBuilder.build(plan, subgoal, screen, history, guard.triedOn(screen),
+                    offscreen = scan?.offscreen(screen).orEmpty())
 
                 // With Jev out of the picture the planner drives every step. Its calls are small
                 // next to a round trip of the main loop, so it gets the whole step budget rather
@@ -379,6 +461,15 @@ class AutopilotExecutor(
                         // One transient failure is not worth a planner round trip, nor worth
                         // telling anyone the model is being asked: re-read and retry.
                         if (decision.reason == "jev_error" && jevFailures in 1 until config.maxJevFailures) continue
+                        // Jev unsure on a page it has only seen part of: show it the rest of the
+                        // page and ask again, before paying for the planner. Once per page.
+                        if (decision.reason in SCAN_REASONS && scan == null && !jevDown) {
+                            val scanned = scanPage(screen)
+                            if (device.stopRequested) return stopped()
+                            if (scanned != null && scanned.rows.size > screen.elements.count { !it.scrollable && !it.name.isNullOrBlank() }) {
+                                continue
+                            }
+                        }
                         escalations += decision.reason
                         emit(AutopilotEvent.Kind.ESCALATED) { copy(reason = decision.reason, jevPick = decision.jevPick) }
                         if (planner == null || plannerCalls >= plannerBudget) {
@@ -472,7 +563,8 @@ class AutopilotExecutor(
                         emit(AutopilotEvent.Kind.ACTING) {
                             copy(action = verb, target = target, confidence = resolved.confidence, source = source)
                         }
-                        val outcome = device.perform(option, screen, plan)
+                        val outcome = if (option is StepOption.Reveal) reveal(option, screen, scan)
+                            else device.perform(option, screen, plan)
                         steps++
                         arrivedByAction = true
                         val label = describeAction(option, target, plan)
@@ -516,6 +608,7 @@ class AutopilotExecutor(
                 is StepOption.Type -> "typed ${option.valueKey} (\"${plan.values[option.valueKey].orEmpty().take(40)}\") into $what"
                 is StepOption.ScrollForward -> "scrolled $what forward"
                 is StepOption.ScrollBackward -> "scrolled $what back"
+                is StepOption.Reveal -> "scrolled ${if (option.below) "down" else "up"} to \"${option.label.take(40)}\""
                 StepOption.Back -> "pressed Back"
                 StepOption.Wait -> "waited"
                 StepOption.None -> "nothing"
@@ -544,5 +637,7 @@ class AutopilotExecutor(
         /** How often a Jev or planner call in flight looks for STOP. */
         const val STOP_POLL_MS = 50L
         private const val SNAPSHOT_ATTEMPTS = 4
+        /** Escalations a page scan may answer: Jev unsure, or seeing nothing that helps. */
+        private val SCAN_REASONS = setOf("low_confidence", "no_option")
     }
 }
