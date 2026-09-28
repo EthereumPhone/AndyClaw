@@ -360,6 +360,8 @@ object ToolEffects {
         "write_system_setting" eff ToolEffect.REVERSIBLE,
         // Settings.Secure carries accessibility and auth posture.
         "write_secure_setting" eff ToolEffect.SENSITIVE,
+        // Settings.Global carries adb, package verification and other device posture.
+        "write_global_setting" eff ToolEffect.SENSITIVE,
 
         // ── SheetsSkill ──────────────────────────────────────────────
         "sheets_read" eff ToolEffect.READ,

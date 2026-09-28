@@ -125,6 +125,7 @@ object ApprovalSummaries {
         "clawhub_install" to "Install a skill",
         "create_custom_tool" to "Create a custom tool",
         "write_secure_setting" to "Change a secure setting",
+        "write_global_setting" to "Change a global setting",
         "reboot_device" to "Restart the phone",
         "delete_event" to "Delete a calendar event",
         "set_eth_address" to "Change a contact's ETH address",

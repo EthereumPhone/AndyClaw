@@ -16,6 +16,10 @@ import org.ethereumphone.andyclaw.skills.Tier
 import org.ethereumphone.andyclaw.skills.ToolDefinition
 
 class SettingsSkill(private val context: Context) : AndyClawSkill {
+    private companion object {
+        val NAMESPACES = listOf("system", "secure", "global")
+    }
+
     override val id = "settings"
     override val name = "System Settings"
 
@@ -48,7 +52,7 @@ class SettingsSkill(private val context: Context) : AndyClawSkill {
     )
 
     override val privilegedManifest = SkillManifest(
-        description = "Write system and secure settings (privileged OS only).",
+        description = "Write system, secure and global settings (privileged OS only).",
         tools = listOf(
             ToolDefinition(
                 name = "write_system_setting",
@@ -76,6 +80,20 @@ class SettingsSkill(private val context: Context) : AndyClawSkill {
                 )),
                 requiresApproval = true,
             ),
+            ToolDefinition(
+                name = "write_global_setting",
+                description = "Write a global setting value (privileged OS only), e.g. device_name, low_power, " +
+                    "airplane_mode_on. A write to a key that lives in another namespace is refused and names it.",
+                inputSchema = JsonObject(mapOf(
+                    "type" to JsonPrimitive("object"),
+                    "properties" to JsonObject(mapOf(
+                        "name" to JsonObject(mapOf("type" to JsonPrimitive("string"), "description" to JsonPrimitive("Setting name"))),
+                        "value" to JsonObject(mapOf("type" to JsonPrimitive("string"), "description" to JsonPrimitive("Setting value"))),
+                    )),
+                    "required" to JsonArray(listOf(JsonPrimitive("name"), JsonPrimitive("value"))),
+                )),
+                requiresApproval = true,
+            ),
         ),
     )
 
@@ -90,6 +108,10 @@ class SettingsSkill(private val context: Context) : AndyClawSkill {
             "write_secure_setting" -> {
                 if (tier != Tier.PRIVILEGED) SkillResult.Error("write_secure_setting requires privileged OS")
                 else writeSetting(params, "secure")
+            }
+            "write_global_setting" -> {
+                if (tier != Tier.PRIVILEGED) SkillResult.Error("write_global_setting requires privileged OS")
+                else writeSetting(params, "global")
             }
             else -> SkillResult.Error("Unknown tool: $tool")
         }
@@ -145,15 +167,34 @@ class SettingsSkill(private val context: Context) : AndyClawSkill {
         }
     }
 
+    private fun read(namespace: String, name: String): String? = when (namespace) {
+        "system" -> Settings.System.getString(context.contentResolver, name)
+        "secure" -> Settings.Secure.getString(context.contentResolver, name)
+        "global" -> Settings.Global.getString(context.contentResolver, name)
+        else -> null
+    }
+
     private fun writeSetting(params: JsonObject, namespace: String): SkillResult {
         val name = params["name"]?.jsonPrimitive?.contentOrNull
             ?: return SkillResult.Error("Missing required parameter: name")
         val value = params["value"]?.jsonPrimitive?.contentOrNull
             ?: return SkillResult.Error("Missing required parameter: value")
         return try {
+            // A put to a name the namespace does not have succeeds and creates a key nothing
+            // reads: device_name written to secure reported success and renamed nothing
+            // (agentbench rename_device). When the name lives in another namespace, say which.
+            val before = read(namespace, name)
+            if (before == null) {
+                val elsewhere = NAMESPACES.filter { it != namespace }.firstOrNull { read(it, name) != null }
+                if (elsewhere != null) {
+                    return SkillResult.Error("'$name' is not a $namespace setting; it is a $elsewhere setting " +
+                        "(currently '${read(elsewhere, name)}'). Nothing was written. Use write_${elsewhere}_setting.")
+                }
+            }
             when (namespace) {
                 "system" -> Settings.System.putString(context.contentResolver, name, value)
                 "secure" -> Settings.Secure.putString(context.contentResolver, name, value)
+                "global" -> Settings.Global.putString(context.contentResolver, name, value)
                 else -> return SkillResult.Error("Invalid namespace for write: $namespace")
             }
             SkillResult.Success(buildJsonObject {
@@ -161,6 +202,12 @@ class SettingsSkill(private val context: Context) : AndyClawSkill {
                 put("name", name)
                 put("value", value)
                 put("namespace", namespace)
+                put("previous", before ?: "unset")
+                if (before == null) {
+                    put("warning", "No $namespace setting named '$name' existed before; this created it. " +
+                        "Unless the system reads this exact name, nothing changes. Confirm it took effect " +
+                        "before telling the user it is done.")
+                }
             }.toString())
         } catch (e: Exception) {
             SkillResult.Error("Failed to write setting: ${e.message}")

@@ -85,7 +85,7 @@ class ToolEffectsTest {
         for (tool in listOf(
             "send_native_token", "send_token", "swap_tokens",
             "propose_transaction", "propose_token_transfer",
-            "create_bankr_order", "write_secure_setting",
+            "create_bankr_order", "write_secure_setting", "write_global_setting",
         )) {
             assertEquals(tool, ToolEffect.SENSITIVE, ToolEffects.of(tool))
         }

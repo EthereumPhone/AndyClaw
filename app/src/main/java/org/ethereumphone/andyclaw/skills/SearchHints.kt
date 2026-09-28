@@ -171,6 +171,7 @@ object SearchHints {
         "list_settings" to "all android settings preferences browse",
         "write_system_setting" to "change android system preference update",
         "write_secure_setting" to "change android secure preference update",
+        "write_global_setting" to "change android global preference device name phone name battery saver airplane",
 
         // ── Screen Time ──
         "get_usage_stats" to "screen time daily weekly statistics",
