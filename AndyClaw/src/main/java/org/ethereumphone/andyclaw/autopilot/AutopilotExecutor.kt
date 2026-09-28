@@ -272,14 +272,20 @@ class AutopilotExecutor(
             return work.await()
         }
 
-        /** A screen caught mid-transition can read as nothing; give it two more chances. */
+        /**
+         * A screen caught mid-transition can read as nothing: no windows at all, or the outgoing
+         * window already emptied of its elements. Neither is the screen to decide on — an empty
+         * one went to Jev, which called it another app and sent the run back out of a correct
+         * tap. Read again; only after that is an empty screen taken as what is there.
+         */
         suspend fun readScreen(): ScreenSnapshot? {
+            var empty: ScreenSnapshot? = null
             repeat(SNAPSHOT_ATTEMPTS - 1) {
-                device.snapshot()?.let { return it }
+                device.snapshot()?.let { if (it.elements.isNotEmpty()) return it else empty = it }
                 if (device.stopRequested) return null
                 device.waitForSettle()
             }
-            return device.snapshot()
+            return device.snapshot() ?: empty
         }
 
         emit(AutopilotEvent.Kind.STARTED)
@@ -525,6 +531,6 @@ class AutopilotExecutor(
 
         /** How often a Jev or planner call in flight looks for STOP. */
         const val STOP_POLL_MS = 50L
-        private const val SNAPSHOT_ATTEMPTS = 3
+        private const val SNAPSHOT_ATTEMPTS = 4
     }
 }

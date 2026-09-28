@@ -380,6 +380,20 @@ class AutopilotExecutorTest {
     }
 
     @Test
+    fun `a screen caught empty mid-transition is read again before Jev sees it`() = runTest {
+        val fake = device()
+        var empties = 2
+        val device = object : AutopilotDevice by fake {
+            override suspend fun snapshot(): ScreenSnapshot? =
+                if (empties-- > 0) T.screen("com.msg", "Chats") else fake.snapshot()
+        }
+        val jev = competentJev()
+        val result = AutopilotExecutor(device, jev, noPlanner).run(plan)
+        assertEquals(AutopilotResult.Status.SUCCESS, result.status)
+        assertTrue("Jev was shown an empty screen", jev.requests.first().state.contains("\"Anna\""))
+    }
+
+    @Test
     fun `with Jev down the planner drives every step of the task`() = runTest {
         val device = device()
         val jev = JevClient { throw JevUnavailableException("no wallet sign-in") }

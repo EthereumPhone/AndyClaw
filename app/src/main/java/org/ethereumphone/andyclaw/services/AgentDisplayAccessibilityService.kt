@@ -612,6 +612,14 @@ class AgentDisplayAccessibilityService : AccessibilityService() {
                     others += if (window.type == AccessibilityWindowInfo.TYPE_SYSTEM) "system" else "dialog"
                 }
                 for (e in result.elements) {
+                    // A list lays out rows past its visible end ahead of a scroll. Such a row is
+                    // not on the screen: a tap at its centre (y=920 on a 720-high display) lands
+                    // on nothing. Keep only what shows, and aim at the part that shows.
+                    val left = e.bounds.x.coerceAtLeast(0)
+                    val top = e.bounds.y.coerceAtLeast(0)
+                    val right = (e.bounds.x + e.bounds.w).coerceAtMost(width)
+                    val bottom = (e.bounds.y + e.bounds.h).coerceAtMost(height)
+                    if (right <= left || bottom <= top) continue
                     elements += ScreenElement(
                         id = elements.size,
                         type = e.type.jsonName,
@@ -625,13 +633,13 @@ class AgentDisplayAccessibilityService : AccessibilityService() {
                         password = e.password == true,
                         viewId = e.viewId,
                         actions = e.actions,
-                        centerX = e.bounds.x + e.bounds.w / 2,
-                        centerY = e.bounds.y + e.bounds.h / 2,
+                        centerX = (left + right) / 2,
+                        centerY = (top + bottom) / 2,
                         window = windowIndex,
-                        left = e.bounds.x,
-                        top = e.bounds.y,
-                        right = e.bounds.x + e.bounds.w,
-                        bottom = e.bounds.y + e.bounds.h,
+                        left = left,
+                        top = top,
+                        right = right,
+                        bottom = bottom,
                     )
                 }
                 windowIndex++
