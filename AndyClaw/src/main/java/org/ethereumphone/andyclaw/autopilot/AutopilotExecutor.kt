@@ -612,7 +612,8 @@ class AutopilotExecutor(
                         lastActionCommitted = false
                         emit(AutopilotEvent.Kind.SETTLED) {
                             copy(action = "back", source = AutopilotEvent.Source.JEV,
-                                timings = StepTimings(jevMs, outcome.actMs, outcome.settleMs, clock() - stepStart))
+                                timings = StepTimings(jevMs, outcome.actMs, outcome.settleMs, clock() - stepStart),
+                                jevAnswers = jevAnswers)
                         }
                         if (!outcome.ok && device.stopRequested) return stopped()
                         guard.acted(screen, StepOption.Back, outcome.changedScreen)
