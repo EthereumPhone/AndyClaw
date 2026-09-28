@@ -92,7 +92,13 @@ Keep tasks safe on a real phone (nothing that sends, posts or buys).
 
 - No wallet, rear screen, LED matrix or `andyclawheartbeat`. Wallet tasks and the rear HUD can't be tested here.
 - AndyClaw is debug-signed, not platform-signed, so signature-only permissions (`DEVICE_POWER`, `REBOOT`, …)
-  are not granted and the device-control tools that need them will fail.
+  are not granted and the device-control tools that need them will fail. That includes
+  `MANAGE_NOTIFICATIONS`, so `set_dnd_mode` is refused here and works only on a dgen1.
+- The emulator has no vibrator: AudioService keeps `mode_ringer` at 2 when VIBRATE is set, so
+  `vibrate_mode` lives in `tasks/device-only.json`.
+- There is no calendar account, so the calendar provider has no calendars to write to.
+- `pm clear com.android.chrome` brings back Chrome's first-run screens every time; a real phone
+  shows them once.
 - arm64 native code runs under translation. Whisper is skipped on x86 hosts because it SIGILLs there.
   Local LLM and XMTP native paths are untested here.
 - SELinux is permissive (needed for the daemon's service registration).

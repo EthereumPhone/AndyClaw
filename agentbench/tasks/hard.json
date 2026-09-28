@@ -1,0 +1,304 @@
+{
+  "about": "Harder agentbench tasks (iteration 2), added once core.json reached 14/14. Each is just past what the agent did reliably: ambiguous phrasing, answers several screens deep that the model cannot know in advance, a condition to judge, settings with no obvious tool, and multi-step edits. Same rules as core.json: safe on a real phone, checked against device state.",
+  "tasks": [
+    {
+      "id": "screen_stay_on_longer",
+      "tags": [
+        "settings",
+        "ambiguous",
+        "medium"
+      ],
+      "prompt": "My screen keeps turning off too quickly. Make it stay on longer.",
+      "setup": [
+        "settings put system screen_off_timeout 15000"
+      ],
+      "checks": [
+        {
+          "type": "shell_regex",
+          "cmd": "v=$(settings get system screen_off_timeout); [ \"$v\" -gt 15000 ] && echo longer:$v || echo same:$v",
+          "regex": "^longer:"
+        }
+      ],
+      "teardown": [
+        "settings put system screen_off_timeout 1800000"
+      ]
+    },
+    {
+      "id": "too_bright",
+      "tags": [
+        "settings",
+        "ambiguous",
+        "medium"
+      ],
+      "prompt": "The screen is way too bright, it hurts my eyes.",
+      "setup": [
+        "settings put system screen_brightness_mode 0",
+        "settings put system screen_brightness 230"
+      ],
+      "checks": [
+        {
+          "type": "shell_regex",
+          "cmd": "m=$(settings get system screen_brightness_mode); v=$(settings get system screen_brightness); if [ \"$m\" = 1 ] || [ \"$v\" -lt 200 ]; then echo dimmer:$m:$v; else echo same:$m:$v; fi",
+          "regex": "^dimmer:"
+        }
+      ],
+      "teardown": [
+        "settings put system screen_brightness 102"
+      ]
+    },
+    {
+      "id": "location_off",
+      "tags": [
+        "settings",
+        "privacy",
+        "medium"
+      ],
+      "prompt": "Turn off location, I don't want apps tracking where I am.",
+      "setup": [
+        "settings put secure location_mode 3"
+      ],
+      "checks": [
+        {
+          "type": "shell_regex",
+          "cmd": "settings get secure location_mode",
+          "regex": "^0$"
+        }
+      ],
+      "teardown": [
+        "settings put secure location_mode 3"
+      ]
+    },
+    {
+      "id": "stay_awake_charging",
+      "tags": [
+        "settings",
+        "hidden",
+        "hard"
+      ],
+      "prompt": "Keep the screen from ever turning off while the phone is charging.",
+      "setup": [
+        "settings put global stay_on_while_plugged_in 0"
+      ],
+      "checks": [
+        {
+          "type": "shell_regex",
+          "cmd": "settings get global stay_on_while_plugged_in",
+          "regex": "^[1-7]$"
+        }
+      ],
+      "teardown": [
+        "settings put global stay_on_while_plugged_in 7"
+      ]
+    },
+    {
+      "id": "conditional_battery_saver",
+      "tags": [
+        "read",
+        "judgement",
+        "medium"
+      ],
+      "prompt": "If my battery is under 50%, turn on battery saver. Otherwise leave it off and just tell me the percentage.",
+      "setup": [
+        "settings put global low_power 0"
+      ],
+      "checks": [
+        {
+          "type": "setting",
+          "ns": "global",
+          "key": "low_power",
+          "equals": "0"
+        },
+        {
+          "type": "reply_regex",
+          "regex": "\\b100\\s?%|\\b100 percent"
+        }
+      ],
+      "teardown": [
+        "settings put global low_power 0"
+      ]
+    },
+    {
+      "id": "build_number_deep",
+      "tags": [
+        "read",
+        "ui",
+        "deep",
+        "hard"
+      ],
+      "prompt": "What's the exact build number of this phone? Find it in Settings.",
+      "reset_apps": [
+        "com.android.settings"
+      ],
+      "checks": [
+        {
+          "type": "reply_regex",
+          "regex": "AE3A\\.240806\\.043"
+        },
+        {
+          "type": "launched",
+          "regex": "^com\\.android\\.settings/"
+        }
+      ]
+    },
+    {
+      "id": "contact_edit_number",
+      "tags": [
+        "edit",
+        "medium"
+      ],
+      "prompt": "Grace Hopper got a new number: 555-0142. Update her contact.",
+      "setup": [
+        "content delete --uri content://com.android.contacts/raw_contacts --where \"display_name='Grace Hopper'\""
+      ],
+      "setup_contacts": [
+        {
+          "name": "Grace Hopper",
+          "phone": "555-0199"
+        }
+      ],
+      "checks": [
+        {
+          "type": "shell_regex",
+          "cmd": "content query --uri content://com.android.contacts/data --projection data1 --where \"display_name='Grace Hopper' AND mimetype='vnd.android.cursor.item/phone_v2'\"",
+          "regex": "555.?0142"
+        },
+        {
+          "type": "shell_regex",
+          "cmd": "n=$(content query --uri content://com.android.contacts/raw_contacts --projection _id --where \"display_name='Grace Hopper' AND deleted=0\" | grep -c _id=); echo count:$n",
+          "regex": "^count:1$"
+        }
+      ],
+      "teardown": [
+        "content delete --uri content://com.android.contacts/raw_contacts --where \"display_name='Grace Hopper'\""
+      ]
+    },
+    {
+      "id": "contacts_count_g",
+      "tags": [
+        "read",
+        "judgement",
+        "medium"
+      ],
+      "prompt": "How many of my contacts have a first name starting with G?",
+      "setup": [
+        "content delete --uri content://com.android.contacts/raw_contacts --where \"display_name IN ('Grace Hopper','Gordon Moore','Linus Torvalds','Gary Kildall')\""
+      ],
+      "setup_contacts": [
+        {
+          "name": "Grace Hopper",
+          "phone": "555-0199"
+        },
+        {
+          "name": "Gordon Moore",
+          "phone": "555-0171"
+        },
+        {
+          "name": "Linus Torvalds",
+          "phone": "555-0172"
+        },
+        {
+          "name": "Gary Kildall",
+          "phone": "555-0173"
+        }
+      ],
+      "checks": [
+        {
+          "type": "reply_regex",
+          "regex": "\\b(3|three)\\b"
+        }
+      ],
+      "teardown": [
+        "content delete --uri content://com.android.contacts/raw_contacts --where \"display_name IN ('Grace Hopper','Gordon Moore','Linus Torvalds','Gary Kildall')\""
+      ]
+    },
+    {
+      "id": "contact_copy_number",
+      "tags": [
+        "multi",
+        "create",
+        "hard"
+      ],
+      "prompt": "Make a new contact called \"Grace Work\" with the same phone number as Grace Hopper.",
+      "setup": [
+        "content delete --uri content://com.android.contacts/raw_contacts --where \"display_name IN ('Grace Hopper','Grace Work')\""
+      ],
+      "setup_contacts": [
+        {
+          "name": "Grace Hopper",
+          "phone": "555-0163"
+        }
+      ],
+      "checks": [
+        {
+          "type": "shell_regex",
+          "cmd": "content query --uri content://com.android.contacts/data --projection data1 --where \"display_name='Grace Work' AND mimetype='vnd.android.cursor.item/phone_v2'\"",
+          "regex": "555.?0163"
+        }
+      ],
+      "teardown": [
+        "content delete --uri content://com.android.contacts/raw_contacts --where \"display_name IN ('Grace Hopper','Grace Work')\""
+      ]
+    },
+    {
+      "id": "alarm_then_dark",
+      "tags": [
+        "multi",
+        "create",
+        "settings",
+        "medium"
+      ],
+      "prompt": "Wake me up at 6:45 tomorrow, and switch to dark mode so the screen isn't blinding at night.",
+      "setup": [
+        "pm clear com.dgen.alarm",
+        "cmd uimode night no"
+      ],
+      "checks": [
+        {
+          "type": "shell_regex",
+          "cmd": "v=$(grep -o 'alarmTime\" value=\"[0-9]*' /data/data/com.dgen.alarm/shared_prefs/AlarmPrefs.xml | grep -o '[0-9]*$'); [ -n \"$v\" ] && date -d @${v%???} +%H:%M",
+          "regex": "^06:45$"
+        },
+        {
+          "type": "setting",
+          "ns": "secure",
+          "key": "ui_night_mode",
+          "equals": "2"
+        },
+        {
+          "type": "tool_not_used",
+          "regex": "^create_reminder$"
+        }
+      ],
+      "teardown": [
+        "cmd uimode night no"
+      ]
+    },
+    {
+      "id": "chrome_iana_link",
+      "tags": [
+        "web",
+        "ui",
+        "deep",
+        "hard"
+      ],
+      "prompt": "In Chrome, open example.com, follow the link on that page, and tell me the title of the page it takes you to.",
+      "timeout_s": 420,
+      "setup": [
+        "pm clear com.android.chrome"
+      ],
+      "reset_apps": [
+        "com.android.chrome"
+      ],
+      "checks": [
+        {
+          "type": "reply_regex",
+          "regex": "Example Domains|IANA|Reserved Domains"
+        },
+        {
+          "type": "launched",
+          "regex": "^com\\.android\\.chrome/"
+        }
+      ]
+    }
+  ]
+}

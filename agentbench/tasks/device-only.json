@@ -7,7 +7,7 @@
         "ui",
         "medium"
       ],
-      "prompt": "Use the calculator app to work out 1234 × 56 and tell me the result.",
+      "prompt": "Use the calculator app to work out 1234 \u00d7 56 and tell me the result.",
       "reset_apps": [
         "com.dgen.dgencalculator"
       ],
@@ -49,6 +49,28 @@
           "regex": "^com\\.dgen\\.note/"
         }
       ]
+    },
+    {
+      "id": "vibrate_mode",
+      "tags": [
+        "settings",
+        "easy"
+      ],
+      "prompt": "Put my phone on vibrate.",
+      "setup": [
+        "cmd audio set-ringer-mode NORMAL"
+      ],
+      "checks": [
+        {
+          "type": "shell_regex",
+          "cmd": "settings get global mode_ringer",
+          "regex": "^1$"
+        }
+      ],
+      "teardown": [
+        "cmd audio set-ringer-mode NORMAL"
+      ],
+      "device_only_reason": "the emulator has no vibrator: AudioService keeps mode_ringer at 2 when VIBRATE is set"
     }
   ]
 }
