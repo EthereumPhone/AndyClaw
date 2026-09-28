@@ -26,6 +26,7 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.JsonObject
 import org.json.JSONArray
 import org.json.JSONObject
+import org.ethereumphone.andyclaw.BuildConfig
 import org.ethereumphone.andyclaw.ExecutionEngine.Provenance
 import org.ethereumphone.andyclaw.NodeApp
 import org.ethereumphone.andyclaw.frames.SessionFrameStore
@@ -77,7 +78,14 @@ class LauncherBindingService : Service() {
         private val ALLOWED_CALLER_PACKAGES = setOf(
             "org.ethosmobile.ethoslauncher",
             "com.android.systemui"
-        )
+        ) + if (BuildConfig.DEBUG) setOf(AGENTBENCH_CLIENT_PACKAGE) else emptySet()
+
+        /**
+         * `agentbench/`'s client, which drives this service over the launcher's own contract on
+         * an emulator. Debug builds only: the shipped APK is a release build, where R8 folds
+         * this away and the launcher and SystemUI stay the only callers.
+         */
+        private const val AGENTBENCH_CLIENT_PACKAGE = "org.ethereumphone.andyclaw.agentbench"
 
         /**
          * How often a frame is pulled off the agent display.

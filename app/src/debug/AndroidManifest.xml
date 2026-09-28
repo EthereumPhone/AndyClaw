@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Debug builds only: agentbench's provisioning hook (see AgentBenchSeedProvider). -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <provider
+            android:name=".bench.AgentBenchSeedProvider"
+            android:authorities="org.ethereumphone.andyclaw.agentbench.seed"
+            android:exported="true" />
+    </application>
+</manifest>

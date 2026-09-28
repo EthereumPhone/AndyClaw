@@ -1,0 +1,54 @@
+{
+  "about": "Tasks that need the dgen1's own apps (Calculator, Notes), which crash on a stock emulator image because they use ethOS framework classes. Kept for a real-device run and for when the emulator image grows those classes.",
+  "tasks": [
+    {
+      "id": "calculator_multiply",
+      "tags": [
+        "ui",
+        "medium"
+      ],
+      "prompt": "Use the calculator app to work out 1234 × 56 and tell me the result.",
+      "reset_apps": [
+        "com.dgen.dgencalculator"
+      ],
+      "checks": [
+        {
+          "type": "reply_regex",
+          "regex": "69[,.\\s]?104"
+        },
+        {
+          "type": "launched",
+          "regex": "^com\\.dgen\\.dgencalculator/"
+        }
+      ]
+    },
+    {
+      "id": "note_groceries",
+      "tags": [
+        "ui",
+        "create",
+        "hard"
+      ],
+      "prompt": "Create a note called \"Groceries\" with the text: milk, eggs, bread.",
+      "setup": [
+        "pm clear com.dgen.note"
+      ],
+      "checks": [
+        {
+          "type": "shell_regex",
+          "cmd": "grep -rla 'Groceries' /data/data/com.dgen.note/ 2>/dev/null | head -3",
+          "regex": "com.dgen.note"
+        },
+        {
+          "type": "shell_regex",
+          "cmd": "grep -rla 'milk' /data/data/com.dgen.note/ 2>/dev/null | head -3",
+          "regex": "com.dgen.note"
+        },
+        {
+          "type": "launched",
+          "regex": "^com\\.dgen\\.note/"
+        }
+      ]
+    }
+  ]
+}

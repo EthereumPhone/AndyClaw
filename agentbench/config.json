@@ -1,0 +1,31 @@
+{
+  "avd": "agentbench_API_35",
+  "port": 5580,
+  "systemImage": "system-images;android-35;google_apis;x86_64",
+  "avdConfig": {
+    "hw.lcd.width": "720",
+    "hw.lcd.height": "720",
+    "hw.lcd.density": "240",
+    "hw.ramSize": "8192",
+    "disk.dataPartition.size": "12G",
+    "hw.keyboard": "yes",
+    "hw.gpu.enabled": "yes",
+    "hw.gpu.mode": "swiftshader_indirect",
+    "showDeviceFrame": "no"
+  },
+  "ethosTree": "~/dgen1/v0mp1_test/git-V0MP1",
+  "ethosApps": {
+    "ethOSAlarm": "com.dgen.alarm"
+  },
+  "seed": {
+    "aiName": "AndyClaw",
+    "allSkills": true
+  },
+  "ethosAppsNotOnEmulator": {
+    "_why": "crash at launch on a stock image: they need ethOS framework classes (android.os.FreemeProxy, the LED manager)",
+    "ethOSCalculator": "com.dgen.dgencalculator",
+    "ethOSNotes": "com.dgen.note",
+    "ethOSTimer": "com.dgen.timer",
+    "ethOSStopwatch": "com.dgen.stopwatch"
+  }
+}

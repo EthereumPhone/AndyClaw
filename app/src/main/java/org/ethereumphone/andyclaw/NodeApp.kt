@@ -1236,7 +1236,11 @@ class NodeApp : Application() {
 
         // Pre-load the Whisper model into RAM so voice transcription is instant.
         // The Q5_1 model (~60 MB on disk, ~388 MB in RAM) stays resident for the process lifetime.
-        whisperTranscriber.warmUp(appScope)
+        // Not on an x86 host (the agentbench emulator): whisper.cpp ships arm64 only, and the
+        // ARM translator dies on its LSE atomics (SIGILL), taking the whole process with it.
+        if (android.os.Build.SUPPORTED_ABIS.firstOrNull()?.startsWith("x86") != true) {
+            whisperTranscriber.warmUp(appScope)
+        }
 
         // Refresh OpenRouter model registry so context windows and pricing are available
         appScope.launch {

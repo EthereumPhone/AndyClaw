@@ -1,0 +1,918 @@
+#!/usr/bin/env python3
+"""agentbench — drive AndyClaw on an emulator the way the ethOS launcher does, and measure it.
+
+    agentbench up                      boot + provision the emulator (idempotent)
+    agentbench run "turn on dark mode" one prompt, streamed, saved under runs/
+    agentbench suite [tasks/core.json] every task, checked against device state, saved under suites/
+    agentbench cycle                   rebuild AndyClaw, reinstall, run the suite, compare to the last one
+    agentbench compare A B             two suite results side by side
+    agentbench build [andyclaw|client|daemon|all]
+    agentbench selftest                the OS side alone (agent display), no model needed
+    agentbench status | down
+
+See README.md for how the pieces fit together.
+"""
+import argparse
+import base64
+import datetime as dt
+import hashlib
+import json
+import os
+import re
+import shlex
+import shutil
+import statistics
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+REPO = HERE.parent
+OUT = HERE / "out"
+RUNS = HERE / "runs"
+SUITES = HERE / "suites"
+SDK = Path(os.environ.get("ANDROID_HOME", Path.home() / "Android/Sdk"))
+ADB = str(SDK / "platform-tools/adb")
+EMULATOR = str(SDK / "emulator/emulator")
+CONFIG = json.loads((HERE / "config.json").read_text())
+SECRETS_FILE = Path(os.environ.get("AGENTBENCH_SECRETS", Path.home() / ".config/agentbench/secrets.json"))
+ETHOS_TREE = Path(os.environ.get("ETHOS_TREE", CONFIG["ethosTree"])).expanduser()
+SERIAL = os.environ.get("ANDROID_SERIAL", f"emulator-{CONFIG['port']}")
+
+ANDYCLAW = "org.ethereumphone.andyclaw"
+CLIENT = "org.ethereumphone.andyclaw.agentbench"
+INSTRUMENT = f"{CLIENT}/.BenchInstrumentation"
+SEED_URI = "content://org.ethereumphone.andyclaw.agentbench.seed"
+DAEMON_CLASS = "org.ethereumphone.agentbench.AgentDisplayDaemon"
+ANDYCLAW_APK = REPO / "app/build/outputs/apk/debug/app-debug.apk"
+DAEMON_JAR = OUT / "agentdisplayd.jar"
+CLIENT_APK = OUT / "agentbench-client.apk"
+
+
+# ---------------------------------------------------------------- adb helpers
+
+def adb(*args, check=True, timeout=120, capture=True):
+    cmd = [ADB, "-s", SERIAL, *args]
+    r = subprocess.run(cmd, capture_output=capture, text=True, timeout=timeout)
+    if check and r.returncode != 0:
+        raise RuntimeError(f"{' '.join(cmd)} failed: {r.stdout}{r.stderr}")
+    return (r.stdout or "").replace("\r", "")
+
+
+def sh(command, check=False, timeout=120):
+    return adb("shell", command, check=check, timeout=timeout).strip()
+
+
+def log(msg):
+    print(f"\033[2m[agentbench]\033[0m {msg}", flush=True)
+
+
+def device_online():
+    r = subprocess.run([ADB, "-s", SERIAL, "get-state"], capture_output=True, text=True)
+    return r.stdout.strip() == "device"
+
+
+def wait_boot(timeout=400):
+    subprocess.run([ADB, "-s", SERIAL, "wait-for-device"], timeout=timeout)
+    t0 = time.time()
+    while time.time() - t0 < timeout:
+        if sh("getprop sys.boot_completed") == "1":
+            return
+        time.sleep(3)
+    raise RuntimeError("emulator did not finish booting")
+
+
+def root():
+    adb("root", check=False)
+    time.sleep(2)
+    subprocess.run([ADB, "-s", SERIAL, "wait-for-device"], timeout=60)
+
+
+def reboot():
+    log("rebooting")
+    adb("reboot", check=False)
+    time.sleep(8)
+    wait_boot()
+    root()
+
+
+def sha256(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def build_tools():
+    return sorted((SDK / "build-tools").iterdir(), key=lambda p: [int(x) if x.isdigit() else 0 for x in re.split(r"[.-]", p.name)])[-1]
+
+
+def load_secrets():
+    secrets = {}
+    if SECRETS_FILE.exists():
+        secrets.update(json.loads(SECRETS_FILE.read_text()))
+    for env, key in (("AGENTBENCH_WALLET_ADDRESS", "walletAddress"),
+                     ("AGENTBENCH_WALLET_SIGNATURE", "walletSignature"),
+                     ("OPENROUTER_API_KEY", "openrouterApiKey")):
+        if os.environ.get(env):
+            secrets[key] = os.environ[env]
+    return secrets
+
+
+# ---------------------------------------------------------------- build
+
+def build(what):
+    if what in ("daemon", "all"):
+        log("building agentdisplayd.jar from the ethOS tree's AgentDisplayService.java")
+        subprocess.run([str(HERE / "daemon/build.sh")], check=True, env={**os.environ, "ETHOS_TREE": str(ETHOS_TREE)})
+    if what in ("client", "all"):
+        log("building agentbench-client.apk")
+        subprocess.run([str(HERE / "client/build.sh")], check=True)
+    if what in ("andyclaw", "all"):
+        log("building AndyClaw :app:assembleDebug")
+        subprocess.run(["./gradlew", ":app:assembleDebug", "-q"], cwd=REPO, check=True)
+
+
+# ---------------------------------------------------------------- provisioning
+
+def start_emulator(window=False):
+    avd = CONFIG["avd"]
+    avd_dir = Path.home() / f".android/avd/{avd}.avd"
+    if not avd_dir.exists():
+        log(f"creating AVD {avd} (720x720 @240dpi, like the dgen1)")
+        avdmanager = next((SDK / "cmdline-tools").glob("*/bin/avdmanager"))
+        subprocess.run([str(avdmanager), "create", "avd", "-n", avd, "-k", CONFIG["systemImage"], "-d", "pixel", "--force"],
+                       input="no\n", text=True, check=True, capture_output=True)
+        cfg = avd_dir / "config.ini"
+        lines = [l for l in cfg.read_text().splitlines() if not l.split("=")[0] in CONFIG["avdConfig"]]
+        lines += [f"{k}={v}" for k, v in CONFIG["avdConfig"].items()]
+        cfg.write_text("\n".join(lines) + "\n")
+    log(f"booting {avd} on port {CONFIG['port']} (writable system)")
+    args = [EMULATOR, "-avd", avd, "-port", str(CONFIG["port"]), "-writable-system", "-no-snapshot",
+            "-no-audio", "-no-boot-anim", "-gpu", "swiftshader_indirect"]
+    if not window:
+        args.append("-no-window")
+    OUT.mkdir(exist_ok=True)
+    subprocess.Popen(args, stdout=open(OUT / "emulator.log", "w"), stderr=subprocess.STDOUT, start_new_session=True)
+    wait_boot()
+
+
+def remount():
+    out = adb("remount", check=False)
+    if "reboot" in out.lower() and "succeeded" not in out.lower():
+        reboot()
+        out = adb("remount", check=False)
+    if "succeeded" not in out.lower() and "remount" not in out.lower():
+        raise RuntimeError(f"remount failed: {out}")
+
+
+def make_stub_apk(apk, dest):
+    """The debug APK is ~250 MB and the emulator's system overlay has ~34 MB free. A system image
+    only has to *declare* the package (same name, cert and permissions); the full APK is then
+    installed over it as an update, which keeps FLAG_SYSTEM and PRIVILEGED — the tier AndyClaw
+    reads to turn on its ethOS tool set."""
+    bt = build_tools()
+    with tempfile.TemporaryDirectory() as w:
+        w = Path(w)
+        stub = w / "stub.apk"
+        shutil.copy(apk, stub)
+        listing = subprocess.run(["unzip", "-l", str(apk)], capture_output=True, text=True).stdout
+        dexes = sorted((int(m.group(1)), m.group(2)) for m in re.finditer(r"^\s*(\d+)\s+\S+\s+\S+\s+(classes\d*\.dex)$", listing, re.M))
+        subprocess.run(["unzip", "-q", "-o", str(apk), dexes[0][1], "-d", str(w / "dex")], check=True)
+        subprocess.run(["zip", "-q", "-d", str(stub), "assets/*", "lib/*", "classes*.dex", "META-INF/*"], check=True)
+        shutil.copy(w / "dex" / dexes[0][1], w / "classes.dex")
+        subprocess.run(["zip", "-q", "-0", str(stub), "classes.dex"], cwd=w, check=True)
+        subprocess.run([str(bt / "zipalign"), "-f", "-p", "4", str(stub), str(w / "aligned.apk")], check=True)
+        sign(w / "aligned.apk", dest)
+
+
+def sign(src, dest):
+    bt = build_tools()
+    subprocess.run([str(bt / "apksigner"), "sign", "--ks", str(Path.home() / ".android/debug.keystore"),
+                    "--ks-key-alias", "androiddebugkey", "--ks-pass", "pass:android", "--key-pass", "pass:android",
+                    "--out", str(dest), str(src)], check=True)
+
+
+def privapp_xml(apk):
+    bt = build_tools()
+    dump = subprocess.run([str(bt / "aapt2"), "dump", "permissions", str(apk)], capture_output=True, text=True).stdout
+    perms = sorted(set(re.findall(r"uses-permission: name='([^']+)'", dump)))
+    body = "\n".join(f'    <permission name="{p}"/>' for p in perms)
+    return ('<?xml version="1.0" encoding="utf-8"?>\n'
+            "<!-- agentbench: everything the debug APK requests. Extras are ignored; a missing privileged one bootloops. -->\n"
+            f'<permissions><privapp-permissions package="{ANDYCLAW}">\n{body}\n</privapp-permissions></permissions>\n')
+
+
+def provision_system():
+    if sh("ls /system/priv-app/AndyClaw/AndyClaw.apk") == "/system/priv-app/AndyClaw/AndyClaw.apk":
+        return False
+    log("first run on this AVD: making AndyClaw a privileged system app")
+    remount()
+    OUT.mkdir(exist_ok=True)
+    make_stub_apk(ANDYCLAW_APK, OUT / "AndyClaw-stub.apk")
+    (OUT / "privapp-andyclaw.xml").write_text(privapp_xml(ANDYCLAW_APK))
+    sh("mkdir -p /system/priv-app/AndyClaw /system/etc/default-permissions")
+    adb("push", str(OUT / "AndyClaw-stub.apk"), "/system/priv-app/AndyClaw/AndyClaw.apk")
+    adb("push", str(OUT / "privapp-andyclaw.xml"), f"/system/etc/permissions/{ANDYCLAW}.xml")
+    adb("push", str(ETHOS_TREE / "packages/apps/AndyClaw/etc/default-permissions/andyclaw_default_permissions.xml"),
+        "/system/etc/default-permissions/andyclaw_default_permissions.xml")
+    sh("chmod 755 /system/priv-app/AndyClaw /system/etc/default-permissions; "
+       f"chmod 644 /system/priv-app/AndyClaw/AndyClaw.apk /system/etc/permissions/{ANDYCLAW}.xml "
+       "/system/etc/default-permissions/andyclaw_default_permissions.xml")
+    reboot()
+    return True
+
+
+def install_if_changed(apk, marker, extra=()):
+    digest = sha256(apk)
+    if sh(f"cat /data/local/tmp/{marker} 2>/dev/null") == digest:
+        return False
+    log(f"installing {apk.name}")
+    out = adb("install", "-r", "-g", *extra, str(apk), timeout=600, check=False)
+    if "Success" not in out:
+        raise RuntimeError(f"install {apk.name} failed: {out}")
+    sh(f"echo {digest} > /data/local/tmp/{marker}")
+    return True
+
+
+def install_ethos_apps():
+    """The dgen1's own utility apps, so the agent meets the phone's app surface, not only Google's."""
+    installed = sh("pm list packages")
+    for rel, pkg in CONFIG.get("ethosAppsNotOnEmulator", {}).items():
+        if not rel.startswith("_") and f"package:{pkg}" in installed:
+            log(f"removing {rel} ({pkg}): it crashes on a stock image")
+            adb("uninstall", pkg, check=False)
+    for rel, pkg in CONFIG["ethosApps"].items():
+        if f"package:{pkg}" in installed:
+            continue
+        src = next((ETHOS_TREE / "packages/apps" / rel).glob("*.apk"), None)
+        if not src:
+            continue
+        signed = OUT / f"{rel}.apk"
+        with tempfile.TemporaryDirectory() as w:
+            aligned = Path(w) / "a.apk"
+            subprocess.run([str(build_tools() / "zipalign"), "-f", "-p", "4", str(src), str(aligned)], check=True)
+            sign(aligned, signed)
+        log(f"installing ethOS app {rel} ({pkg})")
+        adb("install", "-r", "-g", str(signed), check=False, timeout=300)
+
+
+def daemon_alive():
+    return "found" in sh("service check agentdisplay")
+
+
+def start_daemon(force=False):
+    if daemon_alive() and not force:
+        return
+    sh(f"pkill -f {DAEMON_CLASS}")
+    sh("rm -f /data/local/tmp/agentdisplayd.jar")
+    adb("push", str(DAEMON_JAR), "/data/local/tmp/agentdisplayd.jar")
+    sh("chmod 444 /data/local/tmp/agentdisplayd.jar")  # ART won't load a dex its process can write
+    sh(f"su 1000 app_process -Djava.class.path=/data/local/tmp/agentdisplayd.jar /system/bin {DAEMON_CLASS} "
+       "> /data/local/tmp/agentdisplayd.log 2>&1 &")
+    for _ in range(20):
+        if daemon_alive():
+            log("agentdisplay service up (ethOS AgentDisplayService in app_process, uid 1000)")
+            rebind_a11y_proxy()
+            return
+        time.sleep(0.5)
+    raise RuntimeError("agentdisplayd did not publish; see adb shell cat /data/local/tmp/agentdisplayd.log")
+
+
+A11Y = f"{ANDYCLAW}/{ANDYCLAW}.services.AgentDisplayAccessibilityService"
+
+
+def rebind_a11y_proxy():
+    """AndyClaw registers its accessibility proxy once, in onServiceConnected. A new daemon never
+    hears from a proxy that registered with the old one (on a phone, system_server dying takes
+    AndyClaw with it, so this never comes up), so unbind and rebind the service."""
+    sh("settings put secure enabled_accessibility_services ''")
+    time.sleep(1)
+    sh(f"settings put secure enabled_accessibility_services {A11Y}; settings put secure accessibility_enabled 1")
+    time.sleep(2)
+
+
+def seed_config(extra=None):
+    secrets = load_secrets()
+    cfg = dict(CONFIG.get("seed", {}))
+    if secrets.get("walletAddress") and secrets.get("walletSignature"):
+        cfg.update(walletAddress=secrets["walletAddress"], walletSignature=secrets["walletSignature"])
+    elif secrets.get("openrouterApiKey"):
+        cfg.update(provider="OPEN_ROUTER", apiKey=secrets["openrouterApiKey"])
+    cfg.update(extra or {})
+    return cfg
+
+
+def seed(extra=None):
+    arg = json.dumps(seed_config(extra))
+    out = sh(f"content call --uri {SEED_URI} --method seed --arg {shlex.quote(arg)}")
+    return parse_seed(out)
+
+
+def state():
+    return parse_seed(sh(f"content call --uri {SEED_URI} --method state"))
+
+
+def parse_seed(out):
+    m = re.search(r"result=(\{.*\})\}\]", out)
+    if not m:
+        raise RuntimeError(f"seed provider: {out}")
+    return json.loads(m.group(1))
+
+
+def prepare_device():
+    sh("setenforce 0")
+    sh("svc power stayon true; settings put global stay_on_while_plugged_in 7; "
+       "settings put system screen_off_timeout 1800000; locksettings set-disabled true; "
+       "wm dismiss-keyguard; input keyevent KEYCODE_WAKEUP")
+    adb("logcat", "-G", "16M", check=False)
+
+
+def cmd_up(args):
+    if not device_online():
+        start_emulator(window=args.window)
+    root()
+    for artefact, what in ((DAEMON_JAR, "daemon"), (CLIENT_APK, "client"), (ANDYCLAW_APK, "andyclaw")):
+        if not artefact.exists():
+            build(what)
+    prepare_device()
+    if provision_system():
+        prepare_device()
+    install_if_changed(ANDYCLAW_APK, "agentbench.andyclaw.sha")
+    install_if_changed(CLIENT_APK, "agentbench.client.sha")
+    install_ethos_apps()
+    start_daemon(force=args.restart_daemon)
+    st = seed()
+    log(f"AndyClaw: {json.dumps(st)}")
+    if not st["walletAuth"] and not st["apiKey"]:
+        log(f"\033[33mno LLM credentials\033[0m — put walletAddress+walletSignature or openrouterApiKey in {SECRETS_FILE}")
+    if st["tier"] != "PRIVILEGED":
+        log("\033[31mAndyClaw is not PRIVILEGED; agent display tools are off\033[0m")
+
+
+# ---------------------------------------------------------------- one run
+
+def slug(text, n=40):
+    return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")[:n] or "run"
+
+
+def instrument(extras, on_event=None, timeout=None):
+    cmd = ["am", "instrument", "-w", "-r"]
+    for k, v in extras.items():
+        cmd += ["-e", k, str(v)]
+    cmd.append(INSTRUMENT)
+    p = subprocess.Popen([ADB, "-s", SERIAL, "shell", " ".join(shlex.quote(c) for c in cmd)],
+                         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+    result, error = None, None
+    for line in p.stdout:
+        line = line.rstrip("\r\n")
+        if line.startswith("INSTRUMENTATION_STATUS: event=") and on_event:
+            try:
+                on_event(json.loads(line.split("=", 1)[1]))
+            except json.JSONDecodeError:
+                pass
+        elif line.startswith("INSTRUMENTATION_RESULT: result="):
+            result = line.split("=", 1)[1]
+        elif line.startswith("INSTRUMENTATION_RESULT: error="):
+            error = line.split("=", 1)[1]
+        elif "INSTRUMENTATION_FAILED" in line or "Error" in line and "instrument" in line:
+            error = line
+    p.wait(timeout=timeout)
+    if error:
+        raise RuntimeError(f"bench client: {error}")
+    return result
+
+
+def fmt_event(e):
+    t = f"{e.get('t', 0) / 1000:6.1f}s"
+    kind = e.get("type")
+    if kind == "prompt":
+        return None
+    if kind == "tool_start":
+        return f"{t}  \033[36m▶ {e['tool']}\033[0m"
+    if kind == "tool_result":
+        s = (e.get("summary") or "").replace("\n", " ")
+        return f"{t}    ↳ {s[:140]}"
+    if kind == "agent_step":
+        s = e["step"]
+        tgt = (s.get("target") or {}).get("label", "")
+        bits = [s.get("kind"), s.get("action") or "", f'"{tgt}"' if tgt else "", s.get("reason") or s.get("message") or ""]
+        return f"{t}    \033[35m◆ autopilot\033[0m " + " ".join(b for b in bits if b)[:160]
+    if kind == "complete":
+        return f"{t}  \033[32m✔ {(e.get('text') or '').strip()[:400]}\033[0m"
+    if kind in ("error", "timeout"):
+        return f"{t}  \033[31m✘ {kind}: {e.get('message', e.get('after_s', ''))}\033[0m"
+    if kind in ("display_created", "display_destroyed"):
+        return f"{t}  · {kind}"
+    return None
+
+
+class Logcat:
+    """Everything the device logs during one run (AGENTDISPLAYDEBUGKEY carries the prompt, every
+    tool call's input and every result; AgentRunMetrics the per-run numbers)."""
+
+    def __init__(self, path):
+        since = sh("date +'%m-%d %H:%M:%S.000'")
+        self.f = open(path, "w")
+        self.p = subprocess.Popen([ADB, "-s", SERIAL, "logcat", "-v", "threadtime", "-T", since],
+                                  stdout=self.f, stderr=subprocess.DEVNULL)
+
+    def stop(self):
+        time.sleep(1.5)
+        self.p.terminate()
+        self.p.wait()
+        self.f.close()
+
+
+def do_run(prompt, run_dir, settings=None, timeout=300, frames=True, quiet=False):
+    run_dir.mkdir(parents=True, exist_ok=True)
+    if not daemon_alive():
+        log("agentdisplay is gone — restarting the daemon")
+        start_daemon(force=True)
+    run_id = run_dir.name
+    session = f"ab-{run_id}"[:60]
+    sh("input keyevent KEYCODE_WAKEUP; wm dismiss-keyguard; input keyevent KEYCODE_HOME")
+    logcat = Logcat(run_dir / "logcat.txt")
+    extras = {"op": "prompt", "prompt_b64": base64.b64encode(prompt.encode()).decode(),
+              "session": session, "run": run_id, "timeout_s": timeout, "frames": str(frames).lower()}
+    if settings:
+        extras["settings_b64"] = base64.b64encode(json.dumps(settings).encode()).decode()
+    printer = (lambda e: None) if quiet else (lambda e: (lambda s: s and print(s, flush=True))(fmt_event(e)))
+    started = time.time()
+    try:
+        outcome = instrument(extras, on_event=printer, timeout=timeout + 120)
+    except Exception as e:
+        outcome = f"harness-error: {e}"
+    wall = time.time() - started
+    logcat.stop()
+    dev = f"/data/data/{CLIENT}/files/runs/{run_id}"
+    adb("pull", dev, str(run_dir / "device"), check=False, timeout=300)
+    sh(f"rm -rf {dev}")
+    (run_dir / "device" / "frames").mkdir(parents=True, exist_ok=True)
+    summary = analyze_run(run_dir, prompt, outcome, wall)
+    return summary
+
+
+# ---------------------------------------------------------------- analysis
+
+KV = re.compile(r"(\w+)=([^\s|]+)")
+
+
+def parse_logcat(path):
+    info = {"tool_calls": [], "metrics": {}, "tokens": {}, "crashes": [], "errors": [], "iterations": None,
+            "usage": {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0, "calls": 0}, "app_crashes": []}
+    text = path.read_text(errors="replace") if path.exists() else ""
+    for line in text.splitlines():
+        if "TokenStats | input=" in line:
+            # One per model call. Anthropic's input_tokens excludes cached tokens, so the prompt a
+            # call really carried is input + cache_read + cache_write.
+            kv = dict(KV.findall(line.split("TokenStats |", 1)[1]))
+            u = info["usage"]
+            u["calls"] += 1
+            for k in ("input", "output", "cache_read", "cache_write"):
+                if kv.get(k, "").isdigit():
+                    u[k] += int(kv[k])
+        elif "TOOL_CALL [" in line:
+            m = re.search(r"TOOL_CALL \[\d+\]: name=(\S+) id=\S+ input=(.*)$", line)
+            if m:
+                info["tool_calls"].append({"tool": m.group(1), "input": m.group(2)})
+        elif " AgentRunMetrics" in line or "AgentRunMetrics:" in line:
+            info["metrics"].update({k: v for k, v in KV.findall(line.split("AgentRunMetrics", 1)[1])})
+        elif "=== AgentLoop SUMMARY ===" in line:
+            info["tokens"].update({k: int(v) for k, v in KV.findall(line) if v.isdigit()})
+        elif "AndroidRuntime: Process: " in line:
+            # The line after FATAL EXCEPTION names the process. Only AndyClaw's own crashes fail a
+            # run; another app crashing in front of the agent is what the agent had to deal with.
+            proc = line.split("AndroidRuntime: Process: ", 1)[1].split(",")[0].strip()
+            (info["crashes"] if proc in (ANDYCLAW, "app_process") else info["app_crashes"]).append(line[:300])
+        elif "Fatal signal" in line and ("mphone.andyclaw" in line or "(main)" in line and "app_process" in line):
+            info["crashes"].append(line[:300])
+        elif re.search(r" E (AgentLoop|AgentDisplay\w*|LauncherBindingService|JevHttpClient|AnthropicClient|Autopilot\w*)", line):
+            info["errors"].append(line[:300])
+        elif "JevUnavailable" in line or "no wallet sign-in" in line:
+            info["errors"].append(line[:300])
+    return info
+
+
+def read_events(run_dir):
+    p = run_dir / "device" / "events.jsonl"
+    if not p.exists():
+        return []
+    out = []
+    for line in p.read_text(errors="replace").splitlines():
+        try:
+            out.append(json.loads(line))
+        except json.JSONDecodeError:
+            pass
+    return out
+
+
+def contact_sheet(run_dir, max_frames=30, thumb=240):
+    try:
+        from PIL import Image, ImageDraw
+    except ImportError:
+        return None
+    frames = sorted((run_dir / "device" / "frames").glob("*.jpg"))
+    if not frames:
+        return None
+    if len(frames) > max_frames:
+        step = (len(frames) - 1) / (max_frames - 1)
+        frames = [frames[round(i * step)] for i in range(max_frames)]
+    cols = 6
+    rows = (len(frames) + cols - 1) // cols
+    sheet = Image.new("RGB", (cols * thumb, rows * (thumb + 18)), "white")
+    draw = ImageDraw.Draw(sheet)
+    for i, f in enumerate(frames):
+        try:
+            im = Image.open(f).convert("RGB")
+        except Exception:
+            continue
+        im.thumbnail((thumb, thumb))
+        x, y = (i % cols) * thumb, (i // cols) * (thumb + 18)
+        sheet.paste(im, (x, y + 18))
+        ms = int(f.stem.split("_")[1])
+        draw.text((x + 4, y + 3), f"{ms / 1000:.1f}s", fill="black")
+    out = run_dir / "contact.jpg"
+    sheet.save(out, quality=80)
+    shutil.copy(sorted((run_dir / "device" / "frames").glob("*.jpg"))[-1], run_dir / "last.jpg")
+    return out
+
+
+def analyze_run(run_dir, prompt, outcome, wall):
+    events = read_events(run_dir)
+    lc = parse_logcat(run_dir / "logcat.txt")
+    final = next((e.get("text", "") for e in events if e["type"] == "complete"), "")
+    error = next((e.get("message") for e in events if e["type"] == "error"), None)
+    # The model's own calls, from logcat. The launcher callback onToolExecution fires twice per
+    # call (AndyClaw bug, see transcript), so events would double-count.
+    tools = [c["tool"] for c in lc["tool_calls"]] or [e["tool"] for e in events if e["type"] == "tool_start"]
+    steps = [e["step"] for e in events if e["type"] == "agent_step"]
+    ap_end = [s for s in steps if s.get("kind") in ("DONE", "FAILED")]
+    frames = len(list((run_dir / "device" / "frames").glob("*.jpg")))
+    u = lc["usage"]
+    prompt_tokens = u["input"] + u["cache_read"] + u["cache_write"]
+    summary = {
+        "prompt": prompt, "outcome": outcome, "error": error, "wall_s": round(wall, 1),
+        "reply": final, "tools": tools, "tool_count": len(tools),
+        "search_calls": sum(1 for t in tools if t == "search_available_tools"),
+        "display_tools": sum(1 for t in tools if t.startswith("agent_display")),
+        "tool_errors": sum(1 for e in events if e["type"] == "tool_result" and (e.get("summary") or "").lower().startswith("error")),
+        "model_calls": int(lc["metrics"].get("modelCalls", 0)) or u["calls"] or None,
+        "iterations": int(lc["metrics"].get("iterations", 0)) or lc["tokens"].get("iterations"),
+        "input_tokens": prompt_tokens or None, "output_tokens": u["output"] or lc["tokens"].get("output"),
+        "cache_write_tokens": u["cache_write"], "cache_read_tokens": u["cache_read"],
+        "cache_hit": round(u["cache_read"] / prompt_tokens, 2) if prompt_tokens else None,
+        "autopilot_runs": len(ap_end), "autopilot_steps": sum(int(s.get("step") or 0) for s in ap_end),
+        "autopilot_outcomes": [s.get("outcome") or s.get("kind") for s in ap_end],
+        "frames": frames, "crashes": lc["crashes"][:5], "app_crashes": lc["app_crashes"][:5], "log_errors": lc["errors"][:10],
+        "metrics": lc["metrics"],
+    }
+    (run_dir / "summary.json").write_text(json.dumps(summary, indent=2))
+    contact_sheet(run_dir)
+    write_transcript(run_dir, summary, events, lc)
+    return summary
+
+
+def write_transcript(run_dir, s, events, lc):
+    L = [f"# {s['prompt']}", "",
+         f"- outcome: **{s['outcome']}**" + (f" — error: `{s['error']}`" if s["error"] else ""),
+         f"- wall {s['wall_s']}s · model calls {s['model_calls']} · iterations {s['iterations']} · "
+         f"prompt tokens {s['input_tokens']} (cache hit {s.get('cache_hit')}, written {s.get('cache_write_tokens')}) · "
+         f"out {s['output_tokens']} · tools {s['tool_count']} (searches {s.get('search_calls')}) "
+         f"(display {s['display_tools']}, errors {s['tool_errors']}) · autopilot {s['autopilot_outcomes']} "
+         f"steps {s['autopilot_steps']} · frames {s['frames']}", ""]
+    if s.get("checks"):
+        L += ["## Checks", ""] + [f"- {'✅' if c['ok'] else '❌'} {c['desc']} — got `{c.get('got')}`" for c in s["checks"]] + [""]
+    L += ["## Model tool calls (inputs, from logcat)", ""]
+    for i, c in enumerate(lc["tool_calls"], 1):
+        L.append(f"{i}. `{c['tool']}` {c['input'][:600]}")
+    L += ["", "## Timeline (launcher callbacks)", "", "```"]
+    for e in events:
+        k = e["type"]
+        t = f"{e.get('t', 0) / 1000:7.1f}s"
+        if k == "tool_start":
+            L.append(f"{t} ▶ {e['tool']}")
+        elif k == "tool_result":
+            L.append(f"{t}   ↳ {(e.get('summary') or '').strip()[:300]}")
+            d = (e.get("detail") or "").strip()
+            if d:
+                L.append("          " + d[:700].replace("\n", "\n          "))
+        elif k == "agent_step":
+            st = e["step"]
+            L.append(f"{t}   ◆ {json.dumps({x: st.get(x) for x in ('kind', 'step', 'subgoal', 'action', 'target', 'confidence', 'source', 'reason', 'outcome', 'message') if st.get(x) is not None})[:400]}")
+        elif k in ("complete", "error", "timeout", "display_created", "display_destroyed", "end"):
+            L.append(f"{t} {k} {json.dumps({x: v for x, v in e.items() if x not in ('type', 't')})[:600]}")
+    L += ["```", "", "## Final reply", "", s["reply"] or "_(none)_", ""]
+    if s.get("app_crashes"):
+        L += ["## Other apps crashed during the run (not counted against AndyClaw)", "", "```"] + s["app_crashes"] + ["```", ""]
+    if s["crashes"] or s["log_errors"]:
+        L += ["## Errors in logcat", "", "```"] + s["crashes"] + s["log_errors"] + ["```", ""]
+    L += ["Files: `contact.jpg` (frame strip), `last.jpg`, `device/frames/`, `device/events.jsonl`, "
+          "`logcat.txt` (grep AGENTDISPLAYDEBUGKEY for the full system prompt and every tool result)."]
+    (run_dir / "transcript.md").write_text("\n".join(L) + "\n")
+
+
+def parse_sets(pairs):
+    out = {}
+    for p in pairs or []:
+        k, _, v = p.partition("=")
+        out[k] = v
+    return out
+
+
+def cmd_run(args):
+    prompt = " ".join(args.prompt)
+    run_dir = RUNS / f"{dt.datetime.now():%Y%m%d-%H%M%S}_{slug(prompt)}"
+    log(f"run → {run_dir.relative_to(HERE)}")
+    s = do_run(prompt, run_dir, settings=parse_sets(args.set), timeout=args.timeout, frames=not args.no_frames)
+    print_summary(s)
+    log(f"transcript: {run_dir / 'transcript.md'}")
+
+
+def print_summary(s):
+    print(f"\n  outcome={s['outcome']} wall={s['wall_s']}s modelCalls={s['model_calls']} iterations={s['iterations']} "
+          f"tokens={s['input_tokens']}/{s['output_tokens']} tools={s['tool_count']} autopilot={s['autopilot_outcomes']}")
+    if s["error"]:
+        print(f"  error: {s['error']}")
+    if s["crashes"]:
+        print(f"  \033[31mcrashes: {len(s['crashes'])}\033[0m")
+
+
+# ---------------------------------------------------------------- suites
+
+def run_check(c, summary, run_dir=None):
+    kind = c["type"]
+    if kind == "launched":
+        # AgentDisplayService logs every launch it performs: "Launched <component> on display N".
+        text = (run_dir / "logcat.txt").read_text(errors="replace") if run_dir else ""
+        hits = sorted(set(re.findall(r"AgentDisplayService: Launched (\S+) on display", text)))
+        return any(re.search(c["regex"], h) for h in hits), hits[:5], f"launched /{c['regex']}/ on the agent display"
+    if kind == "setting":
+        got = sh(f"settings get {c['ns']} {c['key']}")
+        return got == str(c["equals"]), got, f"{c['ns']}/{c['key']} == {c['equals']}"
+    if kind == "reply_regex":
+        got = summary["reply"]
+        return bool(re.search(c["regex"], got or "", re.I | re.S)), (got or "")[:120], f"reply ~ /{c['regex']}/"
+    if kind == "shell_regex":
+        got = sh(c["cmd"])
+        return bool(re.search(c["regex"], got, re.I | re.S)), got[:200], f"`{c['cmd']}` ~ /{c['regex']}/"
+    if kind == "tool_used":
+        hit = [t for t in summary["tools"] if re.search(c["regex"], t)]
+        return bool(hit), hit[:5], f"used tool /{c['regex']}/"
+    if kind == "tool_not_used":
+        hit = [t for t in summary["tools"] if re.search(c["regex"], t)]
+        return not hit, hit[:5], f"did not use tool /{c['regex']}/"
+    raise ValueError(f"unknown check {kind}")
+
+
+def insert_contact(name, phone):
+    sh("content insert --uri content://com.android.contacts/raw_contacts --bind account_type:n: --bind account_name:n:")
+    rid = re.search(r"_id=(\d+)", sh("content query --uri content://com.android.contacts/raw_contacts --projection _id --sort '_id DESC'"))
+    if not rid:
+        raise RuntimeError("could not insert a contact")
+    rid = rid.group(1)
+    sh(f"content insert --uri content://com.android.contacts/data --bind raw_contact_id:i:{rid} "
+       f"--bind mimetype:s:vnd.android.cursor.item/name --bind data1:s:{shlex.quote(name)}")
+    sh(f"content insert --uri content://com.android.contacts/data --bind raw_contact_id:i:{rid} "
+       f"--bind mimetype:s:vnd.android.cursor.item/phone_v2 --bind data1:s:{shlex.quote(phone)} --bind data2:i:2")
+
+
+def run_task(task, suite_dir, rep, settings, timeout):
+    for cmd in task.get("setup", []):
+        sh(cmd)
+    for c in task.get("setup_contacts", []):
+        insert_contact(c["name"], c["phone"])
+    for pkg in task.get("reset_apps", []):
+        sh(f"am force-stop {pkg}")
+    run_dir = suite_dir / "runs" / f"{task['id']}__{rep}"
+    s = do_run(task["prompt"], run_dir, settings=settings, timeout=task.get("timeout_s", timeout), quiet=True)
+    checks = []
+    for c in task.get("checks", []):
+        try:
+            ok, got, desc = run_check(c, s, run_dir)
+        except Exception as e:
+            ok, got, desc = False, str(e), c["type"]
+        checks.append({"ok": ok, "got": got, "desc": desc})
+    s["checks"] = checks
+    s["ok"] = s["outcome"] == "complete" and all(c["ok"] for c in checks) and not s["crashes"]
+    s["task"], s["rep"] = task["id"], rep
+    (run_dir / "summary.json").write_text(json.dumps(s, indent=2))
+    write_transcript(run_dir, s, read_events(run_dir), parse_logcat(run_dir / "logcat.txt"))
+    for cmd in task.get("teardown", []):
+        sh(cmd)
+    sh("input keyevent KEYCODE_HOME")
+    return s
+
+
+def load_tasks(files, only=None, tags=None):
+    tasks = []
+    for f in files:
+        tasks += json.loads(Path(f).read_text())["tasks"]
+    if only:
+        tasks = [t for t in tasks if t["id"] in only]
+    if tags:
+        tasks = [t for t in tasks if set(tags) & set(t.get("tags", []))]
+    return tasks
+
+
+def git_rev(path):
+    r = subprocess.run(["git", "-C", str(path), "describe", "--always", "--dirty"], capture_output=True, text=True)
+    return r.stdout.strip()
+
+
+def cmd_suite(args):
+    files = args.tasks or [str(HERE / "tasks/core.json")]
+    tasks = load_tasks(files, args.only.split(",") if args.only else None, args.tag)
+    name = args.name or "suite"
+    suite_dir = SUITES / f"{dt.datetime.now():%Y%m%d-%H%M%S}_{slug(name, 30)}"
+    suite_dir.mkdir(parents=True)
+    settings = parse_sets(args.set)
+    meta = {"name": name, "andyclaw": git_rev(REPO), "ethos": git_rev(ETHOS_TREE), "task_files": files,
+            "repeat": args.repeat, "settings_override": settings, "started": dt.datetime.now().isoformat(),
+            "andyclaw_state": state()}
+    try:
+        meta["launcher_settings"] = {k: v for k, v in json.loads(instrument({"op": "settings"})).items()
+                                     if k in ("provider", "model", "autopilotEnabled", "smartRoutingEnabled", "yoloMode",
+                                              "selectedRoutingPresetId", "routingModel", "safetyEnabled")}
+    except Exception as e:
+        meta["launcher_settings"] = str(e)
+    log(f"suite {name}: {len(tasks)} tasks × {args.repeat} → {suite_dir.relative_to(HERE)}")
+    results = []
+    for rep in range(1, args.repeat + 1):
+        for task in tasks:
+            t0 = time.time()
+            s = run_task(task, suite_dir, rep, settings, args.timeout)
+            results.append(s)
+            mark = "\033[32mPASS\033[0m" if s["ok"] else "\033[31mFAIL\033[0m"
+            failed = [c["desc"] for c in s["checks"] if not c["ok"]]
+            print(f"  {mark} {task['id']:<24} #{rep} {time.time() - t0:5.0f}s calls={s['model_calls']} "
+                  f"tools={s['tool_count']} ap={s['autopilot_outcomes']} {s['outcome'] if s['outcome'] != 'complete' else ''} "
+                  f"{('failed: ' + '; '.join(failed)) if failed else ''}", flush=True)
+            (suite_dir / "results.json").write_text(json.dumps({"meta": meta, "results": results}, indent=2))
+    meta["finished"] = dt.datetime.now().isoformat()
+    (suite_dir / "results.json").write_text(json.dumps({"meta": meta, "results": results}, indent=2))
+    baseline = Path(args.baseline) if args.baseline else previous_suite(suite_dir)
+    report = suite_report(suite_dir, baseline)
+    print("\n" + report)
+    log(f"report: {suite_dir / 'report.md'}")
+
+
+def previous_suite(current):
+    prior = sorted(p for p in SUITES.glob("*") if p != current and (p / "results.json").exists())
+    return prior[-1] if prior else None
+
+
+def aggregate(results):
+    by = {}
+    for r in results:
+        by.setdefault(r["task"], []).append(r)
+    agg = {}
+    for task, rs in by.items():
+        def med(key):
+            vals = [r[key] for r in rs if isinstance(r.get(key), (int, float))]
+            return statistics.median(vals) if vals else None
+        agg[task] = {"n": len(rs), "pass": sum(r["ok"] for r in rs), "wall": med("wall_s"), "calls": med("model_calls"),
+                     "tools": med("tool_count"), "in_tok": med("input_tokens"), "out_tok": med("output_tokens"),
+                     "searches": med("search_calls"), "cache": med("cache_hit")}
+    return agg
+
+
+def fmt(v, nd=0):
+    return "–" if v is None else (f"{v:.{nd}f}" if isinstance(v, float) else str(v))
+
+
+def delta(a, b, nd=0, lower_better=True):
+    if a is None or b is None:
+        return ""
+    d = a - b
+    if abs(d) < 1e-9:
+        return ""
+    good = (d < 0) == lower_better
+    return f" ({'+' if d > 0 else ''}{d:.{nd}f}{'↓' if good else '↑'})" if nd else f" ({'+' if d > 0 else ''}{int(d)}{' ✓' if good else ' ✗'})"
+
+
+def suite_report(suite_dir, baseline=None):
+    data = json.loads((suite_dir / "results.json").read_text())
+    agg = aggregate(data["results"])
+    base = aggregate(json.loads((baseline / "results.json").read_text())["results"]) if baseline else {}
+    m = data["meta"]
+    total = sum(a["pass"] for a in agg.values())
+    n = sum(a["n"] for a in agg.values())
+    L = [f"# agentbench — {m['name']}", "",
+         f"AndyClaw `{m['andyclaw']}` · ethOS `{m['ethos']}` · {m.get('started', '')[:16]} · settings {m.get('launcher_settings')}", "",
+         f"**{total}/{n} passed**" + (f" (baseline `{baseline.name}`: {sum(a['pass'] for a in base.values())}/{sum(a['n'] for a in base.values())})" if base else ""), "",
+         "| task | pass | wall s (med) | model calls | tools (searches) | prompt tok | cache hit | out tok |", "|---|---|---|---|---|---|---|---|"]
+    for task, a in agg.items():
+        b = base.get(task, {})
+        L.append(f"| {task} | {a['pass']}/{a['n']}{delta(a['pass'], b.get('pass'), lower_better=False) if b else ''} "
+                 f"| {fmt(a['wall'], 1)}{delta(a['wall'], b.get('wall'), 1) if b else ''} "
+                 f"| {fmt(a['calls'])}{delta(a['calls'], b.get('calls'), 1) if b else ''} "
+                 f"| {fmt(a['tools'])} ({fmt(a.get('searches'))}) | {fmt(a['in_tok'])}{delta(a['in_tok'], b.get('in_tok')) if b else ''} "
+                 f"| {fmt(a.get('cache'), 2)} | {fmt(a['out_tok'])} |")
+    L += ["", "## Failures", ""]
+    for r in data["results"]:
+        if not r["ok"]:
+            why = [c["desc"] + f" (got `{str(c.get('got'))[:80]}`)" for c in r["checks"] if not c["ok"]]
+            if r["outcome"] != "complete":
+                why.insert(0, f"outcome {r['outcome']}" + (f": {r['error']}" if r.get("error") else ""))
+            if r["crashes"]:
+                why.append(f"{len(r['crashes'])} crash line(s)")
+            L.append(f"- **{r['task']}** #{r['rep']}: {'; '.join(why)} → `runs/{r['task']}__{r['rep']}/transcript.md`")
+    report = "\n".join(L) + "\n"
+    (suite_dir / "report.md").write_text(report)
+    return report
+
+
+def cmd_reanalyze(args):
+    """Recompute every run's metrics from its saved logs (after an analysis fix); checks are kept."""
+    suite_dir = Path(args.suite)
+    data = json.loads((suite_dir / "results.json").read_text())
+    fresh = []
+    for r in data["results"]:
+        run_dir = suite_dir / "runs" / f"{r['task']}__{r['rep']}"
+        s = analyze_run(run_dir, r["prompt"], r["outcome"], r["wall_s"])
+        s.update({k: r[k] for k in ("checks", "ok", "task", "rep")})
+        (run_dir / "summary.json").write_text(json.dumps(s, indent=2))
+        write_transcript(run_dir, s, read_events(run_dir), parse_logcat(run_dir / "logcat.txt"))
+        fresh.append(s)
+    data["results"] = fresh
+    (suite_dir / "results.json").write_text(json.dumps(data, indent=2))
+    print(suite_report(suite_dir, Path(args.baseline) if args.baseline else None))
+
+
+def cmd_compare(args):
+    print(suite_report(Path(args.a), Path(args.b)))
+
+
+def cmd_cycle(args):
+    build("andyclaw")
+    args.window = False
+    args.restart_daemon = False
+    cmd_up(args)
+    cmd_suite(args)
+
+
+def cmd_build(args):
+    build(args.what)
+    if device_online():
+        if args.what in ("daemon", "all"):
+            start_daemon(force=True)
+        if args.what in ("client", "all"):
+            install_if_changed(CLIENT_APK, "agentbench.client.sha")
+        if args.what in ("andyclaw", "all"):
+            install_if_changed(ANDYCLAW_APK, "agentbench.andyclaw.sha")
+
+
+def cmd_status(args):
+    if not device_online():
+        print(f"{SERIAL}: offline (agentbench up)")
+        return
+    print(f"{SERIAL}: online · agentdisplay {'up' if daemon_alive() else 'DOWN'}")
+    print(json.dumps(state(), indent=2))
+
+
+def cmd_selftest(args):
+    """The OS side alone, no model: create, launch, settle, tree, tap, capture, destroy — as AndyClaw's uid."""
+    start_daemon()
+    out = sh(f"run-as {ANDYCLAW} app_process -Djava.class.path=/data/local/tmp/agentdisplayd.jar /system/bin "
+             f"org.ethereumphone.agentbench.AgentDisplaySelfTest /data/data/{ANDYCLAW}/cache/selftest.png", timeout=120)
+    print(out)
+    OUT.mkdir(exist_ok=True)
+    png = subprocess.run([ADB, "-s", SERIAL, "exec-out", "run-as", ANDYCLAW, "cat", f"/data/data/{ANDYCLAW}/cache/selftest.png"],
+                         capture_output=True).stdout
+    (OUT / "selftest.png").write_bytes(png)
+    ok = "ok in" in out and '"error"' not in out
+    log(("\033[32mselftest passed\033[0m" if ok else "\033[31mselftest FAILED\033[0m") + f" — frame: {OUT / 'selftest.png'}")
+    sys.exit(0 if ok else 1)
+
+
+def cmd_down(args):
+    adb("emu", "kill", check=False)
+
+
+def main():
+    ap = argparse.ArgumentParser(prog="agentbench", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    p = sub.add_parser("up"); p.add_argument("--window", action="store_true"); p.add_argument("--restart-daemon", action="store_true"); p.set_defaults(f=cmd_up)
+    p = sub.add_parser("run"); p.add_argument("prompt", nargs="+"); p.add_argument("--set", action="append", help="launcher setSetting key=value, e.g. model=… autopilotEnabled=false")
+    p.add_argument("--timeout", type=int, default=300); p.add_argument("--no-frames", action="store_true"); p.set_defaults(f=cmd_run)
+    for name, fn in (("suite", cmd_suite), ("cycle", cmd_cycle)):
+        p = sub.add_parser(name); p.add_argument("tasks", nargs="*"); p.add_argument("--repeat", type=int, default=1)
+        p.add_argument("--only"); p.add_argument("--tag", action="append"); p.add_argument("--name"); p.add_argument("--set", action="append")
+        p.add_argument("--timeout", type=int, default=300); p.add_argument("--baseline"); p.set_defaults(f=fn)
+    p = sub.add_parser("reanalyze"); p.add_argument("suite"); p.add_argument("--baseline"); p.set_defaults(f=cmd_reanalyze)
+    p = sub.add_parser("compare"); p.add_argument("a"); p.add_argument("b"); p.set_defaults(f=cmd_compare)
+    p = sub.add_parser("build"); p.add_argument("what", nargs="?", default="all", choices=["andyclaw", "client", "daemon", "all"]); p.set_defaults(f=cmd_build)
+    sub.add_parser("status").set_defaults(f=cmd_status)
+    sub.add_parser("selftest").set_defaults(f=cmd_selftest)
+    sub.add_parser("down").set_defaults(f=cmd_down)
+    args = ap.parse_args()
+    args.f(args)
+
+
+if __name__ == "__main__":
+    main()

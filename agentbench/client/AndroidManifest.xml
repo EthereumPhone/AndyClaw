@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- agentbench client: stands in for the ethOS launcher's dGENT tab and drives AndyClaw through
+     LauncherBindingService (sendPrompt + ILauncherCallback). AndyClaw admits this package in
+     debug builds only. Run with `am instrument -w -r`; see agentbench/README.md. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="org.ethereumphone.andyclaw.agentbench">
+
+    <queries>
+        <package android:name="org.ethereumphone.andyclaw" />
+    </queries>
+
+    <application android:label="agentbench" android:debuggable="true" android:hasCode="true" />
+
+    <instrumentation
+        android:name=".BenchInstrumentation"
+        android:targetPackage="org.ethereumphone.andyclaw.agentbench"
+        android:label="agentbench" />
+</manifest>
