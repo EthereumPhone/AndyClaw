@@ -191,11 +191,24 @@ class SettingsSkill(private val context: Context) : AndyClawSkill {
                         "(currently '${read(elsewhere, name)}'). Nothing was written. Use write_${elsewhere}_setting.")
                 }
             }
-            when (namespace) {
+            val written = when (namespace) {
                 "system" -> Settings.System.putString(context.contentResolver, name, value)
                 "secure" -> Settings.Secure.putString(context.contentResolver, name, value)
                 "global" -> Settings.Global.putString(context.contentResolver, name, value)
                 else -> return SkillResult.Error("Invalid namespace for write: $namespace")
+            }
+            // A key Android moved to another namespace (stay_on_while_plugged_in, once a system
+            // setting, is global) still *reads* through the old one, so the check above passes;
+            // the put then returns false and writes nothing. That was reported as success too.
+            // What the phone now says is the answer, not what the call returned.
+            val after = read(namespace, name)
+            if (!written || after != value) {
+                val elsewhere = NAMESPACES.filter { it != namespace && read(it, name) != null }
+                return SkillResult.Error("'$name' was not changed: it still reads '${after ?: "unset"}'. Nothing was written" +
+                    (if (elsewhere.isNotEmpty()) ". It also exists as a ${elsewhere.joinToString(" and ")} setting; " +
+                        "Android moved some keys between namespaces, so try " +
+                        elsewhere.joinToString(" or ") { "write_${it}_setting" } + "."
+                    else "; the value may not be one this setting accepts."))
             }
             SkillResult.Success(buildJsonObject {
                 put("success", true)
