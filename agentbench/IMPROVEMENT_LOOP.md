@@ -221,3 +221,40 @@ Open for iteration 2:
 - `select:` costs a round trip for a tool that was just found.
 - The prompt cache is rewritten whenever the tool list grows.
 - The suite needs harder tasks.
+
+---
+
+## Iteration 2, in full
+
+core.json had reached 14/14, so the suite could no longer tell better from worse (§7). `tasks/hard.json`
+added 12 tasks: ambiguous phrasing, answers several screens deep, a condition to judge, a setting with no
+obvious tool, multi-step contact edits. The baseline (`suites/…_iter2-baseline`) passed 24/25. The signal
+was cost: DND, the About-page reads and Chrome each took 35–85 s where the tool-backed tasks took 5–10 s.
+The fix commits are `8b164de`..`88a2a7d`, plus `64c7f5b` for the undo logging.
+
+| Finding | Evidence | Root cause | Fix | Result (median) |
+|---|---|---|---|---|
+| "Stay awake while charging" reported done, wasn't | `write_system_setting` → `{"success":true,"previous":"0"}`; device still 0 | the key moved to Global; System reads redirect, the put returned false, the result was ignored | the put's result and a read-back decide; the error names the other namespace | ✅ refusal verified by forcing the path |
+| DND: 84 s, 23 calls | model found `ZEN_MODE_SETTINGS` at call 19 | the autopilot always started at the app's home; the refusal named no route | `start_intent` on the autopilot; the refusal names the page | ✅ 84 → 8.5–11 s, 23 → 3–5 calls |
+| DND needs an OTA (iteration 1) | `enforcePolicyAccess` returns early for `MANAGE_NOTIFICATIONS` | the permission is signature-only, and AndyClaw is platform-signed on a dgen1 | request it; no allowlist entry needed | **untested: needs a dgen1** |
+| One Jev timeout = planner for the rest of the run | `esc=jev_error,jev_unavailable ×13`, 14 planner calls | `jevFailures` reset only on a successful call, which never came | pause 1/2/4/8 steps, then probe | ✅ in the tests; the run no longer collapses |
+| Planner tapped "Android version" to "see" the value | `AutopilotPlanner` reply: "I need to see the actual version number" | the planner prompt used `name` = `label ?: … ?: summary`; the summary never showed | summaries in the planner prompt and the hand-over summary | ✅ About tasks 36–42 → 10–11 s |
+| Contact edit through `execute_code` | 7 calls, `app_not_installed`, then hand-written ContactsContract | no update tool; `com.android.contacts` guessed | `update_contact` (IRREVERSIBLE, private data); role-based app resolution | ✅ 28 → 7 s |
+| Jev errors had no cause | `reason=jev_error` only | the step log dropped Jev's answers | `jev{…}` on every step, including undo | ✅ showed the failures are `SocketTimeoutException` at the 3.5 s limit |
+
+After: **25/25** (`suites/…_iter2`), targeted ×2 **14/14**.
+
+Environment, not agent (README "Known gaps"): no vibrator, no calendar account, Chrome's first run after
+every `pm clear`, the bench wallet's balance (the backend refuses below $0.05, and a suite then fails
+every task at 0.3 s with a 403).
+
+Open for iteration 3:
+- **Stale sub-goals.** A plan that starts "Open <app>" or "Search for X" is overtaken by the first useful
+  tap, and LAST_PROGRESS, judged against the overtaken sub-goal, undoes a correct tap
+  (`contacts_read_ui`: Back on Grace Hopper's card; 15 → 24 s over 3 runs). The step log now carries the
+  numbers. Ask Jev whether a *later* sub-goal is already met, and skip to it.
+- **Jev timeouts.** `SocketTimeoutException` at the 3.5 s `callTimeout`, several times per suite. Check the
+  backend's `/api/jev` latency before touching the client.
+- **Chrome first run** (`More` / `No thanks` sheets) still hands over. Not seen on a phone after the
+  first day, so low priority.
+- **Verify `MANAGE_NOTIFICATIONS` on a dgen1** (`set_dnd_mode` should succeed with no UI at all).
