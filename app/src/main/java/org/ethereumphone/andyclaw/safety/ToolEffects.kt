@@ -102,7 +102,7 @@ object ToolEffects {
     val PRIVATE_DATA_TOOLS: Set<String> = setOf(
         // Messages, calls, contacts, mail, notifications.
         "read_sms", "get_call_log", "list_conversations", "read_messages", "list_telegram_chats",
-        "search_contacts", "get_contact_details", "get_eth_contacts",
+        "search_contacts", "get_contact_details", "get_eth_contacts", "update_contact",
         "gmail_read", "gmail_get", "list_notifications",
         // What the agent remembers about the user, and who the agent is for them.
         "memory_search", "memory_list", "memory_read", "memory_tree", "read_soul",
@@ -236,6 +236,9 @@ object ToolEffects {
         "create_contact" eff ToolEffect.REVERSIBLE,
         // Rewriting a contact's ETH address re-aims every later payment at it.
         "set_eth_address" eff ToolEffect.IRREVERSIBLE,
+        // Where a contact's calls, messages and mail go: the same redirection a stranger's
+        // instruction could aim at as a changed ETH address.
+        "update_contact" eff ToolEffect.IRREVERSIBLE,
 
         // ── CronjobSkill ─────────────────────────────────────────────
         // A job runs later with nobody watching, so creating one is granting that later run

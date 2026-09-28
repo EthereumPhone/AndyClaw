@@ -129,6 +129,7 @@ object ApprovalSummaries {
         "reboot_device" to "Restart the phone",
         "delete_event" to "Delete a calendar event",
         "set_eth_address" to "Change a contact's ETH address",
+        "update_contact" to "Change a contact's name, phone number or email",
         "update_soul" to "Rewrite the agent's standing instructions",
         "agent_display_autopilot" to "Do a task in an app",
     )

@@ -1,6 +1,8 @@
 package org.ethereumphone.andyclaw.skills.builtin
 
+import android.content.ContentProviderOperation
 import android.content.Context
+import android.provider.ContactsContract
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -103,6 +105,35 @@ class ContactsSkill(private val context: Context) : AndyClawSkill {
                 requiredPermissions = listOf("android.permission.WRITE_CONTACTS"),
             ),
             ToolDefinition(
+                name = "update_contact",
+                description = "Change an existing contact's name, phone number or email. Replaces the contact's " +
+                    "first number or email (or adds one if it has none). Find the contact_id with search_contacts.",
+                inputSchema = JsonObject(mapOf(
+                    "type" to JsonPrimitive("object"),
+                    "properties" to JsonObject(mapOf(
+                        "contact_id" to JsonObject(mapOf(
+                            "type" to JsonPrimitive("string"),
+                            "description" to JsonPrimitive("The contact ID"),
+                        )),
+                        "name" to JsonObject(mapOf(
+                            "type" to JsonPrimitive("string"),
+                            "description" to JsonPrimitive("New display name"),
+                        )),
+                        "phone" to JsonObject(mapOf(
+                            "type" to JsonPrimitive("string"),
+                            "description" to JsonPrimitive("New phone number"),
+                        )),
+                        "email" to JsonObject(mapOf(
+                            "type" to JsonPrimitive("string"),
+                            "description" to JsonPrimitive("New email address"),
+                        )),
+                    )),
+                    "required" to JsonArray(listOf(JsonPrimitive("contact_id"))),
+                )),
+                requiresApproval = true,
+                requiredPermissions = listOf("android.permission.WRITE_CONTACTS"),
+            ),
+            ToolDefinition(
                 name = "set_eth_address",
                 description = "Set or update the ETH address on an existing contact.",
                 inputSchema = JsonObject(mapOf(
@@ -141,6 +172,10 @@ class ContactsSkill(private val context: Context) : AndyClawSkill {
             "set_eth_address" -> {
                 if (tier != Tier.PRIVILEGED) SkillResult.Error("set_eth_address requires privileged OS")
                 else setEthAddress(params)
+            }
+            "update_contact" -> {
+                if (tier != Tier.PRIVILEGED) SkillResult.Error("update_contact requires privileged OS")
+                else updateContact(params)
             }
             else -> SkillResult.Error("Unknown tool: $tool")
         }
@@ -234,6 +269,90 @@ class ContactsSkill(private val context: Context) : AndyClawSkill {
             }
         } catch (e: Exception) {
             SkillResult.Error("Failed to create contact: ${e.message}")
+        }
+    }
+
+    /**
+     * Rewrites the name, first number and first email of one contact. Without it, "Grace got a
+     * new number" went through the Contacts app's editor or, when that failed, through
+     * execute_code writing ContactsContract by hand (agentbench contact_edit_number).
+     */
+    private fun updateContact(params: JsonObject): SkillResult {
+        val contactId = params["contact_id"]?.jsonPrimitive?.contentOrNull?.toLongOrNull()
+            ?: return SkillResult.Error("Missing or invalid parameter: contact_id (use the id from search_contacts)")
+        val name = params["name"]?.jsonPrimitive?.contentOrNull?.trim()?.takeIf { it.isNotEmpty() }
+        val phone = params["phone"]?.jsonPrimitive?.contentOrNull?.trim()?.takeIf { it.isNotEmpty() }
+        val email = params["email"]?.jsonPrimitive?.contentOrNull?.trim()?.takeIf { it.isNotEmpty() }
+        if (name == null && phone == null && email == null) {
+            return SkillResult.Error("Nothing to change: give name, phone and/or email")
+        }
+        return try {
+            val resolver = context.contentResolver
+            val rawId = resolver.query(
+                ContactsContract.RawContacts.CONTENT_URI, arrayOf(ContactsContract.RawContacts._ID),
+                "${ContactsContract.RawContacts.CONTACT_ID}=? AND ${ContactsContract.RawContacts.DELETED}=0",
+                arrayOf(contactId.toString()), "${ContactsContract.RawContacts._ID} ASC",
+            )?.use { if (it.moveToFirst()) it.getLong(0) else null }
+                ?: return SkillResult.Error("Contact not found: $contactId")
+
+            val ops = ArrayList<ContentProviderOperation>()
+            fun upsert(mimeType: String, column: String, value: String, extra: Map<String, Any> = emptyMap()) {
+                val dataId = resolver.query(
+                    ContactsContract.Data.CONTENT_URI, arrayOf(ContactsContract.Data._ID),
+                    "${ContactsContract.Data.CONTACT_ID}=? AND ${ContactsContract.Data.MIMETYPE}=?",
+                    arrayOf(contactId.toString(), mimeType), "${ContactsContract.Data._ID} ASC",
+                )?.use { if (it.moveToFirst()) it.getLong(0) else null }
+                ops += if (dataId != null) {
+                    ContentProviderOperation.newUpdate(ContactsContract.Data.CONTENT_URI)
+                        .withSelection("${ContactsContract.Data._ID}=?", arrayOf(dataId.toString()))
+                        .withValue(column, value)
+                        .build()
+                } else {
+                    ContentProviderOperation.newInsert(ContactsContract.Data.CONTENT_URI)
+                        .withValue(ContactsContract.Data.RAW_CONTACT_ID, rawId)
+                        .withValue(ContactsContract.Data.MIMETYPE, mimeType)
+                        .withValue(column, value)
+                        .apply { extra.forEach { (k, v) -> withValue(k, v) } }
+                        .build()
+                }
+            }
+            name?.let {
+                upsert(ContactsContract.CommonDataKinds.StructuredName.CONTENT_ITEM_TYPE,
+                    ContactsContract.CommonDataKinds.StructuredName.DISPLAY_NAME, it)
+            }
+            phone?.let {
+                upsert(ContactsContract.CommonDataKinds.Phone.CONTENT_ITEM_TYPE,
+                    ContactsContract.CommonDataKinds.Phone.NUMBER, it,
+                    mapOf(ContactsContract.CommonDataKinds.Phone.TYPE to ContactsContract.CommonDataKinds.Phone.TYPE_MOBILE))
+            }
+            email?.let {
+                upsert(ContactsContract.CommonDataKinds.Email.CONTENT_ITEM_TYPE,
+                    ContactsContract.CommonDataKinds.Email.ADDRESS, it,
+                    mapOf(ContactsContract.CommonDataKinds.Email.TYPE to ContactsContract.CommonDataKinds.Email.TYPE_HOME))
+            }
+            resolver.applyBatch(ContactsContract.AUTHORITY, ops)
+
+            // What the contact now says, not what was asked for.
+            val after = contactsSDK.getContactById(contactId.toString())
+                ?: return SkillResult.Error("Contact $contactId could not be read back after the update")
+            val digits = { s: String? -> s.orEmpty().filter(Char::isDigit) }
+            val mismatch = listOfNotNull(
+                name?.takeIf { after.displayName != it }?.let { "name reads '${after.displayName}'" },
+                phone?.takeIf { digits(after.phoneNumber) != digits(it) }?.let { "phone reads '${after.phoneNumber}'" },
+                email?.takeIf { !after.email.equals(it, ignoreCase = true) }?.let { "email reads '${after.email}'" },
+            )
+            if (mismatch.isNotEmpty()) {
+                return SkillResult.Error("Update did not take: ${mismatch.joinToString("; ")}")
+            }
+            SkillResult.Success(buildJsonObject {
+                put("success", true)
+                put("contact_id", contactId.toString())
+                put("name", after.displayName)
+                after.phoneNumber?.let { put("phone", it) }
+                after.email?.let { put("email", it) }
+            }.toString())
+        } catch (e: Exception) {
+            SkillResult.Error("Failed to update contact: ${e.message}")
         }
     }
 

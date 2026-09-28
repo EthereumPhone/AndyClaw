@@ -98,6 +98,7 @@ object SearchHints {
         "get_eth_contacts" to "ethereum wallet contacts addresses",
         "create_contact" to "add new person phone number save",
         "set_eth_address" to "link ethereum wallet to contact",
+        "update_contact" to "edit change contact new phone number email rename person",
 
         // ── Camera ──
         "take_photo" to "capture picture camera snapshot image",
