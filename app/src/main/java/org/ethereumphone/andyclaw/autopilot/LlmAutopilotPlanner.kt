@@ -86,6 +86,8 @@ class LlmAutopilotPlanner(
             append("[${e.id}] ${e.type}")
             e.name?.let { append(" \"${it.take(60)}\"") }
             e.value?.let { append(" value:\"${it.take(40)}\"") }
+            if (e.checked == true) append(" [checked]") else if (e.checked == false) append(" [unchecked]")
+            if (e.selected) append(" [selected]")
             if (!e.enabled) append(" [disabled]")
             appendLine()
         }
@@ -104,6 +106,7 @@ class LlmAutopilotPlanner(
             return if (key in ctx.options) PlannerDecision.Act(key) else PlannerDecision.Unusable("planner_invalid_option")
         }
         if ((obj["done"] as? JsonPrimitive)?.booleanOrNull == true) return PlannerDecision.Done
+        if ((obj["next"] as? JsonPrimitive)?.booleanOrNull == true) return PlannerDecision.SubgoalDone
         (obj["replan"] as? JsonArray)?.let { arr ->
             val steps = arr.mapNotNull { el ->
                 val o = el as? JsonObject ?: return@mapNotNull null
@@ -133,6 +136,8 @@ class LlmAutopilotPlanner(
               {"act": "<option key>"}            perform one of the listed OPTIONS
               {"replan": [{"do": "...", "done_when": "...", "type": "<value key>"}]}
                                                  the remaining sub-goals were wrong; give new ones
+              {"next": true}                     the current sub-goal (→) is already met on this
+                                                 screen; move on to the next one
               {"done": true}                     the GOAL is already accomplished on this screen
               {"abort": "<reason>", "say": "<one sentence for the user>"}
                                                  the goal cannot be done here (login needed, payment,

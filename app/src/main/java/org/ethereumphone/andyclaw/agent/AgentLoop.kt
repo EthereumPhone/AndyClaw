@@ -710,6 +710,7 @@ class AgentLoop(
 
             // Reactive compaction: handles prompt-too-long errors with automatic compaction + circuit breaker
             val compactTracking = AutoCompactTrackingState()
+            val repeatGuard = RepeatGuard()
             val reactiveCompaction = if (client !is LocalLlmClient && compactionConfig != null) {
                 val restoration = PostCompactRestoration(toolSearchService)
                 ReactiveCompaction(
@@ -1074,6 +1075,16 @@ class AgentLoop(
                         ?.filterIsInstance<ToolResultContent.Image>()
                         ?.sumOf { it.source.data.length } ?: 0
                 }
+                // The same calls answered the same way, again: say so on the result the model reads
+                // next, and end the turn if it goes on anyway.
+                val repeat = repeatGuard.observe(toolUseBlocks, allToolResults)
+                if (repeat != RepeatGuard.Verdict.OK) {
+                    Log.w(TAG, "RepeatGuard: identical iteration ${repeatGuard.streak} in a row -> $repeat")
+                    val i = allToolResults.indexOfLast { it is ContentBlock.ToolResult }
+                    (allToolResults.getOrNull(i) as? ContentBlock.ToolResult)?.let { last ->
+                        allToolResults[i] = last.copy(content = last.content + repeatGuard.warning())
+                    }
+                }
                 Log.i("AGENT_VIRTUAL_SCREEN", "AgentLoop: adding ${allToolResults.size} tool results as user message, imageCount=$imageCount, totalBase64Chars=$totalBase64")
                 messages.add(Message("user", MessageContent.Blocks(allToolResults)))
 
@@ -1083,6 +1094,23 @@ class AgentLoop(
                     Log.i(TAG, "Stopped by the user; ending the turn")
                     runOutcome = LedgerOutcome.BLOCKED
                     val line = if (fullText.isEmpty() || fullText.last().isWhitespace()) STOPPED_REPLY else "\n\n$STOPPED_REPLY"
+                    fullText.append(line)
+                    callbacks.onToken(line)
+                    logRunSummary(iterations, totalInputTokens, totalOutputTokens, totalCacheReadTokens, totalCacheWriteTokens, totalTokensSavedByMaxTokens, totalCharsTruncated, truncationCount, budget)
+                    callbacks.onComplete(fullText.toString(), TokenUsageSnapshot(
+                        lastInputTokens = lastInputTokens,
+                        totalInputTokens = totalInputTokens,
+                        totalOutputTokens = totalOutputTokens,
+                        cacheReadTokens = totalCacheReadTokens,
+                        cacheWriteTokens = totalCacheWriteTokens,
+                    ))
+                    return
+                }
+
+                if (repeat == RepeatGuard.Verdict.STOP) {
+                    Log.w(TAG, "RepeatGuard: ending the turn after ${repeatGuard.streak} identical iterations")
+                    val line = if (fullText.isEmpty() || fullText.last().isWhitespace()) RepeatGuard.STOPPED_REPLY
+                        else "\n\n${RepeatGuard.STOPPED_REPLY}"
                     fullText.append(line)
                     callbacks.onToken(line)
                     logRunSummary(iterations, totalInputTokens, totalOutputTokens, totalCacheReadTokens, totalCacheWriteTokens, totalTokensSavedByMaxTokens, totalCharsTruncated, truncationCount, budget)

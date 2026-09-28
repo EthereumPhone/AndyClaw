@@ -72,6 +72,13 @@ sealed interface PlannerDecision {
     data class Act(val optionKey: String) : PlannerDecision
     data class Replan(val steps: List<PlanStep>) : PlannerDecision
     data object Done : PlannerDecision
+
+    /**
+     * The current sub-goal is already met on this screen: move on. Without it a sub-goal the
+     * autopilot had satisfied itself ("Open Settings" — it opens the app before the first step)
+     * left the planner nothing true to say but "no option", which ended the run.
+     */
+    data object SubgoalDone : PlannerDecision
     data class Abort(val reason: String, val say: String? = null) : PlannerDecision
 
     /**
@@ -383,6 +390,9 @@ class AutopilotExecutor(
                         when (val pd = answer.getOrElse { PlannerDecision.Unusable("planner_error") }) {
                             is PlannerDecision.Unusable -> return finish(AutopilotResult.Status.NEEDS_PLANNER, pd.reason)
                             is PlannerDecision.Done -> StepDecision.Done
+                            // The last sub-goal met is the goal met.
+                            is PlannerDecision.SubgoalDone ->
+                                if (subgoal >= plan.steps.lastIndex) StepDecision.Done else StepDecision.AdvanceAndReask
                             is PlannerDecision.Abort -> return finish(AutopilotResult.Status.FAILED, pd.reason, pd.say)
                             is PlannerDecision.Replan -> {
                                 if (pd.steps.isEmpty()) return finish(AutopilotResult.Status.NEEDS_PLANNER, "empty_replan")

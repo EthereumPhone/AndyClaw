@@ -394,6 +394,31 @@ class AutopilotExecutorTest {
     }
 
     @Test
+    fun `a sub-goal the planner finds already met is moved past, not handed back`() = runTest {
+        val device = device()
+        val jev = JevClient { throw JevUnavailableException("no wallet sign-in") }
+        // The model's plan opens with a step the autopilot has already done by launching the app.
+        val stale = plan.copy(steps = listOf(PlanStep("Open the messaging app", doneWhen = "the chat list shows")) + plan.steps)
+        val asked = mutableListOf<Int>()
+        val planner = AutopilotPlanner { ctx ->
+            asked += ctx.subgoalIndex
+            fun pick(verb: String, label: String) =
+                PlannerDecision.Act(ctx.options.entries.first { it.value.startsWith(verb) && it.value.contains("\"$label\"") }.key)
+            when {
+                ctx.subgoalIndex == 0 -> PlannerDecision.SubgoalDone
+                ctx.screen.elements.any { it.label?.contains("Sent") == true } -> PlannerDecision.Done
+                ctx.screen.title == "Chats" -> pick("Tap", "Anna")
+                ctx.screen.elements.any { it.value == "hi" } -> pick("Tap", "Send")
+                else -> pick("Type", "Message")
+            }
+        }
+        val result = AutopilotExecutor(device, jev, planner).run(stale)
+        assertEquals(AutopilotResult.Status.SUCCESS, result.status)
+        assertEquals(listOf("tap:Anna", "type:Message", "tap:Send"), device.performed)
+        assertEquals("asked about the stale sub-goal once", 1, asked.count { it == 0 })
+    }
+
+    @Test
     fun `with Jev down the planner drives every step of the task`() = runTest {
         val device = device()
         val jev = JevClient { throw JevUnavailableException("no wallet sign-in") }

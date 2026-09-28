@@ -512,7 +512,7 @@ object ScreenAnalyzer {
             summary = labelInfo.summary,
             hint = labelInfo.hint,
             value = labelInfo.value,
-            checked = if (labelInfo.hasWidget && labelInfo.widgetCheckable) labelInfo.widgetChecked else null,
+            checked = if (labelInfo.hasWidget && labelInfo.widgetCheckable) labelInfo.widgetChecked else labelInfo.radioChecked,
             enabled = if (!node.isEnabled) false else null,
             selected = if (node.isSelected) true else null,
             actions = actions,

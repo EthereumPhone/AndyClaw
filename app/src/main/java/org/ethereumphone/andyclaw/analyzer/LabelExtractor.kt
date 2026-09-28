@@ -12,7 +12,13 @@ data class LabelInfo(
     val value: String?,
     val hasWidget: Boolean = false,
     val widgetCheckable: Boolean = false,
-    val widgetChecked: Boolean = false
+    val widgetChecked: Boolean = false,
+    /**
+     * The state of a radio button inside the row (a Settings option list), or null when there
+     * is none. Kept apart from the widget fields on purpose: those make the row a toggle, and
+     * the element type is part of every flow's screen checksum.
+     */
+    val radioChecked: Boolean? = null,
 )
 
 object LabelExtractor {
@@ -37,6 +43,7 @@ object LabelExtractor {
         var hasWidget = false
         var widgetCheckable = false
         var widgetChecked = false
+        var radioChecked: Boolean? = null
 
         // First check the container itself
         node.contentDescription?.toString()?.takeIf { it.isNotBlank() }?.let {
@@ -60,6 +67,14 @@ object LabelExtractor {
                 hasWidget = true
                 widgetCheckable = true
                 widgetChecked = child.isChecked
+                return@scanChildren
+            }
+
+            // A radio button: the only thing on a Settings option list that says which option is
+            // the current one. Without it every row read the same, and the model re-tapped the
+            // option it had already chosen until the iteration limit.
+            if (child.isCheckable && childClass.contains("RadioButton")) {
+                radioChecked = child.isChecked
                 return@scanChildren
             }
 
@@ -110,7 +125,8 @@ object LabelExtractor {
             value = null,
             hasWidget = hasWidget,
             widgetCheckable = widgetCheckable,
-            widgetChecked = widgetChecked
+            widgetChecked = widgetChecked,
+            radioChecked = radioChecked,
         )
     }
 
