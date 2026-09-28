@@ -102,10 +102,22 @@ class LlmAutopilotPlanner(
     }
 
     private fun parse(text: String, ctx: PlannerContext): PlannerDecision {
-        val candidate = firstJsonObject(text) ?: return PlannerDecision.Unusable("planner_no_json")
-        val obj = runCatching { json.parseToJsonElement(candidate).jsonObject }
-            .getOrElse { return PlannerDecision.Unusable("planner_bad_json") }
+        // The model sometimes writes a malformed object and then corrects itself in the same
+        // reply ({"scroll_fwd:7": "scroll_fwd:7"} … "Wait, the correct format:" {"act": …}), so
+        // the answer is the first object that reads as one, not simply the first object.
+        val candidates = jsonObjects(text)
+        if (candidates.isEmpty()) return PlannerDecision.Unusable("planner_no_json")
+        var first: PlannerDecision? = null
+        for (candidate in candidates) {
+            val obj = runCatching { json.parseToJsonElement(candidate).jsonObject }.getOrNull() ?: continue
+            val decision = decisionOf(obj, ctx)
+            if (decision !is PlannerDecision.Unusable) return decision
+            if (first == null) first = decision
+        }
+        return first ?: PlannerDecision.Unusable("planner_bad_json")
+    }
 
+    private fun decisionOf(obj: JsonObject, ctx: PlannerContext): PlannerDecision {
         (obj["act"] as? JsonPrimitive)?.contentOrNull?.let { key ->
             return if (key in ctx.options) PlannerDecision.Act(key) else PlannerDecision.Unusable("planner_invalid_option")
         }
@@ -132,9 +144,23 @@ class LlmAutopilotPlanner(
          * from the first `{` to the last `}` failed a reply that added a second object or a
          * brace in a sentence after its answer.
          */
-        internal fun firstJsonObject(text: String): String? {
-            val start = text.indexOf('{')
-            if (start < 0) return null
+        internal fun firstJsonObject(text: String): String? = jsonObjects(text).firstOrNull()
+
+        /** Every top-level balanced `{…}` in [text], in order. */
+        internal fun jsonObjects(text: String): List<String> {
+            val found = ArrayList<String>()
+            var from = 0
+            while (true) {
+                val start = text.indexOf('{', from).takeIf { it >= 0 } ?: return found
+                val obj = balancedFrom(text, start)
+                // An unclosed brace in a sentence is skipped, not the end of the search.
+                if (obj == null) { from = start + 1; continue }
+                found += obj
+                from = start + obj.length
+            }
+        }
+
+        private fun balancedFrom(text: String, start: Int): String? {
             var depth = 0
             var inString = false
             var escaped = false

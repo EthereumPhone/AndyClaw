@@ -21,6 +21,15 @@ class LlmAutopilotPlannerJsonTest {
     }
 
     @Test
+    fun `every object is found, past an unclosed brace`() {
+        // The reply seen on device: a malformed object, then the model correcting itself.
+        val reply = """I should scroll.  {"scroll_fwd:7": "scroll_fwd:7"}  Wait, the correct format:  {"act": "scroll_fwd:7"}"""
+        assertEquals(listOf("""{"scroll_fwd:7": "scroll_fwd:7"}""", """{"act": "scroll_fwd:7"}"""),
+            LlmAutopilotPlanner.jsonObjects(reply))
+        assertEquals(listOf("""{"next": true}"""), LlmAutopilotPlanner.jsonObjects("a { b " + """{"next": true}"""))
+    }
+
+    @Test
     fun `no object or an unclosed one is nothing`() {
         assertNull(first("no json here"))
         assertNull(first("""{"act": "tap:3""""))

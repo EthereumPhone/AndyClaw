@@ -52,7 +52,18 @@ sealed interface StepDecision {
     /** The last action did the wrong thing: go back and never try it on that screen again. */
     data object Undo : StepDecision
 
-    data class Escalate(val reason: String) : StepDecision
+    data class Escalate(val reason: String) : StepDecision {
+        /**
+         * What Jev chose and how surely, when it chose too weakly — for the step log only, and
+         * not part of equality: two escalations for the same reason are the same decision.
+         */
+        var jevPick: String? = null
+            private set
+
+        constructor(reason: String, jevPick: String?) : this(reason) {
+            this.jevPick = jevPick
+        }
+    }
 }
 
 object StepPolicy {
@@ -130,7 +141,11 @@ object StepPolicy {
             (target != null && isCommitLike(target))
         val needed = (if (commits) config.commitConfidence else config.actConfidence) + thresholdBump
         if (answer.confidence < needed || answer.margin < config.actMargin) {
-            return StepDecision.Escalate(if (commits) "low_confidence_commit" else "low_confidence")
+            return StepDecision.Escalate(
+                if (commits) "low_confidence_commit" else "low_confidence",
+                jevPick = String.format(java.util.Locale.ROOT, "%s@%.2f/m%.2f<%.2f",
+                    answer.choice, answer.confidence, answer.margin, needed),
+            )
         }
         return StepDecision.Act(option, answer.confidence, advancesSubgoal = advances, commits = commits)
     }

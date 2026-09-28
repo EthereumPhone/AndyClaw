@@ -104,6 +104,8 @@ data class AutopilotEvent(
     val elapsedMs: Long = 0,
     val plannerCalls: Int = 0,
     val reason: String? = null,
+    /** On ESCALATED: Jev's own pick that was too unsure to act on. Logged only, never shown. */
+    val jevPick: String? = null,
     /** On DONE and FAILED: how the run ended, as [AutopilotOutcome.Outcome.wire]. */
     val outcome: String? = null,
     /** On DONE and FAILED: one short sentence for the user, never a reason code. */
@@ -378,7 +380,7 @@ class AutopilotExecutor(
                         // telling anyone the model is being asked: re-read and retry.
                         if (decision.reason == "jev_error" && jevFailures in 1 until config.maxJevFailures) continue
                         escalations += decision.reason
-                        emit(AutopilotEvent.Kind.ESCALATED) { copy(reason = decision.reason) }
+                        emit(AutopilotEvent.Kind.ESCALATED) { copy(reason = decision.reason, jevPick = decision.jevPick) }
                         if (planner == null || plannerCalls >= plannerBudget) {
                             return finish(AutopilotResult.Status.NEEDS_PLANNER, decision.reason)
                         }
