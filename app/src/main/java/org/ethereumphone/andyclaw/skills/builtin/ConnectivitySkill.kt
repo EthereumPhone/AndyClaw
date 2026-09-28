@@ -4,6 +4,7 @@ import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothManager
 import android.content.Context
 import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.net.wifi.WifiManager
 import android.provider.Settings
 import android.telephony.TelephonyManager
@@ -29,7 +30,7 @@ class ConnectivitySkill(private val context: Context) : AndyClawSkill {
         tools = listOf(
             ToolDefinition(
                 name = "get_connectivity_status",
-                description = "Get current connectivity status including WiFi, Bluetooth, mobile data, and airplane mode state.",
+                description = "Get current connectivity status: WiFi (on, connected, network name), the active network type, the phone's IP addresses, Bluetooth, mobile data, data saver and airplane mode.",
                 inputSchema = JsonObject(mapOf("type" to JsonPrimitive("object"), "properties" to JsonObject(emptyMap()))),
             ),
         ),
@@ -158,9 +159,27 @@ class ConnectivitySkill(private val context: Context) : AndyClawSkill {
                 tm.isDataEnabled
             } catch (_: Exception) { false }
 
+            val active = connectivityManager.activeNetwork
+            val caps = active?.let { connectivityManager.getNetworkCapabilities(it) }
+            val link = active?.let { connectivityManager.getLinkProperties(it) }
             val result = buildJsonObject {
                 put("wifi_enabled", wifiManager.isWifiEnabled)
-                put("wifi_connected", connectivityManager.activeNetwork != null && wifiManager.isWifiEnabled)
+                put("wifi_connected", caps?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true)
+                put("network_type", when {
+                    caps == null -> "none"
+                    caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> "wifi"
+                    caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> "cellular"
+                    caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) -> "ethernet"
+                    caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN) -> "vpn"
+                    else -> "other"
+                })
+                // "What's my IP?" had no tool: the model wrote WifiManager code in execute_code,
+                // twice (agentbench ip_address).
+                put("ip_addresses", JsonArray(link?.linkAddresses.orEmpty()
+                    .mapNotNull { it.address?.hostAddress?.substringBefore('%') }
+                    .map { JsonPrimitive(it) }))
+                put("data_saver", connectivityManager.restrictBackgroundStatus ==
+                    ConnectivityManager.RESTRICT_BACKGROUND_STATUS_ENABLED)
                 @Suppress("DEPRECATION")
                 put("wifi_ssid", wifiManager.connectionInfo?.ssid?.removeSurrounding("\"") ?: "unknown")
                 put("bluetooth_enabled", bluetoothManager?.adapter?.isEnabled == true)
