@@ -30,6 +30,24 @@ class LlmAutopilotPlannerJsonTest {
     }
 
     @Test
+    fun `an option named without act is still that option`() {
+        val never = object : org.ethereumphone.andyclaw.llm.LlmClient {
+            override suspend fun sendMessage(request: org.ethereumphone.andyclaw.llm.MessagesRequest) = error("not called")
+            override suspend fun streamMessage(request: org.ethereumphone.andyclaw.llm.MessagesRequest,
+                callback: org.ethereumphone.andyclaw.llm.StreamingCallback) = error("not called")
+        }
+        val planner = LlmAutopilotPlanner(client = never, modelId = "m")
+        val screen = ScreenSnapshot(packageName = "com.app", elements = emptyList())
+        val plan = AutopilotPlan(packageName = "com.app", goal = "g", steps = listOf(PlanStep("s")))
+        val ctx = PlannerContext(plan, 0, screen, emptyList(), "low_confidence",
+            mapOf("tap:3" to "Tap [3]", "reveal:1001" to "Scroll to bring [1001] \"Display\" into view", "back" to "Back"))
+        assertEquals(PlannerDecision.Act("reveal:1001"), planner.parse("""{"reveal": 1001}""", ctx))
+        assertEquals(PlannerDecision.Act("tap:3"), planner.parse("""{"tap": 3}""", ctx))
+        assertEquals(PlannerDecision.Act("back"), planner.parse("""{"back": true}""", ctx))
+        assertEquals(PlannerDecision.Unusable("planner_unrecognised"), planner.parse("""{"reveal": 7}""", ctx))
+    }
+
+    @Test
     fun `no object or an unclosed one is nothing`() {
         assertNull(first("no json here"))
         assertNull(first("""{"act": "tap:3""""))

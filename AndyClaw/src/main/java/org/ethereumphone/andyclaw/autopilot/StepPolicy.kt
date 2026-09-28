@@ -14,6 +14,13 @@ data class AutopilotConfig(
     val actMargin: Double = 0.15,
     /** Actions that send, post, buy or delete need more certainty. */
     val commitConfidence: Double = 0.92,
+    /**
+     * Scrolling and bringing a row into view change nothing in the app, and a wrong one costs a
+     * scroll back: they need less. On device Jev picked them right every time at 0.61-0.76 with
+     * a margin of 0.5 or more, and each of those was a planner call under the general bar.
+     */
+    val movementConfidence: Double = 0.60,
+    val movementMargin: Double = 0.30,
     val subgoalDone: Double = 0.80,
     /** "The whole goal is done" on the last sub-goal. */
     val goalDoneLast: Double = 0.85,
@@ -141,8 +148,14 @@ object StepPolicy {
 
         val commits = (response.noul(Questions.COMMITS) ?: 0.0) >= config.commitsLikely ||
             (target != null && isCommitLike(target))
-        val needed = (if (commits) config.commitConfidence else config.actConfidence) + thresholdBump
-        if (answer.confidence < needed || answer.margin < config.actMargin) {
+        val moves = option is StepOption.ScrollForward || option is StepOption.ScrollBackward || option is StepOption.Reveal
+        val needed = when {
+            commits -> config.commitConfidence
+            moves -> config.movementConfidence
+            else -> config.actConfidence
+        } + thresholdBump
+        val margin = if (moves && !commits) config.movementMargin else config.actMargin
+        if (answer.confidence < needed || answer.margin < margin) {
             return StepDecision.Escalate(
                 if (commits) "low_confidence_commit" else "low_confidence",
                 jevPick = String.format(java.util.Locale.ROOT, "%s@%.2f/m%.2f<%.2f",

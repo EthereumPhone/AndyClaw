@@ -101,7 +101,7 @@ class LlmAutopilotPlanner(
         ctx.options.entries.take(MAX_OPTIONS).forEach { (k, d) -> appendLine("$k: $d") }
     }
 
-    private fun parse(text: String, ctx: PlannerContext): PlannerDecision {
+    internal fun parse(text: String, ctx: PlannerContext): PlannerDecision {
         // The model sometimes writes a malformed object and then corrects itself in the same
         // reply ({"scroll_fwd:7": "scroll_fwd:7"} … "Wait, the correct format:" {"act": …}), so
         // the answer is the first object that reads as one, not simply the first object.
@@ -134,6 +134,14 @@ class LlmAutopilotPlanner(
         }
         (obj["abort"] as? JsonPrimitive)?.contentOrNull?.let { reason ->
             return PlannerDecision.Abort(reason, (obj["say"] as? JsonPrimitive)?.contentOrNull)
+        }
+        // An option named without "act" — {"reveal": 1001}, {"tap": 3}, {"scroll_fwd:7": …} — is
+        // still an unambiguous choice among the listed keys. Seen on device, each time with the
+        // right answer in it.
+        obj.entries.singleOrNull()?.let { (k, v) ->
+            val value = (v as? JsonPrimitive)?.contentOrNull
+            listOfNotNull(k, value?.let { "$k:$it" }, value).firstOrNull { it in ctx.options }
+                ?.let { return PlannerDecision.Act(it) }
         }
         return PlannerDecision.Unusable("planner_unrecognised")
     }
@@ -189,7 +197,8 @@ class LlmAutopilotPlanner(
             You help an automated agent that is operating an Android app for the user. A fast
             classifier normally picks each action; it was unsure, so you decide this one step.
             Answer with exactly one JSON object and nothing else:
-              {"act": "<option key>"}            perform one of the listed OPTIONS
+              {"act": "<option key>"}            perform one of the listed OPTIONS, named by its
+                                                 whole key, e.g. {"act": "tap:3"} or {"act": "reveal:1001"}
               {"replan": [{"do": "...", "done_when": "...", "type": "<value key>"}]}
                                                  the remaining sub-goals were wrong; give new ones
               {"next": true}                     the current sub-goal (→) is already met on this

@@ -47,6 +47,21 @@ class StepPolicyTest {
     }
 
     @Test
+    fun `moving the page needs less than acting on it, but still a clear lead`() {
+        val list = ScreenElement(id = 20, type = "list", label = "scrollable list",
+            actions = listOf("scroll_forward", "scroll_backward"), centerX = 360, centerY = 400)
+        val page = screen.copy(elements = screen.elements + list)
+        val movePrompt = StepPromptBuilder.build(plan, 0, page, listOf(HistoryEntry("tapped x", true)))
+        fun pick(key: String, c: Double, runnerUp: Double) =
+            StepPolicy.decide(T.response(Questions.NEXT to T.choice(key, c, runnerUp)), movePrompt, plan, 0, page, false, 0.0, config, true)
+        assertEquals(StepDecision.Act(StepOption.ScrollForward(20), 0.65), pick("scroll_fwd:20", 0.65, 0.1))
+        assertEquals("a tap at the same confidence is still asked about",
+            StepDecision.Escalate("low_confidence"), pick("tap:3", 0.65, 0.1))
+        assertEquals("a close runner-up still escalates",
+            StepDecision.Escalate("low_confidence"), pick("scroll_fwd:20", 0.65, 0.45))
+    }
+
+    @Test
     fun `commit-like actions need the higher bar`() {
         val send = T.choice("tap:9", 0.9, 0.0)
         assertEquals(StepDecision.Escalate("low_confidence_commit"), decide(Questions.NEXT to send))

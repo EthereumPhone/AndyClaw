@@ -454,8 +454,8 @@ class AutopilotExecutorTest {
                     mapOf(Questions.NEXT to T.choice(ScriptedJev.keyFor(req, Questions.NEXT, "Tap", "D")!!, 0.95))
                 ScriptedJev.keyFor(req, Questions.NEXT, "Scroll to bring", "D") != null ->
                     mapOf(Questions.NEXT to T.choice(ScriptedJev.keyFor(req, Questions.NEXT, "Scroll to bring", "D")!!, 0.93))
-                // Only part of the page seen: a guess, and Jev knows it.
-                else -> mapOf(Questions.NEXT to T.choice("scroll_fwd:9", 0.6, runnerUp = 0.3))
+                // Only part of the page seen: a guess, and Jev knows it - too close to call.
+                else -> mapOf(Questions.NEXT to T.choice("scroll_fwd:9", 0.45, runnerUp = 0.35))
             }
         }
         val result = AutopilotExecutor(device, jev, noPlanner).run(openD)
