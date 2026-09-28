@@ -159,6 +159,12 @@ object PromptAssembler {
         if (hasAgentDisplay) {
             sb.appendLine("## Virtual Display")
             sb.appendLine("You have your own virtual screen on this device. When a user asks you to open an app, do something in an app, or perform any UI-driven task — you MUST use the virtual display. Do NOT tell the user to do it manually.")
+            val hasAutopilot = skills.any { skill ->
+                skill.privilegedManifest?.tools?.any { it.name == "agent_display_autopilot" } == true
+            }
+            if (hasAutopilot) {
+                sb.appendLine("**Start with `agent_display_autopilot`**, called directly (not through a sub-agent): one call with the plan does the whole task. The manual steps below are only for when it returns `needs_planner`, continuing from the `screen` it reports.")
+            }
             sb.appendLine("1. `agent_display_create` — creates the display and launches the app. **Its response IS the screen** — it returns every visible UI element with labels, types, actions, viewIds, and tap coordinates.")
             sb.appendLine("2. Read the returned elements and interact immediately — do NOT call `agent_display_look` or `agent_display_screenshot` after create.")
             sb.appendLine("3. When done, destroy with `agent_display_destroy` (task complete) or `agent_display_destroy_and_promote` (user keeps the app).")

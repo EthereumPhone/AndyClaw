@@ -32,6 +32,8 @@ class ToolSearchService(
         private const val TAG = "ToolSearchService"
         const val TOOL_NAME = "search_available_tools"
         private const val MAX_RESULTS = 5
+        /** `select:` names each tool on purpose, so it gets more room than a keyword search. */
+        private const val MAX_SELECT_RESULTS = 20
         /** Max sibling tools to auto-load schemas for. Rest are listed by name only. */
         private const val MAX_AUTO_LOAD_SIBLINGS = 5
         private val DEFAULT_CORE_SKILL_IDS = setOf("code_execution", "memory")
@@ -303,7 +305,7 @@ class ToolSearchService(
         // ── Mode 1: select:Tool1,Tool2 ──
         val selectMatch = selectPattern.find(query)
         if (selectMatch != null) {
-            return selectByName(selectMatch.groupValues[1], maxResults)
+            return selectByName(selectMatch.groupValues[1], maxOf(maxResults, MAX_SELECT_RESULTS))
         }
 
         // ── Fast path: exact tool name match ──

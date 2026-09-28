@@ -45,6 +45,9 @@ class AgentDisplaySkill(
         /** Max compressed image size in bytes (before base64 encoding). */
         private const val MAX_IMAGE_BYTES = 200_000 // ~266 KB as base64
         private const val MIN_QUALITY = 40
+        /** Re-reads of a tree that came back empty right after an action; see [actionWithUiTree]. */
+        private const val EMPTY_TREE_RETRIES = 4
+        private const val EMPTY_TREE_RETRY_MS = 150L
         /** Tools that put input on the display: the ones the OS's STOP latch drops. */
         private val INPUT_TOOLS = setOf(
             "agent_display_tap", "agent_display_long_press", "agent_display_double_tap",
@@ -582,9 +585,27 @@ class AgentDisplaySkill(
         if (extraWaitMs > 0) delay(extraWaitMs)
         ScreenSettler.await(seq, kind)
         Log.d(LTAG, "actionWithUiTree: settled, fetching UI tree")
-        val tree = readTree()
+        var tree = readTree()
+        // A tap that starts an activity transition can settle on the gap between the two screens:
+        // the old window gone, the new one not yet listed. That read as "No elements found", which
+        // tells the model to take a screenshot. Give the next screen a moment to appear.
+        var retries = 0
+        while (retries < EMPTY_TREE_RETRIES && isEmptyTree(tree)) {
+            delay(EMPTY_TREE_RETRY_MS)
+            tree = readTree()
+            retries++
+        }
+        if (retries > 0) Log.i(DTAG, "ACTION_WITH_TREE: re-read an empty tree $retries time(s)")
         Log.i(DTAG, "ACTION_WITH_TREE: got tree (${tree.length} chars) for: $description")
         return SkillResult.Success(formatTreeResponse(description, tree))
+    }
+
+    /** A tree with nothing on it to act on, in either format, or a failed read. */
+    private fun isEmptyTree(treeJson: String): Boolean = try {
+        val root = org.json.JSONObject(treeJson)
+        root.has("error") || (root.optJSONArray("elements")?.length() ?: 0) == 0
+    } catch (_: Exception) {
+        false
     }
 
     /**

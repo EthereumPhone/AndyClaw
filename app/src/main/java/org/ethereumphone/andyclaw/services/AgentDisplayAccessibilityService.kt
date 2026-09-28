@@ -528,7 +528,9 @@ class AgentDisplayAccessibilityService : AccessibilityService() {
 
             // Only ever the agent display's own windows. Falling back to getWindows() when it had
             // none handed the model the *main* screen — whatever the user had open.
-            val windows: List<AccessibilityWindowInfo> = allWindows.get(displayId)
+            // Nullable: a display between two activities has no entry at all, and a non-null
+            // declaration here threw before the empty check below could answer "no windows".
+            val windows: List<AccessibilityWindowInfo>? = allWindows.get(displayId)
             if (windows.isNullOrEmpty()) {
                 Log.w(DTAG, "SMART_ANALYSIS: no windows found for displayId=$displayId")
                 return """{"screen":{},"elements":[],"scrollable":false}"""
@@ -676,7 +678,7 @@ class AgentDisplayAccessibilityService : AccessibilityService() {
             val allWindows = windowsOnAllDisplays
 
             // The agent display's windows only; see buildSmartTreeForDisplay.
-            val windows: List<AccessibilityWindowInfo> = allWindows.get(displayId)
+            val windows: List<AccessibilityWindowInfo>? = allWindows.get(displayId)
             if (windows.isNullOrEmpty()) {
                 return """{"windows":[]}"""
             }

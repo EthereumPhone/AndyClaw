@@ -250,15 +250,16 @@ class AgentLoop(
                 append("and you do NOT already have the tools needed for both.\n\n")
                 append("2. CONTEXT-HEAVY TASKS: A task will generate large intermediate data (screenshots, ")
                 append("UI trees, long documents) that would pollute your context window. The sub-agent ")
-                append("handles the heavy work and returns only the final result. ")
-                append("Prime example: virtual screen / agent_display tasks — navigating apps produces ")
-                append("many screenshots and UI dumps that you don't need in your conversation history.\n\n")
+                append("handles the heavy work and returns only the final result.\n\n")
                 // When NOT to use — critical negative guidance
                 append("NEVER use when:\n")
                 append("- You can handle it with your current tools in a few calls\n")
                 append("- Tasks are sequential steps of one workflow (e.g. look up contact then send SMS)\n")
                 append("- Tasks share the same skill set (use parallel tool calls instead)\n")
                 append("- The task is simple and won't generate heavy intermediate context\n")
+                append("- It is a task in an app and you have agent_display_autopilot: call the autopilot yourself. ")
+                append("It keeps the screen out of your context already; a sub-agent only adds model calls ")
+                append("and drives the app one tap at a time\n")
                 append("- You are unsure whether to use it (default: do NOT use it)\n\n")
                 // Cost awareness
                 append("Sub-agents are expensive (extra LLM calls + routing). ")
@@ -593,8 +594,9 @@ class AgentLoop(
                     appendLine()
                     appendLine("### Sub-Agent Delegation")
                     appendLine("`spawn_subagent` — Delegate a subtask to a focused sub-agent with its own tools and context. " +
-                        "Use for parallel independent tasks or context-heavy work (e.g. virtual display navigation) " +
-                        "that would pollute your conversation history.")
+                        "Use for parallel independent tasks or context-heavy work that would pollute your " +
+                        "conversation history. Not for a task in an app when you have agent_display_autopilot — " +
+                        "call the autopilot directly.")
                     appendLine()
                     appendLine("### User Clarification")
                     appendLine("`ask_user` — Ask the user a blocking clarifying question mid-turn when you cannot " +
