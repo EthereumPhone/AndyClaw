@@ -96,10 +96,8 @@ class LlmAutopilotPlanner(
     }
 
     private fun parse(text: String, ctx: PlannerContext): PlannerDecision {
-        val start = text.indexOf('{')
-        val end = text.lastIndexOf('}')
-        if (start < 0 || end <= start) return PlannerDecision.Unusable("planner_no_json")
-        val obj = runCatching { json.parseToJsonElement(text.substring(start, end + 1)).jsonObject }
+        val candidate = firstJsonObject(text) ?: return PlannerDecision.Unusable("planner_no_json")
+        val obj = runCatching { json.parseToJsonElement(candidate).jsonObject }
             .getOrElse { return PlannerDecision.Unusable("planner_bad_json") }
 
         (obj["act"] as? JsonPrimitive)?.contentOrNull?.let { key ->
@@ -123,6 +121,31 @@ class LlmAutopilotPlanner(
     }
 
     companion object {
+        /**
+         * The first balanced `{…}` in [text], braces inside strings ignored. Taking everything
+         * from the first `{` to the last `}` failed a reply that added a second object or a
+         * brace in a sentence after its answer.
+         */
+        internal fun firstJsonObject(text: String): String? {
+            val start = text.indexOf('{')
+            if (start < 0) return null
+            var depth = 0
+            var inString = false
+            var escaped = false
+            for (i in start until text.length) {
+                val c = text[i]
+                when {
+                    escaped -> escaped = false
+                    inString && c == '\\' -> escaped = true
+                    c == '"' -> inString = !inString
+                    inString -> Unit
+                    c == '{' -> depth++
+                    c == '}' -> if (--depth == 0) return text.substring(start, i + 1)
+                }
+            }
+            return null
+        }
+
         private const val TAG = "AutopilotPlanner"
         private const val MAX_TOKENS = 400
         private const val MAX_ELEMENTS = 80

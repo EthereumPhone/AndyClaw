@@ -642,6 +642,13 @@ class AgentDisplayAccessibilityService : AccessibilityService() {
                         bottom = bottom,
                     )
                 }
+                // ScreenAnalyzer folds a list into its rows, so a row below the fold had no way to
+                // be reached: the autopilot offers scrolling only on an element that scrolls, and
+                // there was none. Settings' "Display" and the rest of a long page were out of reach.
+                // Listed after the rows so a row's number does not depend on them.
+                for (list in scrollableLists(root, width, height)) {
+                    elements += list.copy(id = elements.size, window = windowIndex)
+                }
                 windowIndex++
             } catch (e: Exception) {
                 Log.w(TAG, "snapshot: analysis failed for window ${window.id}", e)
@@ -659,6 +666,53 @@ class AgentDisplayAccessibilityService : AccessibilityService() {
             width = width,
             height = height,
         )
+    }
+
+    /**
+     * The scrollable lists on the window under [root] that show on the display and can still
+     * move, outermost first, at most [MAX_SCROLL_LISTS]. A list inside a list is left to scroll
+     * with its parent.
+     */
+    private fun scrollableLists(root: AccessibilityNodeInfo, width: Int, height: Int): List<ScreenElement> {
+        val found = ArrayList<ScreenElement>()
+        fun visit(node: AccessibilityNodeInfo, depth: Int) {
+            if (depth > 30 || found.size >= MAX_SCROLL_LISTS || !node.isVisibleToUser) return
+            if (node.isScrollable) {
+                val actions = node.actionList.map { it.id }
+                val scrolls = buildList {
+                    if (AccessibilityNodeInfo.ACTION_SCROLL_FORWARD in actions) add("scroll_forward")
+                    if (AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD in actions) add("scroll_backward")
+                }
+                val r = Rect().also(node::getBoundsInScreen)
+                r.intersect(0, 0, width, height)
+                if (scrolls.isNotEmpty() && !r.isEmpty) {
+                    found += ScreenElement(
+                        id = 0,
+                        type = "list",
+                        label = "scrollable list",
+                        viewId = node.viewIdResourceName,
+                        actions = scrolls,
+                        centerX = r.centerX(),
+                        centerY = r.centerY(),
+                        left = r.left,
+                        top = r.top,
+                        right = r.right,
+                        bottom = r.bottom,
+                    )
+                    return
+                }
+            }
+            for (i in 0 until node.childCount) {
+                val child = node.getChild(i) ?: continue
+                try {
+                    visit(child, depth + 1)
+                } finally {
+                    try { child.recycle() } catch (_: Exception) {}
+                }
+            }
+        }
+        visit(root, 0)
+        return found
     }
 
     // ========================================================================
@@ -874,6 +928,8 @@ class AgentDisplayAccessibilityService : AccessibilityService() {
         private const val TAG = "AgentDisplayA11y"
         private const val DTAG = "AGENTDISPLAYDEBUGKEY"
         const val INVALID_DISPLAY = -1
+        /** Scrollable lists offered per window: the page, and at most one more beside it. */
+        private const val MAX_SCROLL_LISTS = 2
 
         /** The running service. It lives in this process, so the autopilot can call it directly. */
         @Volatile
