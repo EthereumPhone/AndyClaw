@@ -445,12 +445,12 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             val activeProvider = app.securePrefs.selectedProvider.value
             // For CUSTOM provider, the user's model id (e.g. "gpt-oss:20b",
             // "llama3.2:latest") usually isn't in AnthropicModels — fromModelId
-            // returns null and falls back to MINIMAX_M25. Pass the raw string
+            // returns null and falls back to MINIMAX_M3. Pass the raw string
             // through `customModelIdOverride` so the outgoing request matches
             // what the user's self-hosted backend actually serves.
             val customModelIdOverride: String? =
                 if (activeProvider == LlmProvider.CUSTOM && modelId.isNotBlank()) modelId else null
-            val model = AnthropicModels.fromModelId(modelId) ?: AnthropicModels.MINIMAX_M25
+            val model = AnthropicModels.fromModelId(modelId) ?: AnthropicModels.MINIMAX_M3
             val currentTier = org.ethereumphone.andyclaw.skills.tier.OsCapabilities.currentTier()
             val currentEnabledSkillIds = if (app.securePrefs.yoloMode.value) {
                 app.nativeSkillRegistry.getAll().map { it.id }.toSet()

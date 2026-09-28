@@ -59,7 +59,7 @@ class HeartbeatAgentRunner(
 
         val useSameModel = app.securePrefs.heartbeatUseSameModel.value
         val modelId = if (useSameModel) app.securePrefs.selectedModel.value else app.securePrefs.heartbeatModel.value
-        val model = AnthropicModels.fromModelId(modelId) ?: AnthropicModels.MINIMAX_M25
+        val model = AnthropicModels.fromModelId(modelId) ?: AnthropicModels.MINIMAX_M3
         Log.i(TAG, "Heartbeat LLM: useSame=$useSameModel, model=${model.modelId}, provider=${model.provider}")
 
         val enabledSkillIds = if (app.securePrefs.yoloMode.value) {

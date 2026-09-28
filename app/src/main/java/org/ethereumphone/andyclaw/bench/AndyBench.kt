@@ -128,7 +128,7 @@ object AndyBench {
         val prefs = app.securePrefs
         val modelId = prefs.selectedModel.value
         val provider = prefs.selectedProvider.value
-        val model = AnthropicModels.fromModelId(modelId) ?: AnthropicModels.MINIMAX_M25
+        val model = AnthropicModels.fromModelId(modelId) ?: AnthropicModels.MINIMAX_M3
         val tier = org.ethereumphone.andyclaw.skills.tier.OsCapabilities.currentTier()
         val enabled = prefs.enabledSkills.value
         val loop = AgentLoop(

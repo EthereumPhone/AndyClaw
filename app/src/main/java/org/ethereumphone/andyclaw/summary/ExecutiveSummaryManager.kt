@@ -206,7 +206,7 @@ class ExecutiveSummaryManager(private val app: NodeApp) {
         } else {
             app.securePrefs.heartbeatModel.value
         }
-        val model = AnthropicModels.fromModelId(modelId) ?: AnthropicModels.MINIMAX_M25
+        val model = AnthropicModels.fromModelId(modelId) ?: AnthropicModels.MINIMAX_M3
         val augmentedPrompt = augmentPromptWithDismissals(systemPrompt)
 
         Log.i(TAG, "callLlm: model=${model.modelId}, provider=${model.provider}, useSame=$useSameModel, userMsg=${userMessage.take(150)}")
@@ -243,7 +243,7 @@ class ExecutiveSummaryManager(private val app: NodeApp) {
         } else {
             app.securePrefs.heartbeatModel.value
         }
-        val model = AnthropicModels.fromModelId(modelId) ?: AnthropicModels.MINIMAX_M25
+        val model = AnthropicModels.fromModelId(modelId) ?: AnthropicModels.MINIMAX_M3
         val augmentedPrompt = augmentPromptWithDismissals(systemPrompt)
 
         Log.i(TAG, "callLlmStreaming: model=${model.modelId}, provider=${model.provider}, useSame=$useSameModel")

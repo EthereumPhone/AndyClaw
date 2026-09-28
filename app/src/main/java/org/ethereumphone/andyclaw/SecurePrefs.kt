@@ -273,7 +273,7 @@ class SecurePrefs(context: Context) : KeyValueStore {
   private val _localLlmUseMmap = MutableStateFlow(prefs.getBoolean("local.useMmap", true))
   val localLlmUseMmap: StateFlow<Boolean> = _localLlmUseMmap
 
-  private val _selectedModel = MutableStateFlow(prefs.getString("anthropic.model", "kimi-k2-5") ?: "kimi-k2-5")
+  private val _selectedModel = MutableStateFlow(prefs.getString("anthropic.model", "kimi-k3") ?: "kimi-k3")
   val selectedModel: StateFlow<String> = _selectedModel
 
   private val _aiName = MutableStateFlow(prefs.getString("ai.name", "AndyClaw") ?: "AndyClaw")
@@ -703,7 +703,7 @@ class SecurePrefs(context: Context) : KeyValueStore {
     // customModelId into selectedModel so outgoing MessagesRequest.model
     // matches what their self-hosted backend serves. Without this, switching
     // to CUSTOM from another provider would leave a stale model id (e.g.
-    // an OpenRouter "minimax/minimax-m2.5") and the backend would 404.
+    // an OpenRouter "minimax/minimax-m3") and the backend would 404.
     if (provider == LlmProvider.CUSTOM) {
       val custom = _customModelId.value
       if (custom.isNotBlank()) setSelectedModel(custom)
@@ -1287,7 +1287,7 @@ class SecurePrefs(context: Context) : KeyValueStore {
     _localLlmNThreads.value = prefs.getInt("local.nThreads", 0)
     _localLlmNGpuLayers.value = prefs.getInt("local.nGpuLayers", 0)
     _localLlmUseMmap.value = prefs.getBoolean("local.useMmap", true)
-    _selectedModel.value = prefs.getString("anthropic.model", "kimi-k2-5") ?: "kimi-k2-5"
+    _selectedModel.value = prefs.getString("anthropic.model", "kimi-k3") ?: "kimi-k3"
     _aiName.value = prefs.getString("ai.name", "AndyClaw") ?: "AndyClaw"
     _enabledSkills.value = loadEnabledSkills()
     _budgetModeEnabled.value = prefs.getBoolean("budget.enabled", true)

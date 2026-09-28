@@ -55,8 +55,8 @@ data class RecommendedModel(
  *
  * Models are classified into [ModelTier]s based on prompt pricing:
  * - LIGHT:    < $1/M prompt tokens  (flash/nano models)
- * - STANDARD: $1–$8/M prompt tokens (mid-tier: Sonnet, GPT-4.1, Gemini Pro)
- * - POWERFUL: ≥ $8/M prompt tokens  (flagship: Opus, GPT-5, Grok 4)
+ * - STANDARD: $1–$8/M prompt tokens (mid-tier: Sonnet, Opus 5, GPT-6 Sol, Gemini Pro)
+ * - POWERFUL: ≥ $8/M prompt tokens  (flagship: Fable, GPT-6 Astra)
  *
  * Only models that support tool calling and produce text output are considered.
  * Results are cached in memory and on disk with a 24-hour TTL.
@@ -91,35 +91,45 @@ class OpenRouterModelRegistry(
          */
         private val RANKED_MODEL_PREFERENCES: List<Triple<String, ModelTier, Int>> = listOf(
             // Tier LIGHT — ranked by tool-use reliability and speed
-            Triple("qwen3.5-flash", ModelTier.LIGHT, 1),
-            Triple("gpt-4.1-mini", ModelTier.LIGHT, 2),
-            Triple("gpt-4.1-nano", ModelTier.LIGHT, 3),
-            Triple("haiku", ModelTier.LIGHT, 4),
-            Triple("gemini-3-flash", ModelTier.LIGHT, 5),
-            Triple("gemini-2.5-flash", ModelTier.LIGHT, 6),
-            Triple("flash", ModelTier.LIGHT, 7),
-            Triple("qwen", ModelTier.LIGHT, 8),
+            Triple("qwen3.8-flash", ModelTier.LIGHT, 1),
+            Triple("gpt-6-luna", ModelTier.LIGHT, 2),
+            Triple("gemini-3.8-flash", ModelTier.LIGHT, 3),
+            Triple("qwen3.5-flash", ModelTier.LIGHT, 4),
+            Triple("gpt-5.4-nano", ModelTier.LIGHT, 5),
+            Triple("gpt-4.1-mini", ModelTier.LIGHT, 6),
+            Triple("gpt-4.1-nano", ModelTier.LIGHT, 7),
+            Triple("haiku", ModelTier.LIGHT, 8),
+            Triple("flash", ModelTier.LIGHT, 9),
+            Triple("qwen", ModelTier.LIGHT, 10),
 
             // Tier STANDARD — ranked by reasoning quality and tool-use accuracy
-            Triple("claude-sonnet-4", ModelTier.STANDARD, 1),
-            Triple("gpt-4.1", ModelTier.STANDARD, 2),
-            Triple("kimi-k2.5", ModelTier.STANDARD, 3),
-            Triple("minimax-m2.5", ModelTier.STANDARD, 4),
-            Triple("claude-sonnet", ModelTier.STANDARD, 5),
-            Triple("gpt-4o", ModelTier.STANDARD, 6),
-            Triple("gemini-3.1-pro", ModelTier.STANDARD, 7),
-            Triple("gemini-3-pro", ModelTier.STANDARD, 8),
-            Triple("gemini-2.5-pro", ModelTier.STANDARD, 9),
-            Triple("glm-5", ModelTier.STANDARD, 10),
+            Triple("claude-sonnet-5", ModelTier.STANDARD, 1),
+            Triple("claude-sonnet-4", ModelTier.STANDARD, 2),
+            Triple("gpt-6-sol", ModelTier.STANDARD, 3),
+            Triple("kimi-k3", ModelTier.STANDARD, 4),
+            Triple("gemini-3.1-pro", ModelTier.STANDARD, 5),
+            Triple("grok-4.7", ModelTier.STANDARD, 6),
+            Triple("glm-5.3", ModelTier.STANDARD, 7),
+            Triple("claude-sonnet", ModelTier.STANDARD, 8),
+            Triple("gpt-4.1", ModelTier.STANDARD, 9),
+            Triple("kimi-k2.5", ModelTier.STANDARD, 10),
+            Triple("minimax-m2.5", ModelTier.STANDARD, 11),
+            Triple("gpt-4o", ModelTier.STANDARD, 12),
+            Triple("gemini-3-pro", ModelTier.STANDARD, 13),
+            Triple("gemini-2.5-pro", ModelTier.STANDARD, 14),
+            Triple("glm-5", ModelTier.STANDARD, 15),
 
             // Tier POWERFUL — ranked by deep reasoning capability
-            Triple("claude-opus-4", ModelTier.POWERFUL, 1),
-            Triple("gpt-5", ModelTier.POWERFUL, 2),
-            Triple("grok-4", ModelTier.POWERFUL, 3),
-            Triple("o3", ModelTier.POWERFUL, 4),
-            Triple("o4-mini", ModelTier.POWERFUL, 5),
-            Triple("deepseek-r1", ModelTier.POWERFUL, 6),
-            Triple("claude-opus", ModelTier.POWERFUL, 7),
+            Triple("claude-fable-5.1", ModelTier.POWERFUL, 1),
+            Triple("gpt-6-astra", ModelTier.POWERFUL, 2),
+            Triple("claude-fable-5", ModelTier.POWERFUL, 3),
+            Triple("claude-opus-4", ModelTier.POWERFUL, 4),
+            Triple("gpt-5", ModelTier.POWERFUL, 5),
+            Triple("grok-4", ModelTier.POWERFUL, 6),
+            Triple("o3", ModelTier.POWERFUL, 7),
+            Triple("o4-mini", ModelTier.POWERFUL, 8),
+            Triple("deepseek-r1", ModelTier.POWERFUL, 9),
+            Triple("claude-opus", ModelTier.POWERFUL, 10),
         )
     }
 

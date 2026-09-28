@@ -81,7 +81,7 @@ class TelegramAgentRunner(
         val userStory = app.userStoryManager.read()
 
         val modelId = app.securePrefs.selectedModel.value
-        val model = AnthropicModels.fromModelId(modelId) ?: AnthropicModels.MINIMAX_M25
+        val model = AnthropicModels.fromModelId(modelId) ?: AnthropicModels.MINIMAX_M3
 
         val enabledSkillIds = if (app.securePrefs.yoloMode.value) {
             registry.getAll().map { it.id }.toSet()

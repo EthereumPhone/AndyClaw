@@ -253,20 +253,19 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
 
         // Known popular model IDs in display order (rank = position)
         val popularModelIds = listOf(
-            "anthropic/claude-sonnet-4.6",
-            "anthropic/claude-opus-4.6",
+            "anthropic/claude-sonnet-5",
+            "anthropic/claude-opus-5",
             "google/gemini-3.1-pro-preview",
-            "google/gemini-2.5-pro",
-            "google/gemini-2.5-flash",
-            "openai/gpt-4.1",
-            "openai/gpt-4.1-mini",
-            "x-ai/grok-4",
-            "moonshotai/kimi-k2.5",
-            "minimax/minimax-m2.5",
-            "qwen/qwen3.5-plus-02-15",
-            "qwen/qwen3.5-flash-02-23",
-            "deepseek/deepseek-r1",
-            "meta-llama/llama-4-maverick",
+            "google/gemini-3.8-flash",
+            "openai/gpt-6-sol",
+            "openai/gpt-6-luna",
+            "x-ai/grok-4.7",
+            "moonshotai/kimi-k3",
+            "minimax/minimax-m3",
+            "z-ai/glm-5.3",
+            "qwen/qwen3.7-plus",
+            "qwen/qwen3.8-flash",
+            "deepseek/deepseek-v4-pro",
         )
 
         val seen = mutableSetOf<String>()

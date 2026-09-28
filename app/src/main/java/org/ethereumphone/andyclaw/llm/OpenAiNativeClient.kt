@@ -36,6 +36,10 @@ class OpenAiNativeClient(
     private val baseUrl: String
         get() = baseUrlProvider()
 
+    /** api.openai.com rejects `max_tokens` for GPT-5+ and o-series; see [OpenAiFormatAdapter.toOpenAiRequestJson]. */
+    private val isOpenAiApi: Boolean
+        get() = baseUrl.contains("api.openai.com", ignoreCase = true)
+
     companion object {
         private const val TAG = "OpenAiNativeClient"
         private val JSON_MEDIA_TYPE = "application/json".toMediaType()
@@ -65,7 +69,7 @@ class OpenAiNativeClient(
 
     override suspend fun sendMessage(request: MessagesRequest): MessagesResponse =
         withContext(Dispatchers.IO) {
-            val openAiJson = OpenAiFormatAdapter.toOpenAiRequestJson(request.copy(stream = false))
+            val openAiJson = OpenAiFormatAdapter.toOpenAiRequestJson(request.copy(stream = false), useMaxCompletionTokens = isOpenAiApi)
             Log.d(TAG, "sendMessage: model=${request.model}, messages=${request.messages.size}")
 
             val httpRequest = buildRequest(openAiJson)
@@ -90,7 +94,7 @@ class OpenAiNativeClient(
         request: MessagesRequest,
         callback: StreamingCallback,
     ) = withContext(Dispatchers.IO) {
-        val openAiJson = OpenAiFormatAdapter.toOpenAiRequestJson(request.copy(stream = true))
+        val openAiJson = OpenAiFormatAdapter.toOpenAiRequestJson(request.copy(stream = true), useMaxCompletionTokens = isOpenAiApi)
         Log.d(TAG, "streamMessage: model=${request.model}, messages=${request.messages.size}")
 
         val httpRequest = buildRequest(openAiJson)

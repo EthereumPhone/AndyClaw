@@ -229,7 +229,7 @@ class AnthropicClient(
                 put("tools", kotlinx.serialization.json.JsonArray(tools))
                 put("parallel_tool_calls", kotlinx.serialization.json.JsonPrimitive(request.parallelToolCalls))
             }
-            request.temperature?.let {
+            request.temperature?.takeIf { AnthropicModels.acceptsTemperature(request.model) }?.let {
                 put("temperature", kotlinx.serialization.json.JsonPrimitive(it))
             }
             request.reasoning?.let { cfg ->

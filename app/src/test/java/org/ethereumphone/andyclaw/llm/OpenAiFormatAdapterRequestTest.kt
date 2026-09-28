@@ -60,7 +60,7 @@ class OpenAiFormatAdapterRequestTest {
     @Test
     fun `verbosity is never emitted as a top-level key`() {
         val request = MessagesRequest(
-            model = "kimi-k2-5",
+            model = "kimi-k3",
             maxTokens = 1024,
             messages = listOf(Message.user("hello")),
             verbosity = Verbosity.LOW, // set, as AgentLoop does for concise presets
@@ -77,7 +77,7 @@ class OpenAiFormatAdapterRequestTest {
     fun `kitchen-sink request emits only Venice-allowed top-level keys`() {
         // Exercise every branch of toOpenAiRequestJson at once.
         val request = MessagesRequest(
-            model = "kimi-k2-5",
+            model = "kimi-k3",
             maxTokens = 2048,
             system = "You are a helpful assistant.",
             messages = listOf(
@@ -116,7 +116,7 @@ class OpenAiFormatAdapterRequestTest {
     fun `routing request (reasoning effort none, no tools) is Venice-legal`() {
         // Mirrors SmartRouter.buildRoutingRequest.
         val request = MessagesRequest(
-            model = "kimi-k2-5",
+            model = "kimi-k3",
             maxTokens = 150,
             system = "Route this request.",
             messages = listOf(Message.user("text mom I'm late")),
@@ -138,7 +138,7 @@ class OpenAiFormatAdapterRequestTest {
     fun `main agent request (tools + parallel_tool_calls) is Venice-legal`() {
         // Mirrors AgentLoop's main MessagesRequest.
         val request = MessagesRequest(
-            model = "kimi-k2-5",
+            model = "kimi-k3",
             maxTokens = 4096,
             system = "You are AndyClaw.",
             messages = listOf(Message.user("what time is it in Rome?")),
@@ -155,7 +155,7 @@ class OpenAiFormatAdapterRequestTest {
     @Test
     fun `reasoning is omitted entirely when not set`() {
         val request = MessagesRequest(
-            model = "kimi-k2-5",
+            model = "kimi-k3",
             maxTokens = 256,
             messages = listOf(Message.user("hi")),
         )

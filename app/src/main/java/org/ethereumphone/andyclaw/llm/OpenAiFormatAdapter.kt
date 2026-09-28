@@ -25,11 +25,16 @@ object OpenAiFormatAdapter {
     /**
      * Convert an Anthropic [MessagesRequest] to an OpenAI-compatible
      * chat completion request body (JSON string).
+     *
+     * [useMaxCompletionTokens] sends the output cap as `max_completion_tokens`,
+     * which api.openai.com requires for its reasoning models (GPT-5+, o-series)
+     * and accepts for every other model. Other OpenAI-compatible servers
+     * (Tinfoil, Venice, llama.cpp) keep getting `max_tokens`.
      */
-    fun toOpenAiRequestJson(request: MessagesRequest): String {
+    fun toOpenAiRequestJson(request: MessagesRequest, useMaxCompletionTokens: Boolean = false): String {
         return buildJsonObject {
             put("model", request.model)
-            put("max_tokens", request.maxTokens)
+            put(if (useMaxCompletionTokens) "max_completion_tokens" else "max_tokens", request.maxTokens)
             put("stream", request.stream)
 
             // Build messages array
@@ -61,7 +66,7 @@ object OpenAiFormatAdapter {
                     put("parallel_tool_calls", request.parallelToolCalls)
                 }
             }
-            request.temperature?.let {
+            request.temperature?.takeIf { AnthropicModels.acceptsTemperature(request.model) }?.let {
                 put("temperature", it)
             }
             request.reasoning?.let { cfg ->

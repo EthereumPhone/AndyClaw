@@ -14,7 +14,7 @@ data class Session(
     val agentId: String,
     /** Human-readable title (auto-generated from the first message when empty). */
     val title: String,
-    /** LLM model identifier used in this session (e.g. "claude-sonnet-4-20250514"). */
+    /** LLM model identifier used in this session (e.g. "claude-sonnet-5"). */
     val model: String? = null,
     /** Epoch millis when the session was first created. */
     val createdAt: Long,

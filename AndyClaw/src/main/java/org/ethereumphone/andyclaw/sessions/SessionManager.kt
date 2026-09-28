@@ -22,7 +22,7 @@ import org.ethereumphone.andyclaw.sessions.model.SessionPatch
  * val sessions = SessionManager(context, agentId = "main")
  *
  * // Create & send
- * val session = sessions.createSession(model = "claude-sonnet-4-20250514")
+ * val session = sessions.createSession(model = "claude-sonnet-5")
  * sessions.addMessage(session.id, MessageRole.USER, "Hello!")
  *
  * // Observe
@@ -53,7 +53,7 @@ class SessionManager(
      *
      * A unique session key is generated automatically.
      *
-     * @param model  LLM model identifier (e.g. "claude-sonnet-4-20250514").
+     * @param model  LLM model identifier (e.g. "claude-sonnet-5").
      * @param title  Initial title; auto-generated from first message if left as default.
      * @return The newly created [Session].
      */

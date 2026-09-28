@@ -1159,7 +1159,7 @@ class SmartRouterTest {
     private fun modelRouter(
         enabled: Boolean = true,
         provider: LlmProvider = LlmProvider.CLAUDE_OAUTH,
-        defaultModelId: String = "claude-sonnet-4-6",
+        defaultModelId: String = "claude-sonnet-5",
         tierOverrides: Map<ModelTier, String> = emptyMap(),
         registry: OpenRouterModelRegistry? = null,
     ) = SmartRouter(
@@ -1204,12 +1204,12 @@ class SmartRouterTest {
     fun `conversational LIGHT resolves to static Haiku for Claude OAuth`() {
         val r = modelRouter(
             provider = LlmProvider.CLAUDE_OAUTH,
-            defaultModelId = "claude-sonnet-4-6",
+            defaultModelId = "claude-sonnet-5",
         )
         val result = routeResult("hey there", router = r)
         assertEquals(ModelTier.LIGHT, result.modelTier)
         // Should resolve to Haiku (LIGHT tier for Claude OAuth)
-        assertEquals("claude-3-5-haiku-latest", result.modelIdOverride)
+        assertEquals("claude-haiku-4-5", result.modelIdOverride)
         assertNotNull(result.maxTokensOverride)
     }
 
@@ -1217,10 +1217,10 @@ class SmartRouterTest {
     fun `user tier override takes priority over auto-selection`() {
         val r = modelRouter(
             provider = LlmProvider.CLAUDE_OAUTH,
-            tierOverrides = mapOf(ModelTier.LIGHT to "claude-opus-4-6"),
+            tierOverrides = mapOf(ModelTier.LIGHT to "claude-opus-5"),
         )
         val result = routeResult("hi", router = r)
-        assertEquals("claude-opus-4-6", result.modelIdOverride)
+        assertEquals("claude-opus-5", result.modelIdOverride)
     }
 
     @Test
@@ -1228,7 +1228,7 @@ class SmartRouterTest {
         // Default is Sonnet, STANDARD maps to Sonnet — no override needed
         val r = modelRouter(
             provider = LlmProvider.CLAUDE_OAUTH,
-            defaultModelId = "claude-sonnet-4-6",
+            defaultModelId = "claude-sonnet-5",
         )
         // Keyword-only routing won't produce a modelTier (no LLM),
         // but conversational messages do get LIGHT.
@@ -1236,7 +1236,7 @@ class SmartRouterTest {
         // where the default is already Haiku.
         val r2 = modelRouter(
             provider = LlmProvider.CLAUDE_OAUTH,
-            defaultModelId = "claude-3-5-haiku-latest",
+            defaultModelId = "claude-haiku-4-5",
         )
         val result = routeResult("hey", router = r2)
         // Default is already Haiku, LIGHT maps to Haiku — no override needed
@@ -1261,7 +1261,7 @@ class SmartRouterTest {
 
         val r = modelRouter(
             provider = LlmProvider.OPEN_ROUTER,
-            defaultModelId = "anthropic/claude-sonnet-4-6",
+            defaultModelId = "anthropic/claude-sonnet-5",
             registry = reg,
         )
         val result = routeResult("hello", router = r)
@@ -1276,7 +1276,7 @@ class SmartRouterTest {
         reg.loadModels(emptyList())
         val r = modelRouter(
             provider = LlmProvider.OPEN_ROUTER,
-            defaultModelId = "anthropic/claude-sonnet-4-6",
+            defaultModelId = "anthropic/claude-sonnet-5",
             registry = reg,
         )
         val result = routeResult("hi", router = r)
@@ -1287,19 +1287,19 @@ class SmartRouterTest {
     fun `OpenAI provider uses static tier mapping`() {
         val r = modelRouter(
             provider = LlmProvider.OPENAI,
-            defaultModelId = "gpt-4.1",
+            defaultModelId = "gpt-6-sol",
         )
         val result = routeResult("hey", router = r)
-        // LIGHT for OpenAI should be GPT-4.1-nano
+        // LIGHT for OpenAI should be GPT-6 Luna
         assertEquals(ModelTier.LIGHT, result.modelTier)
-        assertEquals("gpt-4.1-nano", result.modelIdOverride)
+        assertEquals("gpt-6-luna", result.modelIdOverride)
     }
 
     @Test
     fun `model routing result includes maxTokensOverride`() {
         val r = modelRouter(
             provider = LlmProvider.CLAUDE_OAUTH,
-            defaultModelId = "claude-sonnet-4-6",
+            defaultModelId = "claude-sonnet-5",
         )
         val result = routeResult("hi", router = r)
         assertNotNull(result.maxTokensOverride)

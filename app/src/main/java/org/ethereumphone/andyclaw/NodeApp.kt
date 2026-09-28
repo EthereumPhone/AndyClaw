@@ -1301,17 +1301,18 @@ class NodeApp : Application() {
 
     /**
      * One-time migration for ethOS Premium devices: if the user's selected model
-     * is still the old default (kimi-k2-5), switch it to Claude Sonnet 4.6.
+     * is still the stock default, switch it to Claude Sonnet. The stock default
+     * was "kimi-k2-5" before it became "kimi-k3"; both count.
      */
     private fun migrateEthosPremiumDefaultModel() {
         val key = "ethos_premium_model_migration_v1"
         if (securePrefs.getString(key) == "true") return
         try {
             if (OsCapabilities.hasPrivilegedAccess &&
-                securePrefs.selectedModel.value == "kimi-k2-5"
+                securePrefs.selectedModel.value in setOf("kimi-k2-5", "kimi-k3")
             ) {
-                securePrefs.setSelectedModel(AnthropicModels.CLAUDE_SONNET_4_6.modelId)
-                Log.i(TAG, "Migrated ethOS Premium default model to Claude Sonnet 4.6")
+                securePrefs.setSelectedModel(AnthropicModels.CLAUDE_SONNET_5.modelId)
+                Log.i(TAG, "Migrated ethOS Premium default model to Claude Sonnet 5")
             }
         } catch (e: Exception) {
             Log.w(TAG, "Failed to migrate ethOS Premium default model", e)
