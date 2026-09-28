@@ -472,24 +472,6 @@ class FlowInterpreterSafetyTest {
     }
 
     @Test
-    fun `a private app on screen stops the replay`() = runTest {
-        val wallet = Screen("wallet", "org.ethereumphone.walletmanager", Node("conversation_list", "list"), Node("row", "list_item"))
-        val driver = Driver(mapOf("wallet" to wallet), emptyMap(), "wallet")
-        val result = interpreter(driver).run(flow(listOf(TapStep(viewId = "row"))), emptyMap()) as FlowRunResult.Aborted
-        assertEquals(FlowAbortReason.SENSITIVE_TARGET, result.reason)
-        assertTrue(driver.clicks.isEmpty())
-    }
-
-    @Test
-    fun `a system toast over the app is not a private app`() = runTest {
-        val withToast = """{"screen":{"package":"com.msg"},"windows":[{"package":"com.android.systemui"}],""" +
-            """"elements":[{"id":0,"type":"list","viewId":"conversation_list"}]}"""
-        assertEquals(null, FlowTargetGuard.privateAppOn(withToast))
-        assertEquals("org.ethereumphone.walletmanager",
-            FlowTargetGuard.privateAppOn("""{"screen":{"package":"org.ethereumphone.walletmanager"},"elements":[]}"""))
-    }
-
-    @Test
     fun `a screen that is still settling is given a moment before it counts as changed`() = runTest {
         val loading = Screen("loading", "com.msg", Node("conversation_list", "list"), Node("spinner", "image"))
         val expected = NodeTreeChecksum.ofV2(thread.json())

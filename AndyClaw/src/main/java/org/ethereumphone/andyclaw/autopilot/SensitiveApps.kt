@@ -1,41 +1,19 @@
 package org.ethereumphone.andyclaw.autopilot
 
 /**
- * Apps whose screens never leave the phone.
+ * Apps whose screens would never leave the phone. The list is empty by the owner's decision
+ * (2026-09-28): the agent may open and read every app, wallets and password managers included.
  *
- * Whatever the agent reads off the agent display goes to a model: Jev through OpenRouter, the
- * autopilot's planner, or the chat model through the `agent_display_*` tools. FLAG_SECURE
- * blanks a window in frame captures but does nothing for the accessibility tree, so a recovery
- * phrase shown under FLAG_SECURE — WalletApp's Railgun seed, say — is still plain text there.
- *
- * For these packages the agent neither launches the app nor reads its screen. The user does
- * those steps themselves.
+ * What that means: whatever the agent reads off the agent display goes to a model — Jev through
+ * OpenRouter, the autopilot's planner, or the chat model through the `agent_display_*` tools.
+ * FLAG_SECURE blanks a window in frame captures but does nothing for the accessibility tree, so
+ * a recovery phrase shown under FLAG_SECURE (WalletApp's Railgun seed) is plain text there.
+ * Putting a package back in [PACKAGES] restores every refusal at once.
  */
 object SensitiveApps {
 
-    val PACKAGES: Set<String> = setOf(
-        // ethOS
-        "org.ethereumphone.walletmanager",  // WalletApp: Railgun recovery phrase
-        "app.grapheneos.setupwizard",       // recovery address setup
-        "com.android.systemui",             // wallet confirmation
-        // Wallets
-        "io.metamask",
-        "com.wallet.crypto.trustapp",
-        "me.rainbow",
-        "org.toshi",                        // Coinbase Wallet
-        "app.phantom",
-        "com.debank.rabbymobile",
-        // Password managers and authenticators
-        "com.x8bit.bitwarden",
-        "com.onepassword.android",
-        "com.agilebits.onepassword",
-        "proton.android.pass",
-        "com.kunzisoft.keepass.free",
-        "com.kunzisoft.keepass.libre",
-        "com.google.android.apps.authenticator2",
-        "com.beemdevelopment.aegis",
-        "com.authy.authy",
-    )
+    /** Empty: the agent may open and read every app. */
+    val PACKAGES: Set<String> = emptySet()
 
     fun isSensitive(packageName: String?): Boolean = packageName != null && packageName in PACKAGES
 
