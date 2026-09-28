@@ -105,9 +105,20 @@ class AppAutopilotDevice(
             val seq = ScreenSettler.mark()
             svc.launchIntentUri(startIntent)
             ScreenSettler.await(seq, ScreenSettler.Kind.LAUNCH, packageName)
-            (snapshotNow()?.packageName == packageName).also {
-                Log.i(TAG, "started $packageName at $startIntent: ${if (it) "on screen" else "not on screen, launching normally"}")
+            // The OS took the launch; the accessibility tree can lag it. A single read right after
+            // the settle saw no Settings yet, and the fallback then opened Settings' start page
+            // over the DND page it had just reached (agentbench dnd_off). Look again, briefly,
+            // and give up on the intent only when another app is what is actually there.
+            var onScreen: String? = null
+            for (attempt in 0 until START_INTENT_READS) {
+                onScreen = snapshotNow()?.packageName
+                if (onScreen == packageName) break
+                delay(START_INTENT_READ_GAP_MS)
             }
+            val ok = onScreen == packageName || onScreen.isNullOrEmpty()
+            Log.i(TAG, "started $packageName at $startIntent: " +
+                if (ok) "on screen" else "$onScreen is on screen instead, launching normally")
+            ok
         } catch (e: Exception) {
             rethrowIfCancelled(e)
             Log.w(TAG, "start intent $startIntent refused: ${e.message}; launching normally")
@@ -261,6 +272,9 @@ class AppAutopilotDevice(
 
     companion object {
         private const val TAG = "AppAutopilotDevice"
+        /** Reads of the screen after a start intent, [START_INTENT_READ_GAP_MS] apart: up to ~1.5 s. */
+        private const val START_INTENT_READS = 8
+        private const val START_INTENT_READ_GAP_MS = 200L
         const val WIDTH = 720
         const val HEIGHT = 720
         const val DPI = 240
