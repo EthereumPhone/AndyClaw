@@ -91,13 +91,13 @@ class LauncherBindingService : Service() {
          * frame rate and the unit the per-session cap counts in, so it is a named constant
          * rather than a literal inside the loop.
          */
-        private const val DISPLAY_FRAME_INTERVAL_MS = 1000L
+        private const val DISPLAY_FRAME_INTERVAL_MS = FrameStreamPolicy.IDLE_INTERVAL_MS
         /** How far past the rows asked for a ledger read looks, to find the oldest turns' steps. */
         private const val ATTRIBUTION_LOOKBACK = 300
         /** Rows a session read returns at most, to stay well inside a binder transaction. */
         private const val MAX_SESSION_ROWS = 400
         /** While the autopilot runs the preview is the show: ~5 fps instead of 1. */
-        private const val AUTOPILOT_FRAME_INTERVAL_MS = 200L
+        private const val AUTOPILOT_FRAME_INTERVAL_MS = FrameStreamPolicy.RUN_INTERVAL_MS
         private const val DISPLAY_FRAME_MAX_WIDTH = 480
 
         /**
@@ -175,9 +175,10 @@ class LauncherBindingService : Service() {
      */
     private val displayCaptures = java.util.concurrent.ConcurrentHashMap<String, DisplayCapture>()
 
-    /** A running capture: the loop, and the recording it is writing. */
+    /** A running capture: the loop, and how often it pulls a frame (changed as runs start and end). */
     private class DisplayCapture(
         val job: Job,
+        val intervalMs: java.util.concurrent.atomic.AtomicLong,
     )
 
     /** The running turn of each launcher session, so a newer prompt or STOP can end it. */
@@ -1688,10 +1689,15 @@ class LauncherBindingService : Service() {
         callback: ILauncherCallback,
         intervalMs: Long = DISPLAY_FRAME_INTERVAL_MS,
     ) {
-        if (displayCaptures[sessionId]?.job?.isActive == true) return
+        displayCaptures[sessionId]?.takeIf { it.job.isActive }?.let { running ->
+            // A new run on a stream the last one slowed down: back to the run's rate.
+            if (intervalMs < running.intervalMs.get()) running.intervalMs.set(intervalMs)
+            return
+        }
         try {
             callback.onDisplayCreated()
         } catch (_: RemoteException) {}
+        val rate = java.util.concurrent.atomic.AtomicLong(intervalMs)
 
         // Only the stream to the launcher lives here. What is kept for the ledger is recorded by
         // AgentDisplayRecording, for whichever run holds the display — launcher or not.
@@ -1726,8 +1732,15 @@ class LauncherBindingService : Service() {
                             try {
                                 callback.onDisplayFrame(frame)
                             } catch (e: RemoteException) {
-                                Log.w(TAG, "Launcher went away during display capture")
-                                clientAlive = false
+                                // Only a launcher that is gone ends the stream: a full async buffer
+                                // costs this frame, not the preview for the rest of the turn.
+                                val alive = try { callback.asBinder().isBinderAlive } catch (_: Exception) { false }
+                                if (FrameStreamPolicy.launcherGone(e, alive)) {
+                                    Log.w(TAG, "Launcher went away during display capture")
+                                    clientAlive = false
+                                } else {
+                                    Log.w(TAG, "A frame did not reach the launcher (${e.javaClass.simpleName}); trying the next")
+                                }
                             }
                         }
                     }
@@ -1737,10 +1750,16 @@ class LauncherBindingService : Service() {
                 } catch (e: Exception) {
                     Log.w(TAG, "Display capture failed: ${e.message}")
                 }
-                delay(intervalMs)
+                delay(rate.get())
             }
         }
-        displayCaptures[sessionId] = DisplayCapture(job)
+        displayCaptures[sessionId] = DisplayCapture(job, rate)
+    }
+
+    /** A run on [sessionId]'s display started or ended: the preview follows at its rate. */
+    private fun followRunRate(sessionId: String, kind: org.ethereumphone.andyclaw.autopilot.AutopilotEvent.Kind) {
+        val interval = FrameStreamPolicy.intervalAfter(kind) ?: return
+        displayCaptures[sessionId]?.intervalMs?.set(interval)
     }
 
     /**
@@ -1848,7 +1867,8 @@ class LauncherBindingService : Service() {
                     is SkillResult.RequiresApproval -> "Requires approval: ${result.description}"
                 }
                 try {
-                    val formatted = ToolResultFormatter.format(toolName, rawData, input)
+                    // Capped: the detail shares the oneway buffer with the frames.
+                    val formatted = ToolResultFormatter.formatForLauncher(toolName, rawData, input)
                     callback.onToolResult(toolName, formatted.summary, formatted.detail)
                 } catch (e: Exception) {
                     Log.w(TAG, "Failed to format/send tool result", e)
@@ -1870,6 +1890,9 @@ class LauncherBindingService : Service() {
                 if (event.kind == org.ethereumphone.andyclaw.autopilot.AutopilotEvent.Kind.STARTED) {
                     // The autopilot creates the display itself; show it, and faster.
                     startDisplayCapture(sessionId, callback, AUTOPILOT_FRAME_INTERVAL_MS)
+                } else {
+                    // Once the run is DONE or FAILED, back to one frame a second.
+                    followRunRate(sessionId, event.kind)
                 }
                 try {
                     callback.onAgentStep(agentStepJson(event))
@@ -1940,7 +1963,7 @@ class LauncherBindingService : Service() {
                         name,
                         if (entry != null) LauncherApprovalPolicy.awaitingSummary(summary.title)
                         else LauncherApprovalPolicy.notQueuedSummary(summary.title),
-                        org.ethereumphone.andyclaw.safety.ApprovalSummaries.asText(summary),
+                        ToolResultFormatter.capDetail(org.ethereumphone.andyclaw.safety.ApprovalSummaries.asText(summary)),
                     )
                 } catch (_: RemoteException) {}
                 return false

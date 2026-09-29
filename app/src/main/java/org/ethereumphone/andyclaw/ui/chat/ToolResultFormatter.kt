@@ -18,6 +18,33 @@ object ToolResultFormatter {
         val explorerUrl: String? = null,
     )
 
+    /**
+     * The most a tool row's `detail` may carry over `ILauncherCallback.onToolResult`. A raw UI tree
+     * or a shell dump went out whole, on the same oneway buffer as the frames, and one big result
+     * could make the next frame fail — which used to end the preview for the rest of the turn.
+     */
+    const val LAUNCHER_DETAIL_MAX_CHARS = 8_192
+
+    /** [format] for the launcher: the same, with [Formatted.detail] cut to [maxChars]. */
+    fun formatForLauncher(
+        toolName: String,
+        rawResult: String,
+        input: JsonObject? = null,
+        maxChars: Int = LAUNCHER_DETAIL_MAX_CHARS,
+    ): Formatted = format(toolName, rawResult, input).let { it.copy(detail = capDetail(it.detail, maxChars)) }
+
+    /**
+     * [detail] at most [maxChars] long, its end replaced by "… (N more)" when it was cut, N being
+     * the characters left out.
+     */
+    fun capDetail(detail: String, maxChars: Int = LAUNCHER_DETAIL_MAX_CHARS): String {
+        if (detail.length <= maxChars) return detail
+        // Sized for the largest N it could be, so the marker always fits inside the cap.
+        val marker = "… (${detail.length} more)".length
+        val keep = (maxChars - marker).coerceAtLeast(0)
+        return detail.take(keep) + "… (${detail.length - keep} more)"
+    }
+
     fun format(toolName: String, rawResult: String, input: JsonObject? = null): Formatted {
         return try {
             when (toolName) {
