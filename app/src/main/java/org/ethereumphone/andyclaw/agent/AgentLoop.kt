@@ -148,6 +148,12 @@ class AgentLoop(
      * request, kept with any secret in it redacted.
      */
     private val ledgerIntent: String? = null,
+    /**
+     * Picks and runs the one read-only, argument-free tool a request obviously needs before the
+     * first model call, so a simple question costs one model call instead of two. Offered to
+     * [Provenance.USER] runs only; null everywhere else.
+     */
+    private val toolPrefetch: JevToolPrefetch? = null,
 ) {
     /**
      * Model calls made by this run, sub-agents included.
@@ -554,6 +560,10 @@ class AgentLoop(
             toolSearchService.prefetch(userMessage)
         }
 
+        // Jev's pre-execution pick runs while memory and the system prompt are assembled, so a
+        // "none" (the common answer) costs the turn nothing; it is awaited only in preExecute.
+        val prePick = startPrePick(userMessage, useToolSearch, skills, allowedTools)
+
         // Memory injection: only on first turn (cold start) or after compaction
         // (context loss). Mid-conversation, everything is already in the prompt —
         // the model can call memory_search explicitly if it needs more context.
@@ -681,6 +691,7 @@ class AgentLoop(
         val messages = conversationHistory.toMutableList()
         messages.add(Message.user(userMessage))
         Log.i("AGENTDISPLAYDEBUGKEY", "USER_MESSAGE: $userMessage")
+        preExecute(prePick, toolsJson, messages, callbacks)
 
         var iterations = 0
         val fullText = StringBuilder()
@@ -1356,6 +1367,81 @@ class AgentLoop(
      *
      * Called when the main model invokes the `spawn_subagent` tool.
      */
+    /** What [preExecute] ran for the current turn, for `AgentRunMetrics`. */
+    @Volatile
+    private var preExecutedTool: String? = null
+
+    /**
+     * Runs the tool [toolPrefetch] picks and appends the call and its result to [messages], as if
+     * the model had made it — so the model's first call can answer instead of asking for it.
+     *
+     * Never the reason a turn fails: a miss, a slow Jev or an error here just leaves [messages] as
+     * they were. Not for a local model (it cannot be relied on to read a call it did not make) or
+     * a confidential one — Tinfoil's enclave is the point of choosing it, and Jev is reached
+     * through OpenRouter.
+     */
+    private suspend fun startPrePick(
+        userMessage: String,
+        useToolSearch: Boolean,
+        skills: List<org.ethereumphone.andyclaw.skills.AndyClawSkill>,
+        allowedTools: Set<String>?,
+    ): kotlinx.coroutines.Deferred<JevToolPrefetch.Pick?>? {
+        preExecutedTool = null
+        val prefetch = toolPrefetch ?: return null
+        if (provenance != Provenance.USER || client is LocalLlmClient) return null
+        if (client is org.ethereumphone.andyclaw.llm.TinfoilProxyClient ||
+            client is org.ethereumphone.andyclaw.llm.TinfoilClient) return null
+        val resolver: (String, String) -> String = { skillId, name -> skillRegistry.getEffectiveName(skillId, name) }
+        // The same list the model will be offered; preExecute re-checks the pick against it.
+        val tools = if (useToolSearch) toolSearchService!!.buildToolList(resolver)
+            else PromptAssembler.assembleTools(skills, tier, resolver, allowedTools)
+        // A child of the run: cancelled with it, and pick() throws only for that cancel.
+        return CoroutineScope(currentCoroutineContext()).async { prefetch.pick(userMessage, tools) }
+    }
+
+    private suspend fun preExecute(
+        prePick: kotlinx.coroutines.Deferred<JevToolPrefetch.Pick?>?,
+        toolsJson: List<JsonObject>,
+        messages: MutableList<Message>,
+        callbacks: Callbacks,
+    ) {
+        val pick = prePick?.await() ?: return
+        if (toolsJson.none { it["name"]?.jsonPrimitive?.contentOrNull == pick.toolName }) return
+        if (runToken.stopRequested) return
+        try {
+            val call = ContentBlock.ToolUseBlock(
+                id = "toolu_pre_" + java.util.UUID.randomUUID().toString().replace("-", ""),
+                name = pick.toolName,
+                input = JsonObject(emptyMap()),
+            )
+            // The ordinary engine: provenance gate, ledger row and tool callbacks as for any call.
+            val engine = ExecutionEngineFactory.create(
+                skillRegistry = skillRegistry,
+                tier = tier,
+                enabledSkillIds = enabledSkillIds,
+                safetyLayer = safetyLayer,
+                agentCallbacks = callbacks,
+                budgetConfig = budgetConfig,
+                provenance = provenance,
+                triggerConversationId = triggerConversationId,
+                enforceProvenance = enforceProvenance,
+                ledger = ledger,
+                intent = recordedIntent,
+            )
+            val batch = engine.executeBatch(ExecutionEngineFactory.toToolCalls(listOf(call)))
+            noteBatch(batch.metrics)
+            val results = ExecutionEngineFactory.toContentBlocks(batch.results)
+            if (results.isEmpty()) return
+            messages.add(Message.assistant(listOf(call)))
+            messages.add(Message("user", MessageContent.Blocks(results)))
+            preExecutedTool = pick.toolName
+            Log.i(TAG, "Pre-executed ${pick.toolName} (Jev ${"%.2f".format(java.util.Locale.ROOT, pick.confidence)} in ${pick.elapsedMs}ms)")
+        } catch (e: Exception) {
+            org.ethereumphone.andyclaw.ExecutionEngine.rethrowIfCancelled(e)
+            Log.w(TAG, "Pre-execution of ${pick.toolName} skipped: ${e.message}")
+        }
+    }
+
     private suspend fun runSubagent(
         taskDescription: String,
         conversationHistory: List<Message>,
@@ -1751,6 +1837,7 @@ class AgentLoop(
             METRICS_TAG,
             "durationMs=${System.currentTimeMillis() - runStartedMs} " +
                 "modelCalls=${modelCalls.get()} iterations=$iterations " +
+                "preExecuted=${preExecutedTool ?: "-"} " +
                 FlowMetrics.snapshot() + " " + AutopilotMetrics.snapshotAndReset(),
         )
         if (cacheRead > 0 || cacheWrite > 0) {

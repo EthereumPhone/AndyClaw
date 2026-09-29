@@ -339,6 +339,13 @@ backend's `/api/jev` with the wallet sign-in (`JevHttpClient`).
   empty — never as the main screen's windows.
 - UX: `ui/autopilot/` live view (mirror, focus ring, ticker, STOP, share replay), rear HUD via
   `setHudState`, launcher `onAgentStep`. Replays black out editable/password fields.
+- **Pre-execution** (`agent/JevToolPrefetch`, `agent.jevPrefetch`, default on): before the first
+  model call of a `USER` turn, one Jev call may pick one READ, argument-free, no-egress tool from
+  the turn's own tool list; the loop runs it through the ordinary engine and puts the call and its
+  result in history, so "what's my battery?" is one model call instead of two. Only when the
+  request shares a word with the tool, above 0.85, within 700 ms — a miss costs nothing. Never
+  with a Tinfoil client (the request would leave the enclave) or a local model. `AgentRunMetrics`
+  logs `preExecuted=`.
 - Measure with AndyBench (Agent Display developer screen) and `adb logcat -s AutopilotStep AgentRunMetrics`.
 
 ## 9. The ledger, the frames, and anticipatory context

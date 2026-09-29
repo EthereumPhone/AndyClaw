@@ -375,6 +375,7 @@ class LauncherBindingService : Service() {
                 // a phone that has the agent display, where both exist.
                 if (OsCapabilities.hasPrivilegedAccess) {
                     put("autopilotEnabled", prefs.autopilotEnabled.value)
+                    put("jevPrefetchEnabled", prefs.jevPrefetchEnabled.value)
                     put("autopilotNoConfirm", prefs.autopilotNoConfirm.value)
                 }
                 put("ambientIngest", prefs.ambientIngestEnabled.value)
@@ -457,6 +458,7 @@ class LauncherBindingService : Service() {
                     "ledgerEnabled" -> prefs.setLedgerEnabled(value.toBooleanStrict())
                     "displayFrameCapture" -> prefs.setDisplayFrameCaptureEnabled(value.toBooleanStrict())
                     "autopilotEnabled" -> prefs.setAutopilotEnabled(value.toBooleanStrict())
+                    "jevPrefetchEnabled" -> prefs.setJevPrefetchEnabled(value.toBooleanStrict())
                     "autopilotNoConfirm" -> prefs.setAutopilotNoConfirm(value.toBooleanStrict())
                     // Through the app, not the prefs: the receivers have to follow the
                     // switch, or nothing happens until the next boot.
@@ -1826,6 +1828,7 @@ class LauncherBindingService : Service() {
             // frames all land under one key without any of the three knowing about the
             // others.
             ledger = app.agentLedger(sessionId),
+            toolPrefetch = app.jevToolPrefetch,
         )
 
         // Get or create conversation history for this session

@@ -2977,6 +2977,7 @@ private fun AutopilotSettingsRows(
             as org.ethereumphone.andyclaw.NodeApp).securePrefs
         val autopilotOn by autopilotPrefs.autopilotEnabled.collectAsState()
         val noConfirmOn by autopilotPrefs.autopilotNoConfirm.collectAsState()
+        val prefetchOn by autopilotPrefs.jevPrefetchEnabled.collectAsState()
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -3027,6 +3028,34 @@ private fun AutopilotSettingsRows(
             DgenSquareSwitch(
                 checked = noConfirmOn,
                 onCheckedChange = { autopilotPrefs.setAutopilotNoConfirm(it) },
+                activeColor = primaryColor,
+            )
+        }
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "ANSWER SIMPLE QUESTIONS FASTER",
+                    style = contentTitleStyle,
+                    color = primaryColor,
+                )
+                Text(
+                    text = "For questions one read-only tool can answer (battery, Wi-Fi, storage…), " +
+                        "run that tool before asking the model. The request is sent to TypeSafe's " +
+                        "Jev model (via OpenRouter) to choose it. Never used with a private " +
+                        "(Tinfoil) model.",
+                    style = contentBodyStyle,
+                    color = dgenWhite,
+                )
+            }
+            Spacer(Modifier.width(rowControlSpacing))
+            DgenSquareSwitch(
+                checked = prefetchOn,
+                onCheckedChange = { autopilotPrefs.setJevPrefetchEnabled(it) },
                 activeColor = primaryColor,
             )
         }

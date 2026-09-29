@@ -403,6 +403,13 @@ class SecurePrefs(context: Context) : KeyValueStore {
   private val _autopilotEnabled = MutableStateFlow(prefs.getBoolean("agent.autopilot.enabled", true))
   val autopilotEnabled: StateFlow<Boolean> = _autopilotEnabled
 
+  /**
+   * Jev picks and runs the one read-only tool a request obviously needs before the model is asked
+   * (`JevToolPrefetch`). Sends the request text to Jev when it shares a word with such a tool.
+   */
+  private val _jevPrefetchEnabled = MutableStateFlow(prefs.getBoolean("agent.jevPrefetch", true))
+  val jevPrefetchEnabled: StateFlow<Boolean> = _jevPrefetchEnabled
+
   /** Irreversible compiled flows run without an approval card (the user's own requests only). */
   private val _autopilotNoConfirm = MutableStateFlow(prefs.getBoolean("agent.autopilot.noConfirm", true))
   val autopilotNoConfirm: StateFlow<Boolean> = _autopilotNoConfirm
@@ -1101,6 +1108,11 @@ class SecurePrefs(context: Context) : KeyValueStore {
     _autopilotNoConfirm.value = enabled
   }
 
+  fun setJevPrefetchEnabled(enabled: Boolean) {
+    prefs.edit { putBoolean("agent.jevPrefetch", enabled) }
+    _jevPrefetchEnabled.value = enabled
+  }
+
   fun setAutopilotEnabled(enabled: Boolean) {
     prefs.edit { putBoolean("agent.autopilot.enabled", enabled) }
     _autopilotEnabled.value = enabled
@@ -1466,6 +1478,7 @@ class SecurePrefs(context: Context) : KeyValueStore {
     _smartRoutingEnabled.value = prefs.getBoolean("routing.enabled", false)
     _toolSearchEnabled.value = prefs.getBoolean("routing.toolSearchEnabled", true)
     _autopilotEnabled.value = prefs.getBoolean("agent.autopilot.enabled", true)
+    _jevPrefetchEnabled.value = prefs.getBoolean("agent.jevPrefetch", true)
     _autopilotNoConfirm.value = prefs.getBoolean("agent.autopilot.noConfirm", true)
     _selectedRoutingPresetId.value = prefs.getString("routing.presetId", "stock_minimal") ?: "stock_minimal"
     _routingPresets.value = loadRoutingPresets()

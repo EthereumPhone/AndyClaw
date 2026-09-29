@@ -926,6 +926,15 @@ class NodeApp : Application() {
         )
     }
 
+    /** Runs the one read-only tool a request obviously needs before the first model call. Privileged only. */
+    val jevToolPrefetch: org.ethereumphone.andyclaw.agent.JevToolPrefetch? by lazy {
+        if (!OsCapabilities.hasPrivilegedAccess) null
+        else org.ethereumphone.andyclaw.agent.JevToolPrefetch(
+            jev = { jevClient },
+            enabled = { securePrefs.jevPrefetchEnabled.value },
+        )
+    }
+
     val autopilotToolHandler: org.ethereumphone.andyclaw.autopilot.AutopilotToolHandler? by lazy {
         if (!OsCapabilities.hasPrivilegedAccess) null
         else org.ethereumphone.andyclaw.autopilot.AutopilotToolHandler(

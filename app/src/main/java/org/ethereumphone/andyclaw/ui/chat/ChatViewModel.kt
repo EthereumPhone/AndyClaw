@@ -509,6 +509,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 // `sid` rather than the flow: the session was created above, and reading
                 // it back through a nullable would make a recorded chat depend on ordering.
                 ledger = app.agentLedger(sid),
+                toolPrefetch = app.jevToolPrefetch,
             )
 
             // Initialize background memory extractor for this run (opt-in)
