@@ -455,6 +455,11 @@ class AgentLoop(
             toolName: String? = null,
             toolInput: JsonObject? = null,
         ): Boolean
+        /**
+         * What the model is told about a call [onApprovalNeeded] just refused, or null for the
+         * engine's neutral "not approved". A host that queued the call for the user says so here.
+         */
+        fun notApprovedMessage(toolName: String?, toolInput: JsonObject?): String? = null
         suspend fun onPermissionsNeeded(permissions: List<String>): Boolean
         /**
          * Called when the agent displays questions to the user via ask_user.

@@ -437,6 +437,73 @@ class ParallelExecutionEngineTest {
         assertEquals(ParallelExecutionEngine.NOT_APPROVED, result.results[0].content)
     }
 
+    /** A host that queued the call for later says so; see ExecutionCallbacks.notApprovedMessage. */
+    private class QueueingCallbacks : ExecutionCallbacks {
+        val blocked = mutableListOf<Pair<String, String>>()
+        val completed = mutableListOf<ToolCallResult>()
+        val asked = mutableListOf<String?>()
+        override fun onToolStarted(toolName: String) {}
+        override fun onToolCompleted(toolName: String, result: ToolCallResult) { completed += result }
+        override fun onToolBlocked(toolName: String, reason: String) { blocked += toolName to reason }
+        override suspend fun onApprovalNeeded(description: String, toolName: String?, toolInput: JsonObject?) = false
+        override suspend fun onPermissionsNeeded(permissions: List<String>) = true
+        override fun notApprovedMessage(toolName: String?, toolInput: JsonObject?): String {
+            asked += toolName
+            return "Waiting for the user's approval."
+        }
+    }
+
+    @Test
+    fun `preflight NeedsApproval - a host that queued the call tells the model so`() = runTest {
+        val callbacks = QueueingCallbacks()
+        val engine = buildEngine(
+            preflightChecks = listOf(PreflightCheck { PreflightVerdict.NeedsApproval("Uninstall?") }),
+            callbacks = callbacks,
+        )
+
+        val result = engine.executeBatch(listOf(toolCall(name = "uninstall_app")))
+        assertEquals("Waiting for the user's approval.", result.results[0].content)
+        assertTrue(result.results[0].isError)
+        assertEquals(listOf<String?>("uninstall_app"), callbacks.asked)
+        assertEquals(listOf("uninstall_app" to "Waiting for the user's approval."), callbacks.blocked)
+    }
+
+    @Test
+    fun `RequiresApproval - a refusal is a block with the host's words, never post-processed`() = runTest {
+        val callbacks = QueueingCallbacks()
+        val processed = AtomicInteger(0)
+        val engine = buildEngine(
+            executor = ToolExecutor { _, _ -> ToolExecResult.RequiresApproval("Confirm?") },
+            postProcessors = listOf(PostProcessor { _, _ ->
+                processed.incrementAndGet()
+                PostProcessedResult(content = "processed", isError = false)
+            }),
+            callbacks = callbacks,
+        )
+
+        val result = engine.executeBatch(listOf(toolCall()))
+        assertEquals("Waiting for the user's approval.", result.results[0].content)
+        assertTrue(result.results[0].isError)
+        assertEquals(ToolCallResult.Phase.BLOCKED_PREFLIGHT, result.results[0].phase)
+        // One row for the step, written as the block it is — the ledger processor never sees it.
+        assertEquals(1, callbacks.blocked.size)
+        assertEquals(0, processed.get())
+        // And the host still hears how the call ended.
+        assertEquals(1, callbacks.completed.size)
+    }
+
+    @Test
+    fun `without a message of the host's the model hears NOT_APPROVED`() = runTest {
+        val engine = buildEngine(
+            preflightChecks = listOf(PreflightCheck { PreflightVerdict.NeedsApproval("?") }),
+            callbacks = object : ExecutionCallbacks by noOpCallbacks() {
+                override suspend fun onApprovalNeeded(description: String, toolName: String?, toolInput: JsonObject?) = false
+                override fun notApprovedMessage(toolName: String?, toolInput: JsonObject?) = "  "
+            },
+        )
+        assertEquals(ParallelExecutionEngine.NOT_APPROVED, engine.executeBatch(listOf(toolCall())).results[0].content)
+    }
+
     // ═══════════════════════════════════════════
     // Post-processing
     // ═══════════════════════════════════════════

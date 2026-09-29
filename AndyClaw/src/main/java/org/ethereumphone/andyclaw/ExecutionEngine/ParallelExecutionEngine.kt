@@ -34,7 +34,7 @@ class ParallelExecutionEngine(
          * What the model hears when an approval did not come through. Neutral on purpose: a
          * headless run queues the request for the owner rather than asking anyone, and "the
          * user denied it" would then be relayed to whoever sent the message as the owner's
-         * answer.
+         * answer. A host with more to say supplies it ([ExecutionCallbacks.notApprovedMessage]).
          */
         const val NOT_APPROVED = "Not approved, so it did not run. Do not try it again in this turn."
     }
@@ -154,7 +154,7 @@ class ParallelExecutionEngine(
                     )
                     if (!approved) {
                         Log.d(TAG, "Pre-flight DENIED approval [${call.name}]")
-                        return PreflightOutcome.Blocked(NOT_APPROVED)
+                        return PreflightOutcome.Blocked(notApprovedMessage(call))
                     }
                     Log.d(TAG, "Pre-flight APPROVED [${call.name}]")
                     approvedByUser = true
@@ -230,10 +230,15 @@ class ParallelExecutionEngine(
             toolInput = call.input,
         )
         if (!approved) {
+            // Refused like a pre-flight block, and recorded like one: whatever the host says the
+            // refusal was, the step's row is a block, never an error.
+            val reason = notApprovedMessage(call)
+            callbacks.onToolBlocked(call.name, reason)
             return ExecutedTool(
                 call,
-                ToolExecResult.Error(NOT_APPROVED),
+                ToolExecResult.Error(reason),
                 ToolCallResult.Phase.BLOCKED_PREFLIGHT,
+                refused = true,
             )
         }
 
@@ -260,8 +265,12 @@ class ParallelExecutionEngine(
         val reason = callbacks.vetoStart(call.name) ?: return null
         Log.d(TAG, "Vetoed at start [${call.name}]: $reason")
         callbacks.onToolBlocked(call.name, reason)
-        return ExecutedTool(call, ToolExecResult.Error(reason), ToolCallResult.Phase.BLOCKED_PREFLIGHT, vetoed = true)
+        return ExecutedTool(call, ToolExecResult.Error(reason), ToolCallResult.Phase.BLOCKED_PREFLIGHT, refused = true)
     }
+
+    /** What the model hears about [call] after its approval did not come through; see [ExecutionCallbacks.notApprovedMessage]. */
+    private fun notApprovedMessage(call: ToolCall): String =
+        callbacks.notApprovedMessage(call.name, call.input)?.takeIf { it.isNotBlank() } ?: NOT_APPROVED
 
     /** The run itself was cancelled while [call] was executing, as opposed to a tool's own timeout. */
     private suspend fun noteIfInterrupted(call: ToolCall, e: Exception) {
@@ -280,9 +289,9 @@ class ParallelExecutionEngine(
         return executedTools.map { executed ->
             val (call, result, phase) = executed
 
-            // If no post-processors, convert directly. A vetoed call never ran: nothing to
-            // process, and its row was written when it was refused.
-            if (postProcessors.isEmpty() || executed.vetoed) {
+            // If no post-processors, convert directly. A refused call never ran as asked: nothing
+            // to process, and its row was written when it was refused.
+            if (postProcessors.isEmpty() || executed.refused) {
                 return@map resultToToolCallResult(call, result, phase)
             }
 
@@ -416,6 +425,10 @@ class ParallelExecutionEngine(
         val call: ToolCall,
         val result: ToolExecResult,
         val phase: ToolCallResult.Phase,
-        val vetoed: Boolean = false,
+        /**
+         * Vetoed as it started, or not approved after it asked: reported through
+         * [ExecutionCallbacks.onToolBlocked] and never shown to the post-processors.
+         */
+        val refused: Boolean = false,
     )
 }

@@ -59,6 +59,12 @@ object ApprovalSummaries {
         "reminder" -> "A reminder"
         "notification" -> "A notification"
         "heartbeat" -> "A background check"
+        // A turn typed or spoken on the home screen that read something, or wanted something
+        // sensitive, before it asked (LauncherApprovalPolicy).
+        org.ethereumphone.andyclaw.services.LauncherApprovalPolicy.SOURCE ->
+            org.ethereumphone.andyclaw.services.LauncherApprovalPolicy.SOURCE_LABEL
+        org.ethereumphone.andyclaw.services.LauncherApprovalPolicy.LOCKSCREEN_SOURCE ->
+            org.ethereumphone.andyclaw.services.LauncherApprovalPolicy.LOCKSCREEN_SOURCE_LABEL
         else -> "A background task"
     }
 

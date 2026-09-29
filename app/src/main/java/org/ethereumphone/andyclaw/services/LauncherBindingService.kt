@@ -1871,6 +1871,8 @@ class LauncherBindingService : Service() {
 
             override fun onToolResult(toolName: String, result: SkillResult, input: kotlinx.serialization.json.JsonObject?) {
                 Log.d(TAG, "Tool result ($toolName): ${result::class.simpleName}")
+                // A refusal onApprovalNeeded queued has been reported to the launcher already.
+                if (result is SkillResult.Error && LauncherApprovalPolicy.isRefusalMessage(result.message)) return
                 val rawData = when (result) {
                     is SkillResult.Success -> result.data
                     is SkillResult.ImageSuccess -> result.text
@@ -1909,15 +1911,75 @@ class LauncherBindingService : Service() {
                 }
             }
 
+            /** What the model is told about each call refused below, until the engine asks. */
+            private val refusals = java.util.concurrent.ConcurrentHashMap<String, String>()
+
+            private fun refusalKey(toolName: String?, toolInput: JsonObject?) = "$toolName|$toolInput"
+
             override suspend fun onApprovalNeeded(
                 description: String,
                 toolName: String?,
                 toolInput: JsonObject?,
             ): Boolean {
-                // Auto-approve from launcher context (same as heartbeat)
-                Log.i(TAG, "Auto-approving: $description")
-                return true
+                // Nobody can be asked mid-turn from the home screen. A plain request of the
+                // user's own still runs; anything sensitive, anything after the run has read
+                // someone else's words, and anything from the lock screen waits for the user as
+                // the exact call (LauncherApprovalPolicy).
+                val name = toolName ?: "unknown"
+                val effect = org.ethereumphone.andyclaw.safety.ToolEffects.of(
+                    name, registry.getTools(tier).firstOrNull { it.name == name },
+                )
+                val tainted = agentLoop.currentRunToken.readThirdPartyContent
+                val decision = LauncherApprovalPolicy.decide(
+                    effect = effect,
+                    provenance = Provenance.USER,
+                    readThirdPartyContent = tainted,
+                    yolo = app.securePrefs.yoloMode.value,
+                    fromLockscreen = fromLockscreen,
+                )
+                if (decision == LauncherApprovalPolicy.Decision.RUN) {
+                    Log.i(TAG, "Approving '$name' for the user's own request ($effect): $description")
+                    return true
+                }
+                val summary = org.ethereumphone.andyclaw.safety.ApprovalSummaries.of(name, toolInput)
+                val entry = try {
+                    app.pendingApprovalStore.queue(
+                        org.ethereumphone.andyclaw.safety.PendingApprovalStore.Request(
+                            source = if (fromLockscreen) LauncherApprovalPolicy.LOCKSCREEN_SOURCE else LauncherApprovalPolicy.SOURCE,
+                            provenance = Provenance.USER.name,
+                            toolName = name,
+                            input = toolInput,
+                            description = summary.title,
+                            // The conversation on screen: the launcher shows it there, inline.
+                            conversationId = sessionId,
+                            // The turn's own ledger session (app.agentLedger(sessionId)).
+                            ledgerSessionId = sessionId,
+                            effect = effect.name,
+                            toolReason = description,
+                        )
+                    )
+                } catch (e: Exception) {
+                    Log.w(TAG, "Could not queue pending approval: ${e.message}")
+                    null
+                }
+                Log.w(TAG, "Not running '$name' in a launcher turn ($effect, read others' content: $tainted, " +
+                    "lockscreen: $fromLockscreen); queued: ${entry != null}")
+                refusals[refusalKey(toolName, toolInput)] =
+                    if (entry != null) LauncherApprovalPolicy.QUEUED_FOR_MODEL else LauncherApprovalPolicy.NOT_QUEUED_FOR_MODEL
+                // Told now: a call refused before it started never reaches onToolResult.
+                try {
+                    callback.onToolResult(
+                        name,
+                        if (entry != null) LauncherApprovalPolicy.awaitingSummary(summary.title)
+                        else LauncherApprovalPolicy.notQueuedSummary(summary.title),
+                        org.ethereumphone.andyclaw.safety.ApprovalSummaries.asText(summary),
+                    )
+                } catch (_: RemoteException) {}
+                return false
             }
+
+            override fun notApprovedMessage(toolName: String?, toolInput: JsonObject?): String? =
+                refusals.remove(refusalKey(toolName, toolInput))
 
             override suspend fun onPermissionsNeeded(permissions: List<String>): Boolean {
                 // Can't request permissions from a bound service - check if already granted

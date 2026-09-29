@@ -23,6 +23,14 @@ interface ExecutionCallbacks {
         toolInput: JsonObject? = null,
     ): Boolean
 
+    /**
+     * What the model is told about the call [onApprovalNeeded] just said no to, or null for
+     * [ParallelExecutionEngine.NOT_APPROVED]. Asked once, straight after that answer, for the same
+     * call — so a host that queued the call for the user to approve later can say that, rather
+     * than a bare "not approved" that reads like the user's refusal.
+     */
+    fun notApprovedMessage(toolName: String?, toolInput: JsonObject?): String? = null
+
     /** User must grant Android permissions. Returns true if granted. */
     suspend fun onPermissionsNeeded(permissions: List<String>): Boolean
 

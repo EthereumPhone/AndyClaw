@@ -677,6 +677,9 @@ object ExecutionEngineFactory {
             toolInput: JsonObject?,
         ): Boolean = agentCallbacks.onApprovalNeeded(description, toolName, toolInput)
 
+        override fun notApprovedMessage(toolName: String?, toolInput: JsonObject?): String? =
+            agentCallbacks.notApprovedMessage(toolName, toolInput)
+
         override suspend fun onPermissionsNeeded(permissions: List<String>): Boolean =
             agentCallbacks.onPermissionsNeeded(permissions)
     }

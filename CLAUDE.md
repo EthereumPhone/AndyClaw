@@ -147,8 +147,8 @@ New background trigger? It states its `Provenance` explicitly. The defaults are 
 - **Standing instructions are written only by an untainted owner.** `HEARTBEAT.md`, `soul.md` and
   `user_story.md` are fed to every later TRUSTED run, so `write_file` to them needs a `USER` run
   that has read no third-party text, and `update_soul` is blocked in a tainted run
-  (`ProvenanceGate.standingInstructionVerdict`) — a block, not an approval, because the launcher
-  approves everything.
+  (`ProvenanceGate.standingInstructionVerdict`) — a block, not an approval, because YOLO approves
+  everything.
 - **The agent's file tools don't touch AndyClaw's own state** (`FileSystemSkill.PROTECTED`: the
   job provenance store, the approval queue and outcomes, `telegram_chats.json`, `flows/`,
   `session_frames/`). Rewriting any of them was a way to hand a stranger the owner's authority.
@@ -167,8 +167,24 @@ New background trigger? It states its `Provenance` explicitly. The defaults are 
   PENDING. Outside senders share one trigger budget across identities, and the owner's own
   requests make room in a queue strangers filled.
 - Headless heartbeats queue `SENSITIVE` tools as pending approvals instead of approving them.
-  The launcher chat still approves everything it is asked — a product decision, not an
-  oversight.
+- **The home screen asks too** (`services/LauncherApprovalPolicy`). The launcher cannot be asked
+  mid-turn (no approval callback on `ILauncherCallback`, and adding one is an ordinal), so its
+  turns used to approve everything. Now a launcher turn queues the exact call — source
+  `launcher`, provenance `USER`, `conversationId` = the launcher's session id, the turn's ledger
+  session — when the tool is `SENSITIVE`, or the run has read someone else's words
+  (`AgentRunToken.readThirdPartyContent`), or it is not `USER`; the launcher shows it inline in
+  that conversation with APPROVE → device credential → run once. The model is told it is waiting
+  (`ExecutionCallbacks.notApprovedMessage`, `LauncherApprovalPolicy.QUEUED_FOR_MODEL`), and the
+  launcher gets an `onToolResult` whose summary starts with exactly `Waiting for your approval`,
+  its cue to refresh the cards mid-turn. A plain untainted request of the user's own still runs;
+  YOLO approves everything as in AndyClaw's own chat. A lock-screen turn (SystemUI's
+  `sendLockscreenPrompt`) queues every such call, YOLO or not. `LauncherApprovalPolicyTest`
+  fails if an `onApprovalNeeded` in `LauncherBindingService` goes back to `return true`.
+- **A launcher caller is its name and its key** (`services/CallerPolicy`): the launcher or
+  SystemUI by package name *and* the system uid or AndyClaw's signing key (the ethOS build signs
+  all three with the platform key). The name alone let any app called
+  `org.ethosmobile.ethoslauncher` read every key off a phone that is not a dgen1.
+  `sendLockscreenPrompt` is SystemUI's only.
 
 ## 7. Things that will bite you
 
