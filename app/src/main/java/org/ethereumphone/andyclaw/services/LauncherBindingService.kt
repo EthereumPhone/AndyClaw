@@ -19,7 +19,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -181,8 +180,8 @@ class LauncherBindingService : Service() {
         val job: Job,
     )
 
-    /** Active prompt jobs keyed by launcher sessionId, so we can cancel inference. */
-    private val activePromptJobs = java.util.concurrent.ConcurrentHashMap<String, Job>()
+    /** The running turn of each launcher session, so a newer prompt or STOP can end it. */
+    private val turns by lazy { LauncherTurns(scope) }
 
     /** Per-session conversation histories for multi-turn support. */
     private val sessionHistories = java.util.concurrent.ConcurrentHashMap<String, MutableList<Message>>()
@@ -197,16 +196,32 @@ class LauncherBindingService : Service() {
     private var execSummaryCallback: IExecSummaryCallback? = null
 
     /**
-     * A second prompt for a session used to overwrite its [activePromptJobs] entry without
-     * stopping the first, so both runs appended to the same unsynchronised history and the first
-     * could no longer be stopped. The launcher only follows the newest turn (its callback for an
-     * older turn is ignored), so the newer prompt wins: the older is cancelled, and joined so it
-     * has stopped touching the history before this one starts.
+     * Starts a turn for [sessionId]: it replaces a turn the session still has running, ends if the
+     * caller's process dies, and sends exactly one terminal callback however it ends.
      */
-    private suspend fun replacePreviousTurn(previous: Job?) {
-        if (previous == null || previous.isCompleted) return
-        Log.i(TAG, "New prompt while an older turn of the session is running; cancelling the older one")
-        previous.cancelAndJoin()
+    private fun startTurn(prompt: String, sessionId: String, callback: ILauncherCallback, fromLockscreen: Boolean) {
+        val terminal = TurnTerminal()
+        val caller = try { callback.asBinder() } catch (_: Exception) { null }
+        turns.start(sessionId, caller) {
+            try {
+                runAgentLoop(prompt, sessionId, callback, terminal, fromLockscreen)
+                // Every path of the loop ends in onComplete or onError; this is the net under it.
+                terminal.end {
+                    Log.w(TAG, "Turn for session $sessionId ended without an answer")
+                    try { callback.onError("Something went wrong on my side") } catch (_: RemoteException) {}
+                }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                Log.i(TAG, "Inference cancelled for session $sessionId")
+                terminal.end {
+                    try { callback.onError("Cancelled") } catch (_: RemoteException) {}
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, if (fromLockscreen) "sendLockscreenPrompt failed" else "sendPrompt failed", e)
+                terminal.end {
+                    try { callback.onError(e.message ?: "Unknown error") } catch (_: RemoteException) {}
+                }
+            }
+        }
     }
 
     private val binder = object : ILauncherService.Stub() {
@@ -225,30 +240,7 @@ class LauncherBindingService : Service() {
 
         override fun sendPrompt(prompt: String, sessionId: String, callback: ILauncherCallback) {
             enforceCallerIsLauncher()
-            // Lazy, so it can be registered before it runs and wait for the turn it replaces.
-            var previous: Job? = null
-            val job = scope.launch(start = kotlinx.coroutines.CoroutineStart.LAZY) {
-                try {
-                    replacePreviousTurn(previous)
-                    runAgentLoop(prompt, sessionId, callback)
-                } catch (e: kotlinx.coroutines.CancellationException) {
-                    Log.i(TAG, "Inference cancelled for session $sessionId")
-                    try {
-                        callback.onError("Cancelled")
-                    } catch (_: RemoteException) {}
-                } catch (e: Exception) {
-                    Log.e(TAG, "sendPrompt failed", e)
-                    try {
-                        callback.onError(e.message ?: "Unknown error")
-                    } catch (_: RemoteException) {}
-                } finally {
-                    // Only this job's own entry: a newer prompt for the same session may have
-                    // replaced it, and removing that one would leave it impossible to stop.
-                    coroutineContext[Job]?.let { activePromptJobs.remove(sessionId, it) }
-                }
-            }
-            previous = activePromptJobs.put(sessionId, job)
-            job.start()
+            startTurn(prompt, sessionId, callback, fromLockscreen = false)
         }
 
         override fun transcribeAudio(audioFd: ParcelFileDescriptor, callback: ILauncherCallback) {
@@ -294,30 +286,7 @@ class LauncherBindingService : Service() {
             callback: ILauncherCallback,
         ) {
             enforceCallerIsSystemUi()
-            // Lazy, so it can be registered before it runs and wait for the turn it replaces.
-            var previous: Job? = null
-            val job = scope.launch(start = kotlinx.coroutines.CoroutineStart.LAZY) {
-                try {
-                    replacePreviousTurn(previous)
-                    runAgentLoop(prompt, sessionId, callback, fromLockscreen = true)
-                } catch (e: kotlinx.coroutines.CancellationException) {
-                    Log.i(TAG, "Lockscreen inference cancelled for session $sessionId")
-                    try {
-                        callback.onError("Cancelled")
-                    } catch (_: RemoteException) {}
-                } catch (e: Exception) {
-                    Log.e(TAG, "sendLockscreenPrompt failed", e)
-                    try {
-                        callback.onError(e.message ?: "Unknown error")
-                    } catch (_: RemoteException) {}
-                } finally {
-                    // Only this job's own entry: a newer prompt for the same session may have
-                    // replaced it, and removing that one would leave it impossible to stop.
-                    coroutineContext[Job]?.let { activePromptJobs.remove(sessionId, it) }
-                }
-            }
-            previous = activePromptJobs.put(sessionId, job)
-            job.start()
+            startTurn(prompt, sessionId, callback, fromLockscreen = true)
         }
 
         override fun getRecentSessions(limit: Int): String {
@@ -633,10 +602,8 @@ class LauncherBindingService : Service() {
 
         override fun stopInference(sessionId: String) {
             enforceCallerIsLauncher()
-            val job = activePromptJobs.remove(sessionId)
-            if (job != null && job.isActive) {
+            if (turns.stop(sessionId)) {
                 Log.i(TAG, "Stopping inference for session: $sessionId")
-                job.cancel()
             } else {
                 Log.d(TAG, "No active inference to stop for session: $sessionId")
             }
@@ -1806,6 +1773,7 @@ class LauncherBindingService : Service() {
         prompt: String,
         sessionId: String,
         callback: ILauncherCallback,
+        terminal: TurnTerminal,
         fromLockscreen: Boolean = false,
     ) {
         val app = application as? NodeApp
@@ -1992,23 +1960,29 @@ class LauncherBindingService : Service() {
                 return allGranted
             }
 
+            // One terminal callback per turn (TurnTerminal): whatever else reports an end later is
+            // not the end, and must not put the display away under a turn still running either.
             override fun onComplete(fullText: String, tokenUsage: org.ethereumphone.andyclaw.agent.TokenUsageSnapshot?) {
-                // Stop this session's display capture if the agent left it running.
-                if (displayCaptures.containsKey(sessionId)) {
-                    stopDisplayCapture(sessionId, callback)
+                terminal.end {
+                    // Stop this session's display capture if the agent left it running.
+                    if (displayCaptures.containsKey(sessionId)) {
+                        stopDisplayCapture(sessionId, callback)
+                    }
+                    try {
+                        callback.onComplete(fullText)
+                    } catch (_: RemoteException) {}
                 }
-                try {
-                    callback.onComplete(fullText)
-                } catch (_: RemoteException) {}
             }
 
             override fun onError(error: Throwable) {
-                if (displayCaptures.containsKey(sessionId)) {
-                    stopDisplayCapture(sessionId, callback)
+                terminal.end {
+                    if (displayCaptures.containsKey(sessionId)) {
+                        stopDisplayCapture(sessionId, callback)
+                    }
+                    try {
+                        callback.onError(error.message ?: "Unknown error")
+                    } catch (_: RemoteException) {}
                 }
-                try {
-                    callback.onError(error.message ?: "Unknown error")
-                } catch (_: RemoteException) {}
             }
         }
 

@@ -212,6 +212,10 @@ New background trigger? It states its `Provenance` explicitly. The defaults are 
   generic `catch (e: Exception)` must `rethrowIfCancelled(e)` first, or a cancel turns into an
   ordinary error and the run carries on. `execute_code`'s `ToolBridge` passes the context
   through to the tools it calls.
+- **A launcher turn is one per session and ends once** (`services/LauncherTurns`). A newer prompt
+  cancels and joins the older one; the callback binder is linked to death, so a home screen that
+  crashed or was recreated leaves no turn acting unseen; and `TurnTerminal` lets exactly one of
+  `onComplete`/`onError` out, whichever path ends the turn — the launcher treats either as the end.
 - **Anything that moves money is not half-cancellable.** The agent wallet's submit and parse run
   under `NonCancellable`: a cancel after submission used to report failure and skip the history
   row, which invites a second send.

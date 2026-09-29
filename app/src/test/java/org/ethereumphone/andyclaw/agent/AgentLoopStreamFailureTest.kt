@@ -79,6 +79,54 @@ class AgentLoopStreamFailureTest {
         assertEquals("model not loaded", callbacks.errors.single().message)
     }
 
+    /** Counts every terminal callback, so a second one cannot hide behind the first. */
+    private class TerminalCounter : RecordingCallbacks() {
+        val terminals = java.util.Collections.synchronizedList(mutableListOf<String>())
+        override fun onComplete(fullText: String, tokenUsage: TokenUsageSnapshot?) {
+            terminals += "complete"
+            super.onComplete(fullText, tokenUsage)
+        }
+        override fun onError(error: Throwable) {
+            terminals += "error"
+            super.onError(error)
+        }
+    }
+
+    /**
+     * IPC-06: a client that reports a bad event through onError and then streams on to a normal
+     * end — SseParser's old shape, and any third-party client's — ends the turn exactly once.
+     */
+    @Test
+    fun `an error reported mid-stream is the one terminal callback, whatever the stream does next`() = runBlocking {
+        val client = object : LlmClient {
+            override suspend fun sendMessage(request: MessagesRequest) = error("unused")
+            override suspend fun streamMessage(request: MessagesRequest, callback: StreamingCallback) {
+                callback.onToken("Hel")
+                callback.onError(RuntimeException("bad event"))
+                callback.onToken("lo")
+                callback.onComplete(done(request.model))
+            }
+        }
+        val callbacks = TerminalCounter()
+        AgentLoop(client, NativeSkillRegistry(), Tier.OPEN, enabledSkillIds = emptySet()).run("hi", emptyList(), callbacks)
+
+        assertEquals(listOf("error"), callbacks.terminals.toList())
+        assertEquals("bad event", callbacks.errors.single().message)
+    }
+
+    @Test
+    fun `a client that errors and returns ends the turn once`() = runBlocking {
+        val client = object : LlmClient {
+            override suspend fun sendMessage(request: MessagesRequest) = error("unused")
+            override suspend fun streamMessage(request: MessagesRequest, callback: StreamingCallback) {
+                callback.onError(AnthropicApiException(401, "invalid key"))
+            }
+        }
+        val callbacks = TerminalCounter()
+        AgentLoop(client, NativeSkillRegistry(), Tier.OPEN, enabledSkillIds = emptySet()).run("hi", emptyList(), callbacks)
+        assertEquals(listOf("error"), callbacks.terminals.toList())
+    }
+
     @Test
     fun `truncated tool arguments are answered with an error and never run`() = runBlocking {
         var ran = false
