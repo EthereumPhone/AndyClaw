@@ -20,13 +20,46 @@ class LauncherApprovalPolicyTest {
         yolo: Boolean = false,
         provenance: Provenance = Provenance.USER,
         lockscreen: Boolean = false,
-    ) = LauncherApprovalPolicy.decide(effect, provenance, tainted, yolo, lockscreen)
+        tool: String = "some_tool",
+    ) = LauncherApprovalPolicy.decide(tool, effect, provenance, tainted, yolo, lockscreen)
+
+    /** The real classification, as the service looks it up. */
+    private fun decide(tool: String, tainted: Boolean = false, provenance: Provenance = Provenance.USER, lockscreen: Boolean = false) =
+        decide(ToolEffects.of(tool, null), tainted = tainted, provenance = provenance, lockscreen = lockscreen, tool = tool)
 
     @Test
     fun `a sensitive tool is always queued`() {
         assertEquals(ToolEffect.SENSITIVE, ToolEffects.of("write_secure_setting", null))
-        assertEquals(Decision.QUEUE, decide(ToolEffects.of("write_secure_setting", null)))
+        assertEquals(Decision.QUEUE, decide("write_secure_setting"))
+        assertEquals(Decision.QUEUE, decide("create_custom_tool"))
         assertEquals(Decision.QUEUE, decide(ToolEffect.SENSITIVE, tainted = true))
+    }
+
+    /** The owner's decision: the terminal-screen confirmation is the approval of these. */
+    @Test
+    fun `the user's own wallet runs for a plain request, straight to the terminal screen`() {
+        assertEquals(ToolEffect.SENSITIVE, ToolEffects.of("send_native_token", null))
+        for (tool in ToolEffects.USER_WALLET_TOOLS) {
+            assertEquals(tool, Decision.RUN, decide(tool))
+        }
+    }
+
+    @Test
+    fun `the user's wallet still waits once the run has read someone else's words, or is not the user's`() {
+        assertEquals(Decision.QUEUE, decide("send_native_token", tainted = true))
+        assertEquals(Decision.QUEUE, decide("propose_transaction", tainted = true))
+        assertEquals(Decision.QUEUE, decide("send_native_token", provenance = Provenance.TRUSTED))
+        assertEquals(Decision.QUEUE, decide("send_native_token", lockscreen = true))
+    }
+
+    @Test
+    fun `the agent's own sub-account keeps the rule it had`() {
+        assertEquals(ToolEffect.IRREVERSIBLE, ToolEffects.of("agent_send_native_token", null))
+        assertFalse(ToolEffects.USER_WALLET_TOOLS.any { it.startsWith("agent_") })
+        assertEquals(Decision.RUN, decide("agent_send_native_token"))
+        assertEquals(Decision.QUEUE, decide("agent_send_native_token", tainted = true))
+        // Were an agent tool ever SENSITIVE, it would wait: the exception is the user's wallet only.
+        assertEquals(Decision.QUEUE, decide(ToolEffect.SENSITIVE, tool = "agent_send_native_token"))
     }
 
     @Test

@@ -1,6 +1,7 @@
 package org.ethereumphone.andyclaw.services
 
 import org.ethereumphone.andyclaw.ExecutionEngine.Provenance
+import org.ethereumphone.andyclaw.safety.ToolEffects
 import org.ethereumphone.andyclaw.skills.ToolEffect
 
 /**
@@ -11,10 +12,14 @@ import org.ethereumphone.andyclaw.skills.ToolEffect
  * protection than a background heartbeat, on the surface most requests come through. Now a call
  * is **queued** as a pending approval, the exact call, for the launcher to show in the
  * conversation with the same APPROVE → device credential → run-once flow as the home cards, when:
- *  - it is SENSITIVE (payment, auth, the agent's own code): never completed on the way past;
+ *  - the turn came from the lock screen: whoever holds a locked phone is not necessarily its owner;
  *  - the run has read someone else's words (a page, a mail, a notification) or is not the user's
- *    own: what it now wants may be that person's idea;
- *  - the turn came from the lock screen: whoever holds a locked phone is not necessarily its owner.
+ *    own: what it now wants may be that person's idea — the user's wallet included;
+ *  - it is SENSITIVE (payment, auth, the agent's own code): never completed on the way past —
+ *    except the user's own wallet ([ToolEffects.USER_WALLET_TOOLS]), whose every effect waits for
+ *    the SystemUI confirmation on the terminal screen. That confirmation is the approval, and a
+ *    card in front of it would be the second dialog CLAUDE.md §6 rules out. The agent's own
+ *    sub-account (`agent_*`) is promptless and gets no such exception.
  * Otherwise — the user asked, and nothing but the user has spoken — it runs, as it always has.
  * YOLO approves everything, as in AndyClaw's own chat, except on the lock screen.
  *
@@ -27,6 +32,7 @@ object LauncherApprovalPolicy {
     enum class Decision { RUN, QUEUE }
 
     fun decide(
+        toolName: String,
         effect: ToolEffect,
         provenance: Provenance,
         readThirdPartyContent: Boolean,
@@ -35,8 +41,10 @@ object LauncherApprovalPolicy {
     ): Decision = when {
         fromLockscreen -> Decision.QUEUE
         yolo -> Decision.RUN
-        effect == ToolEffect.SENSITIVE -> Decision.QUEUE
         readThirdPartyContent || provenance != Provenance.USER -> Decision.QUEUE
+        // The terminal-screen confirmation is this call's approval.
+        toolName in ToolEffects.USER_WALLET_TOOLS -> Decision.RUN
+        effect == ToolEffect.SENSITIVE -> Decision.QUEUE
         else -> Decision.RUN
     }
 

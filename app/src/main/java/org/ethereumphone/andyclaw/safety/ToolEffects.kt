@@ -195,11 +195,32 @@ object ToolEffects {
     /**
      * Standing instructions every later run reads as the owner's own. A run that has read
      * another person's words may not rewrite them — whoever set it off, the owner's chat included,
-     * which approves everything it is asked from the launcher — because an injected line there
-     * becomes the instructions of every heartbeat after it.
+     * where YOLO approves everything — because an injected line there becomes the instructions of
+     * every heartbeat after it.
      */
     val STANDING_INSTRUCTION_WRITES: Set<String> = setOf(
         "update_soul",
+    )
+
+    /**
+     * The user's own wallet: tools that act only through WalletSDK's `sendTransaction` or
+     * `signMessage` on the OS wallet, so every effect waits for the SystemUI confirmation on the
+     * terminal screen. That confirmation *is* the approval (§6 of CLAUDE.md: do not add a second
+     * dialog in front of it), which is why a home-screen turn of the user's own runs them straight
+     * through (`LauncherApprovalPolicy`). Never the agent's own sub-account (`agent_*`): that one
+     * signs with no prompt at all. Pinned by `UserWalletToolsTest` against the skills' sources.
+     */
+    val USER_WALLET_TOOLS: Set<String> = setOf(
+        // WalletSkill
+        "propose_transaction",
+        "propose_token_transfer",
+        "send_native_token",
+        "send_token",
+        // SwapSkill: approve and swap, each confirmed on the terminal screen.
+        "swap_tokens",
+        // BankrTradingSkill: the approval transaction and the order's EIP-712 signature.
+        "create_bankr_order",
+        "cancel_bankr_order",
     )
 
     // ══════════════════════════════════════════════════════════════════

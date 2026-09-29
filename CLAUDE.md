@@ -117,7 +117,9 @@ That is the lethal trifecta, and it is the central design problem, not a hardeni
   system prompt is advice.
 - The **user's** wallet path (`propose_*`, `send_native_token`, …) is protected by the SystemUI
   confirmation on the device's terminal screen and needs nothing from this app. Do not add a
-  second dialog in front of it.
+  second dialog in front of it. The set is `ToolEffects.USER_WALLET_TOOLS`, pinned by
+  `UserWalletToolsTest` against every skill that sends or signs through WalletSDK; a new tool on
+  the user's wallet goes there, an `agent_*` tool never does.
 - Never log, persist, or transmit a private key, a mnemonic, or signing material.
 
 New background trigger? It states its `Provenance` explicitly. The defaults are closed
@@ -176,9 +178,12 @@ New background trigger? It states its `Provenance` explicitly. The defaults are 
   mid-turn (no approval callback on `ILauncherCallback`, and adding one is an ordinal), so its
   turns used to approve everything. Now a launcher turn queues the exact call — source
   `launcher`, provenance `USER`, `conversationId` = the launcher's session id, the turn's ledger
-  session — when the tool is `SENSITIVE`, or the run has read someone else's words
-  (`AgentRunToken.readThirdPartyContent`), or it is not `USER`; the launcher shows it inline in
-  that conversation with APPROVE → device credential → run once. The model is told it is waiting
+  session — when the run has read someone else's words (`AgentRunToken.readThirdPartyContent`) or
+  is not `USER`, or the tool is `SENSITIVE` and not the user's own wallet; the launcher shows it
+  inline in that conversation with APPROVE → device credential → run once. The user's wallet
+  (`ToolEffects.USER_WALLET_TOOLS`) runs straight to the terminal-screen confirmation for an
+  untainted request of the user's own, because that confirmation is its approval; tainted, it
+  waits like anything else. The agent's sub-account (`agent_*`) gets no such exception. The model is told it is waiting
   (`ExecutionCallbacks.notApprovedMessage`, `LauncherApprovalPolicy.QUEUED_FOR_MODEL`), and the
   launcher gets an `onToolResult` whose summary starts with exactly `Waiting for your approval`,
   its cue to refresh the cards mid-turn. A plain untainted request of the user's own still runs;

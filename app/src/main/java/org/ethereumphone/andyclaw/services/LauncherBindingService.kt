@@ -1859,15 +1859,17 @@ class LauncherBindingService : Service() {
                 toolInput: JsonObject?,
             ): Boolean {
                 // Nobody can be asked mid-turn from the home screen. A plain request of the
-                // user's own still runs; anything sensitive, anything after the run has read
-                // someone else's words, and anything from the lock screen waits for the user as
-                // the exact call (LauncherApprovalPolicy).
+                // user's own still runs, and so does the user's wallet, whose terminal-screen
+                // confirmation is the approval; anything else sensitive, anything after the run
+                // has read someone else's words, and anything from the lock screen waits for the
+                // user as the exact call (LauncherApprovalPolicy).
                 val name = toolName ?: "unknown"
                 val effect = org.ethereumphone.andyclaw.safety.ToolEffects.of(
                     name, registry.getTools(tier).firstOrNull { it.name == name },
                 )
                 val tainted = agentLoop.currentRunToken.readThirdPartyContent
                 val decision = LauncherApprovalPolicy.decide(
+                    toolName = name,
                     effect = effect,
                     provenance = Provenance.USER,
                     readThirdPartyContent = tainted,
