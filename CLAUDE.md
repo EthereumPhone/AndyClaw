@@ -291,6 +291,12 @@ trusted on sight — a flow whose hash or MAC does not verify is ignored, not re
   never counted against the flow, never marks it stale and never falls back. Neither do
   `MISSING_PARAM`, `CHECKPOINT_REFUSED`, `DISPLAY_UNAVAILABLE` or `APP_NOT_INSTALLED`: only
   faults retire a flow.
+- **A replay is shown like an autopilot run** (`flows/FlowReplayEvents`, IPC-08): STARTED with one
+  sub-goal per tap or typed value, ACTING/SETTLED/SUBGOAL_DONE per action, and exactly one
+  DONE/FAILED with `outcome`, run id `flow-…`, through the run's `AutopilotRunContext.events`, so
+  the launcher's card, frames and STOP work for learned tasks too. An abort that lets the task be
+  done another way is a `handoff`; one that may have acted is `failed`. No target (the
+  interpreter never learns bounds), and never a typed value.
 - **A checkpoint needs a real approval.** `FlowCheckpointPolicy.mayCross` wants the
   `UserApproval` witness `ParallelExecutionEngine` sets for an approved call, unless
   `noConfirm` is on for a `USER`/`TRUSTED` run; `noConfirm` is part of the manifest's memo key.

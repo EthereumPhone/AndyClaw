@@ -16,6 +16,7 @@ import org.ethereumphone.andyclaw.flows.FlowInterpreter
 import org.ethereumphone.andyclaw.flows.FlowMetrics
 import org.ethereumphone.andyclaw.flows.FlowRepository
 import org.ethereumphone.andyclaw.flows.FlowRunAccounting
+import org.ethereumphone.andyclaw.flows.FlowReplayEvents
 import org.ethereumphone.andyclaw.flows.FlowRunResult
 import org.ethereumphone.andyclaw.flows.FlowStopSignal
 import org.ethereumphone.andyclaw.flows.FlowToolEffect
@@ -29,7 +30,9 @@ import org.ethereumphone.andyclaw.ExecutionEngine.currentProvenance
 import org.ethereumphone.andyclaw.ExecutionEngine.currentUserApproval
 import org.ethereumphone.andyclaw.agent.currentRunToken
 import org.ethereumphone.andyclaw.autopilot.AgentDisplayCapabilities
+import org.ethereumphone.andyclaw.autopilot.AutopilotEventSink
 import org.ethereumphone.andyclaw.autopilot.AutopilotPlan
+import org.ethereumphone.andyclaw.autopilot.AutopilotRunContext
 import org.ethereumphone.andyclaw.autopilot.AutopilotToolHandler
 import org.ethereumphone.andyclaw.skills.AndyClawSkill
 import org.ethereumphone.andyclaw.skills.SkillManifest
@@ -155,13 +158,31 @@ class FlowSkill(
 
     /**
      * One replay of [stored] — the interpreter, the metrics, the flow's record — and nothing
-     * more. What an abort means for the task is the caller's decision.
+     * more. What an abort means for the task is the caller's decision; both callers answer an
+     * abort that [FlowRunAccounting.mayFallBack] allows by doing the task another way, so that is
+     * what the run's events call a hand-over.
      */
     private suspend fun replayOnce(stored: StoredFlow, arguments: Map<String, String>): FlowRunResult {
         val flow = stored.flow
         FlowMetrics.onInvocation()
-        val interpreter = FlowInterpreter(driver, checkpointHandler(flow.toolName), stop = stopSignal())
-        val result = interpreter.run(flow, arguments)
+        // Told as an autopilot run, through the run's own event sink: the launcher's card, its
+        // frames and its STOP all start from these (IPC-08). A replay used to show nothing at all.
+        val events = FlowReplayEvents(
+            flow,
+            kotlinx.coroutines.currentCoroutineContext()[AutopilotRunContext]?.events ?: AutopilotEventSink { },
+        )
+        events.started()
+        val interpreter = FlowInterpreter(driver, checkpointHandler(flow.toolName), stop = stopSignal(), actions = events)
+        val result = try {
+            interpreter.run(flow, arguments)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            events.cancelled()
+            throw e
+        } catch (e: Exception) {
+            events.crashed()
+            throw e
+        }
+        events.finished(result, handsOver = result is FlowRunResult.Aborted && FlowRunAccounting.mayFallBack(result))
         FlowMetrics.onResult(result)
         // The replay has run. A bookkeeping failure must not turn that into an exception, which
         // both callers read as "nothing happened" — and answer by doing the task another way.

@@ -53,6 +53,20 @@ fun interface FlowStopSignal {
     }
 }
 
+/**
+ * Told about each tap and each typed value as it goes out and once the screen has settled after
+ * it, so a replay can be shown like an autopilot run ([FlowReplayEvents]). Observes only: nothing
+ * it does changes the replay.
+ */
+fun interface FlowActionListener {
+    /** [stepIndex] into `flow.steps`; [opcode] `tap` or `type`; [settled] false before, true after. */
+    fun onAction(stepIndex: Int, opcode: String, viewId: String, settled: Boolean)
+
+    companion object {
+        val NONE = FlowActionListener { _, _, _, _ -> }
+    }
+}
+
 enum class FlowAbortReason {
     APP_NOT_INSTALLED,
     APP_VERSION_MISMATCH,
@@ -131,6 +145,7 @@ class FlowInterpreter(
     private val sleep: suspend (Long) -> Unit = { delay(it) },
     private val clock: () -> Long = System::currentTimeMillis,
     private val stop: FlowStopSignal = FlowStopSignal.NEVER,
+    private val actions: FlowActionListener = FlowActionListener.NONE,
 ) {
 
     suspend fun run(
@@ -158,6 +173,14 @@ class FlowInterpreter(
         suspend fun stopped(): Boolean {
             currentCoroutineContext().ensureActive()
             return stop.stopRequested()
+        }
+
+        /** The listener only watches: whatever it does, the replay goes on as it would without it. */
+        fun observe(step: Int, opcode: String, viewId: String, settled: Boolean) {
+            try {
+                actions.onAction(step, opcode, viewId, settled)
+            } catch (_: Exception) {
+            }
         }
 
         /** A fresh tree, read again a couple of times before giving up. Never the stale one. */
@@ -321,12 +344,14 @@ class FlowInterpreter(
                             return abort(reason, message, index)
                         }
                         if (stopped()) return abort(FlowAbortReason.STOPPED, "stopped by the user", index)
+                        observe(index, step.opcode, viewId, settled = false)
                         val sent = dispatch { driver.clickNode(viewId, position) }
                         if (sent.mayHaveHappened && (crossedCheckpoint || acts(step) || index == lastAction)) committed = true
                         failure(sent, "tap on $viewId")?.let { return abort(FlowAbortReason.STEP_FAILED, it, index) }
                         trace += "tap:$viewId"
                         tree = readTreeAfterAction(tree, SETTLE_TAP_MS)
                             ?: return abort(FlowAbortReason.DISPLAY_UNAVAILABLE, "the screen could not be read after tapping $viewId", index)
+                        observe(index, step.opcode, viewId, settled = true)
                     }
 
                     is TypeStep -> {
@@ -338,12 +363,14 @@ class FlowInterpreter(
                         }
                         if (stopped()) return abort(FlowAbortReason.STOPPED, "stopped by the user", index)
                         val value = substitute(step.value, params)
+                        observe(index, step.opcode, viewId, settled = false)
                         val sent = dispatch { driver.setNodeText(viewId, value) }
                         if (sent.mayHaveHappened && (crossedCheckpoint || acts(step) || index == lastAction)) committed = true
                         failure(sent, "typing into $viewId")?.let { return abort(FlowAbortReason.STEP_FAILED, it, index) }
                         trace += "type:$viewId"
                         tree = readTreeAfterAction(tree, SETTLE_TYPE_MS)
                             ?: return abort(FlowAbortReason.DISPLAY_UNAVAILABLE, "the screen could not be read after typing into $viewId", index)
+                        observe(index, step.opcode, viewId, settled = true)
                     }
 
                     is WaitForStep -> {
