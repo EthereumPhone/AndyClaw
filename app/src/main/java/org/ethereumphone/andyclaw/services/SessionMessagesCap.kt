@@ -27,6 +27,16 @@ object SessionMessagesCap {
 
     data class Row(val role: String, val content: String, val timestamp: Long)
 
+    /**
+     * The roles the launcher renders: what was said. Tool results it discards, and a compaction
+     * summary or a system row it showed as the agent speaking (CHAT-12); left out, the budget
+     * goes to the conversation instead. Nothing but the launcher reads this reply.
+     */
+    val LAUNCHER_ROLES = setOf("user", "assistant")
+
+    /** [cap] over the rows the launcher shows. `omittedBefore` then counts only those. */
+    fun capForLauncher(rows: List<Row>): List<Out> = cap(rows.filter { it.role in LAUNCHER_ROLES })
+
     data class Out(
         val role: String,
         val content: String,

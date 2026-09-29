@@ -319,8 +319,9 @@ class LauncherBindingService : Service() {
             return runBlocking(Dispatchers.IO) {
                 try {
                     val messages = app.sessionManager.getMessages(sessionId)
-                    // Bounded: an unbounded session overflowed the 1 MB binder transaction.
-                    val rows = SessionMessagesCap.cap(
+                    // Bounded: an unbounded session overflowed the 1 MB binder transaction. Only
+                    // what was said: tool rows the launcher drops, and summaries it showed as replies.
+                    val rows = SessionMessagesCap.capForLauncher(
                         messages.map { SessionMessagesCap.Row(it.role.name.lowercase(), it.content, it.timestamp) }
                     )
                     val arr = JSONArray()
@@ -1083,27 +1084,8 @@ class LauncherBindingService : Service() {
         override fun getHeartbeatLogs(): String {
             enforceCallerIsLauncher()
             val app = application as? NodeApp ?: return "[]"
-            val arr = JSONArray()
-            // Already newest-first from the store.
-            for (entry in app.heartbeatLogStore.getAll()) {
-                val toolCalls = JSONArray()
-                for (tc in entry.toolCalls) {
-                    toolCalls.put(JSONObject().apply {
-                        put("toolName", tc.toolName)
-                        put("result", tc.result)
-                    })
-                }
-                arr.put(JSONObject().apply {
-                    put("timestampMs", entry.timestampMs)
-                    put("outcome", entry.outcome)
-                    put("prompt", entry.prompt)
-                    put("responseText", entry.responseText)
-                    entry.error?.let { put("error", it) }
-                    put("durationMs", entry.durationMs)
-                    put("toolCalls", toolCalls)
-                })
-            }
-            return arr.toString()
+            // Newest first from the store, and only as many as fit in one binder reply.
+            return LauncherReplies.heartbeatLogs(app.heartbeatLogStore.getAll())
         }
 
         override fun clearHeartbeatLogs() {
@@ -1187,7 +1169,9 @@ class LauncherBindingService : Service() {
             enforceCallerIsLauncher()
             if (id.isNullOrBlank()) return
             val app = application as? NodeApp ?: return
-            scope.launch {
+            // Applied before this returns: the launcher refreshes the cards straight after, and a
+            // dismissal still queued behind an ingest's write lock brought the card back.
+            runBlocking(Dispatchers.IO) {
                 runCatching { app.predictedContextRepository.dismiss(id) }
                     .onFailure { Log.w(TAG, "dismissPredictedCard failed", it) }
             }
@@ -1251,6 +1235,8 @@ class LauncherBindingService : Service() {
                         // launcher). Not a card to act on again, and not one that "can't run".
                         put("state", if (e.state == org.ethereumphone.andyclaw.safety.PendingApprovalStore.State.EXECUTING) "RUNNING" else "PENDING")
                         e.toolReason?.let { put("toolReason", it) }
+                        // Where the request is (or will be) recorded: the launcher offers OPEN LEDGER.
+                        e.ledgerSessionId?.let { put("ledgerSessionId", it) }
                     })
                 }
                 arr.toString()
@@ -1316,10 +1302,9 @@ class LauncherBindingService : Service() {
                 // A turn's steps are written before it, so read a little further back than asked
                 // to give the oldest turns shown their steps too.
                 val rows = runBlocking { app.ledgerRepository.recent(n + ATTRIBUTION_LOOKBACK) }
-                val steps = org.ethereumphone.andyclaw.ledger.LedgerDigest.attribute(rows)
-                val arr = JSONArray()
-                for (row in rows.take(n)) arr.put(ledgerEntryJson(row, steps[row.id]))
-                arr.toString()
+                // Capped by what it costs on the wire, not by count: a reply over the binder
+                // buffer failed outright, and the launcher showed an empty ledger.
+                LauncherReplies.ledgerEntries(rows, n)
             } catch (e: Exception) {
                 Log.w(TAG, "getLedgerEntries failed", e)
                 "[]"
@@ -1332,35 +1317,9 @@ class LauncherBindingService : Service() {
             val app = application as? NodeApp ?: return "{}"
             return try {
                 val replay = runBlocking { app.sessionReplay.of(sessionId) }
-                val steps = org.ethereumphone.andyclaw.ledger.LedgerDigest.attribute(replay.entries)
                 // A Telegram chat is one session for every message it ever sent, and a binder
-                // reply over a megabyte fails outright: the newest rows, and say so.
-                val shown = replay.entries.takeLast(MAX_SESSION_ROWS)
-                val entries = JSONArray()
-                for (row in shown) entries.put(ledgerEntryJson(row, steps[row.id]))
-                val frames = JSONArray()
-                for (f in replay.frames) {
-                    frames.put(JSONObject().apply {
-                        put("id", f.id)
-                        put("index", f.index)
-                        put("timestampMs", f.timestampMs)
-                        put("sizeBytes", f.sizeBytes)
-                    })
-                }
-                val missing = JSONArray()
-                for (m in replay.missingFrames) missing.put(m)
-                JSONObject().apply {
-                    put("sessionId", replay.sessionId)
-                    put("intent", replay.turn?.let { org.ethereumphone.andyclaw.ledger.LedgerDigest.displayIntent(it) } ?: "")
-                    put("truncated", replay.entries.size > shown.size)
-                    put("startedMs", replay.startedMs)
-                    put("endedMs", replay.endedMs)
-                    put("entries", entries)
-                    put("frames", frames)
-                    // Named by the rows, gone from disk. Surfaced rather than hidden: a
-                    // replay that quietly plays a shorter version misrepresents the run.
-                    put("missingFrames", missing)
-                }.toString()
+                // reply over a megabyte fails outright: the newest rows that fit, and say so.
+                LauncherReplies.ledgerSession(replay, MAX_SESSION_ROWS).toString()
             } catch (e: Exception) {
                 Log.w(TAG, "getLedgerSession failed", e)
                 "{}"
@@ -1434,80 +1393,6 @@ class LauncherBindingService : Service() {
             } finally {
                 // The fd keeps an open file alive; nothing is left behind in cacheDir either way.
                 tmp?.delete()
-            }
-        }
-    }
-
-    /**
-     * One ledger row as JSON.
-     *
-     * `costUsd` is written as an explicit null when it is unknown rather than omitted or
-     * zeroed. A model whose price the registry has never seen has an unknown cost, and a
-     * viewer that renders that as free is lying in the one screen whose entire job is being
-     * trustworthy -- so the null has to survive the wire.
-     */
-    /** A step that changed something outside the process: anything not a pure read. */
-    private fun isSideEffect(tool: String): Boolean =
-        tool != "agent_display_capture" &&
-            org.ethereumphone.andyclaw.safety.ToolEffects.of(tool) != org.ethereumphone.andyclaw.skills.ToolEffect.READ
-
-    /**
-     * One ledger row for the launcher. [steps] are the TOOL rows a TURN row owns
-     * ([org.ethereumphone.andyclaw.ledger.LedgerDigest.attribute]); with them a turn also says what
-     * it did. The derived keys are computed here and never stored or exported.
-     */
-    private fun ledgerEntryJson(
-        row: org.ethereumphone.andyclaw.ledger.LedgerEntry,
-        steps: List<org.ethereumphone.andyclaw.ledger.LedgerEntry>? = null,
-    ): JSONObject {
-        val actions = JSONArray()
-        for (a in row.actions) {
-            actions.put(JSONObject().apply {
-                put("tool", a.tool)
-                put("ok", a.ok)
-                put("durationMs", a.durationMs)
-                a.note?.let { put("note", it) }
-            })
-        }
-        val frames = JSONArray()
-        for (f in row.frames) frames.put(f)
-        val models = JSONArray()
-        for (m in row.modelIds) models.put(m)
-        return JSONObject().apply {
-            put("id", row.id)
-            put("seq", row.seq)
-            put("sessionId", row.sessionId)
-            put("ts", row.ts)
-            put("kind", row.kind.name)
-            put("intent", row.intent)
-            put("provenance", row.provenance)
-            if (row.routeRung != null) put("routeRung", row.routeRung) else put("routeRung", JSONObject.NULL)
-            if (row.flowRef != null) put("flowRef", row.flowRef) else put("flowRef", JSONObject.NULL)
-            put("actions", actions)
-            put("frames", frames)
-            put("outcome", row.outcome.name)
-            put("modelIds", models)
-            if (row.costUsd != null) put("costUsd", row.costUsd) else put("costUsd", JSONObject.NULL)
-            put("inputTokens", row.inputTokens)
-            put("outputTokens", row.outputTokens)
-            put("durationMs", row.durationMs)
-            put("prevHash", row.prevHash)
-            put("hash", row.hash)
-            // Derived. `intent` stays as stored, for an older launcher and for the chain; what
-            // to show is `displayIntent`, which is never somebody else's message.
-            put("displayIntent", org.ethereumphone.andyclaw.ledger.LedgerDigest.displayIntent(row))
-            put("trigger", org.ethereumphone.andyclaw.ledger.LedgerDigest.trigger(row).wire)
-            if (row.kind == org.ethereumphone.andyclaw.ledger.LedgerKind.TURN && steps != null) {
-                val summary = org.ethereumphone.andyclaw.ledger.LedgerDigest.summary(row, steps, ::isSideEffect)
-                put("actedOnBehalf", org.ethereumphone.andyclaw.ledger.LedgerDigest.actedOnBehalf(row, summary))
-                put("summary", JSONObject().apply {
-                    put("toolsRun", summary.toolsRun)
-                    put("toolsBlocked", summary.toolsBlocked)
-                    put("toolErrors", summary.toolErrors)
-                    put("sideEffects", summary.sideEffects)
-                    put("sideEffectTools", JSONArray(summary.sideEffectTools))
-                    put("frames", summary.frames)
-                })
             }
         }
     }

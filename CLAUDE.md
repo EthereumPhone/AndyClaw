@@ -412,6 +412,13 @@ its own hash and every hash after it.
   sideEffectTools, frames}` and `actedOnBehalf` to the binder JSON only. A step belongs to the
   first TURN after it in its session, so a run gives back the display, and writes its
   recording, before its own TURN row.
+- **A launcher reply is capped by what it costs on the wire** (`services/LauncherReplies`,
+  256 000 characters ≈ 512 KB as UTF-16), never by row count: `getLedgerEntries`,
+  `getLedgerSession` (the newest rows that fit next to the frame list, `truncated` when cut) and
+  `getHeartbeatLogs`. Over the ~1 MB binder buffer a reply fails outright and the launcher shows
+  an empty ledger. List rows carry `frameCount`; the frame ids go too, this release, for older
+  launchers. `getSessionMessages` has its own cap (`SessionMessagesCap`) and sends only user and
+  assistant rows.
 - **The database is frozen at schema 1** (pinned by a test): new data goes in a sibling
   database. A ledger from a newer build, met after a rollback, is left untouched and this build
   records into memory, so the chain survives the roll-forward.
