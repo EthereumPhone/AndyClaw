@@ -64,6 +64,19 @@ class SessionManager(
         return repository.createSession(agentId, model, title)
     }
 
+    /**
+     * The session with id [sessionId], created with that id if there is none. For a caller that
+     * names its own conversations: the launcher's session id is the durable key of a home-screen
+     * conversation, the same one its ledger rows carry.
+     */
+    suspend fun getOrCreateSession(
+        sessionId: String,
+        model: String? = null,
+        title: String = "New Chat",
+    ): Session {
+        return repository.getOrCreateSession(sessionId, agentId, model, title)
+    }
+
     // ── Sessions: Read ───────────────────────────────────────────────
 
     /**

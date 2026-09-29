@@ -24,6 +24,13 @@ interface SessionDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertSession(session: SessionEntity)
 
+    /**
+     * Inserts [session] unless a session with its id exists; -1 when one did. Never REPLACE for a
+     * caller-chosen id: replacing the row cascades to its messages.
+     */
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    suspend fun insertSessionIfAbsent(session: SessionEntity): Long
+
     @Update
     suspend fun updateSession(session: SessionEntity)
 

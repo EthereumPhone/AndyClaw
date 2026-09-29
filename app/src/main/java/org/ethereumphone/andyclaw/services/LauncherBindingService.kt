@@ -41,9 +41,6 @@ import org.ethereumphone.andyclaw.ipc.ILauncherService
 import org.ethereumphone.andyclaw.summary.ExecutiveSummaryManager
 import org.ethereumphone.andyclaw.llm.AnthropicModels
 import org.ethereumphone.andyclaw.llm.LlmProvider
-import org.ethereumphone.andyclaw.llm.ContentBlock
-import org.ethereumphone.andyclaw.llm.Message
-import org.ethereumphone.andyclaw.sessions.model.MessageRole
 import org.ethereumphone.andyclaw.skills.RoutingPreset
 import org.ethereumphone.andyclaw.skills.SkillResult
 import org.ethereumphone.andyclaw.skills.tier.OsCapabilities
@@ -184,11 +181,13 @@ class LauncherBindingService : Service() {
     /** The running turn of each launcher session, so a newer prompt or STOP can end it. */
     private val turns by lazy { LauncherTurns(scope) }
 
-    /** Per-session conversation histories for multi-turn support. */
-    private val sessionHistories = java.util.concurrent.ConcurrentHashMap<String, MutableList<Message>>()
-
-    /** Maps launcher sessionId → Room database sessionId for persistence. */
-    private val dbSessionIds = java.util.concurrent.ConcurrentHashMap<String, String>()
+    /**
+     * The launcher's conversations — the model's context and the Room session — keyed by the
+     * launcher's own session id, which is also the Room session's id and the ledger's (IPC-10).
+     */
+    private val conversations by lazy {
+        LauncherConversations(LauncherConversations.storeOf((application as NodeApp).sessionManager))
+    }
 
     /** Tracks whether a memory reindex is in progress. */
     private val isReindexingFlag = AtomicBoolean(false)
@@ -276,8 +275,8 @@ class LauncherBindingService : Service() {
 
         override fun clearSession(sessionId: String) {
             enforceCallerIsLauncher()
-            sessionHistories.remove(sessionId)
-            dbSessionIds.remove(sessionId)
+            if (application !is NodeApp) return
+            conversations.clear(sessionId)
             Log.d(TAG, "Cleared session: $sessionId")
         }
 
@@ -563,38 +562,27 @@ class LauncherBindingService : Service() {
 
         override fun deleteSession(sessionId: String) {
             enforceCallerIsLauncher()
-            val app = application as? NodeApp ?: return
+            if (application !is NodeApp) return
             runBlocking(Dispatchers.IO) {
                 try {
-                    app.sessionManager.deleteSession(sessionId)
+                    // The stored conversation and what memory holds for it, under either id.
+                    conversations.delete(sessionId)
                 } catch (e: Exception) {
                     Log.e(TAG, "deleteSession failed", e)
                 }
             }
-            sessionHistories.remove(sessionId)
-            dbSessionIds.remove(sessionId)
             Log.d(TAG, "Deleted session: $sessionId")
         }
 
         override fun resumeSession(sessionId: String) {
             enforceCallerIsLauncher()
-            val app = application as? NodeApp ?: return
+            if (application !is NodeApp) return
             runBlocking(Dispatchers.IO) {
                 try {
-                    val messages = app.sessionManager.getMessages(sessionId)
-                    val history = mutableListOf<Message>()
-                    for (m in messages) {
-                        when (m.role) {
-                            MessageRole.USER -> history.add(Message.user(m.content))
-                            MessageRole.ASSISTANT -> history.add(
-                                Message.assistant(listOf(ContentBlock.TextBlock(m.content)))
-                            )
-                            else -> {} // skip system/tool for agent loop reconstruction
-                        }
-                    }
-                    sessionHistories[sessionId] = history
-                    dbSessionIds[sessionId] = sessionId
-                    Log.d(TAG, "Resumed session: $sessionId with ${history.size} messages")
+                    // Works for a conversation started on the home screen too: its Room session
+                    // carries the launcher's id.
+                    val size = conversations.resume(sessionId)
+                    Log.d(TAG, "Resumed session: $sessionId with $size messages")
                 } catch (e: Exception) {
                     Log.e(TAG, "resumeSession failed", e)
                 }
@@ -1838,8 +1826,8 @@ class LauncherBindingService : Service() {
             toolPrefetch = app.jevToolPrefetch,
         )
 
-        // Get or create conversation history for this session
-        val history = sessionHistories.getOrPut(sessionId) { mutableListOf() }
+        // The conversation so far: in memory, or rebuilt from what was stored (after a restart).
+        val history = conversations.history(sessionId)
 
         val callbacks = object : AgentLoop.Callbacks {
             override fun onToken(text: String) {
@@ -2009,16 +1997,10 @@ class LauncherBindingService : Service() {
             }
         }
 
-        // Get or create the database session for persistence
-        val sm = app.sessionManager
-        val dbSessionId = dbSessionIds.getOrPut(sessionId) {
-            val titlePrefix = if (fromLockscreen) "Lockscreen: " else ""
-            val session = sm.createSession(
-                model = model.modelId,
-                title = "$titlePrefix${prompt.take(50)}",
-            )
-            session.id
-        }
+        // The Room session for persistence: the launcher's own id, created with it if new, so the
+        // session list, resumeSession and deleteSession all know the conversation by that name.
+        val titlePrefix = if (fromLockscreen) "Lockscreen: " else ""
+        val dbSessionId = conversations.dbSessionId(sessionId, model.modelId, "$titlePrefix${prompt.take(50)}")
 
         val fullResponseText = StringBuilder()
         val wrappedCallbacks = object : AgentLoop.Callbacks by callbacks {
@@ -2042,21 +2024,9 @@ class LauncherBindingService : Service() {
         app.jevTurnRouter?.prewarm(prompt)
         agentLoop.run(prompt, history, wrappedCallbacks)
 
-        // Add both user and assistant messages to history so the next call
-        // in this session sees the full conversation.
-        history.add(Message.user(prompt))
-        if (fullResponseText.isNotEmpty()) {
-            history.add(
-                Message.assistant(listOf(ContentBlock.TextBlock(fullResponseText.toString())))
-            )
-        }
-
-        // Persist to Room database
+        // Both messages into the context for the next call in this session, and into Room.
         try {
-            sm.addMessage(dbSessionId, MessageRole.USER, prompt)
-            if (fullResponseText.isNotEmpty()) {
-                sm.addMessage(dbSessionId, MessageRole.ASSISTANT, fullResponseText.toString())
-            }
+            conversations.recordTurn(sessionId, dbSessionId, prompt, fullResponseText.toString())
         } catch (e: Exception) {
             Log.w(TAG, "Failed to persist launcher chat to database", e)
         }

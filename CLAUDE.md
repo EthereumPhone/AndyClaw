@@ -75,6 +75,11 @@ The APK's writable state is its own sandbox — `HEARTBEAT.md`, `pending_approva
 logs, skills, memory DBs, `flows/` (§8), the ledger and predicted-context databases, and
 `session_frames/` (§9).
 
+A conversation started on the home screen is a Room session **whose id is the launcher's session
+id** (`services/LauncherConversations`, `SessionManager.getOrCreateSession`), the same key its
+ledger rows carry; after a restart its context is rebuilt from the stored messages. Create such a
+row with IGNORE, never REPLACE: replacing a session row cascades to its messages.
+
 `/data/andyclaw_files/` is **not** available to this app. It is `0771 system system`, labelled
 `andyclaw_data_file`, and sepolicy grants it to `system_server` only; the APK has no rule and no
 `sharedUserId`. Writing there needs a sepolicy change *and* a new binder method — that is an

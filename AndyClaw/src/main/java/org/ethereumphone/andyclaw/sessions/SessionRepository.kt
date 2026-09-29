@@ -52,6 +52,33 @@ class SessionRepository(
         entity.toDomain()
     }
 
+    /**
+     * The session with id [sessionId], created for [agentId] if there is none — with that id, so
+     * a caller that names its conversations (the launcher) keeps one name for it across restarts.
+     * An existing session is returned as it is, messages and all.
+     */
+    suspend fun getOrCreateSession(
+        sessionId: String,
+        agentId: String,
+        model: String? = null,
+        title: String = "New Chat",
+    ): Session = withContext(Dispatchers.IO) {
+        dao.getSession(sessionId)?.let { return@withContext it.toDomain() }
+        val now = System.currentTimeMillis()
+        val entity = SessionEntity(
+            id = sessionId,
+            agentId = agentId,
+            title = title,
+            model = model,
+            createdAt = now,
+            updatedAt = now,
+            sessionKey = SessionKey.buildMainSessionKey(agentId, sessionId),
+        )
+        // IGNORE, not REPLACE: created in between by someone else, it stays theirs, messages kept.
+        dao.insertSessionIfAbsent(entity)
+        (dao.getSession(sessionId) ?: entity).toDomain()
+    }
+
     // ── Sessions: Read ───────────────────────────────────────────────
 
     suspend fun getSession(sessionId: String): Session? = withContext(Dispatchers.IO) {
