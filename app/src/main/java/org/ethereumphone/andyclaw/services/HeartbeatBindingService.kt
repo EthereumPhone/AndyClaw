@@ -31,6 +31,7 @@ import org.ethereumphone.andyclaw.ExecutionEngine.Provenance
 import org.ethereumphone.andyclaw.agent.HeartbeatAgentRunner
 import org.ethereumphone.andyclaw.heartbeat.HeartbeatConfig
 import org.ethereumphone.andyclaw.heartbeat.HeartbeatInstructions
+import org.ethereumphone.andyclaw.heartbeat.HeartbeatTickGate
 import org.ethereumphone.andyclaw.ipc.IHeartbeatService
 import org.ethereumphone.andyclaw.skills.builtin.CronjobSkill
 import org.ethereumphone.andyclaw.skills.tier.OsCapabilities
@@ -531,6 +532,19 @@ class HeartbeatBindingService : Service() {
             Log.i(TAG, "performHeartbeat: wallet auth not ready, skipping")
             return
         }
+        // The OS ticks at most hourly (it also drives the ambient sweep, above); an interval of
+        // more than an hour is the app's to honour (SET-02). Only this scheduled run is gated.
+        val prefs = (application as NodeApp).securePrefs
+        val interval = prefs.heartbeatIntervalMinutes.value
+        val now = System.currentTimeMillis()
+        val last = prefs.getString(HeartbeatTickGate.PREF_LAST_SCHEDULED_RUN_MS)?.toLongOrNull() ?: 0L
+        if (!HeartbeatTickGate.shouldRun(now, last, interval)) {
+            Log.i(TAG, "performHeartbeat: ${(now - last) / 60_000} of $interval minutes since the last run, skipping this tick")
+            // The balance check has always ridden on the tick, not on the run.
+            serviceScope.launch { checkPaymasterBalance() }
+            return
+        }
+        prefs.putString(HeartbeatTickGate.PREF_LAST_SCHEDULED_RUN_MS, now.toString())
         Log.i(TAG, "performHeartbeat: starting")
         serviceScope.launch {
             checkPaymasterBalance()

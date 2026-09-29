@@ -230,7 +230,9 @@ New background trigger? It states its `Provenance` explicitly. The defaults are 
   row, which invites a second send.
 - `AGENTDISPLAYDEBUGKEY` in logcat dumps the assembled system prompt, the tool list and every
   tool result — the fastest way to see what the model actually saw.
-  `adb shell am broadcast -a com.android.server.andyclaw.HEARTBEAT_NOW` forces a heartbeat.
+  `adb shell am broadcast -a com.android.server.andyclaw.HEARTBEAT_NOW` forces a heartbeat tick —
+  which, with an interval over an hour, runs the heartbeat only once that interval has passed
+  (`HeartbeatTickGate`).
 - Heartbeat cadence and LLM spend come out of `user_funds.usd_balance`, which is **shared with
   sponsored gas**. A chatty background loop costs the user transactions, not just tokens.
 - **The ambient paths have a floor; chat deliberately does not.**
@@ -499,6 +501,11 @@ run skip with `HeartbeatSkipReason.RECENT_EVENT_TRIGGER`.
   not from an app the agent just acted in, and no sooner than max(window, 5 min) after the last.
   `TriggerBudget` gives each outside sender (XMTP, a Telegram chat that is not the owner's)
   three runs in a row, then one per ten minutes.
+- **The OS ticks at most hourly** (it clamps to 5–60 min, and the same tick drives the ambient
+  sweep), while the app offers up to a day. `HeartbeatTickGate` skips the scheduled run until the
+  chosen interval has passed since the last one (`heartbeat.lastScheduledRunMs`, 10 min slack);
+  `getSettings` says `heartbeatMaxIntervalMinutes: 1440`. Only the scheduled run is gated — never
+  `onAmbientTick()`, XMTP or notification runs.
 - A user pressing the heartbeat button is **not** event-driven. Otherwise the manual control
   would quietly turn the schedule off.
 - Zero disables the window, which is the right state for a device where the clock genuinely is
