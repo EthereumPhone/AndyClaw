@@ -800,7 +800,10 @@ class SmartRouterTest {
     fun `address keyword matches wallet via crypto keywords`() {
         val result = route("what is this address")
         assertTrue("wallet" in result)
-        assertFalse("contacts should NOT match bare 'address'", "contacts" in result)
+        // contacts arrives only as wallet's co-dependency (recipients by name, e879738),
+        // never from the bare keyword — messaging skills must not tag along.
+        assertTrue("contacts" in result)
+        assertFalse("sms" in result)
     }
 
     @Test

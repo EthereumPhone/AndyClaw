@@ -155,6 +155,9 @@ dependencies {
     implementation("com.github.komputing.kethereum:rpc:0.85.7")
     implementation("com.github.komputing.kethereum:model:0.85.7")
     testImplementation(libs.junit)
+    // The android.jar stub of org.json returns null under isReturnDefaultValues;
+    // tests that parse JSON need the real implementation on the JVM classpath.
+    testImplementation("org.json:json:20240303")
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
     androidTestImplementation(platform(libs.androidx.compose.bom))
