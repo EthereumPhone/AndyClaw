@@ -75,17 +75,14 @@ class LauncherBindingService : Service() {
     companion object {
         private const val TAG = "LauncherBindingService"
 
-        /** Packages allowed to bind to this service. */
-        private val ALLOWED_CALLER_PACKAGES = setOf(
-            "org.ethosmobile.ethoslauncher",
-            "com.android.systemui"
-        ) + if (BuildConfig.DEBUG) setOf(AGENTBENCH_CLIENT_PACKAGE) else emptySet()
-
         /**
-         * `agentbench/`'s client, which drives this service over the launcher's own contract on
-         * an emulator. Debug builds only: the shipped APK is a release build, where R8 folds
-         * this away and the launcher and SystemUI stay the only callers.
+         * Callers let in by name alone: `agentbench/`'s client, which drives this service over the
+         * launcher's own contract on an emulator. Debug builds only: the shipped APK is a release
+         * build, where R8 folds this away and every caller has to pass [CallerPolicy] in full.
          */
+        private val DEBUG_CALLER_PACKAGES =
+            if (BuildConfig.DEBUG) setOf(AGENTBENCH_CLIENT_PACKAGE) else emptySet()
+
         private const val AGENTBENCH_CLIENT_PACKAGE = "org.ethereumphone.andyclaw.agentbench"
 
         /**
@@ -119,24 +116,47 @@ class LauncherBindingService : Service() {
     }
 
     /**
-     * Validates that the calling process belongs to an authorised caller.
+     * Validates that the calling process belongs to an authorised caller: the launcher or
+     * SystemUI by name, **and** the system uid or AndyClaw's own signing key ([CallerPolicy]). A
+     * name alone let any app called `org.ethosmobile.ethoslauncher` read every key off a phone
+     * that is not a dgen1.
      * Throws [SecurityException] if the caller is not authorized.
      */
     private fun enforceCallerIsLauncher() {
         val callingUid = Binder.getCallingUid()
-        val pm = packageManager
-        val callerPackages = pm.getPackagesForUid(callingUid)
-        if (callerPackages != null) {
-            for (pkg in callerPackages) {
-                if (pkg in ALLOWED_CALLER_PACKAGES) return
-            }
-        }
+        val callerPackages = packageManager.getPackagesForUid(callingUid)?.toList()
+        val signatureMatch = CallerPolicy.needsSignatureCheck(callingUid, callerPackages) &&
+            signedLikeUs(callingUid)
+        if (CallerPolicy.isAllowed(callingUid, callerPackages, signatureMatch, DEBUG_CALLER_PACKAGES)) return
         val callerNames = callerPackages?.joinToString() ?: "unknown (uid=$callingUid)"
         Log.w(TAG, "Rejected IPC from unauthorized caller: $callerNames")
         throw SecurityException(
             "Only authorised packages may bind to LauncherBindingService. " +
             "Caller: $callerNames"
         )
+    }
+
+    /**
+     * `sendLockscreenPrompt` is SystemUI's alone, authenticated like every other call; the launcher
+     * sends its turns through `sendPrompt`.
+     */
+    private fun enforceCallerIsSystemUi() {
+        val callingUid = Binder.getCallingUid()
+        val callerPackages = packageManager.getPackagesForUid(callingUid)?.toList()
+        val signatureMatch = callingUid != CallerPolicy.SYSTEM_UID &&
+            callerPackages.orEmpty().contains(CallerPolicy.SYSTEMUI_PACKAGE) && signedLikeUs(callingUid)
+        if (CallerPolicy.lockscreenAllowed(callingUid, callerPackages, signatureMatch)) return
+        val callerNames = callerPackages?.joinToString() ?: "unknown (uid=$callingUid)"
+        Log.w(TAG, "Rejected sendLockscreenPrompt from $callerNames")
+        throw SecurityException("Only SystemUI may send lock-screen prompts. Caller: $callerNames")
+    }
+
+    /** Whether [uid] is signed with the key this APK is signed with (the platform key on a dgen1). */
+    private fun signedLikeUs(uid: Int): Boolean = try {
+        packageManager.checkSignatures(uid, android.os.Process.myUid()) == PackageManager.SIGNATURE_MATCH
+    } catch (e: Exception) {
+        Log.w(TAG, "Signature check for uid $uid failed", e)
+        false
     }
 
     private val scope = CoroutineScope(
@@ -273,7 +293,7 @@ class LauncherBindingService : Service() {
             sessionId: String,
             callback: ILauncherCallback,
         ) {
-            enforceCallerIsLauncher()
+            enforceCallerIsSystemUi()
             // Lazy, so it can be registered before it runs and wait for the turn it replaces.
             var previous: Job? = null
             val job = scope.launch(start = kotlinx.coroutines.CoroutineStart.LAZY) {
