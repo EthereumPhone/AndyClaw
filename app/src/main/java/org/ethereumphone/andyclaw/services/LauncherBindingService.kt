@@ -421,6 +421,33 @@ class LauncherBindingService : Service() {
                 put("localNThreads", prefs.localLlmNThreads.value)
                 put("localNGpuLayers", prefs.localLlmNGpuLayers.value)
                 put("localUseMmap", prefs.localLlmUseMmap.value)
+                // Tool search on means the LLM router never runs (SET-03): the launcher shows the
+                // router's switches only when this is false.
+                put("toolSearchEnabled", prefs.toolSearchEnabled.value)
+                // AndyClaw skips OS ticks the interval has not reached, so every interval up to a
+                // day is honoured (SET-02).
+                put("heartbeatMaxIntervalMinutes", LauncherSettings.HEARTBEAT_MAX_INTERVAL_MINUTES)
+                // Connected without handing the launcher the refresh token to find out, and how the
+                // last CONNECT went (SET-13, SET-26).
+                put("googleConnected", prefs.googleOauthRefreshToken.value.isNotBlank())
+                put("googleOauthState", app.googleAuthManager.wireState())
+                put("telegramConfigured", LauncherSettings.telegramConfigured(
+                    prefs.telegramBotToken.value, prefs.telegramOwnerChatId.value))
+                // What a secret field shows instead of the secret (SET-26). The raw values above
+                // still go out this release, for launchers that read them.
+                val secrets = mapOf(
+                    "apiKey" to prefs.apiKey.value,
+                    "tinfoilApiKey" to prefs.tinfoilApiKey.value,
+                    "openaiApiKey" to prefs.openaiApiKey.value,
+                    "veniceApiKey" to prefs.veniceApiKey.value,
+                    "customApiKey" to prefs.customApiKey.value,
+                    "claudeOauthRefreshToken" to prefs.claudeOauthRefreshToken.value,
+                    "googleOauthClientSecret" to prefs.googleOauthClientSecret.value,
+                    "telegramBotToken" to prefs.telegramBotToken.value,
+                )
+                for (key in LauncherSettings.SECRET_KEYS) {
+                    put("${key}Hint", LauncherSettings.secretHint(secrets[key].orEmpty()))
+                }
             }.toString()
         }
 
@@ -433,10 +460,28 @@ class LauncherBindingService : Service() {
                     "provider" -> {
                         val provider = LlmProvider.fromName(value) ?: return false
                         prefs.setSelectedProvider(provider)
-                        prefs.setSelectedModel(AnthropicModels.defaultForProvider(provider).modelId)
+                        // CUSTOM keeps the user's own model id, which setSelectedProvider has just put
+                        // back; the Qwen placeholder is a model their server does not have (SET-10).
+                        if (provider != LlmProvider.CUSTOM) {
+                            prefs.setSelectedModel(AnthropicModels.defaultForProvider(provider).modelId)
+                        }
                     }
-                    "model" -> prefs.setSelectedModel(value)
-                    "aiName" -> prefs.setAiName(value)
+                    "model" -> {
+                        prefs.setSelectedModel(value)
+                        // For CUSTOM the pick is the server's model id: keep customModelId in step,
+                        // or the provider never counts as configured (SET-10).
+                        if (prefs.selectedProvider.value == LlmProvider.CUSTOM && value.isNotBlank()) {
+                            prefs.setCustomModelId(value)
+                        }
+                    }
+                    "aiName" -> {
+                        // Where every run and getAiName() read it too: the story's `# Name:` line
+                        // (SET-06). Blank is refused, not turned into "AndyClaw".
+                        val name = value.trim()
+                        if (name.isEmpty()) return false
+                        prefs.setAiName(name)
+                        app.userStoryManager.rename(name)
+                    }
                     "yoloMode" -> prefs.setYoloMode(value.toBooleanStrict())
                     "safetyEnabled" -> prefs.setSafetyEnabled(value.toBooleanStrict())
                     // Off = the provenance gate logs its verdicts without applying
@@ -455,19 +500,52 @@ class LauncherBindingService : Service() {
                     "ambientIngest" -> app.setAmbientIngestEnabled(value.toBooleanStrict())
                     "heartbeatOnXmtpMessage" -> prefs.setHeartbeatOnXmtpMessageEnabled(value.toBooleanStrict())
                     "heartbeatIntervalMinutes" -> prefs.setHeartbeatIntervalMinutes(value.toInt())
-                    "heartbeatUseSameModel" -> prefs.setHeartbeatUseSameModel(value.toBooleanStrict())
+                    // As AndyClaw's own settings do it (SET-08): a provider change brings the model
+                    // along, and a separate model starts from the main one.
+                    "heartbeatUseSameModel" -> {
+                        val same = value.toBooleanStrict()
+                        prefs.setHeartbeatUseSameModel(same)
+                        if (!same && prefs.heartbeatModel.value.isBlank()) {
+                            prefs.setHeartbeatProvider(prefs.selectedProvider.value)
+                            prefs.setHeartbeatModel(prefs.selectedModel.value)
+                        }
+                    }
                     "heartbeatProvider" -> {
                         val p = LlmProvider.fromName(value) ?: return false
                         prefs.setHeartbeatProvider(p)
+                        prefs.setHeartbeatModel(LauncherSettings.modelAfterProviderChange(
+                            prefs.getHeartbeatUserModelForProvider(p),
+                            AnthropicModels.defaultForProvider(p).modelId,
+                        ))
                     }
-                    "heartbeatModel" -> prefs.setHeartbeatModel(value)
+                    "heartbeatModel" -> {
+                        prefs.setHeartbeatModel(value)
+                        prefs.setHeartbeatUserModelForProvider(prefs.heartbeatProvider.value, value)
+                    }
                     "smartRoutingEnabled" -> prefs.setSmartRoutingEnabled(value.toBooleanStrict())
-                    "routingUseSameModel" -> prefs.setRoutingUseSameModel(value.toBooleanStrict())
+                    "toolSearchEnabled" -> prefs.setToolSearchEnabled(value.toBooleanStrict())
+                    "routingUseSameModel" -> {
+                        val same = value.toBooleanStrict()
+                        prefs.setRoutingUseSameModel(same)
+                        if (!same && prefs.routingModel.value.isBlank()) {
+                            val main = prefs.selectedProvider.value
+                            prefs.setRoutingProvider(main)
+                            (AnthropicModels.routingModelForProvider(main) ?: AnthropicModels.defaultForProvider(main))
+                                .let { prefs.setRoutingModel(it.modelId) }
+                        }
+                    }
                     "routingProvider" -> {
                         val p = LlmProvider.fromName(value) ?: return false
                         prefs.setRoutingProvider(p)
+                        prefs.setRoutingModel(LauncherSettings.modelAfterProviderChange(
+                            prefs.getRoutingUserModelForProvider(p),
+                            (AnthropicModels.routingModelForProvider(p) ?: AnthropicModels.defaultForProvider(p)).modelId,
+                        ))
                     }
-                    "routingModel" -> prefs.setRoutingModel(value)
+                    "routingModel" -> {
+                        prefs.setRoutingModel(value)
+                        prefs.setRoutingUserModelForProvider(prefs.routingProvider.value, value)
+                    }
                     "ledMaxBrightness" -> prefs.setLedMaxBrightness(value.toInt())
                     "telegramBotEnabled" -> prefs.setTelegramBotEnabled(value.toBooleanStrict())
                     "telegramBotToken" -> prefs.setTelegramBotToken(value)
@@ -836,6 +914,7 @@ class LauncherBindingService : Service() {
             enforceCallerIsLauncher()
             val app = application as? NodeApp ?: return
             app.securePrefs.clearGoogleOauthSetup()
+            app.googleAuthManager.forgetFlow()
         }
 
         // ── Local Model ───────────────────────────────────────────────────
@@ -1410,7 +1489,7 @@ class LauncherBindingService : Service() {
         if (baseUrl == customModelsCacheUrl && now - customModelsCacheAt < 30_000L) {
             return customModelsCacheJson
         }
-        val url = modelsUrlFromChatUrl(baseUrl)
+        val url = LauncherSettings.modelsUrlFromChatUrl(baseUrl)
         return try {
             val client = OkHttpClient.Builder()
                 .connectTimeout(5, TimeUnit.SECONDS)
@@ -1437,16 +1516,6 @@ class LauncherBindingService : Service() {
         } catch (e: Exception) {
             Log.w(TAG, "fetchCustomModelsJson failed", e)
             "[]"
-        }
-    }
-
-    private fun modelsUrlFromChatUrl(chatUrl: String): String {
-        val t = chatUrl.trim().trimEnd('/')
-        return when {
-            t.endsWith("/chat/completions") -> t.removeSuffix("/chat/completions") + "/models"
-            t.endsWith("/v1") -> "$t/models"
-            t.contains("/v1/") -> t.substringBefore("/v1/") + "/v1/models"
-            else -> "$t/v1/models"
         }
     }
 
@@ -1679,6 +1748,9 @@ class LauncherBindingService : Service() {
 
         val modelId = app.securePrefs.selectedModel.value
         val model = AnthropicModels.fromModelId(modelId) ?: AnthropicModels.MINIMAX_M3
+        // CUSTOM (and an OpenRouter id that is not ours) sends the id the user picked, as the
+        // in-app chat does; it went out as minimax/minimax-m3 to the user's own server (SET-10).
+        val customModelIdOverride = org.ethereumphone.andyclaw.llm.ModelIdOverride.of(app.securePrefs.selectedProvider.value, modelId)
 
         val enabledSkillIds = if (app.securePrefs.yoloMode.value) {
             registry.getAll().map { it.id }.toSet()
@@ -1699,6 +1771,7 @@ class LauncherBindingService : Service() {
             smartRouter = if (app.securePrefs.smartRoutingEnabled.value && !app.securePrefs.toolSearchEnabled.value) app.smartRouter else null,
             toolSearchService = app.createToolSearchService(tier, enabledSkillIds),
             budgetConfig = app.createBudgetConfig(),
+            customModelIdOverride = customModelIdOverride,
             // sendPrompt / sendLockscreenPrompt are the user typing or speaking.
             provenance = Provenance.USER,
             enforceProvenance = app.securePrefs.provenanceEnforcementEnabled.value,

@@ -35,6 +35,20 @@ class GoogleAuthManager(private val securePrefs: SecurePrefs) {
             "https://www.googleapis.com/auth/calendar",
             "https://www.googleapis.com/auth/spreadsheets",
         )
+
+        /**
+         * `googleOauthState`: "waiting", "missing_client_id", "connected", "idle", or
+         * "error:<message>". An attempt in progress or one that failed wins over the stored grant,
+         * so a failed reconnect is seen; a grant Google refuses is an error, not "connected".
+         */
+        fun wireState(flow: FlowState, hasClientId: Boolean, connected: Boolean, expired: Boolean): String = when {
+            flow is FlowState.Waiting -> "waiting"
+            flow is FlowState.MissingClientId && !hasClientId -> "missing_client_id"
+            flow is FlowState.Failed -> "error:${flow.message}"
+            connected && expired -> "error:Google no longer accepts this sign-in. Connect again."
+            connected -> "connected"
+            else -> "idle"
+        }
     }
 
     private val json = Json { ignoreUnknownKeys = true }
@@ -58,6 +72,36 @@ class GoogleAuthManager(private val securePrefs: SecurePrefs) {
     /** Connected, but Google no longer accepts the grant. The user has to reconnect. */
     val isAuthExpired: Boolean
         get() = isAuthenticated && rejectedRefreshToken == securePrefs.googleOauthRefreshToken.value
+
+    /** Where a sign-in started with [startOAuthFlow] stands. */
+    sealed interface FlowState {
+        data object Idle : FlowState
+        data object MissingClientId : FlowState
+        data object Waiting : FlowState
+        data object Connected : FlowState
+        data class Failed(val message: String) : FlowState
+    }
+
+    /**
+     * The last sign-in attempt (SET-13). A flow that failed used to say so only in logcat — with no
+     * client id it did not even open the browser — and the launcher's CONNECT looked dead. In
+     * memory: a restart forgets an attempt, never a connection.
+     */
+    @Volatile var flowState: FlowState = FlowState.Idle
+        private set
+
+    /** The user disconnected: no attempt to report any more. */
+    fun forgetFlow() {
+        flowState = FlowState.Idle
+    }
+
+    /** [flowState] and the stored grant, as `getSettings`' `googleOauthState`. */
+    fun wireState(): String = wireState(
+        flow = flowState,
+        hasClientId = securePrefs.googleOauthClientId.value.isNotBlank(),
+        connected = isAuthenticated,
+        expired = isAuthExpired,
+    )
 
     /**
      * Forget the cached access token, so the next [getAccessToken] refreshes it. For a 401
@@ -97,8 +141,10 @@ class GoogleAuthManager(private val securePrefs: SecurePrefs) {
         val clientId = securePrefs.googleOauthClientId.value
         if (clientId.isBlank()) {
             Log.e(TAG, "No Google OAuth Client ID configured")
+            flowState = FlowState.MissingClientId
             return@withContext
         }
+        flowState = FlowState.Waiting
 
         // Random port on loopback only. ServerSocket(0) listened on every interface, so a
         // device on the same Wi-Fi could connect to the port the auth code is delivered on.
@@ -174,16 +220,22 @@ class GoogleAuthManager(private val securePrefs: SecurePrefs) {
 
             if (!stateValid) {
                 Log.e(TAG, "OAuth state mismatch — possible CSRF attack")
+                flowState = FlowState.Failed("The sign-in could not be verified. Try again.")
             } else if (code != null) {
                 exchangeCode(code, redirectUri)
+                flowState = FlowState.Connected
             } else {
                 Log.e(TAG, "OAuth callback had no code. Error: $error")
+                flowState = FlowState.Failed(if (error == "access_denied") "Sign-in was declined." else "Sign-in failed. Try again.")
             }
         } catch (e: java.net.SocketTimeoutException) {
             Log.w(TAG, "OAuth flow timed out — user did not complete sign-in within 5 minutes")
+            flowState = FlowState.Failed("Sign-in timed out. Try again.")
         } catch (e: Exception) {
+            if (e is kotlinx.coroutines.CancellationException) flowState = FlowState.Idle
             rethrowIfCancelled(e)
             Log.e(TAG, "OAuth flow error: ${e.message}", e)
+            flowState = FlowState.Failed(e.message?.takeIf { it.isNotBlank() } ?: "Sign-in failed. Try again.")
         } finally {
             try { server.close() } catch (_: Exception) {}
         }

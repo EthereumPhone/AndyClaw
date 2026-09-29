@@ -458,23 +458,9 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
             val modelId = app.securePrefs.selectedModel.value
             val activeProvider = app.securePrefs.selectedProvider.value
-            // For CUSTOM provider, the user's model id (e.g. "gpt-oss:20b",
-            // "llama3.2:latest") usually isn't in AnthropicModels — fromModelId
-            // returns null and falls back to MINIMAX_M3. Pass the raw string
-            // through `customModelIdOverride` so the outgoing request matches
-            // what the user's self-hosted backend actually serves.
-            //
-            // OPEN_ROUTER too, when the id is not one of ours: its picker lists the whole
-            // OpenRouter registry, and "google/gemini-…" silently ran as MiniMax M3 while
-            // Settings showed Gemini. An enum id keeps the old path (and SmartRouter's model
-            // routing). ETHOS_PREMIUM deliberately keeps the fallback: the premium backend
-            // only serves the ids it bills for.
-            val customModelIdOverride: String? = when {
-                modelId.isBlank() -> null
-                activeProvider == LlmProvider.CUSTOM -> modelId
-                activeProvider == LlmProvider.OPEN_ROUTER && AnthropicModels.fromModelId(modelId) == null -> modelId
-                else -> null
-            }
+            // For CUSTOM, and OPEN_ROUTER ids that are not ours, the raw id goes out rather than
+            // the MINIMAX_M3 fallback (ModelIdOverride); the launcher's turns do the same.
+            val customModelIdOverride: String? = org.ethereumphone.andyclaw.llm.ModelIdOverride.of(activeProvider, modelId)
             val model = AnthropicModels.fromModelId(modelId) ?: AnthropicModels.MINIMAX_M3
             val currentTier = org.ethereumphone.andyclaw.skills.tier.OsCapabilities.currentTier()
             val currentEnabledSkillIds = if (app.securePrefs.yoloMode.value) {

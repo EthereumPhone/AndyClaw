@@ -210,7 +210,11 @@ New background trigger? It states its `Provenance` explicitly. The defaults are 
   reach is the same dead-on-arrival shape as an unseeded skill. Wire it into
   `SettingsScreen`, `SettingsViewModel` **and** `LauncherBindingService.getSettings` /
   `setSetting` — that last pair is a JSON blob and a string switch, so adding a key there
-  costs no binder ordinal.
+  costs no binder ordinal. A secret added there also gets a `<key>Hint`
+  (`LauncherSettings.SECRET_KEYS`): the launcher shows the hint, not the value. The raw values
+  still go out for older launchers and are to be dropped once none reads them. `setSetting` does
+  what AndyClaw's own settings screen does around a value — a provider change brings its model,
+  `aiName` renames the story, CUSTOM keeps the user's model id — or the two drift apart.
 - **Every run carries an `AgentRunToken`** (a coroutine-context element; sub-agents share it):
   the display lease, STOP and the ledger session all hang off it. Tools run on `Dispatchers.IO`
   as children of the run, so cancelling a turn reaches the tool that is running. A tool's

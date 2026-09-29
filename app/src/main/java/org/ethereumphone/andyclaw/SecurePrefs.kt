@@ -381,8 +381,11 @@ class SecurePrefs(context: Context) : KeyValueStore {
   private val _aiName = MutableStateFlow(prefs.getString("ai.name", "AndyClaw") ?: "AndyClaw")
   val aiName: StateFlow<String> = _aiName
 
-  private val _enabledSkills = MutableStateFlow(loadEnabledSkills())
-  val enabledSkills: StateFlow<Set<String>> = _enabledSkills
+  // One lock for every change: binder calls toggle skills from concurrent threads (SET-07).
+  private val enabledSkillSet = EnabledSkillSet(loadEnabledSkills()) { ids ->
+    prefs.edit { putString("agent.enabledSkills", JsonArray(ids.map { JsonPrimitive(it) }).toString()) }
+  }
+  val enabledSkills: StateFlow<Set<String>> = enabledSkillSet.flow
 
   private val _budgetModeEnabled = MutableStateFlow(prefs.getBoolean("budget.enabled", true))
   val budgetModeEnabled: StateFlow<Boolean> = _budgetModeEnabled
@@ -1059,22 +1062,11 @@ class SecurePrefs(context: Context) : KeyValueStore {
     _aiName.value = trimmed
   }
 
-  fun setSkillEnabled(skillId: String, enabled: Boolean) {
-    val current = _enabledSkills.value.toMutableSet()
-    if (enabled) current.add(skillId) else current.remove(skillId)
-    val updated = current.toSet()
-    val encoded = JsonArray(updated.map { JsonPrimitive(it) }).toString()
-    prefs.edit { putString("agent.enabledSkills", encoded) }
-    _enabledSkills.value = updated
-  }
+  fun setSkillEnabled(skillId: String, enabled: Boolean) = enabledSkillSet.set(skillId, enabled)
 
-  fun setAllSkillsEnabled(skillIds: Set<String>) {
-    val encoded = JsonArray(skillIds.map { JsonPrimitive(it) }).toString()
-    prefs.edit { putString("agent.enabledSkills", encoded) }
-    _enabledSkills.value = skillIds
-  }
+  fun setAllSkillsEnabled(skillIds: Set<String>) = enabledSkillSet.setAll(skillIds)
 
-  fun isSkillEnabled(skillId: String): Boolean = skillId in _enabledSkills.value
+  fun isSkillEnabled(skillId: String): Boolean = skillId in enabledSkillSet.flow.value
 
   fun setBudgetModeEnabled(enabled: Boolean) {
     prefs.edit { putBoolean("budget.enabled", enabled) }
@@ -1471,7 +1463,7 @@ class SecurePrefs(context: Context) : KeyValueStore {
     _localLlmUseMmap.value = prefs.getBoolean("local.useMmap", true)
     _selectedModel.value = prefs.getString("anthropic.model", "kimi-k3") ?: "kimi-k3"
     _aiName.value = prefs.getString("ai.name", "AndyClaw") ?: "AndyClaw"
-    _enabledSkills.value = loadEnabledSkills()
+    enabledSkillSet.reload(loadEnabledSkills())
     _budgetModeEnabled.value = prefs.getBoolean("budget.enabled", true)
     _selectedBudgetPresetId.value = prefs.getString("budget.presetId", BudgetPreset.defaultPresetId) ?: BudgetPreset.defaultPresetId
     _budgetPresets.value = loadBudgetPresets()
