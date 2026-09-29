@@ -4,6 +4,7 @@ package org.ethereumphone.andyclaw
 
 import android.content.Context
 import android.content.SharedPreferences
+import android.util.Log
 import androidx.core.content.edit
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
@@ -27,10 +28,111 @@ class SecurePrefs(context: Context) : KeyValueStore {
     val defaultWakeWords: List<String> = listOf("openclaw", "claude")
     private const val displayNameKey = "node.displayName"
     private const val voiceWakeModeKey = "voiceWake.mode"
+    private const val TAG = "SecurePrefs"
+
+    /**
+     * The store's file name. EncryptedSharedPreferences keeps its two Tink keysets
+     * (`__androidx_security_crypto_encrypted_prefs_{key,value}_keyset__`) inside this
+     * same file, so `shared_prefs/openclaw.node.secure.xml` is the whole store — and the
+     * path `res/xml/backup_rules.xml` and `data_extraction_rules.xml` exclude.
+     */
+    internal const val PREFS_NAME = "openclaw.node.secure"
+
+    /**
+     * Keys a backup import never writes: the device keeps its own value (or its absence).
+     * A backup is a file anyone can hand the user, and these would otherwise let it carry
+     * authority or identity across:
+     * - `node.instanceId` — this device's identity.
+     * - `auth.walletAddress` / `auth.walletSignature` — the premium gateway credential.
+     *   From another device it is another wallet's fixed-message signature; the
+     *   WALLET_SIGN route obtains one for the wallet this phone actually has.
+     * - `agent.provenanceEnforcement`, `agent.yoloMode`, `agent.safetyEnabled`,
+     *   `agent.autopilot.noConfirm` — the switches that decide what a run may do
+     *   without asking. A crafted backup could otherwise turn the provenance gate
+     *   log-only or skip every approval; these are set on the device, deliberately.
+     * - `telegram.botToken` / `telegram.ownerChatId` / `telegram.botEnabled` — kept
+     *   together: the owner chat id is the TRUSTED principal of every Telegram run, and a
+     *   backup naming its own bot and chat would make a stranger the owner. Re-pairing
+     *   goes through the Telegram setup screen.
+     */
+    internal val IMPORT_PRESERVED_KEYS: Set<String> = setOf(
+      "node.instanceId",
+      "auth.walletAddress",
+      "auth.walletSignature",
+      "agent.provenanceEnforcement",
+      "agent.yoloMode",
+      "agent.safetyEnabled",
+      "agent.autopilot.noConfirm",
+      "telegram.botToken",
+      "telegram.ownerChatId",
+      "telegram.botEnabled",
+    )
+
+    /** The part of a backup that [importAllValues] may write. */
+    internal fun importableValues(values: Map<String, Any?>): Map<String, Any?> =
+      values.filterKeys { it !in IMPORT_PRESERVED_KEYS }
+
+    /** Where an unreadable store is moved to, under noBackupFilesDir. Never deleted. */
+    internal const val QUARANTINE_DIR = "unreadable_prefs"
+
+    /**
+     * Whether a failure from EncryptedSharedPreferences.create means the stored keysets
+     * can never be decrypted on this device — the only case in which the store is moved
+     * aside. The shape it has after a cloud restore or device transfer: the file came
+     * across, the AndroidKeyStore master key that wraps its keysets did not.
+     *
+     * - [masterKeyExisted] == false: the master key was just minted, so nothing written
+     *   before this launch can be unwrapped by it. Any crypto/IO failure is final.
+     * - otherwise only a failure that is about the keyset bytes themselves counts: the
+     *   AEAD tag did not verify (AEADBadTagException is a BadPaddingException), or the
+     *   unwrapped bytes are not a keyset (Tink's shaded InvalidProtocolBufferException).
+     *   A bare KeyStoreException / ProviderException can be keystore2 having a bad
+     *   moment, and moving a healthy user's settings aside for that would be the bug.
+     */
+    internal fun isUnreadableStoreFailure(e: Throwable, masterKeyExisted: Boolean?): Boolean {
+      val chain = generateSequence(e) { it.cause }.take(16).toList()
+      if (chain.none { it is java.security.GeneralSecurityException || it is java.io.IOException }) {
+        return false
+      }
+      if (masterKeyExisted == false) return true
+      return chain.any {
+        it is javax.crypto.BadPaddingException ||
+          it.javaClass.simpleName == "InvalidProtocolBufferException"
+      }
+    }
+
+    /**
+     * Moves `<name>.xml` and its `.bak` out of [sharedPrefsDir] into [quarantineDir],
+     * suffixed with [stamp]. Renames only — if a rename fails this throws and the file
+     * stays where it was; it is never deleted. Returns the files' new locations.
+     */
+    internal fun moveStoreAside(
+      sharedPrefsDir: java.io.File,
+      name: String,
+      quarantineDir: java.io.File,
+      stamp: Long,
+    ): List<java.io.File> {
+      if (!quarantineDir.isDirectory && !quarantineDir.mkdirs()) {
+        throw java.io.IOException("cannot create $quarantineDir")
+      }
+      val moved = mutableListOf<java.io.File>()
+      for (fileName in listOf("$name.xml", "$name.xml.bak")) {
+        val src = java.io.File(sharedPrefsDir, fileName)
+        if (!src.exists()) continue
+        val dst = java.io.File(quarantineDir, "$fileName.unreadable-$stamp")
+        if (!src.renameTo(dst)) throw java.io.IOException("cannot move $src to $dst")
+        moved += dst
+      }
+      return moved
+    }
   }
 
   private val appContext = context.applicationContext
   private val json = Json { ignoreUnknownKeys = true }
+
+  // Read before MasterKey.Builder.build(), which mints the key when it is missing:
+  // afterwards there is no telling a restored store from a healthy one.
+  private val masterKeyExisted: Boolean? = masterKeyAliasExists()
 
   private val masterKey =
     MasterKey.Builder(context)
@@ -38,7 +140,7 @@ class SecurePrefs(context: Context) : KeyValueStore {
       .build()
 
   private val prefs: SharedPreferences by lazy {
-    createPrefs(appContext, "openclaw.node.secure")
+    createPrefs(appContext, PREFS_NAME)
   }
 
   private val _instanceId = MutableStateFlow(loadOrCreateInstanceId())
@@ -478,14 +580,86 @@ class SecurePrefs(context: Context) : KeyValueStore {
     prefs.edit { remove(key) }
   }
 
-  private fun createPrefs(context: Context, name: String): SharedPreferences {
-    return EncryptedSharedPreferences.create(
+  private fun openEncryptedPrefs(context: Context, name: String): SharedPreferences =
+    EncryptedSharedPreferences.create(
       context,
       name,
       masterKey,
       EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
       EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM,
     )
+
+  /**
+   * Opens the store, recovering from exactly one failure: a store whose keysets this
+   * device's master key cannot unwrap (a Google restore or device transfer copied the
+   * file but not the AndroidKeyStore key). Without this every launch, service bind and
+   * heartbeat threw until the user cleared the app's data.
+   *
+   * Recovery is deliberately narrow — see [isUnreadableStoreFailure]. It needs the user
+   * unlocked, a second attempt that fails too, and a file actually on disk; the old file
+   * is moved to noBackupFilesDir, never deleted, so nothing is lost that was readable.
+   * Anything else is rethrown as before. The wallet signature is re-obtained through the
+   * WALLET_SIGN route, since walletAddress comes back empty.
+   */
+  private fun createPrefs(context: Context, name: String): SharedPreferences {
+    val firstFailure = try {
+      return openEncryptedPrefs(context, name)
+    } catch (e: Exception) {
+      e
+    }
+    val unlocked = try {
+      context.getSystemService(android.os.UserManager::class.java)?.isUserUnlocked == true
+    } catch (_: Exception) {
+      false
+    }
+    if (!unlocked || !isUnreadableStoreFailure(firstFailure, masterKeyExisted)) {
+      Log.e(TAG, "Opening $name failed (masterKeyExisted=$masterKeyExisted, unlocked=$unlocked); not recovering", firstFailure)
+      throw firstFailure
+    }
+    // One retry, so a failure that clears on its own never costs the user their settings.
+    try {
+      return openEncryptedPrefs(context, name)
+    } catch (e: Exception) {
+      if (!isUnreadableStoreFailure(e, masterKeyExisted)) throw e
+    }
+
+    val sharedPrefsDir = java.io.File(context.dataDir, "shared_prefs")
+    val storeFile = java.io.File(sharedPrefsDir, "$name.xml")
+    val backupFile = java.io.File(sharedPrefsDir, "$name.xml.bak")
+    if (!storeFile.exists() && !backupFile.exists()) {
+      // Nothing on disk to be unreadable: the keystore itself is failing. Not ours to fix.
+      throw firstFailure
+    }
+    val moved = moveStoreAside(
+      sharedPrefsDir = sharedPrefsDir,
+      name = name,
+      quarantineDir = java.io.File(context.noBackupFilesDir, QUARANTINE_DIR),
+      stamp = System.currentTimeMillis(),
+    )
+    Log.e(
+      TAG,
+      "SETTINGS RESET: $name could not be decrypted with this device's keystore " +
+        "(masterKeyExisted=$masterKeyExisted) — typically a backup restore or device " +
+        "transfer. Moved aside to $moved and starting an empty store.",
+      firstFailure,
+    )
+    // The failed open left a SharedPreferencesImpl for this name in the process-wide
+    // cache, still holding the unreadable keysets; reopening would get that same
+    // instance and fail again. deleteSharedPreferences evicts it. Only called once both
+    // files are verifiably gone from shared_prefs, so it has nothing left to delete.
+    if (!storeFile.exists() && !backupFile.exists()) {
+      context.deleteSharedPreferences(name)
+    }
+    return openEncryptedPrefs(context, name)
+  }
+
+  private fun masterKeyAliasExists(): Boolean? = try {
+    java.security.KeyStore.getInstance("AndroidKeyStore")
+      .apply { load(null) }
+      .containsAlias(MasterKey.DEFAULT_MASTER_KEY_ALIAS)
+  } catch (e: Exception) {
+    Log.w(TAG, "Could not check for the master key", e)
+    null
   }
 
   private fun loadOrCreateInstanceId(): String {
@@ -1190,19 +1364,15 @@ class SecurePrefs(context: Context) : KeyValueStore {
 
   /**
    * Import preference values from a backup, replacing current values.
-   * Skips the instanceId so the device keeps its unique identity.
+   * Keys in [IMPORT_PRESERVED_KEYS] keep this device's value — see there for why.
    */
   fun importAllValues(values: Map<String, Any?>) {
+    // Snapshot before clear(): the edit's clear applies first on commit, and these must
+    // come through it with the device's own values.
+    val preserved = prefs.all.filterKeys { it in IMPORT_PRESERVED_KEYS }
     prefs.edit {
-      // Clear everything except instanceId
-      val currentInstanceId = prefs.getString("node.instanceId", null)
       clear()
-      if (currentInstanceId != null) {
-        putString("node.instanceId", currentInstanceId)
-      }
-
-      for ((key, value) in values) {
-        if (key == "node.instanceId") continue // preserve device identity
+      for ((key, value) in preserved + importableValues(values)) {
         when (value) {
           is String -> putString(key, value)
           is Boolean -> putBoolean(key, value)

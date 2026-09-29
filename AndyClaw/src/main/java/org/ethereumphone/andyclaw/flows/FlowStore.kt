@@ -2,6 +2,8 @@ package org.ethereumphone.andyclaw.flows
 
 import kotlinx.serialization.Serializable
 import java.io.File
+import java.io.FileOutputStream
+import java.io.IOException
 import java.util.logging.Logger
 import javax.crypto.Mac
 import javax.crypto.spec.SecretKeySpec
@@ -95,8 +97,12 @@ class FlowStore(
             val bytes = FlowCodec.canonicalBytes(flow)
             val hash = FlowCodec.sha256Hex(bytes)
             root.mkdirs()
-            flowFile(hash).writeBytes(bytes)
-            macFile(hash).writeText(hex(signer.mac(bytes)))
+            // The MAC first: a flow file on disk then always has its MAC beside it, so a flow
+            // file without one is an orphan of an interrupted install and never one in progress
+            // ([listAll] removes those). Each file is replaced atomically — a torn .mac or
+            // .flow.json only made the flow unverifiable, but a torn .meta.json lost its counts.
+            atomicWrite(macFile(hash), hex(signer.mac(bytes)).toByteArray(Charsets.UTF_8))
+            atomicWrite(flowFile(hash), bytes)
             val meta = readMeta(hash)?.copy(installedMs = clock())
                 ?: FlowMeta(installedMs = clock())
             writeMeta(hash, meta)
@@ -120,7 +126,27 @@ class FlowStore(
     fun listAll(): List<StoredFlow> {
         val files = root.listFiles { f: File -> f.isFile && f.name.endsWith(FLOW_SUFFIX) }
             ?: return emptyList()
-        return files.sortedBy { it.name }.mapNotNull { load(it) }
+        removeOrphans(files)
+        return files.sortedBy { it.name }.filter { it.isFile }.mapNotNull { load(it) }
+    }
+
+    /**
+     * A flow file with no MAC can never verify: an install cut short after the flow was written
+     * (older builds wrote the flow first), or a removal cut short. Left alone it is re-read and
+     * refused on every listing. So are temp files a crash left behind — only old ones, since a
+     * young one may be an install writing right now.
+     */
+    private fun removeOrphans(flowFiles: Array<File>) {
+        for (file in flowFiles) {
+            val hash = file.name.removeSuffix(FLOW_SUFFIX)
+            if (!macFile(hash).exists()) {
+                log.warning("flow ${file.name} has no MAC — removing the orphan")
+                remove(hash)
+            }
+        }
+        val cutoff = clock() - ORPHAN_TMP_AGE_MS
+        root.listFiles { f: File -> f.isFile && f.name.endsWith(TMP_SUFFIX) && f.lastModified() < cutoff }
+            ?.forEach { runCatching { it.delete() } }
     }
 
     fun get(hash: String): StoredFlow? = load(flowFile(hash))
@@ -241,7 +267,29 @@ class FlowStore(
 
     private fun writeMeta(hash: String, meta: FlowMeta) {
         runCatching {
-            metaFile(hash).writeText(FlowCodec.json.encodeToString(FlowMeta.serializer(), meta))
+            atomicWrite(metaFile(hash), FlowCodec.json.encodeToString(FlowMeta.serializer(), meta).toByteArray(Charsets.UTF_8))
+        }
+    }
+
+    /**
+     * [bytes] into [target] all or nothing: written to a temp file beside it, synced, and renamed
+     * over it (rename(2) replaces atomically on the same filesystem). A crash mid-write used to
+     * leave a truncated file under the real name — for the meta, a flow that forgot it was stale
+     * or how often it had failed.
+     */
+    private fun atomicWrite(target: File, bytes: ByteArray) {
+        // A unique name, so two installs of one flow at once never write into each other's file.
+        val tmp = File.createTempFile(target.name + ".", TMP_SUFFIX, target.parentFile)
+        try {
+            FileOutputStream(tmp).use { out ->
+                out.write(bytes)
+                out.flush()
+                out.fd.sync()
+            }
+            if (!tmp.renameTo(target)) throw IOException("could not move ${tmp.name} into place")
+        } catch (e: Exception) {
+            runCatching { tmp.delete() }
+            throw e
         }
     }
 
@@ -262,6 +310,9 @@ class FlowStore(
 
     companion object {
         const val FLOW_SUFFIX = ".flow.json"
+        private const val TMP_SUFFIX = ".tmp"
+        /** A temp file older than this is a crash's leftover, not an install in progress. */
+        private const val ORPHAN_TMP_AGE_MS = 60_000L
         /** The directory under `filesDir`. */
         const val DIR_NAME = "flows"
     }

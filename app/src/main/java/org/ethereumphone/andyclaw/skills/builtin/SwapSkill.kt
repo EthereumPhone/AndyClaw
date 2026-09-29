@@ -12,6 +12,11 @@ import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonPrimitive
 import org.ethereumphone.andyclaw.BuildConfig
+import org.ethereumphone.andyclaw.ExecutionEngine.rethrowIfCancelled
+import org.ethereumphone.andyclaw.agentwallet.AgentWalletChains
+import org.ethereumphone.andyclaw.agentwallet.Erc20Check
+import org.ethereumphone.andyclaw.agentwallet.EthAddress
+import org.ethereumphone.andyclaw.agentwallet.UserWalletResult
 import org.ethereumphone.andyclaw.skills.AndyClawSkill
 import org.ethereumphone.andyclaw.skills.SkillManifest
 import org.ethereumphone.andyclaw.skills.SkillResult
@@ -45,6 +50,11 @@ class SwapSkill(private val context: Context) : AndyClawSkill {
 
         private fun chainIdToBundler(chainId: Int): String =
             "https://api.pimlico.io/v2/$chainId/rpc?apikey=${BuildConfig.BUNDLER_API}"
+
+        private val NATIVE_ADDRESSES = setOf(
+            "0x0000000000000000000000000000000000000000",
+            "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        )
     }
 
     private val walletsByChain = mutableMapOf<Int, WalletSDK>()
@@ -115,11 +125,11 @@ class SwapSkill(private val context: Context) : AndyClawSkill {
                         )),
                         "sell_decimals" to JsonObject(mapOf(
                             "type" to JsonPrimitive("integer"),
-                            "description" to JsonPrimitive("Decimals of sell token (e.g. 18 for ETH, 6 for USDC). Default: 18"),
+                            "description" to JsonPrimitive("Decimals of sell token (e.g. 18 for ETH, 6 for USDC). Optional: known tokens and the contract itself are checked, and a mismatch is refused."),
                         )),
                         "buy_decimals" to JsonObject(mapOf(
                             "type" to JsonPrimitive("integer"),
-                            "description" to JsonPrimitive("Decimals of buy token. Default: 18"),
+                            "description" to JsonPrimitive("Decimals of buy token. Optional: known tokens and the contract itself are checked."),
                         )),
                         "sell_symbol" to JsonObject(mapOf(
                             "type" to JsonPrimitive("string"),
@@ -158,8 +168,8 @@ class SwapSkill(private val context: Context) : AndyClawSkill {
             ?: return SkillResult.Error("'sell_amount' is required")
         val chainId = params["chain_id"]?.jsonPrimitive?.intOrNull
             ?: return SkillResult.Error("'chain_id' is required")
-        val sellDecimals = params["sell_decimals"]?.jsonPrimitive?.intOrNull ?: 18
-        val buyDecimals = params["buy_decimals"]?.jsonPrimitive?.intOrNull ?: 18
+        val claimedSellDecimals = params["sell_decimals"]?.jsonPrimitive?.intOrNull
+        val claimedBuyDecimals = params["buy_decimals"]?.jsonPrimitive?.intOrNull
         val sellSymbol = params["sell_symbol"]?.jsonPrimitive?.contentOrNull ?: ""
         val buySymbol = params["buy_symbol"]?.jsonPrimitive?.contentOrNull ?: ""
 
@@ -173,6 +183,17 @@ class SwapSkill(private val context: Context) : AndyClawSkill {
             BigDecimal(sellAmountStr)
         } catch (e: Exception) {
             return SkillResult.Error("Invalid sell_amount: $sellAmountStr")
+        }
+
+        // Decimals used to default to 18: a USDC sell was scaled by 10^12 and the "Received"
+        // line for a USDC buy was off by the same factor.
+        val sellDecimals = when (val v = tokenDecimals(sellToken, chainId, claimedSellDecimals)) {
+            is Erc20Check.Verdict.Ok -> v.decimals
+            is Erc20Check.Verdict.Refused -> return SkillResult.Error("sell_token: ${v.reason}")
+        }
+        val buyDecimals = when (val v = tokenDecimals(buyToken, chainId, claimedBuyDecimals)) {
+            is Erc20Check.Verdict.Ok -> v.decimals
+            is Erc20Check.Verdict.Refused -> return SkillResult.Error("buy_token: ${v.reason}")
         }
 
         return withContext(Dispatchers.IO) {
@@ -204,7 +225,7 @@ class SwapSkill(private val context: Context) : AndyClawSkill {
                     WalletSDK.TxParams(to = tx.to, value = tx.value, data = tx.data)
                 }
 
-                val txHash = if (batchTxParams.size == 1) {
+                val rawResult = if (batchTxParams.size == 1) {
                     val tx = batchTxParams.first()
                     wallet.sendTransaction(
                         to = tx.to,
@@ -222,11 +243,13 @@ class SwapSkill(private val context: Context) : AndyClawSkill {
                     )
                 }
 
-                if (txHash == null || txHash == "error") {
-                    return@withContext SkillResult.Error("Swap transaction failed")
-                }
-                if (txHash == "decline") {
-                    return@withContext SkillResult.Error("Swap declined by user")
+                // The SDK returns a bundler rejection as "Error: …" rather than throwing, and
+                // that used to be reported as "Swap executed successfully" with the error as hash.
+                val txHash = when (val outcome = UserWalletResult.parse(rawResult)) {
+                    is UserWalletResult.Submitted -> outcome.userOpHash
+                    UserWalletResult.Declined -> return@withContext SkillResult.Error("Swap declined by user")
+                    is UserWalletResult.Failed ->
+                        return@withContext SkillResult.Error("Swap transaction failed: ${outcome.message}")
                 }
 
                 val sb = StringBuilder("Swap executed successfully!\n")
@@ -243,10 +266,29 @@ class SwapSkill(private val context: Context) : AndyClawSkill {
                 sb.appendLine("Transaction: $txHash")
                 SkillResult.Success(sb.toString().trim())
             } catch (e: Exception) {
+                rethrowIfCancelled(e)
                 Log.e(TAG, "Swap execution failed", e)
                 SkillResult.Error("Swap execution failed: ${e.message}")
             }
         }
+    }
+
+    /**
+     * Decimals for [token]: 18 for the native placeholder, the registry's for a vetted token,
+     * otherwise what the contract says (and it must agree with [claimed] if one was given).
+     */
+    private suspend fun tokenDecimals(token: String, chainId: Int, claimed: Int?): Erc20Check.Verdict {
+        val address = token.trim()
+        if (address.lowercase() in NATIVE_ADDRESSES) {
+            return Erc20Check.Verdict.Ok(AgentWalletChains.NATIVE_TOKENS[chainId]?.decimals ?: 18)
+        }
+        AgentWalletChains.resolveDecimalsByAddress(address, chainId)?.let { return Erc20Check.Verdict.Ok(it) }
+        if (!EthAddress.isWellFormed(address)) {
+            return Erc20Check.Verdict.Refused("'$token' is not a contract address (0x + 40 hex characters).")
+        }
+        val rpc = chainIdToRpc(chainId) ?: return Erc20Check.Verdict.Refused("Unsupported chain")
+        val onChain = withContext(Dispatchers.IO) { Erc20Check.read(rpc, address) }
+        return Erc20Check.verdict(address, AgentWalletChains.chainDisplayName(chainId), onChain, claimed)
     }
 
     // ── ContentProvider query ─────────────────────────────────────────────

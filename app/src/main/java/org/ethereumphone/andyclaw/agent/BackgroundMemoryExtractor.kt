@@ -32,6 +32,7 @@ import org.ethereumphone.andyclaw.memory.model.MemoryType
  * - Coalesced execution: stashes context if already running, runs trailing after completion
  * - Mutual exclusion with main agent: skips if main agent already wrote memories this turn
  * - Skip for local models (too small for quality extraction)
+ * - Reads only what the user and the assistant said ([extractionInput]), never a tool's result
  */
 class BackgroundMemoryExtractor(
     private val client: LlmClient,
@@ -43,6 +44,33 @@ class BackgroundMemoryExtractor(
         private const val EXTRACTION_MAX_TOKENS = 2048
         /** Minimum new messages required before extraction attempt. */
         private const val MIN_NEW_MESSAGES = 2
+
+        /**
+         * The conversation as the extractor may see it: the text the user wrote and the text the
+         * assistant wrote, nothing a tool returned. What this call stores comes back in every later
+         * prompt as a USER or FEEDBACK memory — the owner's own words, as far as the model can
+         * tell — so a page or a message that said "the user always wants payments sent to 0x…"
+         * must not reach it. The model's own tool calls go too: their inputs are built from what
+         * the tools returned.
+         *
+         * One message out for every message in, so "the last N messages" in the prompt still
+         * points at the same ones; a message left with no text says so rather than vanishing.
+         * The in-app chat already hands over text only; this holds whoever calls it next.
+         */
+        internal fun extractionInput(history: List<Message>): List<Message> = history.map { msg ->
+            when (val c = msg.content) {
+                is MessageContent.Text -> msg
+                is MessageContent.Blocks -> {
+                    val text = c.blocks.filterIsInstance<ContentBlock.TextBlock>()
+                    Message(
+                        msg.role,
+                        MessageContent.Blocks(text.ifEmpty { listOf(ContentBlock.TextBlock(OMITTED)) }),
+                    )
+                }
+            }
+        }
+
+        private const val OMITTED = "[tool activity omitted]"
     }
 
     private val json = Json { ignoreUnknownKeys = true; isLenient = true }
@@ -105,7 +133,7 @@ class BackgroundMemoryExtractor(
                 model = modelId,
                 maxTokens = EXTRACTION_MAX_TOKENS,
                 system = ExtractionPrompts.EXTRACTION_SYSTEM_PROMPT,
-                messages = history + listOf(Message.user(userPrompt)),
+                messages = extractionInput(history) + listOf(Message.user(userPrompt)),
                 stream = false,
                 temperature = 0.1f,
             )

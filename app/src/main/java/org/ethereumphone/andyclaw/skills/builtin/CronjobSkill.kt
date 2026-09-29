@@ -37,6 +37,7 @@ class CronjobSkill(private val context: Context) : AndyClawSkill {
         private const val PREFS_NAME = "andyclaw_cronjobs"
         private const val ACTION_CRONJOB_SCHEDULE = "org.ethereumphone.andyclaw.CRONJOB_SCHEDULE"
         private const val ACTION_CRONJOB_CANCEL = "org.ethereumphone.andyclaw.CRONJOB_CANCEL"
+        private const val OS_PACKAGE = "android"
         private const val MIN_INTERVAL_MINUTES = 5L
         private const val MAX_INTERVAL_MINUTES = 7 * 24 * 60L // 7 days
 
@@ -143,7 +144,9 @@ class CronjobSkill(private val context: Context) : AndyClawSkill {
         }
 
         val now = System.currentTimeMillis()
-        val cronjobId = (now % Int.MAX_VALUE).toInt()
+        val cronjobId = TriggerIds.next(now) { id ->
+            context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).contains(id.toString())
+        }
         val intervalMs = intervalMinutes * 60 * 1000L
 
         return if (OsCapabilities.hasPrivilegedAccess) {
@@ -168,6 +171,10 @@ class CronjobSkill(private val context: Context) : AndyClawSkill {
                 putExtra("reason", reason)
                 putExtra("label", label)
             }
+            // Explicit: the receiver is AndyClawHeartbeatService in system_server (package
+            // "android"). Implicit, any installed app could register for the action and read
+            // every reminder text and cron prompt.
+            intent.setPackage(OS_PACKAGE)
             context.sendBroadcast(intent)
             Log.i(TAG, "Sent OS cronjob broadcast: id=$cronjobId interval=${intervalMinutes}min")
 
@@ -243,6 +250,10 @@ class CronjobSkill(private val context: Context) : AndyClawSkill {
             val intent = Intent(ACTION_CRONJOB_CANCEL).apply {
                 putExtra("cronjob_id", cronjobId)
             }
+            // Explicit: the receiver is AndyClawHeartbeatService in system_server (package
+            // "android"). Implicit, any installed app could register for the action and read
+            // every reminder text and cron prompt.
+            intent.setPackage(OS_PACKAGE)
             context.sendBroadcast(intent)
             Log.i(TAG, "Sent OS cronjob cancel broadcast: id=$cronjobId")
 

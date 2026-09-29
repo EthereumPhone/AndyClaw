@@ -101,11 +101,22 @@ class JevTurnRouter(
         if (AgentDisplayLease.isHeld()) return
         val svc = AgentDisplayBinder.serviceOrNull() ?: return
         val claimsBefore = AgentDisplayLease.claims
-        if (svc.displayId < 0 || AgentDisplayCapabilities.latched()) {
-            svc.createAgentDisplay(AppAutopilotDevice.WIDTH, AppAutopilotDevice.HEIGHT, AppAutopilotDevice.DPI)
+        // The isHeld() check above is only a hint: a run could claim the display between it and
+        // the launch, and then have this app launched over its task. parkIfUnclaimed is the
+        // lease's one "only while nobody has claimed since" section — it refuses if a claim came
+        // in, and holds any claim arriving meanwhile until the block is done — so the create and
+        // the launch run inside it, although nothing is parked here.
+        val launched = AgentDisplayLease.parkIfUnclaimed(claimsBefore) {
+            if (svc.displayId < 0 || AgentDisplayCapabilities.latched()) {
+                svc.createAgentDisplay(AppAutopilotDevice.WIDTH, AppAutopilotDevice.HEIGHT, AppAutopilotDevice.DPI)
+            }
+            AgentDisplayAccessibilityService.watchedDisplayId = svc.displayId
+            svc.launchApp(packageName)
         }
-        AgentDisplayAccessibilityService.watchedDisplayId = svc.displayId
-        svc.launchApp(packageName)
+        if (!launched) {
+            Log.i(TAG, "prelaunch of $packageName skipped: a run claimed the display")
+            return
+        }
         Log.i(TAG, "prelaunched $packageName")
         delay(UNUSED_DISPLAY_MS)
         // Nothing used it: the turn did not need the app after all. Park the display so the app

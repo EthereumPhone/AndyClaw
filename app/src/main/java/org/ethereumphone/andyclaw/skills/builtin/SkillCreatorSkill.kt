@@ -10,6 +10,7 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
 import kotlinx.serialization.json.putJsonObject
+import org.ethereumphone.andyclaw.extensions.clawhub.SafePaths
 import org.ethereumphone.andyclaw.skills.AndyClawSkill
 import org.ethereumphone.andyclaw.skills.NativeSkillRegistry
 import org.ethereumphone.andyclaw.skills.Skill
@@ -46,6 +47,33 @@ class SkillCreatorSkill(
         private const val TAG = "SkillCreatorSkill"
         private val SLUG_REGEX = Regex("^[a-z0-9][a-z0-9-]*[a-z0-9]$|^[a-z0-9]$")
         private val DATE_FMT = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.US)
+
+        /**
+         * The directory of the AI skill [slug] under [aiSkillsDir], or null unless
+         * [slug] is one `skill_create` could have made (it has always enforced
+         * [SLUG_REGEX] and 64 chars) and it resolves directly under [aiSkillsDir].
+         * Write, delete and read used to take the slug as given: `..` is
+         * `filesDir`, so `skill_delete` wiped the sandbox and `skill_write_file`
+         * wrote AndyClaw's own state past `FileSystemSkill.PROTECTED`.
+         */
+        internal fun aiSkillDir(aiSkillsDir: File, slug: String): File? {
+            if (slug.length > 64 || !SLUG_REGEX.matches(slug)) return null
+            return SafePaths.childOf(aiSkillsDir, slug)
+        }
+
+        /**
+         * Where `skill_write_file` may put [filePath] inside [skillDir]: strictly
+         * inside it after canonicalisation (so a symlink or `..` can't leave it), and
+         * never SKILL.md itself. Null means refuse.
+         */
+        internal fun skillFileTarget(skillDir: File, filePath: String): File? {
+            val normalized = filePath.replace("\\", "/")
+            if (normalized.startsWith("/") || normalized.split('/').any { it == ".." }) return null
+            if (normalized == "SKILL.md") return null
+            val target = SafePaths.resolveInside(skillDir, normalized) ?: return null
+            if (target.canonicalFile == File(skillDir, "SKILL.md").canonicalFile) return null
+            return target
+        }
 
         /**
          * Create instruction-only adapters for all AI-created skills on disk.
@@ -243,7 +271,8 @@ class SkillCreatorSkill(
         }
 
         // Check for conflicts with existing AI skills
-        val targetDir = File(aiSkillsDir, slug)
+        val targetDir = aiSkillDir(aiSkillsDir, slug)
+            ?: return SkillResult.Error("Invalid slug '$slug'.")
         if (targetDir.isDirectory) {
             return SkillResult.Error(
                 "An AI skill with slug '$slug' already exists. " +
@@ -308,8 +337,8 @@ class SkillCreatorSkill(
             ?: return SkillResult.Error("Missing required parameter: content")
         val executable = params["executable"]?.jsonPrimitive?.content?.toBooleanStrictOrNull() ?: false
 
-        val skillDir = File(aiSkillsDir, slug)
-        if (!skillDir.isDirectory) {
+        val skillDir = aiSkillDir(aiSkillsDir, slug)
+        if (skillDir == null || !skillDir.isDirectory) {
             return SkillResult.Error("AI skill '$slug' does not exist. Create it first with skill_create.")
         }
 
@@ -324,8 +353,12 @@ class SkillCreatorSkill(
             return SkillResult.Error("Cannot overwrite SKILL.md via skill_write_file. Use skill_delete + skill_create to replace.")
         }
 
+        // The string checks above can't see a symlink out of the skill's directory
+        // (or onto its SKILL.md); the canonical one can.
+        val target = skillFileTarget(skillDir, normalizedPath)
+            ?: return SkillResult.Error("Invalid file path: must stay inside the skill's directory")
+
         return try {
-            val target = File(skillDir, normalizedPath)
             target.parentFile?.mkdirs()
             target.writeText(content)
             if (executable) {
@@ -404,9 +437,13 @@ class SkillCreatorSkill(
 
         // Try as a ClawHub skill
         val clawHubSlug = skillId.removePrefix("clawhub:")
-        val clawHubDir = File(clawHubSkillsDir, clawHubSlug)
-        val clawHubFile = File(clawHubDir, "SKILL.md")
-        if (clawHubFile.isFile) {
+        val clawHubDir = if (SafePaths.isValidClawHubSlug(clawHubSlug)) {
+            SafePaths.childOf(clawHubSkillsDir, clawHubSlug)
+        } else {
+            null
+        }
+        val clawHubFile = clawHubDir?.let { File(it, "SKILL.md") }
+        if (clawHubFile != null && clawHubFile.isFile) {
             return SkillResult.Success(
                 "# ClawHub Skill: $clawHubSlug\n\n" +
                     "```markdown\n${clawHubFile.readText()}\n```"
@@ -415,9 +452,8 @@ class SkillCreatorSkill(
 
         // Try as an AI-created skill
         val aiSlug = skillId.removePrefix("ai:")
-        val aiDir = File(aiSkillsDir, aiSlug)
-        val aiFile = File(aiDir, "SKILL.md")
-        if (aiFile.isFile) {
+        val aiFile = aiSkillDir(aiSkillsDir, aiSlug)?.let { File(it, "SKILL.md") }
+        if (aiFile != null && aiFile.isFile) {
             return SkillResult.Success(
                 "# AI-Created Skill: $aiSlug\n\n" +
                     "```markdown\n${aiFile.readText()}\n```"
@@ -481,8 +517,8 @@ class SkillCreatorSkill(
         val slug = params["slug"]?.jsonPrimitive?.content
             ?: return SkillResult.Error("Missing required parameter: slug")
 
-        val targetDir = File(aiSkillsDir, slug)
-        if (!targetDir.isDirectory) {
+        val targetDir = aiSkillDir(aiSkillsDir, slug)
+        if (targetDir == null || !targetDir.isDirectory) {
             return SkillResult.Error("AI skill '$slug' not found. Use skill_list_created to see available skills.")
         }
 

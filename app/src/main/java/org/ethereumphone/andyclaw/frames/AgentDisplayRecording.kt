@@ -104,11 +104,16 @@ class AgentDisplayRecording(
         if (active === a) active = null
         a.job?.cancel()
         val ids = runCatching { a.session.close() }.getOrDefault(emptyList())
-        if (ids.isEmpty()) return
+        // The store's own caps (frames, bytes) are what stops a recording short most often;
+        // the recorder only knows its own.
+        val truncated = a.recorder.truncated || a.session.truncated
+        // A run with nothing kept still gets a row when something kept it from being recorded,
+        // so a replay that shows nothing says why instead of looking like nothing happened.
+        if (ids.isEmpty() && !truncated && a.recorder.skippedPrivate == 0) return
         val sink = ledger() ?: return
         val note = buildString {
             append("${ids.size} frame(s)")
-            if (a.recorder.truncated) append("; the recording hit its cap")
+            if (truncated) append("; the recording hit its cap")
             if (a.recorder.skippedPrivate > 0) append("; a private app, or a screen that could not be checked, was not recorded")
         }
         runCatching {

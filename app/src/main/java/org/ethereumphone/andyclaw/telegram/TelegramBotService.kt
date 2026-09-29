@@ -33,7 +33,8 @@ class TelegramBotService(
     private val runner = TelegramAgentRunner(app, client)
 
     private var pollingJob: Job? = null
-    private val chatMutexes = mutableMapOf<Long, Mutex>()
+    // Each update is handled on its own coroutine, so this map is reached concurrently.
+    private val chatMutexes = java.util.concurrent.ConcurrentHashMap<Long, Mutex>()
 
     val isRunning: Boolean get() = pollingJob?.isActive == true
 
@@ -109,6 +110,15 @@ class TelegramBotService(
         if (text == "/clear") {
             runner.clearHistory(chatId)
             client.sendMessage(chatId, "Conversation history cleared.")
+            return
+        }
+
+        // Anyone but the owner writing in a loop must not become a stream of paid runs — the
+        // same budget the ethOS path (HeartbeatBindingService) has always applied.
+        if (!TelegramOwner.isOwner(app.securePrefs.telegramOwnerChatId.value, chatId) &&
+            !app.triggerBudget.tryAcquire("telegram:$chatId")
+        ) {
+            Log.w(TAG, "Telegram chat $chatId is over its message budget; not running the agent")
             return
         }
 

@@ -19,6 +19,9 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import org.ethereumphone.andyclaw.ExecutionEngine.Provenance
+import org.ethereumphone.andyclaw.ExecutionEngine.currentProvenance
+import org.ethereumphone.andyclaw.ExecutionEngine.rethrowIfCancelled
 import org.ethereumphone.andyclaw.skills.AndyClawSkill
 import org.ethereumphone.andyclaw.skills.SkillManifest
 import org.ethereumphone.andyclaw.skills.SkillResult
@@ -35,6 +38,7 @@ class GmailSkill(
         private const val TAG = "GmailSkill"
         private const val BASE_URL = "https://gmail.googleapis.com/gmail/v1/users/me"
         private val JSON_TYPE = "application/json".toMediaType()
+        private const val MAX_BODY_CHARS = 20_000
     }
 
     override val id = "gmail"
@@ -150,6 +154,7 @@ class GmailSkill(
                 else -> SkillResult.Error("Unknown tool: $tool")
             }
         } catch (e: Exception) {
+            rethrowIfCancelled(e)
             SkillResult.Error("Gmail error: ${e.message}")
         }
     }
@@ -286,6 +291,7 @@ class GmailSkill(
                 sb.appendLine("Preview: $snippet")
                 sb.appendLine()
             } catch (e: Exception) {
+                rethrowIfCancelled(e)
                 Log.w(TAG, "Failed to fetch metadata for message $msgId: ${e.message}")
             }
         }
@@ -313,7 +319,11 @@ class GmailSkill(
 
         val msgJson = kotlinx.serialization.json.Json.parseToJsonElement(responseBody).jsonObject
         val headers = msgJson["payload"]?.jsonObject?.get("headers")?.jsonArray
-        val bodyText = extractBodyText(msgJson["payload"]?.jsonObject)
+        // Capped: a newsletter or a long thread quote ran to hundreds of KB, all of it prompt.
+        val fullBody = extractBodyText(msgJson["payload"]?.jsonObject)
+        val bodyText = if (fullBody.length > MAX_BODY_CHARS) {
+            fullBody.take(MAX_BODY_CHARS) + "\n\n[Body truncated at $MAX_BODY_CHARS of ${fullBody.length} characters]"
+        } else fullBody
 
         var subject = ""
         var from = ""
@@ -355,7 +365,7 @@ class GmailSkill(
 
         // Fetch original message for threading headers
         val origRequest = Request.Builder()
-            .url("$BASE_URL/messages/$messageId?format=metadata&metadataHeaders=Subject&metadataHeaders=From&metadataHeaders=To&metadataHeaders=Message-ID")
+            .url("$BASE_URL/messages/$messageId?format=metadata&metadataHeaders=Subject&metadataHeaders=From&metadataHeaders=To&metadataHeaders=Message-ID&metadataHeaders=Reply-To")
             .addHeader("Authorization", "Bearer $token")
             .get()
             .build()
@@ -372,6 +382,7 @@ class GmailSkill(
         val headers = origJson["payload"]?.jsonObject?.get("headers")?.jsonArray
 
         var origFrom = ""
+        var origReplyTo = ""
         var origSubject = ""
         var origMessageId = ""
 
@@ -380,12 +391,20 @@ class GmailSkill(
             val headerValue = header.jsonObject["value"]?.jsonPrimitive?.contentOrNull ?: ""
             when (headerName.lowercase()) {
                 "from" -> origFrom = headerValue
+                "reply-to" -> origReplyTo = headerValue
                 "subject" -> origSubject = headerValue
                 "message-id" -> origMessageId = headerValue
             }
         }
 
-        val safeFrom = sanitizeHeader(origFrom)
+        // A reply goes where the sender asked replies to go (RFC 5322 §3.6.2) — mailing lists
+        // and no-reply senders set Reply-To, and answering From there reaches nobody. Not for an
+        // UNTRUSTED run, though: ProvenanceGate lets a stranger's run reply only "in thread", on
+        // the understanding that the reply reaches the sender, and Reply-To is a header the
+        // sender writes — honouring it there would let one email aim the reply at anyone.
+        // The result names the address actually used.
+        val honourReplyTo = currentProvenance() != Provenance.UNTRUSTED
+        val safeFrom = sanitizeHeader(if (honourReplyTo) origReplyTo.ifBlank { origFrom } else origFrom)
         val safeSubject = sanitizeHeader(origSubject)
         val safeMessageId = sanitizeHeader(origMessageId)
         val replySubject = if (safeSubject.startsWith("Re:", ignoreCase = true)) safeSubject else "Re: $safeSubject"
@@ -423,7 +442,7 @@ class GmailSkill(
             return@withContext SkillResult.Error("Failed to send reply (HTTP ${sendResponse.code}): $sendResponseBody")
         }
 
-        SkillResult.Success("Reply sent to $origFrom in thread $threadId")
+        SkillResult.Success("Reply sent to $safeFrom in thread $threadId")
     }
 
     private fun extractBodyText(payload: JsonObject?): String {
@@ -432,11 +451,14 @@ class GmailSkill(
         // Check for direct body data
         val bodyData = payload["body"]?.jsonObject?.get("data")?.jsonPrimitive?.contentOrNull
         if (!bodyData.isNullOrBlank()) {
-            return try {
+            val text = try {
                 String(Base64.decode(bodyData, Base64.URL_SAFE), Charsets.UTF_8)
             } catch (e: Exception) {
                 bodyData
             }
+            // A single-part HTML mail used to come back as raw markup.
+            val mimeType = payload["mimeType"]?.jsonPrimitive?.contentOrNull ?: ""
+            return if (mimeType.equals("text/html", ignoreCase = true)) BoundedText.htmlToText(text) else text
         }
 
         // Check parts recursively
@@ -468,7 +490,7 @@ class GmailSkill(
                 if (!data.isNullOrBlank()) {
                     return try {
                         val html = String(Base64.decode(data, Base64.URL_SAFE), Charsets.UTF_8)
-                        html.replace(Regex("<[^>]+>"), "").replace(Regex("\\s+"), " ").trim()
+                        BoundedText.htmlToText(html)
                     } catch (e: Exception) {
                         data
                     }

@@ -1,12 +1,13 @@
 package org.ethereumphone.andyclaw.skills.builtin
 
+import org.ethereumphone.andyclaw.ExecutionEngine.rethrowIfCancelled
 import android.util.Log
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.float
-import kotlinx.serialization.json.int
+import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
@@ -161,7 +162,8 @@ class MemorySkill(
     private suspend fun executeSearch(params: JsonObject): SkillResult {
         val query = params["query"]?.jsonPrimitive?.content
             ?: return SkillResult.Error("Missing required parameter: query")
-        val maxResults = params["max_results"]?.jsonPrimitive?.int ?: 6
+        // Clamped: the model picks these, and every hit lands in the prompt.
+        val maxResults = (params["max_results"]?.jsonPrimitive?.intOrNull ?: 6).coerceIn(1, 50)
         val tags = params["tags"]?.jsonArray?.map { it.jsonPrimitive.content }
 
         Log.d(TAG, "memory_search: query=\"$query\", maxResults=$maxResults, tags=$tags")
@@ -192,7 +194,7 @@ class MemorySkill(
                 Log.i(TAG, "memory_search: ${results.size} result(s) for \"$query\"")
                 val formatted = results.mapIndexed { i, r ->
                     // Fetch full entry for type and age
-                    val entry = try { memoryManager.get(r.memoryId) } catch (_: Exception) { null }
+                    val entry = try { memoryManager.get(r.memoryId) } catch (e: Exception) { rethrowIfCancelled(e); null }
                     val typeLabel = entry?.type?.name ?: r.source.name
                     val age = entry?.let { MemoryPromptBuilder.daysSince(it.updatedAt) } ?: 0
                     val ageStr = when (age) {
@@ -214,13 +216,14 @@ class MemorySkill(
                 SkillResult.Success("Found ${results.size} relevant memories:\n\n$formatted")
             }
         } catch (e: Exception) {
+            rethrowIfCancelled(e)
             Log.e(TAG, "memory_search failed: ${e.message}", e)
             SkillResult.Error("Memory search failed: ${e.message}")
         }
     }
 
     private suspend fun executeList(params: JsonObject): SkillResult {
-        val limit = params["limit"]?.jsonPrimitive?.int ?: 20
+        val limit = (params["limit"]?.jsonPrimitive?.intOrNull ?: 20).coerceIn(1, 100)
         val sourceStr = params["source"]?.jsonPrimitive?.content
         val source = sourceStr?.let {
             runCatching { MemorySource.valueOf(it.uppercase()) }.getOrNull()
@@ -258,6 +261,7 @@ class MemorySkill(
                 SkillResult.Success("${entries.size} stored memory/memories:\n\n$formatted")
             }
         } catch (e: Exception) {
+            rethrowIfCancelled(e)
             Log.e(TAG, "memory_list failed: ${e.message}", e)
             SkillResult.Error("Failed to list memories: ${e.message}")
         }
@@ -284,6 +288,7 @@ class MemorySkill(
             Log.i(TAG, "memory_store: stored id=${entry.id}")
             SkillResult.Success("Memory stored (id: ${entry.id}). Tags: ${tags.ifEmpty { listOf("none") }.joinToString(", ")}")
         } catch (e: Exception) {
+            rethrowIfCancelled(e)
             Log.e(TAG, "memory_store failed: ${e.message}", e)
             SkillResult.Error("Failed to store memory: ${e.message}")
         }
@@ -306,6 +311,7 @@ class MemorySkill(
                 SkillResult.Success("Memory deleted: $memoryId")
             }
         } catch (e: Exception) {
+            rethrowIfCancelled(e)
             Log.e(TAG, "memory_delete failed: ${e.message}", e)
             SkillResult.Error("Failed to delete memory: ${e.message}")
         }

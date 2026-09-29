@@ -124,6 +124,61 @@ class LeakDetector(
             return sb.toString()
         }
 
+        /**
+         * A run of this many recovery-phrase words is treated as a phrase. 12 is the shortest
+         * BIP-39 phrase; the longer ones (15/18/21/24) contain a run of 12.
+         */
+        const val MIN_PHRASE_WORDS = 12
+
+        /**
+         * 32 bytes of hex, with or without `0x`: the shape of a raw secp256k1 private key. Bounded
+         * by non-hex rather than `\b`, because there is no word boundary between the `x` of `0x`
+         * and the digits — `\b[a-fA-F0-9]{64}\b` never saw a key written the way wallets print one.
+         * Longer hex (calldata, a signature) is not matched.
+         */
+        private val RAW_32_BYTE_HEX = Regex("""(?<![0-9A-Fa-f])(?:0[xX])?[0-9A-Fa-f]{64}(?![0-9A-Fa-f])""")
+        private val WORD = Regex("[A-Za-z]+")
+        /** What may sit between two words of a pasted phrase: spaces, line breaks, "1." numbering. */
+        private val BETWEEN_PHRASE_WORDS = Regex("""[\s\d.,;:()\-]+""")
+        /** A JSON-escaped line break or tab, so `abandon\nability` reads as two words. */
+        private val JSON_WHITESPACE_ESCAPE = Regex("""\\[nrt]""")
+
+        /**
+         * True when [text] carries what can sign for a wallet: 32 bytes of hex or a BIP-39
+         * recovery phrase. For places that must never *write a secret down* — the pending-approval
+         * queue — not for scanning output.
+         *
+         * Deliberately not one of [defaultPatterns]. A transaction hash is 32 bytes of hex too, and
+         * the agent's own sends return one, so as a BLOCK pattern this would refuse every tool
+         * result that mentions a transaction. Where it is used the cost of a false positive is
+         * small and bounded: a card that can be declined but not approved.
+         */
+        fun holdsKeyMaterial(text: String): Boolean =
+            RAW_32_BYTE_HEX.containsMatchIn(text) || containsRecoveryPhrase(text)
+
+        /**
+         * [MIN_PHRASE_WORDS] or more words in a row, every one of them from the BIP-39 English
+         * list. Checked against the list, not the words' shape: most English sentences have a word
+         * the list lacks ("the", "from", "could", "hey") within a dozen, a phrase has none.
+         */
+        fun containsRecoveryPhrase(text: String): Boolean {
+            val t = text.replace(JSON_WHITESPACE_ESCAPE, " ")
+            var run = 0
+            var lastEnd = -1
+            for (m in WORD.findAll(t)) {
+                val inList = m.value.lowercase() in Bip39English.WORDS
+                val joined = lastEnd >= 0 && BETWEEN_PHRASE_WORDS.matches(t.substring(lastEnd, m.range.first))
+                run = when {
+                    !inList -> 0
+                    joined && run > 0 -> run + 1
+                    else -> 1
+                }
+                if (run >= MIN_PHRASE_WORDS) return true
+                lastEnd = m.range.last + 1
+            }
+            return false
+        }
+
         fun defaultPatterns(): List<LeakPattern> = listOf(
             LeakPattern(
                 name = "openai_api_key",

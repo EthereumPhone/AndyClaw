@@ -46,8 +46,9 @@ engine need (`ToolEffect`, `Provenance`) belongs in `:AndyClaw`; a table of conc
 there. `local.properties` carries the API keys (`ALCHEMY_API`, `BUNDLER_API`, `ZEROX_API_KEY`,
 `BANKR_API`, `VENICE_API`) and the release signing config; it is not in git.
 
-`OpenRouterModelRegistryTest` (27 tests) and one `SmartRouterTest` case fail on `main` and have
-for a while — they are not yours. Diff the failure list, don't count it.
+Both suites are green. `:app` tests get the real `org.json` (`testImplementation`), because the
+`android.jar` stub returns null under `isReturnDefaultValues` — a test that parses JSON against the
+stub fails with an NPE that looks like a product bug.
 
 ## 3. The frozen surfaces
 
@@ -139,6 +140,15 @@ New background trigger? It states its `Provenance` explicitly. The defaults are 
   call needs approval (`ProvenanceGate.taintedTrustedRunNeedsApproval`), and the headless runner
   queues it as a card rather than approving it. Messages to the owner stay open. `USER` runs are
   not affected: somebody is watching them.
+- **The Telegram owner is the code-verified chat id and nothing else** (`TelegramOwner.isOwner`,
+  `securePrefs.telegramOwnerChatId`; 0 means nobody). `TelegramChatStore`'s first chat used to be
+  the owner, so a stranger who wrote first got the owner's audience, memory and Approve buttons.
+  Phones set up before the verified id existed are strangers until they redo setup — by design.
+- **Standing instructions are written only by an untainted owner.** `HEARTBEAT.md`, `soul.md` and
+  `user_story.md` are fed to every later TRUSTED run, so `write_file` to them needs a `USER` run
+  that has read no third-party text, and `update_soul` is blocked in a tainted run
+  (`ProvenanceGate.standingInstructionVerdict`) — a block, not an approval, because the launcher
+  approves everything.
 - **The agent's file tools don't touch AndyClaw's own state** (`FileSystemSkill.PROTECTED`: the
   job provenance store, the approval queue and outcomes, `telegram_chats.json`, `flows/`,
   `session_frames/`). Rewriting any of them was a way to hand a stranger the owner's authority.

@@ -8,6 +8,7 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
 import kotlinx.serialization.json.putJsonObject
+import org.ethereumphone.andyclaw.extensions.clawhub.SafePaths
 import org.ethereumphone.andyclaw.skills.AndyClawSkill
 import org.ethereumphone.andyclaw.skills.NativeSkillRegistry
 import org.ethereumphone.andyclaw.skills.Skill
@@ -378,11 +379,12 @@ class SkillRefinementSkill(
     // ── Helpers ──────────────────────────────────────────────────────────
 
     private fun findSkillDir(slug: String): File? {
-        val clawHub = File(clawHubSkillsDir, slug)
-        if (clawHub.isDirectory && File(clawHub, "SKILL.md").isFile) return clawHub
+        // A slug of ".." would otherwise find filesDir's own SKILL.md-bearing parent.
+        val clawHub = SafePaths.childOf(clawHubSkillsDir, slug)
+        if (clawHub != null && clawHub.isDirectory && File(clawHub, "SKILL.md").isFile) return clawHub
 
-        val ai = File(aiSkillsDir, slug)
-        if (ai.isDirectory && File(ai, "SKILL.md").isFile) return ai
+        val ai = SafePaths.childOf(aiSkillsDir, slug)
+        if (ai != null && ai.isDirectory && File(ai, "SKILL.md").isFile) return ai
 
         return null
     }

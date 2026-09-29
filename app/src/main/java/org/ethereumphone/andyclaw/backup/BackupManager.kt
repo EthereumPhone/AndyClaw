@@ -8,6 +8,7 @@ import kotlinx.coroutines.withContext
 import org.ethereumphone.andyclaw.NodeApp
 import org.ethereumphone.andyclaw.agenttx.db.AgentTxDatabase
 import org.ethereumphone.andyclaw.agenttx.db.entity.AgentTxEntity
+import org.ethereumphone.andyclaw.extensions.clawhub.SafePaths
 import org.ethereumphone.andyclaw.memory.db.MemoryDatabase
 import org.ethereumphone.andyclaw.memory.db.entity.MemoryChunkEntity
 import org.ethereumphone.andyclaw.memory.db.entity.MemoryEntryEntity
@@ -59,6 +60,16 @@ class BackupManager(private val context: Context) {
         private const val GCM_TAG_BITS = 128
         private const val PBKDF2_ITERATIONS = 210_000
         private const val KEY_LENGTH_BITS = 256
+
+        /**
+         * Where a skill-dir archive entry [relativePath] may be restored under [dir]:
+         * strictly inside it after canonicalisation, or null to skip the entry. A
+         * directory entry (trailing `/`) or an empty name has nothing to write.
+         */
+        internal fun restoreTarget(dir: File, relativePath: String): File? {
+            if (relativePath.isEmpty() || relativePath.endsWith("/")) return null
+            return SafePaths.resolveInside(dir, relativePath)
+        }
     }
 
     private val app get() = context.applicationContext as NodeApp
@@ -599,8 +610,16 @@ class BackupManager(private val context: Context) {
         }
         for (i in 0 until arr.length()) {
             val obj = arr.getJSONObject(i)
+            val name = obj.getString("name")
+            // The name becomes a file name; the store refuses anything
+            // create_custom_tool could not have made. A backup is a file anyone can
+            // hand the user, so skip that one tool rather than fail the restore.
+            if (!org.ethereumphone.andyclaw.skills.customtools.CustomToolStore.isValidName(name)) {
+                Log.w(TAG, "Skipping custom tool with invalid name in backup")
+                continue
+            }
             val def = org.ethereumphone.andyclaw.skills.customtools.CustomToolDefinition(
-                name = obj.getString("name"),
+                name = name,
                 description = obj.getString("description"),
                 parameters = kotlinx.serialization.json.Json.parseToJsonElement(
                     obj.getString("parameters")
@@ -652,7 +671,13 @@ class BackupManager(private val context: Context) {
 
         for ((path, data) in skillEntries) {
             val relativePath = path.removePrefix(prefix)
-            val target = File(dir, relativePath)
+            // Zip-slip: an entry named `ai-skills/../trigger_provenance.json` used to
+            // be written wherever it resolved, AndyClaw's own state included.
+            val target = restoreTarget(dir, relativePath)
+            if (target == null) {
+                Log.w(TAG, "Skipping backup entry outside $prefix")
+                continue
+            }
             target.parentFile?.mkdirs()
             target.writeBytes(data)
         }

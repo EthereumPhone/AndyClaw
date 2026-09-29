@@ -8,6 +8,7 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonPrimitive
+import org.ethereumphone.andyclaw.agentwallet.EthAddress
 import org.ethereumphone.andyclaw.skills.AndyClawSkill
 import org.ethereumphone.andyclaw.skills.SkillManifest
 import org.ethereumphone.andyclaw.skills.SkillResult
@@ -97,7 +98,13 @@ class ENSSkill : AndyClawSkill {
     }
 
     private fun resolveForward(ens: ENS, ensName: String): SkillResult {
-        val name = ensName.lowercase()
+        // Same rule as the send screen: plain a-z, 0-9 and hyphens only. A look-alike Unicode
+        // name renders as a familiar one and resolves to somebody else's address.
+        val name = EthAddress.normalizeEnsName(ensName)
+            ?: return SkillResult.Error(
+                "Refusing to resolve '$ensName': only plain ASCII .eth names (a-z, 0-9, '-') are " +
+                    "resolved, since look-alike characters can impersonate another name."
+            )
         if (!ENSName(name).isPotentialENSDomain()) {
             return SkillResult.Error("Invalid ENS name format: $ensName")
         }
@@ -130,11 +137,29 @@ class ENSSkill : AndyClawSkill {
             return SkillResult.Error("Failed to reverse resolve address '$ethereumAddress': ${e.message}")
         }
 
-        return if (ensName != null) {
-            Log.d(TAG, "Reverse resolved $ethereumAddress -> $ensName")
-            SkillResult.Success("Address '$ethereumAddress' resolves to ENS name: $ensName")
+        if (ensName == null) {
+            return SkillResult.Success("No ENS name found for address: $ethereumAddress")
+        }
+
+        // Anyone can set their reverse record to any name, "vitalik.eth" included. The name
+        // only belongs to this address if it resolves back to it; otherwise it is a claim.
+        val plainName = EthAddress.normalizeEnsName(ensName)
+        val forward = plainName?.let {
+            try {
+                ens.getAddress(ENSName(it))
+            } catch (e: Exception) {
+                Log.w(TAG, "Forward check of $it failed: ${e.message}")
+                null
+            }
+        }
+        return if (forward != null && forward.hex.equals(ethereumAddress, ignoreCase = true)) {
+            Log.d(TAG, "Reverse resolved $ethereumAddress -> $plainName")
+            SkillResult.Success("Address '$ethereumAddress' resolves to ENS name: $plainName")
         } else {
-            SkillResult.Success("No ENS name found for address: $ethereumAddress")
+            SkillResult.Success(
+                "No verified ENS name for address: $ethereumAddress (its reverse record does not " +
+                    "resolve back to it, so the name is not reported)"
+            )
         }
     }
 }

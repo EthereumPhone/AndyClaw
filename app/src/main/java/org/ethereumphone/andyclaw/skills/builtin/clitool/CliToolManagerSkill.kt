@@ -12,6 +12,7 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
 import kotlinx.serialization.json.putJsonObject
+import org.ethereumphone.andyclaw.extensions.clawhub.SafePaths
 import org.ethereumphone.andyclaw.skills.AndyClawSkill
 import org.ethereumphone.andyclaw.skills.SkillManifest
 import org.ethereumphone.andyclaw.skills.SkillResult
@@ -37,6 +38,45 @@ class CliToolManagerSkill(
         private const val FETCH_TIMEOUT_MS = 120_000L
         private const val RUN_TIMEOUT_DEFAULT = 30_000L
         private const val RUN_TIMEOUT_MAX = 300_000L
+
+        /** A command name as `which`/`--help` get it: one word, not an option. */
+        private val BINARY_NAME_REGEX = Regex("^[A-Za-z0-9_+][A-Za-z0-9._+-]{0,127}$")
+
+        /** A POSIX environment variable name; it is spliced into `export K='v'`. */
+        private val ENV_KEY_REGEX = Regex("^[A-Za-z_][A-Za-z0-9_]{0,127}$")
+
+        internal fun isValidBinaryName(name: String): Boolean = BINARY_NAME_REGEX.matches(name)
+        internal fun isValidEnvKey(key: String): Boolean = ENV_KEY_REGEX.matches(key)
+
+        /**
+         * A git URL or npm spec as the last argument of `git clone`/`npm pack`.
+         * It is quoted, so only a leading `-` (read as an option, e.g.
+         * `--upload-pack=…`) and control characters are left to refuse.
+         */
+        internal fun isValidSourceArg(value: String): Boolean =
+            value.isNotBlank() && !value.startsWith("-") && value.none { it.isISOControl() }
+
+        /** `export K='v' …; ` for the valid keys only; values are single-quote escaped. */
+        internal fun envPreamble(envVars: Map<String, String>): String {
+            val valid = envVars.filterKeys { isValidEnvKey(it) }
+            if (valid.isEmpty()) return ""
+            return "export " + valid.entries.joinToString(" ") { (k, v) ->
+                "$k=${SafePaths.shellQuote(v)}"
+            } + "; "
+        }
+
+        /**
+         * The path under [tmpDir] that a `find` output [line] names, relative to
+         * [tmpDir], or null if the line is not under it. The lines come from a
+         * cloned repo's file names, so they are hostile input.
+         */
+        internal fun relativeFoundPath(tmpDir: String, line: String): String? {
+            val trimmed = line.trim()
+            if (!trimmed.startsWith("$tmpDir/")) return null
+            val rel = trimmed.removePrefix("$tmpDir/")
+            if (rel.isEmpty() || rel.split('/').any { it == ".." }) return null
+            return rel
+        }
     }
 
     private val registry by lazy { CliToolRegistry(File(context.filesDir, CLI_TOOLS_DIR)) }
@@ -300,11 +340,29 @@ class CliToolManagerSkill(
             return SkillResult.Error("source_type must be 'git', 'npm', or 'local'")
         }
 
+        // The id names a directory under filesDir and a Termux temp dir; `..`
+        // made cli_tools_remove delete filesDir.
+        if (!CliToolRegistry.isValidNewId(id)) {
+            return SkillResult.Error(
+                "Invalid id '$id'. Use 1-64 lowercase letters, digits, '-' or '_', starting with a letter or digit."
+            )
+        }
+        if (sourceType != "local" && !isValidSourceArg(sourceValue)) {
+            return SkillResult.Error("Invalid source_value: must not start with '-' or contain control characters")
+        }
+
         val binaryName = params["binary_name"]?.jsonPrimitive?.contentOrNull
+            ?.takeIf { it.isNotBlank() }
+        if (binaryName != null && !isValidBinaryName(binaryName)) {
+            return SkillResult.Error("Invalid binary_name '$binaryName': must be a single command name")
+        }
         val installCommand = params["install_command"]?.jsonPrimitive?.contentOrNull
         val envVarKeys = params["env_var_keys"]?.jsonPrimitive?.contentOrNull
             ?.split(",")?.map { it.trim() }?.filter { it.isNotEmpty() }
             ?: emptyList()
+        envVarKeys.firstOrNull { !isValidEnvKey(it) }?.let {
+            return SkillResult.Error("Invalid environment variable name '$it'")
+        }
 
         val entry = CliToolEntry(
             id = id,
@@ -390,14 +448,18 @@ class CliToolManagerSkill(
         }
 
         // Fallback: try --help via Termux
-        if (entry.binaryName != null && runner.isTermuxInstalled()) {
+        // cli_tools_info runs without a prompt, so the stored binary name is quoted
+        // and, if it isn't a plain command name (entries from before validation),
+        // not run at all.
+        if (entry.binaryName != null && isValidBinaryName(entry.binaryName) && runner.isTermuxInstalled()) {
             Log.d(TAG, "No cached docs for '$id', falling back to --help")
-            val helpResult = runner.run("${entry.binaryName} --help 2>&1", timeoutMs = 15_000)
+            val helpResult = runner.run("${SafePaths.shellQuote(entry.binaryName)} --help 2>&1", timeoutMs = 15_000)
             if (helpResult.isSuccess && helpResult.stdout.isNotBlank()) {
                 // Cache the help output for next time
-                registry.saveSkillMd(id, "HELP.md", helpResult.stdout)
-                val updated = entry.copy(skillMdFiles = entry.skillMdFiles + "HELP.md")
-                registry.update(updated)
+                if (registry.saveSkillMd(id, "HELP.md", helpResult.stdout)) {
+                    val updated = entry.copy(skillMdFiles = entry.skillMdFiles + "HELP.md")
+                    registry.update(updated)
+                }
                 return SkillResult.Success("## ${entry.name} — --help output\n\n${helpResult.stdout}")
             }
         }
@@ -420,15 +482,24 @@ class CliToolManagerSkill(
             ?: return SkillResult.Error("No CLI tool registered with id '$id'.")
 
         val setKeys = mutableListOf<String>()
+        val rejected = mutableListOf<String>()
         for ((key, value) in envVarsJson) {
             val strValue = (value as? JsonPrimitive)?.contentOrNull
                 ?: continue
+            // The key is spliced unquoted into `export K='v'` by cli_tools_run.
+            if (!isValidEnvKey(key)) {
+                rejected.add(key)
+                continue
+            }
             configStore.setEnvVar(id, key, strValue)
             setKeys.add(key)
         }
 
         val allConfigured = configStore.isConfigured(id, entry.envVarKeys)
         val sb = StringBuilder("Configured ${setKeys.size} env var(s) for '${entry.name}': ${setKeys.joinToString()}\n")
+        if (rejected.isNotEmpty()) {
+            sb.appendLine("Ignored invalid variable name(s): ${rejected.joinToString()}")
+        }
         if (entry.envVarKeys.isNotEmpty()) {
             sb.appendLine(if (allConfigured) "All required variables are set." else {
                 val missing = entry.envVarKeys.filter { configStore.getEnvVar(id, it) == null }
@@ -472,8 +543,8 @@ class CliToolManagerSkill(
             registry.update(entry.copy(installedAt = System.currentTimeMillis()))
 
             // Verify binary is available
-            if (entry.binaryName != null) {
-                val which = runner.run("which ${entry.binaryName}", timeoutMs = 5_000)
+            if (entry.binaryName != null && isValidBinaryName(entry.binaryName)) {
+                val which = runner.run("which ${SafePaths.shellQuote(entry.binaryName)}", timeoutMs = 5_000)
                 if (which.isSuccess && which.stdout.isNotBlank()) {
                     sb.appendLine("Binary '${entry.binaryName}' found at: ${which.stdout.trim()}")
                 } else {
@@ -506,15 +577,7 @@ class CliToolManagerSkill(
         }
 
         // Build env var preamble
-        val envVars = configStore.getAllEnvVars(id)
-        val envPreamble = if (envVars.isNotEmpty()) {
-            envVars.entries.joinToString(" ") { (k, v) ->
-                // Shell-escape the value
-                "$k='${v.replace("'", "'\\''")}'"
-            } + " "
-        } else ""
-
-        val wrappedCommand = "export ${envPreamble}; $command"
+        val wrappedCommand = envPreamble(configStore.getAllEnvVars(id)) + command
         val effectiveTimeout = timeoutMs.coerceIn(1_000, RUN_TIMEOUT_MAX)
 
         val result = runner.run(wrappedCommand, timeoutMs = effectiveTimeout)
@@ -553,14 +616,20 @@ class CliToolManagerSkill(
             return "Termux is not installed (needed for git clone)."
         }
 
+        if (!CliToolRegistry.isValidNewId(entry.id) || !isValidSourceArg(entry.sourceValue)) {
+            return "Invalid tool id or source."
+        }
         val tmpDir = "/data/data/com.termux/files/home/.cli-tool-tmp/${entry.id}"
+        val qTmp = SafePaths.shellQuote(tmpDir)
         try {
-            // Ensure git is available, clone, find SKILL.md files
+            // Ensure git is available, clone, find SKILL.md files. Every value is
+            // one quoted word: source_value used to go in bare (`x; rm -rf ~`), and
+            // `--` stops a URL being read as a git option.
             val cloneCmd = buildString {
                 append("pkg install -y git 2>/dev/null; ")
-                append("rm -rf $tmpDir && ")
-                append("git clone --depth 1 ${entry.sourceValue} $tmpDir 2>/dev/null && ")
-                append("find $tmpDir -name 'SKILL.md' -type f")
+                append("rm -rf $qTmp && ")
+                append("git clone --depth 1 -- ${SafePaths.shellQuote(entry.sourceValue)} $qTmp 2>/dev/null && ")
+                append("find $qTmp -name 'SKILL.md' -type f")
             }
             val result = runner.run(cloneCmd, timeoutMs = FETCH_TIMEOUT_MS)
             if (!result.isSuccess || result.stdout.isBlank()) {
@@ -572,7 +641,7 @@ class CliToolManagerSkill(
             return cacheSkillMdFiles(entry, tmpDir, paths)
         } finally {
             // Cleanup temp dir
-            runner.run("rm -rf $tmpDir", timeoutMs = 10_000)
+            runner.run("rm -rf $qTmp", timeoutMs = 10_000)
         }
     }
 
@@ -581,15 +650,19 @@ class CliToolManagerSkill(
             return "Termux is not installed (needed for npm)."
         }
 
+        if (!CliToolRegistry.isValidNewId(entry.id) || !isValidSourceArg(entry.sourceValue)) {
+            return "Invalid tool id or source."
+        }
         val tmpDir = "/data/data/com.termux/files/home/.cli-tool-tmp/${entry.id}"
+        val qTmp = SafePaths.shellQuote(tmpDir)
         try {
             val cmd = buildString {
                 append("pkg install -y nodejs 2>/dev/null; ")
-                append("rm -rf $tmpDir && mkdir -p $tmpDir && ")
-                append("cd $tmpDir && ")
-                append("npm pack ${entry.sourceValue} 2>/dev/null && ")
+                append("rm -rf $qTmp && mkdir -p $qTmp && ")
+                append("cd $qTmp && ")
+                append("npm pack ${SafePaths.shellQuote(entry.sourceValue)} 2>/dev/null && ")
                 append("tar -xzf *.tgz 2>/dev/null && ")
-                append("find $tmpDir -name 'SKILL.md' -type f")
+                append("find $qTmp -name 'SKILL.md' -type f")
             }
             val result = runner.run(cmd, timeoutMs = FETCH_TIMEOUT_MS)
             if (!result.isSuccess || result.stdout.isBlank()) {
@@ -600,7 +673,7 @@ class CliToolManagerSkill(
             val paths = result.stdout.lines().filter { it.contains("SKILL.md") }
             return cacheSkillMdFiles(entry, tmpDir, paths)
         } finally {
-            runner.run("rm -rf $tmpDir", timeoutMs = 10_000)
+            runner.run("rm -rf $qTmp", timeoutMs = 10_000)
         }
     }
 
@@ -621,8 +694,9 @@ class CliToolManagerSkill(
         val relativePaths = mutableListOf<String>()
         for (file in skillFiles) {
             val relativePath = file.relativeTo(sourceDir).path
-            registry.saveSkillMd(entry.id, relativePath, file.readText())
-            relativePaths.add(relativePath)
+            if (registry.saveSkillMd(entry.id, relativePath, file.readText())) {
+                relativePaths.add(relativePath)
+            }
         }
 
         registry.update(entry.copy(skillMdFiles = relativePaths))
@@ -643,19 +717,19 @@ class CliToolManagerSkill(
 
         val relativePaths = mutableListOf<String>()
         for (absPath in absolutePaths) {
-            val trimmed = absPath.trim()
-            if (trimmed.isEmpty()) continue
+            // These lines are file names from a cloned repo or npm tarball. A name
+            // with a `'` broke out of the old `cat '…'`, and one with a newline could
+            // put a `../` path on its own line; only paths under tmpDir are taken,
+            // they are quoted, and the cache write is checked to stay in the tool dir.
+            val relativePath = relativeFoundPath(tmpDir, absPath) ?: continue
 
             // Read the file content via Termux
-            val catResult = runner.run("cat '$trimmed'", timeoutMs = 10_000)
+            val catResult = runner.run("cat -- ${SafePaths.shellQuote("$tmpDir/$relativePath")}", timeoutMs = 10_000)
             if (!catResult.isSuccess || catResult.stdout.isBlank()) continue
 
-            // Compute a relative path for storage
-            val relativePath = trimmed.removePrefix("$tmpDir/")
-                .ifEmpty { "SKILL.md" }
-
-            registry.saveSkillMd(entry.id, relativePath, catResult.stdout)
-            relativePaths.add(relativePath)
+            if (registry.saveSkillMd(entry.id, relativePath, catResult.stdout)) {
+                relativePaths.add(relativePath)
+            }
         }
 
         if (relativePaths.isEmpty()) {

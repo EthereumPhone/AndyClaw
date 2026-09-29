@@ -36,18 +36,22 @@ import java.util.concurrent.ConcurrentHashMap
  * is preserved within a service lifecycle.
  *
  * Every inbound Telegram message is [Provenance.UNTRUSTED]: the bot answers whoever
- * messages it, and [TelegramChatStore.getOwnerChatId] is only "the first chat that
- * ever wrote to this bot", so a sender is not the device owner by default.
+ * messages it. The owner's chat is the one verified at setup ([TelegramOwner]); every
+ * other chat is a stranger's.
  *
  * This runner does have a real approval affordance — inline Approve/Decline buttons.
  * It is only a *genuine* one when the buttons reach the owner: sending them to an
  * arbitrary sender would let that sender approve their own irreversible request,
  * which is the hole this whole gate exists to close. So approval prompts are offered
  * in the owner's chat and refused everywhere else.
+ *
+ * [inlineApprovals] is false where button presses cannot come back: on ethOS the OS polls
+ * Telegram for messages only, so the owner's approvals are queued for the phone instead.
  */
 class TelegramAgentRunner(
     private val app: NodeApp,
     private val botClient: TelegramBotClient,
+    private val inlineApprovals: Boolean = true,
 ) {
 
     companion object {
@@ -57,7 +61,9 @@ class TelegramAgentRunner(
         private const val ASK_USER_TIMEOUT_MS = 3L * 60 * 1000 // 3 minutes
     }
 
-    private val chatHistories = mutableMapOf<Long, MutableList<Message>>()
+    // Runs for different chats go on concurrently, and /clear or a settings change clears from
+    // yet another thread. Each chat's own list is only touched under that chat's lock.
+    private val chatHistories = ConcurrentHashMap<Long, MutableList<Message>>()
     private val memoryScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     private val pendingApprovals = ConcurrentHashMap<String, CompletableDeferred<Boolean>>()
@@ -88,7 +94,8 @@ class TelegramAgentRunner(
         } else {
             app.securePrefs.enabledSkills.value
         }
-        val isOwnerChat = app.telegramChatStore.getOwnerChatId() == chatId
+        // The chat verified at setup, never "the first chat that wrote" — see TelegramOwner.
+        val isOwnerChat = TelegramOwner.isOwner(app.securePrefs.telegramOwnerChatId.value, chatId)
         val agentLoop = AgentLoop(
             client = client,
             skillRegistry = registry,
@@ -188,26 +195,7 @@ class TelegramAgentRunner(
                 // decide; anything else is refused and queued for the user.
                 if (!isOwnerChat) {
                     Log.w(TAG, "Refusing approval from non-owner chat $chatId: ${toolName ?: "?"} — $description")
-                    try {
-                        val name = toolName ?: "unknown"
-                        app.pendingApprovalStore.queue(
-                            org.ethereumphone.andyclaw.safety.PendingApprovalStore.Request(
-                                source = "telegram",
-                                provenance = Provenance.UNTRUSTED.name,
-                                toolName = name,
-                                input = toolInput,
-                                description = org.ethereumphone.andyclaw.safety.ApprovalSummaries.of(name, toolInput).title,
-                                conversationId = chatId.toString(),
-                                ledgerSessionId = "telegram:$chatId",
-                                effect = org.ethereumphone.andyclaw.safety.ToolEffects.of(
-                                    name, registry.getTools(tier).firstOrNull { it.name == name },
-                                ).name,
-                                toolReason = description,
-                            )
-                        )
-                    } catch (e: Exception) {
-                        Log.w(TAG, "Could not queue pending approval: ${e.message}")
-                    }
+                    queueForPhone(toolName, toolInput, description)
                     memoryScope.launch {
                         botClient.sendMessage(
                             chatId,
@@ -221,6 +209,25 @@ class TelegramAgentRunner(
                 // YOLO setting applies as it does anywhere else. A non-owner chat
                 // never reaches this line, whatever YOLO says.
                 if (app.securePrefs.yoloMode.value) return true
+
+                // No way to hear the answer: the buttons would be pressed into the void, and the
+                // run would wait three minutes holding the chat's lock before declining itself.
+                if (!inlineApprovals) {
+                    Log.i(TAG, "Queueing approval for the phone (chat=$chatId, tool=${toolName ?: "?"})")
+                    val queued = queueForPhone(toolName, toolInput, description)
+                    memoryScope.launch {
+                        botClient.sendMessage(
+                            chatId,
+                            if (queued) {
+                                "That needs your approval. I've put it on your phone — approve it there."
+                            } else {
+                                "That needs your approval, and I couldn't queue it on your phone. " +
+                                    "Please do it from the phone directly."
+                            },
+                        )
+                    }
+                    return false
+                }
 
                 var threatAssessment: ThreatAssessment? = null
                 var slug: String? = null
@@ -281,6 +288,30 @@ class TelegramAgentRunner(
 
                 return result
             }
+
+            /** Queues the refused call as a card on the phone. True when it was queued. */
+            private fun queueForPhone(toolName: String?, toolInput: JsonObject?, description: String): Boolean =
+                try {
+                    val name = toolName ?: "unknown"
+                    app.pendingApprovalStore.queue(
+                        org.ethereumphone.andyclaw.safety.PendingApprovalStore.Request(
+                            source = "telegram",
+                            provenance = Provenance.UNTRUSTED.name,
+                            toolName = name,
+                            input = toolInput,
+                            description = org.ethereumphone.andyclaw.safety.ApprovalSummaries.of(name, toolInput).title,
+                            conversationId = chatId.toString(),
+                            ledgerSessionId = "telegram:$chatId",
+                            effect = org.ethereumphone.andyclaw.safety.ToolEffects.of(
+                                name, registry.getTools(tier).firstOrNull { it.name == name },
+                            ).name,
+                            toolReason = description,
+                        )
+                    ) != null
+                } catch (e: Exception) {
+                    Log.w(TAG, "Could not queue pending approval: ${e.message}")
+                    false
+                }
 
             override suspend fun onPermissionsNeeded(permissions: List<String>): Boolean {
                 val allGranted = permissions.all { perm ->

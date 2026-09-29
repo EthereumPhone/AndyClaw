@@ -126,15 +126,17 @@ class StorageSkill(private val context: Context) : AndyClawSkill {
     private fun readFile(params: JsonObject): SkillResult {
         val path = params["path"]?.jsonPrimitive?.contentOrNull
             ?: return SkillResult.Error("Missing required parameter: path")
-        val maxBytes = params["max_bytes"]?.jsonPrimitive?.contentOrNull?.toIntOrNull() ?: 10000
+        // Clamped: the model picks this, and the bytes land in the prompt.
+        val maxBytes = (params["max_bytes"]?.jsonPrimitive?.contentOrNull?.toIntOrNull() ?: 10000)
+            .coerceIn(1, BoundedText.MAX_READ_BYTES)
         val file = resolveSafePath(path)
             ?: return SkillResult.Error("Access denied: path is outside allowed storage area")
         if (!file.exists()) return SkillResult.Error("File not found: $path")
         if (file.isDirectory) return SkillResult.Error("Path is a directory, not a file: $path")
         return try {
-            val bytes = file.inputStream().use { it.readNBytes(maxBytes) }
-            val content = String(bytes)
-            val truncated = file.length() > maxBytes
+            val read = file.inputStream().use { BoundedText.read(it, maxBytes) }
+            val content = read.text
+            val truncated = read.truncated
             SkillResult.Success(buildJsonObject {
                 put("path", file.path)
                 put("size", file.length())
@@ -150,7 +152,7 @@ class StorageSkill(private val context: Context) : AndyClawSkill {
         val query = params["query"]?.jsonPrimitive?.contentOrNull
             ?: return SkillResult.Error("Missing required parameter: query")
         val path = params["path"]?.jsonPrimitive?.contentOrNull ?: ""
-        val limit = params["limit"]?.jsonPrimitive?.contentOrNull?.toIntOrNull() ?: 50
+        val limit = (params["limit"]?.jsonPrimitive?.contentOrNull?.toIntOrNull() ?: 50).coerceIn(1, 200)
         val dir = resolveSafePath(path)
             ?: return SkillResult.Error("Access denied: path is outside allowed storage area")
         if (!dir.exists() || !dir.isDirectory) return SkillResult.Error("Directory not found: $path")
@@ -196,10 +198,10 @@ class StorageSkill(private val context: Context) : AndyClawSkill {
                 put("total_bytes", totalBytes)
                 put("free_bytes", freeBytes)
                 put("used_bytes", usedBytes)
-                put("total_gb", String.format("%.1f", totalBytes / 1_073_741_824.0))
-                put("free_gb", String.format("%.1f", freeBytes / 1_073_741_824.0))
-                put("used_gb", String.format("%.1f", usedBytes / 1_073_741_824.0))
-                put("used_percent", String.format("%.1f", usedBytes * 100.0 / totalBytes))
+                put("total_gb", String.format(java.util.Locale.ROOT, "%.1f", totalBytes / 1_073_741_824.0))
+                put("free_gb", String.format(java.util.Locale.ROOT, "%.1f", freeBytes / 1_073_741_824.0))
+                put("used_gb", String.format(java.util.Locale.ROOT, "%.1f", usedBytes / 1_073_741_824.0))
+                put("used_percent", String.format(java.util.Locale.ROOT, "%.1f", usedBytes * 100.0 / totalBytes))
             }.toString())
         } catch (e: Exception) {
             SkillResult.Error("Failed to get storage info: ${e.message}")

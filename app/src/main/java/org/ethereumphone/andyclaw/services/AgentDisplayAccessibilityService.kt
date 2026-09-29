@@ -781,6 +781,10 @@ class AgentDisplayAccessibilityService : AccessibilityService() {
                 }
                 val root = window.getRoot()
                 if (root != null) {
+                    // The legacy format has no `screen`, so a window's package is the only thing
+                    // SensitiveApps.sensitivePackageIn and FlowTargetGuard.privateAppOn can see;
+                    // without it a private app read through this fallback passed every check.
+                    root.packageName?.toString()?.let { windowObj.put("package", it) }
                     nodeToJson(root, 0)?.let { windowObj.put("tree", it) }
                     collectInteractiveElements(root, interactiveElements, elementIndex)
                     elementIndex = interactiveElements.size

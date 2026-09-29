@@ -1,8 +1,11 @@
 package org.ethereumphone.andyclaw.autopilot
 
 import kotlinx.coroutines.test.runTest
+import org.ethereumphone.andyclaw.flows.AssertStep
 import org.ethereumphone.andyclaw.flows.CheckpointStep
 import org.ethereumphone.andyclaw.flows.FlowCodec
+import org.ethereumphone.andyclaw.flows.FlowValidator
+import org.ethereumphone.andyclaw.flows.Selector
 import org.ethereumphone.andyclaw.flows.NodeExists
 import org.ethereumphone.andyclaw.flows.NodeTextContains
 import org.ethereumphone.andyclaw.flows.TapStep
@@ -143,5 +146,71 @@ class AutopilotFlowCompilerTest {
         assertEquals(AutopilotResult.Status.SUCCESS, result.status)
         assertEquals(AutopilotFlowCompiler.Result.Skipped("started_at_intent"),
             AutopilotFlowCompiler.compile(result, "msg.x", ">=1"))
+    }
+
+    // ── Taps chosen by a typed value (a search hit) ─────────────────────
+
+    private val searchHome = T.screen("com.msg", "Chats", T.field(1, "Search", viewId = "com.msg:id/search"))
+    private fun searchResults(row: String, typed: String) = T.screen("com.msg", "Search",
+        T.field(1, "Search", value = typed, viewId = "com.msg:id/search"),
+        T.button(2, row, y = 200, type = "list_item", viewId = "com.msg:id/contact_row"),
+    )
+    private fun chat(title: String, withSend: Boolean) = T.screen("com.msg", title, *listOfNotNull(
+        T.text(4, title, y = 60).copy(viewId = "com.msg:id/toolbar_title"),
+        T.field(5, "Message", viewId = "com.msg:id/compose"),
+        T.button(9, "Send", y = 650, x = 690, type = "icon_button", viewId = "com.msg:id/send_btn").takeIf { withSend },
+    ).toTypedArray())
+    private val searchSent = T.screen("com.msg", "Anna", T.text(7, "hi there", y = 500).copy(viewId = "com.msg:id/bubble"))
+
+    private fun searchRun(name: String, row: String): AutopilotResult {
+        val results = searchResults(row, name)
+        val plan = AutopilotPlan(
+            packageName = "com.msg",
+            goal = "Send 'hi there' to $name",
+            steps = listOf(PlanStep("Find $name", typeKeys = listOf("name")), PlanStep("Write 'hi there'", typeKeys = listOf("body")), PlanStep("Send it")),
+            values = mapOf("name" to name, "body" to "hi there"),
+            say = "Sent.",
+        )
+        val actions = listOf(
+            ExecutedAction(StepOption.Type(1, "name"), searchHome.elements[0], "name", 0, searchHome, changedScreen = true),
+            ExecutedAction(StepOption.Tap(2), results.elements[1], null, 0, results, changedScreen = true),
+            // The Send button only shows once there is text, as in most messengers.
+            ExecutedAction(StepOption.Type(5, "body"), chat(row, false).elements[1], "body", 1, chat(row, false), changedScreen = true),
+            ExecutedAction(StepOption.Tap(9), chat(row, true).elements[2], null, 2, chat(row, true), changedScreen = true),
+        )
+        return AutopilotResult(
+            status = AutopilotResult.Status.SUCCESS, steps = actions.size, durationMs = 1, say = "Sent.", reason = null,
+            trace = emptyList(), screenSummary = null, plannerCalls = 0, jevCalls = 4, jevMsP50 = 100,
+            escalations = emptyList(), actions = actions, finalScreen = searchSent, plan = plan,
+        )
+    }
+
+    @Test
+    fun `a tap on a search hit carries an identity assert before it and after it`() {
+        val flow = (AutopilotFlowCompiler.compile(searchRun("Anna", "Anna"), "msg.search_send", ">=1")
+            as AutopilotFlowCompiler.Result.Compiled).flow
+        assertEquals(
+            listOf(
+                TypeStep(target = Selector(viewId = "com.msg:id/search"), value = "{{name}}"),
+                AssertStep(viewId = "com.msg:id/contact_row", nodeTextContains = "{{name}}"),
+                TapStep(viewId = "com.msg:id/contact_row"),
+                AssertStep(viewId = "com.msg:id/toolbar_title", nodeTextContains = "{{name}}"),
+                TypeStep(target = Selector(viewId = "com.msg:id/compose"), value = "{{body}}"),
+            ),
+            flow.steps.take(5),
+        )
+        assertTrue(flow.steps[5] is CheckpointStep)
+        assertEquals("a Send button that appears with the text is no search hit",
+            "com.msg:id/send_btn", (flow.steps[6] as TapStep).viewId)
+        assertTrue(FlowValidator.validate(flow).isValid)
+    }
+
+    @Test
+    fun `a hit the typed value only partly names cannot be checked, so it is not compiled`() {
+        assertEquals(AutopilotFlowCompiler.Result.Skipped("value_dependent_target"),
+            AutopilotFlowCompiler.compile(searchRun("Ann", "Anna"), "msg.x", ">=1"))
+        // Searched by number, the row shows a name: nothing ties the row to the value.
+        assertEquals(AutopilotFlowCompiler.Result.Skipped("value_dependent_target"),
+            AutopilotFlowCompiler.compile(searchRun("+4915112345678", "Anna"), "msg.x", ">=1"))
     }
 }

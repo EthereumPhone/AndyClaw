@@ -110,19 +110,14 @@ class ChatGptOauthClient(
     override suspend fun streamMessage(request: MessagesRequest, callback: StreamingCallback) =
         withContext(Dispatchers.IO) {
             if (!request.tools.isNullOrEmpty()) {
-                callback.onError(
-                    ChatGptOauthException(
-                        "ChatGPT OAuth provider does not yet support tool use (Codex Responses tool format unimplemented in v1).",
-                    ),
+                // Thrown, as every client does: a failure passed to onError and a normal return
+                // let the caller carry on as if the model had answered with nothing.
+                throw ChatGptOauthException(
+                    "ChatGPT OAuth provider does not yet support tool use (Codex Responses tool format unimplemented in v1).",
                 )
-                return@withContext
             }
 
-            val (token, accountId) = try {
-                tokenManager.getValidAuth()
-            } catch (e: Exception) {
-                callback.onError(e); return@withContext
-            }
+            val (token, accountId) = tokenManager.getValidAuth()
             val body = ResponsesFormatAdapter.toRequestJson(request, stream = true)
             Log.d(TAG, "streamMessage: model=${request.model}, messages=${request.messages.size}")
 
@@ -132,8 +127,8 @@ class ChatGptOauthClient(
             if (!response.isSuccessful) {
                 val errorBody = response.body?.string() ?: "Unknown error"
                 Log.e(TAG, "streamMessage: HTTP ${response.code} from ChatGPT, error=$errorBody")
-                callback.onError(ChatGptOauthException("ChatGPT API error (${response.code}): $errorBody"))
-                return@withContext
+                response.close()
+                throw ChatGptOauthException("ChatGPT API error (${response.code}): $errorBody")
             }
 
             val accumulator = ResponsesSseAccumulator()
@@ -149,7 +144,7 @@ class ChatGptOauthClient(
                 callback.onComplete(accumulator.toMessagesResponse(request.model))
             } catch (e: Exception) {
                 Log.e(TAG, "streamMessage: SSE error", e)
-                callback.onError(e)
+                throw e
             } finally {
                 reader.close()
                 response.close()

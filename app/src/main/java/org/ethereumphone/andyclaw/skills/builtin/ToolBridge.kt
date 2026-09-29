@@ -74,19 +74,20 @@ class ToolBridge(
      * to call the tool directly instead, where an approval card can actually be
      * raised.
      */
-    private fun enforceProvenance(toolName: String) {
-        val skill = registry.findSkillForTool(toolName, tier)
-        val toolDef = skill?.baseManifest?.tools?.find { it.name == toolName }
-            ?: skill?.privilegedManifest?.tools?.find { it.name == toolName }
+    private fun enforceProvenance(toolName: String, inputs: List<JsonObject>) {
+        val toolDef = toolDefFor(toolName)
         val effect = ToolEffects.of(toolName, toolDef)
         val token = runContext[AgentRunToken]
-        if (ProvenanceGate.allowsUnattended(
+        val allowed = inputs.ifEmpty { listOf(null) }.all { input ->
+            ProvenanceGate.allowsUnattended(
                 provenance, effect, toolName,
                 audience = runContext[ReplyAudience],
                 readPrivateData = token?.readPrivateData == true,
                 readThirdPartyContent = token?.readThirdPartyContent == true,
+                input = input,
             )
-        ) {
+        }
+        if (allowed) {
             if (provenance != Provenance.USER && toolName in ToolEffects.PRIVATE_DATA_TOOLS) {
                 token?.readPrivateData = true
             }
@@ -100,16 +101,43 @@ class ToolBridge(
             toolName, org.ethereumphone.andyclaw.ledger.LedgerOutcome.BLOCKED, 0L, "refused from execute_code",
         )
 
-        val privacy = if (provenance == Provenance.UNTRUSTED) {
-            ProvenanceGate.privacyVerdict(toolName, runContext[ReplyAudience], token?.readPrivateData == true)
-        } else ProvenanceGate.taintedTrustedEgressVerdict(
-            provenance, toolName, token?.readPrivateData == true, token?.readThirdPartyContent == true,
-        )
+        val input = inputs.firstOrNull()
+        val privacy = ProvenanceGate.standingInstructionVerdict(toolName, token?.readThirdPartyContent == true)
+            ?: if (provenance == Provenance.UNTRUSTED) {
+                ProvenanceGate.privacyVerdict(toolName, runContext[ReplyAudience], token?.readPrivateData == true, input)
+            } else ProvenanceGate.taintedTrustedEgressVerdict(
+                provenance, toolName, token?.readPrivateData == true, token?.readThirdPartyContent == true, input,
+            )
         throw RuntimeException(
             privacy?.reason ?: ("Tool '$toolName' is $effect and this code is running for a request that " +
                 "came from untrusted content, so it cannot be called from code. " +
                 "Call it as a direct tool call instead — that path can ask the user.")
         )
+    }
+
+    /**
+     * The definition of [toolName] as its skill declares it. An external tool whose name collides
+     * with another's is offered to the model as `slug/tool`, and the manifest only knows `tool` —
+     * looked up by the name the code passed, it was not found, and the `requiresApproval` refusal
+     * below was skipped for exactly the tools most likely to need it.
+     */
+    private fun toolDefFor(toolName: String): org.ethereumphone.andyclaw.skills.ToolDefinition? {
+        val skill = registry.findSkillForTool(toolName, tier) ?: return null
+        val original = registry.resolveOriginalToolName(toolName)
+        return skill.baseManifest.tools.find { it.name == original }
+            ?: skill.privilegedManifest?.tools?.find { it.name == original }
+    }
+
+    /**
+     * STOP ends the turn, and code is part of the turn. The engine refuses every call after STOP,
+     * but code reaches the registry without it: a loop in `execute_code` kept sending after the
+     * user had stopped it.
+     */
+    private fun refuseIfStopped(toolName: String) {
+        if (runContext[AgentRunToken]?.stopRequested == true) {
+            Log.w(TAG, "Refusing '$toolName' from execute_code: the user pressed STOP")
+            throw RuntimeException("Stopped by the user. Nothing more runs in this turn.")
+        }
     }
 
     data class ToolCallRecord(
@@ -142,7 +170,12 @@ class ToolBridge(
     fun call(toolName: String, params: Map<String, Any?>): String {
         val startMs = System.currentTimeMillis()
 
-        enforceProvenance(toolName)
+        refuseIfStopped(toolName)
+
+        // Convert Java Map to JsonObject
+        val jsonParams = mapToJsonObject(params)
+
+        enforceProvenance(toolName, listOf(jsonParams))
 
         // Validate tool exists and skill is enabled
         val skill = registry.findSkillForTool(toolName, tier)
@@ -153,17 +186,13 @@ class ToolBridge(
         }
 
         // Check if tool requires approval (can't approve from within code)
-        val toolDef = skill.baseManifest.tools.find { it.name == toolName }
-            ?: skill.privilegedManifest?.tools?.find { it.name == toolName }
+        val toolDef = toolDefFor(toolName)
         if (toolDef?.requiresApproval == true) {
             throw RuntimeException(
                 "Tool '$toolName' requires user approval and cannot be called from code. " +
                 "Use it as a direct tool call instead."
             )
         }
-
-        // Convert Java Map to JsonObject
-        val jsonParams = mapToJsonObject(params)
 
         Log.d(TAG, "Programmatic call: $toolName(${jsonParams.toString().take(100)})")
 
@@ -224,7 +253,10 @@ class ToolBridge(
     fun callParallel(toolName: String, paramsList: List<Map<String, Any?>>): List<String> {
         if (paramsList.isEmpty()) return emptyList()
 
-        enforceProvenance(toolName)
+        refuseIfStopped(toolName)
+
+        val jsonParamsList = paramsList.map { mapToJsonObject(it) }
+        enforceProvenance(toolName, jsonParamsList)
 
         // Validate tool exists and is callable before dispatching
         val skill = registry.findSkillForTool(toolName, tier)
@@ -232,8 +264,7 @@ class ToolBridge(
         if (skill.id !in enabledSkillIds) {
             throw RuntimeException("Tool '$toolName' belongs to disabled skill '${skill.id}'")
         }
-        val toolDef = skill.baseManifest.tools.find { it.name == toolName }
-            ?: skill.privilegedManifest?.tools?.find { it.name == toolName }
+        val toolDef = toolDefFor(toolName)
         if (toolDef?.requiresApproval == true) {
             throw RuntimeException(
                 "Tool '$toolName' requires user approval and cannot be called from code."
@@ -245,11 +276,8 @@ class ToolBridge(
 
         val results = try {
             runBlocking(Dispatchers.IO + runContext) {
-                paramsList.map { params ->
-                    async {
-                        val jsonParams = mapToJsonObject(params)
-                        registry.executeTool(toolName, jsonParams, tier)
-                    }
+                jsonParamsList.map { jsonParams ->
+                    async { registry.executeTool(toolName, jsonParams, tier) }
                 }.awaitAll()
             }
         } finally {

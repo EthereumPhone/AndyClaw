@@ -129,4 +129,24 @@ class ToolEffectsTest {
         )
         assertEquals(known, ToolEffects.OUTBOUND_MESSAGE_TARGETS)
     }
+
+    @Test
+    fun `what re-aims a payment or mails an invitation is irreversible`() {
+        // A new contact is a payment target as much as a rewritten one; an event with invitees
+        // is mailed to them.
+        for (tool in listOf("create_contact", "set_eth_address", "update_contact", "create_event", "gcal_create_event")) {
+            assertEquals(tool, ToolEffect.IRREVERSIBLE, ToolEffects.of(tool))
+        }
+    }
+
+    @Test
+    fun `every conditional-egress key names a real parameter`() {
+        assertEquals(
+            mapOf(
+                "create_event" to setOf("participants", "calendar_id"),
+                "gcal_create_event" to setOf("attendees", "calendar_id"),
+            ),
+            ToolEffects.CONDITIONAL_EGRESS,
+        )
+    }
 }

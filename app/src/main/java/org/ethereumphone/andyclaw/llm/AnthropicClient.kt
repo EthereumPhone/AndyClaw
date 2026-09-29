@@ -1,7 +1,9 @@
 package org.ethereumphone.andyclaw.llm
 
 import android.util.Log
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import okhttp3.MediaType.Companion.toMediaType
@@ -72,13 +74,14 @@ class AnthropicClient(
         Log.i("AGENT_VIRTUAL_SCREEN", "AnthropicClient.sendMessage: payloadSize=${body.length} chars (${body.toByteArray().size} bytes), model=${request.model}, messages=${request.messages.size}")
         val httpRequest = buildRequest(body)
 
-        val response = client.newCall(httpRequest).execute()
-        if (!response.isSuccessful) {
-            val errorBody = response.body?.string() ?: "Unknown error"
-            val retryAfter = response.header("retry-after")?.toIntOrNull()
-            throw AnthropicApiException(response.code, errorBody, retryAfter, provider = provider)
+        val responseBody = client.newCall(httpRequest).executeCancellable { response ->
+            if (!response.isSuccessful) {
+                val errorBody = response.body?.string() ?: "Unknown error"
+                val retryAfter = response.header("retry-after")?.toIntOrNull()
+                throw AnthropicApiException(response.code, errorBody, retryAfter, provider = provider)
+            }
+            response.body?.string() ?: throw AnthropicApiException(500, "Empty response", provider = provider)
         }
-        val responseBody = response.body?.string() ?: throw AnthropicApiException(500, "Empty response", provider = provider)
         json.decodeFromString<MessagesResponse>(responseBody)
     }
 
@@ -92,40 +95,48 @@ class AnthropicClient(
         }
         val httpRequest = buildRequest(body)
 
-        val response = client.newCall(httpRequest).execute()
-        if (!response.isSuccessful) {
-            val errorBody = response.body?.string() ?: "Unknown error"
-            val retryAfter = response.header("retry-after")?.toIntOrNull()
-            Log.e("AGENT_VIRTUAL_SCREEN", "AnthropicClient.streamMessage: HTTP ${response.code}, errorBody=${errorBody.take(500)}")
-            throw AnthropicApiException(response.code, errorBody, retryAfter, provider = provider)
-        }
+        // Cancelling the turn closes the socket (executeCancellable); the loop's own check
+        // covers a server that keeps sending while the close is on its way.
+        val job = coroutineContext[Job]
+        client.newCall(httpRequest).executeCancellable { response ->
+            if (!response.isSuccessful) {
+                val errorBody = response.body?.string() ?: "Unknown error"
+                val retryAfter = response.header("retry-after")?.toIntOrNull()
+                Log.e("AGENT_VIRTUAL_SCREEN", "AnthropicClient.streamMessage: HTTP ${response.code}, errorBody=${errorBody.take(500)}")
+                throw AnthropicApiException(response.code, errorBody, retryAfter, provider = provider)
+            }
 
-        val parser = SseParser(callback)
-        val reader = BufferedReader(InputStreamReader(response.body!!.byteStream()))
-        try {
-            var currentEvent = ""
-            var dataBuffer = StringBuilder()
+            val parser = SseParser(callback, provider)
+            BufferedReader(InputStreamReader(response.body!!.byteStream())).use { reader ->
+                var currentEvent = ""
+                var dataBuffer = StringBuilder()
 
-            reader.forEachLine { line ->
-                when {
-                    line.startsWith("event: ") -> {
-                        currentEvent = line.removePrefix("event: ").trim()
-                    }
-                    line.startsWith("data: ") -> {
-                        dataBuffer.append(line.removePrefix("data: "))
-                    }
-                    line.isBlank() -> {
-                        if (currentEvent.isNotEmpty() && dataBuffer.isNotEmpty()) {
-                            parser.onEvent(currentEvent, dataBuffer.toString())
+                while (true) {
+                    val line = reader.readLine() ?: break
+                    if (job?.isActive == false) throw CancellationException("LLM stream cancelled")
+                    when {
+                        line.startsWith("event: ") -> {
+                            currentEvent = line.removePrefix("event: ").trim()
                         }
-                        currentEvent = ""
-                        dataBuffer = StringBuilder()
+                        line.startsWith("data: ") -> {
+                            dataBuffer.append(line.removePrefix("data: "))
+                        }
+                        line.isBlank() -> {
+                            if (currentEvent.isNotEmpty() && dataBuffer.isNotEmpty()) {
+                                parser.onEvent(currentEvent, dataBuffer.toString())
+                            }
+                            currentEvent = ""
+                            dataBuffer = StringBuilder()
+                        }
                     }
                 }
+                // A final event the server did not terminate with a blank line
+                if (currentEvent.isNotEmpty() && dataBuffer.isNotEmpty()) {
+                    parser.onEvent(currentEvent, dataBuffer.toString())
+                }
             }
-        } finally {
-            reader.close()
-            response.close()
+            // No message_stop: the body was cut off, and half a reply is not a reply.
+            parser.finishStream()
         }
     }
 

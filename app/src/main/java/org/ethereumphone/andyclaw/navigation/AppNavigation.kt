@@ -1,6 +1,8 @@
 package org.ethereumphone.andyclaw.navigation
 
+import android.util.Log
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
 import androidx.compose.ui.platform.LocalContext
 import androidx.navigation.NavType
@@ -8,6 +10,7 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
+import kotlinx.coroutines.withTimeoutOrNull
 import org.ethereumphone.andyclaw.NodeApp
 import org.ethereumphone.andyclaw.onboarding.OnboardingScreen
 import org.ethereumphone.andyclaw.onboarding.WalletSignScreen
@@ -35,6 +38,19 @@ object Routes {
     const val AGENT_WALLET_SEND = "agent_wallet_send"
 }
 
+private const val OS_WALLET_LOOKUP_TIMEOUT_MS = 5_000L
+
+/**
+ * Whether the stored wallet sign-in belongs to a different wallet than the OS reports.
+ * Unknown ([osAddress] null or blank) is never a mismatch: the check fails open rather
+ * than locking a user out of chat because the wallet service was slow.
+ */
+internal fun walletAuthMismatch(storedAddress: String, osAddress: String?): Boolean {
+    val os = osAddress?.trim().orEmpty()
+    if (!os.startsWith("0x")) return false
+    return !storedAddress.trim().equals(os, ignoreCase = true)
+}
+
 @Composable
 fun AppNavigation() {
     val navController = rememberNavController()
@@ -46,6 +62,25 @@ fun AppNavigation() {
             OsCapabilities.hasPrivilegedAccess &&
                 !app.securePrefs.walletSignature.value.startsWith("0x") -> Routes.WALLET_SIGN
             else -> Routes.CHAT
+        }
+    }
+
+    // The gate above only proves *a* signature is stored. After a backup restore or an
+    // older build's import it can be another wallet's — the gateway then bills or refuses
+    // the wrong account. The OS address is a binder call, so it cannot decide the start
+    // destination synchronously; check it once after start and redirect on a mismatch.
+    // Fails open: no OS address (wallet service down, timeout) leaves the user in chat.
+    if (startDestination == Routes.CHAT && OsCapabilities.hasPrivilegedAccess) {
+        LaunchedEffect(Unit) {
+            val osAddress = withTimeoutOrNull(OS_WALLET_LOOKUP_TIMEOUT_MS) {
+                app.agentWalletRepository.getOsWalletAddress()
+            }?.trim()
+            if (!walletAuthMismatch(app.securePrefs.walletAddress.value, osAddress)) return@LaunchedEffect
+            if (navController.currentDestination?.route != Routes.CHAT) return@LaunchedEffect
+            Log.w("AppNavigation", "Stored wallet sign-in is not this device's wallet; asking to sign again")
+            navController.navigate(Routes.WALLET_SIGN) {
+                popUpTo(Routes.CHAT) { inclusive = true }
+            }
         }
     }
 

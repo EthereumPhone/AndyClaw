@@ -8,6 +8,7 @@ import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.os.Bundle
 import kotlinx.coroutines.TimeoutCancellationException
+import org.ethereumphone.andyclaw.ExecutionEngine.rethrowIfCancelled
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withTimeout
 import java.util.UUID
@@ -116,6 +117,7 @@ class TermuxCommandRunner(private val context: Context) {
                 internalError = "Command timed out after ${effectiveTimeout}ms.",
             )
         } catch (e: Exception) {
+            rethrowIfCancelled(e)
             TermuxCommandResult(
                 exitCode = -1, stdout = "", stderr = "",
                 internalError = "Execution failed: ${e.message}",

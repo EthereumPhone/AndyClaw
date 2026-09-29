@@ -105,7 +105,8 @@ class CalendarSkill(private val context: Context) : AndyClawSkill {
         val now = System.currentTimeMillis()
         val startTime = params["start_time"]?.jsonPrimitive?.long ?: now
         val endTime = params["end_time"]?.jsonPrimitive?.long ?: (now + 7L * 24 * 60 * 60 * 1000)
-        val limit = params["limit"]?.jsonPrimitive?.contentOrNull?.toIntOrNull() ?: 50
+        // Clamped: the model picks this, and every row lands in the prompt.
+        val limit = (params["limit"]?.jsonPrimitive?.contentOrNull?.toIntOrNull() ?: 50).coerceIn(1, 100)
         return try {
             val events = mutableListOf<JsonObject>()
             val uri = CalendarContract.Instances.CONTENT_URI.buildUpon()

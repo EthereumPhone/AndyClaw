@@ -242,7 +242,16 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
         includeEnumFallbacks: Boolean = false,
     ): List<DisplayModel> {
         val registry = app.openRouterModelRegistry
-        val registryModels = registry.getAllModels()
+        // ethOS Premium serves only the ids in the AnthropicModels enum: an id the enum
+        // does not know is routed to the Tinfoil proxy (NodeApp.getLlmClientForProvider),
+        // which does not serve it. Offering the whole OpenRouter catalogue there let the
+        // user pick a model that never answered. OPEN_ROUTER keeps the full list.
+        val registryModels = if (provider == LlmProvider.ETHOS_PREMIUM) {
+            val servedIds = AnthropicModels.forProvider(provider).mapTo(mutableSetOf()) { it.modelId }
+            registry.getAllModels().filter { it.id in servedIds }
+        } else {
+            registry.getAllModels()
+        }
 
         // If registry is empty, fall back to enum-only
         if (registryModels.isEmpty()) {
@@ -491,7 +500,11 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
                     android.widget.Toast.LENGTH_LONG,
                 ).show()
             } catch (e: Exception) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
                 Log.e("SettingsViewModel", "Backup export failed", e)
+                // Logging alone left the user believing a backup existed; the section
+                // already renders backupError, so say it failed.
+                _backupError.value = "Backup export failed: ${e.message}"
             } finally {
                 _isExporting.value = false
             }
@@ -519,7 +532,9 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
                     proceedWithImportManifest(context, null)
                 }
             } catch (e: Exception) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
                 Log.e("SettingsViewModel", "Failed to check backup file", e)
+                _backupError.value = "Could not read backup file: ${e.message}"
             }
         }
     }
@@ -576,7 +591,11 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
                     backupManager.restoreBackup(stream, password)
                 }
             } catch (e: Exception) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
                 Log.e("SettingsViewModel", "Backup import failed", e)
+                // A failed restore may have applied part of the backup; the user has to
+                // know it did not complete rather than assume it did.
+                _backupError.value = "Restore failed: ${e.message}"
             } finally {
                 _isImporting.value = false
             }

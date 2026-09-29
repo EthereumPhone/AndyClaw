@@ -37,6 +37,15 @@ class NodeForegroundService : Service() {
         private const val NOTIFICATION_ID = 1
         const val EXTRA_XMTP_MESSAGE_COUNT = "xmtp_message_count"
 
+        /**
+         * The conversation id an XMTP wake-up runs under. The run reads strangers' messages and is
+         * told to answer them, so it must carry a stranger audience (ReplyAudience.STRANGER, which
+         * HeartbeatAgentRunner sets for an untrusted run with a conversation). With none it could
+         * read the SMS inbox and the owner's other private data. It names no real thread, so
+         * ProvenanceGate's reply-to-sender rule still refuses every outbound message.
+         */
+        internal const val XMTP_WAKEUP_CONVERSATION = "xmtp-wakeup"
+
         fun start(context: Context) {
             val intent = Intent(context, NodeForegroundService::class.java)
             context.startForegroundService(intent)
@@ -68,7 +77,16 @@ class NodeForegroundService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val notification = buildNotification()
-        startForeground(NOTIFICATION_ID, notification)
+        try {
+            startForeground(NOTIFICATION_ID, notification)
+        } catch (e: android.app.ForegroundServiceStartNotAllowedException) {
+            // Refused from the background: a START_STICKY restart after the process was killed,
+            // or a dataSync start after the day's six hours are used up. Stop instead of crashing
+            // the app; the next time the user opens it, MainActivity starts this again.
+            Log.w(TAG, "Not allowed to start in the foreground now; stopping", e)
+            stopSelf()
+            return START_NOT_STICKY
+        }
 
         if (!serviceInitialized) {
             // Wire up the real heartbeat agent runner with tool_use
@@ -116,6 +134,16 @@ class NodeForegroundService : Service() {
         }
 
         return START_STICKY
+    }
+
+    /**
+     * Android 15 caps a dataSync foreground service at six hours a day and calls this when they
+     * are up. A service still in the foreground a few seconds later crashes the app, so stop.
+     * The heartbeat resumes the next time the user opens the app.
+     */
+    override fun onTimeout(startId: Int, fgsType: Int) {
+        Log.w(TAG, "Foreground time limit reached (type=$fgsType); stopping")
+        stopSelf()
     }
 
     override fun onDestroy() {
@@ -243,7 +271,7 @@ class NodeForegroundService : Service() {
                     "Use list_conversations and read_messages to check them."
             }
             // The context is other people's XMTP message bodies.
-            runtime.requestHeartbeatNowWithContext(context, Provenance.UNTRUSTED)
+            runtime.requestHeartbeatNowWithContext(context, Provenance.UNTRUSTED, XMTP_WAKEUP_CONVERSATION)
         }
     }
 
@@ -279,7 +307,7 @@ class NodeForegroundService : Service() {
                     }
 
                     // The context is other people's XMTP message bodies.
-                    runtime.requestHeartbeatNowWithContext(context, Provenance.UNTRUSTED)
+                    runtime.requestHeartbeatNowWithContext(context, Provenance.UNTRUSTED, XMTP_WAKEUP_CONVERSATION)
                 }
             } catch (e: SdkException) {
                 Log.w(TAG, "MessengerSDK not available for XMTP message listening: ${e.message}")

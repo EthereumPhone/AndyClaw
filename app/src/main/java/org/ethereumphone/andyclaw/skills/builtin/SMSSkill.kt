@@ -95,7 +95,8 @@ class SMSSkill(private val context: Context) : AndyClawSkill {
     }
 
     private fun readSms(params: JsonObject): SkillResult {
-        val limit = params["limit"]?.jsonPrimitive?.intOrNull ?: 20
+        // Clamped: the model picks this, and every row lands in the prompt.
+        val limit = (params["limit"]?.jsonPrimitive?.intOrNull ?: 20).coerceIn(1, 100)
         val fromFilter = params["from"]?.jsonPrimitive?.contentOrNull
         return try {
             val messages = mutableListOf<JsonObject>()

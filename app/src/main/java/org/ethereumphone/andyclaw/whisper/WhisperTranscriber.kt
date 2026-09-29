@@ -132,24 +132,52 @@ class WhisperTranscriber(private val context: Context) {
                 Log.i(TAG, "Deleted old F16 model")
             }
 
-            if (!modelFile.exists() || modelFile.length() == 0L) {
-                Log.i(TAG, "Copying Whisper model from assets to ${modelFile.absolutePath}")
-                context.assets.open(ASSET_NAME).use { input ->
-                    modelFile.outputStream().use { output ->
-                        input.copyTo(output, COPY_BUFFER_SIZE)
-                    }
-                }
-                Log.i(TAG, "Model copied (${modelFile.length()} bytes)")
+            // The asset's length is known when it is stored uncompressed; then a short file is
+            // caught here, before the native loader has to cope with it.
+            val assetLength = runCatching { context.assets.openFd(ASSET_NAME).use { it.length } }.getOrNull()
+            if (!modelFile.exists() || modelFile.length() == 0L ||
+                (assetLength != null && assetLength > 0 && modelFile.length() != assetLength)
+            ) {
+                copyModelFromAssets()
             }
 
             Log.i(TAG, "Initializing Whisper model: ${modelFile.absolutePath}")
-            val success = WhisperBridgeNative.initModel(modelFile.absolutePath)
-            if (!success) {
-                throw RuntimeException("Failed to initialize Whisper model")
+            if (!WhisperBridgeNative.initModel(modelFile.absolutePath)) {
+                // Most likely a partial file: older builds copied straight onto the final name,
+                // and a kill mid-copy left it short forever — it "existed", so it was never
+                // copied again and every transcription failed until the app data was cleared.
+                Log.w(TAG, "Whisper model failed to load; copying it again from the APK once")
+                modelFile.delete()
+                copyModelFromAssets()
+                if (!WhisperBridgeNative.initModel(modelFile.absolutePath)) {
+                    throw RuntimeException("Failed to initialize Whisper model")
+                }
             }
             initialized = true
             Log.i(TAG, "Whisper model initialized")
         }
+    }
+
+    /**
+     * Copies the bundled model to [modelFile] through a temp file and a rename, so the final
+     * name only ever holds a complete copy. Blocking I/O; call on [Dispatchers.IO].
+     */
+    private fun copyModelFromAssets() {
+        Log.i(TAG, "Copying Whisper model from assets to ${modelFile.absolutePath}")
+        val tmp = File(modelFile.parentFile, "$ASSET_NAME.tmp")
+        try {
+            context.assets.open(ASSET_NAME).use { input ->
+                tmp.outputStream().use { output ->
+                    input.copyTo(output, COPY_BUFFER_SIZE)
+                }
+            }
+            if (!tmp.renameTo(modelFile)) {
+                throw java.io.IOException("Could not move the Whisper model into place")
+            }
+        } finally {
+            tmp.delete() // a no-op after a successful rename
+        }
+        Log.i(TAG, "Model copied (${modelFile.length()} bytes)")
     }
 
     /**

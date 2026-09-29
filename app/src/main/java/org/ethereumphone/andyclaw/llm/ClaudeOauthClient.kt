@@ -29,21 +29,31 @@ class ClaudeOauthClient(
     override suspend fun streamMessage(request: MessagesRequest, callback: StreamingCallback) {
         val token = setupTokenProvider().trim()
         if (token.isBlank()) {
-            callback.onError(
-                ClaudeOauthException("No setup-token configured. Paste your Claude setup-token in Settings."),
-            )
-            return
+            // Thrown like every other failure; onError plus a normal return read as an empty reply.
+            throw ClaudeOauthException("No setup-token configured. Paste your Claude setup-token in Settings.")
         }
         clientWithToken(token).streamMessage(request, callback)
     }
 
-    private fun clientWithToken(token: String) = AnthropicClient(
-        apiKey = { token },
-        extraHeaders = {
-            mapOf(
-                "anthropic-beta" to OAUTH_BETAS,
-            )
-        },
-        baseUrl = BASE_URL,
-    )
+    /**
+     * One [AnthropicClient] per token, not per call: each one builds its own OkHttpClient,
+     * and a fresh connection pool per request threw away keep-alive and TLS resumption on
+     * every model call of every turn.
+     */
+    @Volatile private var cached: Pair<String, AnthropicClient>? = null
+
+    private fun clientWithToken(token: String): AnthropicClient {
+        cached?.let { (t, c) -> if (t == token) return c }
+        val client = AnthropicClient(
+            apiKey = { token },
+            extraHeaders = {
+                mapOf(
+                    "anthropic-beta" to OAUTH_BETAS,
+                )
+            },
+            baseUrl = BASE_URL,
+        )
+        cached = token to client
+        return client
+    }
 }

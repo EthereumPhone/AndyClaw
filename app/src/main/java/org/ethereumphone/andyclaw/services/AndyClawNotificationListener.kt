@@ -86,11 +86,18 @@ class AndyClawNotificationListener : NotificationListenerService() {
         val sbn = all.find { it.key == key }
             ?: throw IllegalArgumentException("Notification not found: $key")
 
-        // Try the target notification first, then fall back to siblings from the
-        // same package (handles WhatsApp-style bundled notifications where the
-        // group summary has no actions but child notifications do).
+        // Try the target notification first, then fall back to siblings that are provably the
+        // same conversation (WhatsApp-style bundles, where the entry the model picked has no
+        // actions but a child notification for that chat does). "Same package" is not enough:
+        // it used to send the reply to whichever chat of that app happened to have a reply
+        // action, and it defeated ProvenanceGate's pinning of the approved key.
         val candidates = mutableListOf(sbn)
-        candidates.addAll(all.filter { it.key != key && it.packageName == sbn.packageName })
+        candidates.addAll(all.filter {
+            isSameConversation(
+                target = ReplyTarget(sbn.key, sbn.packageName, sbn.groupKey, sbn.notification?.shortcutId),
+                other = ReplyTarget(it.key, it.packageName, it.groupKey, it.notification?.shortcutId),
+            )
+        })
 
         for (candidate in candidates) {
             val actions = candidate.notification.actions ?: continue
@@ -109,6 +116,28 @@ class AndyClawNotificationListener : NotificationListenerService() {
             }
         }
 
-        throw IllegalArgumentException("No notification from ${sbn.packageName} has a direct reply action")
+        throw IllegalArgumentException(
+            "Notification $key has no direct reply action, and no other notification is " +
+                "provably the same conversation — not replying, to avoid messaging the wrong chat"
+        )
     }
 }
+
+/** The identity fields [isSameConversation] compares, pulled out so it can be tested on the JVM. */
+internal data class ReplyTarget(
+    val key: String,
+    val packageName: String,
+    val groupKey: String?,
+    val shortcutId: String?,
+)
+
+/**
+ * Whether [other] may stand in for [target] when [target] itself has no reply action: same
+ * package, same notification group, and the same non-empty conversation shortcut id. A missing
+ * shortcut id on either side is not a match — without it nothing says the two are one chat.
+ */
+internal fun isSameConversation(target: ReplyTarget, other: ReplyTarget): Boolean =
+    other.key != target.key &&
+        other.packageName == target.packageName &&
+        target.groupKey != null && other.groupKey == target.groupKey &&
+        !target.shortcutId.isNullOrEmpty() && other.shortcutId == target.shortcutId

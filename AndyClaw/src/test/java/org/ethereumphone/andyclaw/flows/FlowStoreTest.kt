@@ -160,4 +160,36 @@ class FlowStoreTest {
         assertTrue(store().listAll().isEmpty())
         assertNotNull(signer.mac(ByteArray(0)))
     }
+
+    @Test
+    fun `writes leave no temp files behind and keep the on-disk names`() {
+        val s = store()
+        val hash = (s.install(validFlow()) as FlowInstallResult.Installed).stored.hash
+        s.recordUse(hash, aborted = true)
+        val names = File(temp.root, "flows").listFiles()!!.map { it.name }.toSet()
+        assertEquals(setOf("$hash${FlowStore.FLOW_SUFFIX}", "$hash.mac", "$hash.meta.json"), names)
+        assertEquals(1, s.meta(hash)!!.aborts)
+    }
+
+    @Test
+    fun `a flow file without its MAC is an orphan and is cleaned up, its sidecars too`() {
+        val s = store()
+        val hash = (s.install(validFlow()) as FlowInstallResult.Installed).stored.hash
+        File(temp.root, "flows/$hash.mac").delete()
+        assertTrue(s.listAll().isEmpty())
+        assertFalse(File(temp.root, "flows/$hash${FlowStore.FLOW_SUFFIX}").exists())
+        assertFalse(File(temp.root, "flows/$hash.meta.json").exists())
+    }
+
+    @Test
+    fun `a leftover temp file is removed once it is old, and never read as a flow`() {
+        val s = store()
+        s.install(validFlow())
+        val dir = File(temp.root, "flows")
+        val old = File(dir, "x.meta.json.123.tmp").apply { writeText("{"); setLastModified(System.currentTimeMillis() - 3_600_000) }
+        val young = File(dir, "y.flow.json.456.tmp").apply { writeText("{") }
+        assertEquals(1, s.listAll().size)
+        assertFalse(old.exists())
+        assertTrue("may be an install in progress", young.exists())
+    }
 }

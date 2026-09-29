@@ -17,6 +17,7 @@ import okhttp3.MultipartBody
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import org.ethereumphone.andyclaw.ExecutionEngine.rethrowIfCancelled
 import org.ethereumphone.andyclaw.skills.AndyClawSkill
 import org.ethereumphone.andyclaw.skills.SkillManifest
 import org.ethereumphone.andyclaw.skills.SkillResult
@@ -121,6 +122,7 @@ class DriveSkill(
                 else -> SkillResult.Error("Unknown tool: $tool")
             }
         } catch (e: Exception) {
+            rethrowIfCancelled(e)
             SkillResult.Error("Drive error: ${e.message}")
         }
     }
@@ -204,7 +206,7 @@ class DriveSkill(
             .build()
 
         val metaResponse = client.newCall(metaRequest).execute()
-        val metaBody = metaResponse.body?.string() ?: ""
+        val metaBody = metaResponse.use { it.body?.string() ?: "" }
 
         if (!metaResponse.isSuccessful) {
             return@withContext SkillResult.Error("Failed to get file metadata (HTTP ${metaResponse.code}): $metaBody")
@@ -226,20 +228,31 @@ class DriveSkill(
                 "$BASE_URL/files/$fileId?alt=media"
         }
 
+        // Only text is worth handing the model. A binary file used to be read whole into a
+        // String before truncation — a large one was an OutOfMemoryError that crashed the app.
+        val isGoogleDoc = mimeType.startsWith("application/vnd.google-apps.")
+        if (!isGoogleDoc && !BoundedText.isTextMime(mimeType)) {
+            return@withContext SkillResult.Error(
+                "File '$fileName' is $mimeType, not text; drive_download only reads text files and Google Docs"
+            )
+        }
+
         val downloadRequest = Request.Builder()
             .url(downloadUrl)
             .addHeader("Authorization", "Bearer $token")
             .get()
             .build()
 
-        val downloadResponse = client.newCall(downloadRequest).execute()
-        val content = downloadResponse.body?.string() ?: ""
-
-        if (!downloadResponse.isSuccessful) {
-            return@withContext SkillResult.Error("Failed to download file (HTTP ${downloadResponse.code}): $content")
+        // maxLength is in characters; 4 bytes a char covers any UTF-8 without reading more.
+        val (content, bytesTruncated) = client.newCall(downloadRequest).execute().use { resp ->
+            val read = BoundedText.read(resp.body, if (resp.isSuccessful) maxLength * 4 else 4096)
+            if (!resp.isSuccessful) {
+                return@withContext SkillResult.Error("Failed to download file (HTTP ${resp.code}): ${read.text}")
+            }
+            read.text to read.truncated
         }
 
-        val truncated = if (content.length > maxLength) {
+        val truncated = if (content.length > maxLength || bytesTruncated) {
             content.take(maxLength) + "\n\n[Content truncated at $maxLength characters]"
         } else {
             content
@@ -248,7 +261,7 @@ class DriveSkill(
         val sb = StringBuilder()
         sb.appendLine("File: $fileName")
         sb.appendLine("Type: $mimeType")
-        sb.appendLine("Size: ${content.length} characters")
+        sb.appendLine(if (bytesTruncated) "Size: more than ${content.length} characters" else "Size: ${content.length} characters")
         sb.appendLine()
         sb.append(truncated)
 

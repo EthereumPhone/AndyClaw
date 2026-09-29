@@ -1,5 +1,6 @@
 package org.ethereumphone.andyclaw.memory
 
+import org.ethereumphone.andyclaw.ExecutionEngine.rethrowIfCancelled
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
@@ -224,7 +225,8 @@ class MemoryRepository(
             val texts = batch.map { it.text }
             val embeddings = try {
                 provider.embed(texts)
-            } catch (_: Exception) {
+            } catch (e: Exception) {
+                rethrowIfCancelled(e)
                 return@forEach // skip this batch on error
             }
 

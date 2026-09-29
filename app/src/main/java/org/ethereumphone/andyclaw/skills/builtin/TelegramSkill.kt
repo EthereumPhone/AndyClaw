@@ -84,9 +84,9 @@ class TelegramSkill(
         val text = params["text"]?.jsonPrimitive?.contentOrNull
             ?: return SkillResult.Error("Missing required parameter: text")
 
-        val prefsChatId = ownerChatId()
-        val chatId = if (prefsChatId != 0L) prefsChatId
-            else chatStore.getOwnerChatId()
+        // Only the code-verified owner. The first chat that ever wrote to the bot can be a
+        // stranger, and this message may carry the owner's private data.
+        val chatId = ownerChatId().takeIf { it != 0L }
             ?: return SkillResult.Error(
                 "No verified Telegram owner. " +
                 "The user must complete Telegram setup in Settings before you can send messages."

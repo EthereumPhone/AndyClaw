@@ -21,6 +21,12 @@ data class RetryPolicy(
     val jitterFraction: Float = 0.25f,
     /** Maximum retries specifically for 529 (overloaded) errors. */
     val max529Retries: Int = 3,
+    /**
+     * Longest `retry-after` worth waiting for. A server asking for more (a daily quota's
+     * "come back in 3600 s") is refusing, not throttling: sleeping that long left the turn
+     * spinning with the user watching, so it fails now instead.
+     */
+    val maxRetryAfterSeconds: Int = 60,
 )
 
 /**
@@ -54,6 +60,11 @@ suspend fun <T> withRetry(
         } catch (e: AnthropicApiException) {
             val retryable = isRetryable(e.statusCode)
             if (!retryable || attempt >= policy.maxRetries) {
+                throw CannotRetryException(e, e.statusCode)
+            }
+            val retryAfter = e.retryAfterSeconds
+            if (retryAfter != null && retryAfter > policy.maxRetryAfterSeconds) {
+                Log.w(TAG, "retry-after ${retryAfter}s exceeds ${policy.maxRetryAfterSeconds}s; not retrying")
                 throw CannotRetryException(e, e.statusCode)
             }
 

@@ -1,5 +1,6 @@
 package org.ethereumphone.andyclaw.skills.builtin
 
+import org.ethereumphone.andyclaw.ExecutionEngine.rethrowIfCancelled
 import android.content.Context
 import android.content.Intent
 import android.location.Geocoder
@@ -324,6 +325,7 @@ class LocationSkill(private val context: Context) : AndyClawSkill {
                 "Location permission not granted. Please allow location access."
             )
         } catch (e: Exception) {
+            rethrowIfCancelled(e)
             SkillResult.Error("Failed to get current location: ${e.message}")
         }
     }
@@ -452,6 +454,7 @@ class LocationSkill(private val context: Context) : AndyClawSkill {
                 }
                 SkillResult.Success(response.toString())
             } catch (e: Exception) {
+                rethrowIfCancelled(e)
                 SkillResult.Error("Nearby search failed: ${e.message}")
             }
         }
@@ -493,13 +496,14 @@ class LocationSkill(private val context: Context) : AndyClawSkill {
             .get()
             .build()
 
-        val response = httpClient.newCall(request).execute()
-        if (!response.isSuccessful) {
-            throw Exception("Nominatim returned HTTP ${response.code}")
+        // use: a non-2xx response used to be thrown away unclosed, leaking the connection.
+        val body = httpClient.newCall(request).execute().use { response ->
+            if (!response.isSuccessful) {
+                throw Exception("Nominatim returned HTTP ${response.code}")
+            }
+            response.body?.string()
+                ?: throw Exception("Empty response from Nominatim")
         }
-
-        val body = response.body?.string()
-            ?: throw Exception("Empty response from Nominatim")
 
         val rawResults = json.decodeFromString<List<NominatimResult>>(body)
 

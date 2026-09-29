@@ -1,5 +1,6 @@
 package org.ethereumphone.andyclaw.memory.search
 
+import org.ethereumphone.andyclaw.ExecutionEngine.rethrowIfCancelled
 import org.ethereumphone.andyclaw.memory.db.Converters
 import org.ethereumphone.andyclaw.memory.db.MemoryDao
 import org.ethereumphone.andyclaw.memory.db.entity.MemoryChunkEntity
@@ -98,7 +99,8 @@ class MemorySearchManager(
 
         val chunks = try {
             dao.searchChunksFtsByAgent(ftsQuery, agentId)
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            rethrowIfCancelled(e)
             emptyList()
         }
 
@@ -164,7 +166,8 @@ class MemorySearchManager(
         // Embed the query
         val queryVec = try {
             provider.embed(query)
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            rethrowIfCancelled(e)
             return emptyMap()
         }
 

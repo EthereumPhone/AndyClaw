@@ -262,4 +262,19 @@ class PendingApprovalStoreTest {
         assertFalse(s.isExecutable(e))
         assertEquals(PendingApprovalStore.Claim.NotExecutable, s.claim(e.id))
     }
+
+    @Test
+    fun `the device store never writes down a wallet key or a recovery phrase`() {
+        val key = "0x4c0883a69102937d6231471b5dbb6204fe5129617082792ae468d01a3f362318"
+        val phrase = "abandon ability able about above absent absorb abstract absurd abuse access accident"
+        assertTrue(PendingApprovalStore.holdsSecret("""{"message":"$key","to":"+491701234567"}"""))
+        assertTrue(PendingApprovalStore.holdsSecret("""{"message":"$phrase","to":"+491701234567"}"""))
+        assertFalse(PendingApprovalStore.holdsSecret("""{"message":"on my way","to":"+491701234567"}"""))
+
+        val e = store(secret = PendingApprovalStore::holdsSecret).queue(request(buildJsonObject {
+            put("to", "+491701234567"); put("message", "my seed: $phrase")
+        }, tool = "send_sms"))!!
+        assertNull("a phrase must not be stored", e.input)
+        assertNull(e.inputPreview)
+    }
 }

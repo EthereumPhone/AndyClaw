@@ -12,10 +12,11 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import org.ethereumphone.andyclaw.skills.SkillResult
-import java.io.ByteArrayOutputStream
+import org.ethereumphone.andyclaw.ExecutionEngine.rethrowIfCancelled
+import org.ethereumphone.andyclaw.skills.builtin.BoundedOutputStream
+import org.ethereumphone.andyclaw.skills.builtin.SandboxThread
 import java.io.PrintStream
-import java.util.concurrent.Executors
-import java.util.concurrent.TimeUnit
+import java.util.concurrent.FutureTask
 import java.util.concurrent.TimeoutException
 
 class CustomToolExecutor(private val context: Context) {
@@ -26,17 +27,48 @@ class CustomToolExecutor(private val context: Context) {
         private const val MAX_OUTPUT_CHARS = 50_000
     }
 
-    private val executor = Executors.newSingleThreadExecutor()
+    /**
+     * For a running agent turn: waits cancellably, so STOP ends the wait instead of blocking for
+     * the whole timeout. The code's thread is interrupted and abandoned (see [SandboxThread]).
+     */
+    suspend fun executeCancellable(code: String, params: JsonObject, timeoutMs: Long = DEFAULT_TIMEOUT_MS): SkillResult {
+        val effectiveTimeout = timeoutMs.coerceIn(1000, MAX_TIMEOUT_MS)
+        val run = start(code, params)
+        return try {
+            finish(run, SandboxThread.await(run.future, effectiveTimeout))
+        } catch (e: Exception) {
+            rethrowIfCancelled(e)
+            fail(run, e, effectiveTimeout)
+        }
+    }
 
+    /** Blocking form, for the non-suspend test-run in CustomToolCreatorSkill. */
     fun execute(code: String, params: JsonObject, timeoutMs: Long = DEFAULT_TIMEOUT_MS): SkillResult {
         val effectiveTimeout = timeoutMs.coerceIn(1000, MAX_TIMEOUT_MS)
+        val run = start(code, params)
+        return try {
+            finish(run, SandboxThread.awaitBlocking(run.future, effectiveTimeout))
+        } catch (e: Exception) {
+            fail(run, e, effectiveTimeout)
+        }
+    }
 
-        val outputStream = ByteArrayOutputStream()
-        val printStream = PrintStream(outputStream)
+    private class Run(
+        val future: FutureTask<Any?>,
+        val output: BoundedOutputStream,
+        val startTime: Long,
+    )
+
+    private fun start(code: String, params: JsonObject): Run {
+        // Bounded: an unbounded buffer let a print loop grow the heap to OutOfMemoryError.
+        val outputStream = BoundedOutputStream(MAX_OUTPUT_CHARS * 4)
+        val printStream = PrintStream(outputStream, true, "UTF-8")
 
         val startTime = System.currentTimeMillis()
 
-        val future = executor.submit<Any?> {
+        // A fresh thread per call: on the old single-thread executor one runaway loop queued
+        // every later custom tool behind it forever.
+        val future = SandboxThread.start("custom_tool") {
             val interpreter = Interpreter(null, printStream, printStream, false)
             // Pre-bind Android context variables (same as CodeExecutionSkill)
             interpreter.set("context", context)
@@ -52,53 +84,53 @@ class CustomToolExecutor(private val context: Context) {
 
             interpreter.eval(code)
         }
+        return Run(future, outputStream, startTime)
+    }
 
-        return try {
-            val returnValue = future.get(effectiveTimeout, TimeUnit.MILLISECONDS)
-            val executionTimeMs = System.currentTimeMillis() - startTime
-            val output = outputStream.toString("UTF-8")
-            val truncated = output.length > MAX_OUTPUT_CHARS
+    private fun finish(run: Run, returnValue: Any?): SkillResult {
+        val executionTimeMs = System.currentTimeMillis() - run.startTime
+        val output = run.output.toString()
+        val truncated = output.length > MAX_OUTPUT_CHARS || run.output.overflowed
 
-            val result = buildJsonObject {
-                if (returnValue != null) {
-                    put("return_value", returnValue.toString())
-                    put("return_type", returnValue.javaClass.name)
-                } else {
-                    put("return_value", null as String?)
-                    put("return_type", "void")
-                }
-                put("output", output.take(MAX_OUTPUT_CHARS))
-                if (truncated) put("truncated", true)
-                put("execution_time_ms", executionTimeMs)
+        val result = buildJsonObject {
+            if (returnValue != null) {
+                put("return_value", returnValue.toString())
+                put("return_type", returnValue.javaClass.name)
+            } else {
+                put("return_value", null as String?)
+                put("return_type", "void")
             }
-            SkillResult.Success(result.toString())
-        } catch (e: TimeoutException) {
-            future.cancel(true)
-            val executionTimeMs = System.currentTimeMillis() - startTime
-            val output = outputStream.toString("UTF-8")
+            put("output", output.take(MAX_OUTPUT_CHARS))
+            if (truncated) put("truncated", true)
+            put("execution_time_ms", executionTimeMs)
+        }
+        return SkillResult.Success(result.toString())
+    }
+
+    private fun fail(run: Run, e: Exception, effectiveTimeout: Long): SkillResult {
+        val executionTimeMs = System.currentTimeMillis() - run.startTime
+        val output = run.output.toString()
+        if (e is TimeoutException) {
             val result = buildJsonObject {
                 put("error_type", "timeout")
                 put("error_message", "Code execution timed out after ${effectiveTimeout}ms")
                 put("output", output.take(MAX_OUTPUT_CHARS))
                 put("execution_time_ms", executionTimeMs)
             }
-            SkillResult.Error(result.toString())
-        } catch (e: Exception) {
-            val executionTimeMs = System.currentTimeMillis() - startTime
-            val output = outputStream.toString("UTF-8")
-            val cause = e.cause
-            val (errorType, errorMessage) = when (cause) {
-                is EvalError -> "eval_error" to (cause.message ?: "BeanShell evaluation error")
-                else -> "execution_error" to (cause?.message ?: e.message ?: "Unknown error")
-            }
-            val result = buildJsonObject {
-                put("error_type", errorType)
-                put("error_message", errorMessage)
-                put("output", output.take(MAX_OUTPUT_CHARS))
-                put("execution_time_ms", executionTimeMs)
-            }
-            SkillResult.Error(result.toString())
+            return SkillResult.Error(result.toString())
         }
+        val cause = e.cause
+        val (errorType, errorMessage) = when (cause) {
+            is EvalError -> "eval_error" to (cause.message ?: "BeanShell evaluation error")
+            else -> "execution_error" to (cause?.message ?: e.message ?: "Unknown error")
+        }
+        val result = buildJsonObject {
+            put("error_type", errorType)
+            put("error_message", errorMessage)
+            put("output", output.take(MAX_OUTPUT_CHARS))
+            put("execution_time_ms", executionTimeMs)
+        }
+        return SkillResult.Error(result.toString())
     }
 
     private fun resolveParamValue(element: kotlinx.serialization.json.JsonElement): Any? {

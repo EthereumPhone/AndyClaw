@@ -8,15 +8,13 @@ import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
+import org.ethereumphone.andyclaw.ExecutionEngine.rethrowIfCancelled
 import org.ethereumphone.andyclaw.skills.AndyClawSkill
 import org.ethereumphone.andyclaw.skills.SkillManifest
 import org.ethereumphone.andyclaw.skills.SkillResult
 import org.ethereumphone.andyclaw.skills.Tier
 import org.ethereumphone.andyclaw.skills.ToolDefinition
 import org.ethereumphone.andyclaw.skills.ToolEffect
-import java.io.BufferedReader
-import java.io.InputStreamReader
-import java.util.concurrent.TimeUnit
 
 class ShellSkill(
     private val context: Context,
@@ -126,7 +124,7 @@ class ShellSkill(
         }
     }
 
-    private fun runCommand(params: JsonObject, tier: Tier): SkillResult {
+    private suspend fun runCommand(params: JsonObject, tier: Tier): SkillResult {
         val command = params["command"]?.jsonPrimitive?.contentOrNull
             ?: return SkillResult.Error("Missing required parameter: command")
         val timeoutMs = params["timeout_ms"]?.jsonPrimitive?.intOrNull?.toLong()?.coerceIn(1000, 120_000)
@@ -187,32 +185,24 @@ class ShellSkill(
             }
 
             val process = processBuilder.start()
-
-            val reader = BufferedReader(InputStreamReader(process.inputStream))
-            val output = StringBuilder()
-            var line: String?
-            while (reader.readLine().also { line = it } != null) {
-                if (output.length < MAX_OUTPUT_CHARS) {
-                    output.appendLine(line)
-                }
+            val run = BoundedProcess.await(process, timeoutMs, MAX_OUTPUT_CHARS)
+            if (run.timedOut) {
+                return SkillResult.Error(
+                    "Command timed out after ${timeoutMs}ms" +
+                        if (run.output.isNotEmpty()) ". Output so far:\n${run.output}" else ""
+                )
             }
 
-            val completed = process.waitFor(timeoutMs, TimeUnit.MILLISECONDS)
-            if (!completed) {
-                process.destroyForcibly()
-                return SkillResult.Error("Command timed out after ${timeoutMs}ms")
-            }
-
-            val exitCode = process.exitValue()
             val result = buildJsonObject {
-                put("exit_code", exitCode)
-                put("output", output.toString().take(MAX_OUTPUT_CHARS))
-                if (output.length > MAX_OUTPUT_CHARS) {
+                put("exit_code", run.exitCode)
+                put("output", run.output)
+                if (run.truncated) {
                     put("truncated", true)
                 }
             }
             SkillResult.Success(result.toString())
         } catch (e: Exception) {
+            rethrowIfCancelled(e)
             SkillResult.Error("Failed to execute command: ${e.message}")
         }
     }

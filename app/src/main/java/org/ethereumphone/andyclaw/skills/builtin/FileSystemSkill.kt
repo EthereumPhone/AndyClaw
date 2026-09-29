@@ -9,6 +9,9 @@ import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
+import org.ethereumphone.andyclaw.ExecutionEngine.Provenance
+import org.ethereumphone.andyclaw.ExecutionEngine.currentProvenance
+import org.ethereumphone.andyclaw.agent.currentRunToken
 import org.ethereumphone.andyclaw.skills.AndyClawSkill
 import org.ethereumphone.andyclaw.skills.SkillManifest
 import org.ethereumphone.andyclaw.skills.SkillResult
@@ -102,13 +105,21 @@ class FileSystemSkill(private val context: Context) : AndyClawSkill {
         return when (tool) {
             "list_directory" -> listDirectory(params)
             "read_file" -> readFile(params)
-            "write_file" -> writeFile(params)
+            "write_file" -> writeFile(params, isCleanOwnerRun())
             "file_info" -> fileInfo(params)
             else -> SkillResult.Error("Unknown tool: $tool")
         }
     }
 
-    private fun resolvePath(path: String): File {
+    /**
+     * The owner's own chat that has not read anyone else's words in this run. Only such a run
+     * may rewrite the owner-authority files ([OWNER_WRITABLE]). No token or no provenance
+     * reads as not clean — the defaults are closed.
+     */
+    private suspend fun isCleanOwnerRun(): Boolean =
+        currentProvenance() == Provenance.USER && currentRunToken()?.readThirdPartyContent != true
+
+    private fun resolvePath(path: String, write: Boolean = false, cleanOwnerRun: Boolean = false): File {
         // Always resolve within the app sandbox - no permission needed
         val cleaned = path.trimStart('/')
         if (cleaned.isEmpty() || cleaned == ".") return workDir
@@ -124,13 +135,15 @@ class FileSystemSkill(private val context: Context) : AndyClawSkill {
             // each scheduled job, the queued approvals, which Telegram chat is the owner's.
             // Rewriting any of them was a way to give a stranger the owner's authority.
             val rel = canon.removePrefix(root).trimStart(File.separatorChar)
-            require(PROTECTED.none { p -> rel == p || rel.startsWith("$p.") || rel.startsWith(p + File.separator) }) {
-                "'$path' is AndyClaw's own state; the file tools don't read or write it"
+            protectionError(rel, write, cleanOwnerRun)?.let { reason ->
+                throw IllegalArgumentException("'$path' $reason")
             }
         }
     }
 
-    private companion object {
+    internal companion object {
+        const val MAX_READ_BYTES = 1024 * 1024
+
         val PROTECTED = setOf(
             org.ethereumphone.andyclaw.safety.TriggerProvenanceStore.FILENAME,
             org.ethereumphone.andyclaw.safety.PendingApprovalStore.FILENAME,
@@ -138,7 +151,52 @@ class FileSystemSkill(private val context: Context) : AndyClawSkill {
             "telegram_chats.json",
             "flows",
             "session_frames",
+            // The gateway device identity (its private key). Not the agent's to read.
+            "openclaw",
         )
+
+        /**
+         * Code and weights that run with AndyClaw's authority. Each has its own tool that
+         * validates what goes in (create_custom_tool test-runs, skill_* tools, the CLI tool
+         * manager, the model downloader); write_file into them skipped all of that. Readable.
+         */
+        val WRITE_PROTECTED = setOf(
+            "custom-tools",
+            "ai-skills",
+            "skills",
+            "clawhub-skills",
+            "cli-tools",
+            "models",
+        )
+
+        /**
+         * Standing instructions every later run obeys: HEARTBEAT.md is fed to each heartbeat as
+         * the owner's own task list (TRUSTED, clean token), soul.md and user_story.md go into
+         * every system prompt. A tainted or background run writing one planted an instruction
+         * that ran unattended forever. Only the owner's clean chat may write them — there is no
+         * other editor for HEARTBEAT.md, so "add a heartbeat task" in chat keeps working.
+         * heartbeat_journal.md is deliberately not here: the heartbeat writes it every run.
+         */
+        val OWNER_WRITABLE = setOf(
+            "HEARTBEAT.md",
+            "soul.md",
+            "user_story.md",
+        )
+
+        private fun matches(rel: String, p: String) =
+            rel == p || rel.startsWith("$p.") || rel.startsWith(p + File.separator)
+
+        /** Why [rel] (canonical, relative to filesDir) may not be touched, or null if it may. */
+        internal fun protectionError(rel: String, write: Boolean, cleanOwnerRun: Boolean): String? = when {
+            PROTECTED.any { matches(rel, it) } ->
+                "is AndyClaw's own state; the file tools don't read or write it"
+            write && WRITE_PROTECTED.any { matches(rel, it) } ->
+                "holds code or models AndyClaw runs; write_file can't change it (use the dedicated tool)"
+            write && !cleanOwnerRun && OWNER_WRITABLE.any { matches(rel, it) } ->
+                "holds the owner's standing instructions; only the owner's own chat, before it has " +
+                    "read anyone else's content, may change it"
+            else -> null
+        }
     }
 
     private fun listDirectory(params: JsonObject): SkillResult {
@@ -171,7 +229,9 @@ class FileSystemSkill(private val context: Context) : AndyClawSkill {
     private fun readFile(params: JsonObject): SkillResult {
         val path = params["path"]?.jsonPrimitive?.contentOrNull
             ?: return SkillResult.Error("Missing required parameter: path")
-        val maxBytes = params["max_bytes"]?.jsonPrimitive?.intOrNull ?: 100_000
+        // Clamped: a model-chosen max_bytes of 2^31 read a whole file into memory, and the
+        // OutOfMemoryError that followed is an Error no catch below sees.
+        val maxBytes = (params["max_bytes"]?.jsonPrimitive?.intOrNull ?: 100_000).coerceIn(1, MAX_READ_BYTES)
         val file = try {
             resolvePath(path)
         } catch (e: IllegalArgumentException) {
@@ -182,15 +242,13 @@ class FileSystemSkill(private val context: Context) : AndyClawSkill {
         if (!file.canRead()) return SkillResult.Error("File not readable: $path")
 
         return try {
-            val content = if (file.length() > maxBytes) {
-                file.inputStream().use { it.readNBytes(maxBytes).decodeToString() }
-            } else {
-                file.readText()
-            }
+            // Always a bounded read, whatever length() says: a file growing while we read it
+            // (a log another tool appends to) used to be read to its end with readText().
+            val read = file.inputStream().use { BoundedText.read(it, maxBytes) }
             val result = buildJsonObject {
-                put("content", content)
+                put("content", read.text)
                 put("size", file.length())
-                if (file.length() > maxBytes) put("truncated", true)
+                if (read.truncated) put("truncated", true)
             }
             SkillResult.Success(result.toString())
         } catch (e: Exception) {
@@ -198,13 +256,13 @@ class FileSystemSkill(private val context: Context) : AndyClawSkill {
         }
     }
 
-    private fun writeFile(params: JsonObject): SkillResult {
+    private fun writeFile(params: JsonObject, cleanOwnerRun: Boolean): SkillResult {
         val path = params["path"]?.jsonPrimitive?.contentOrNull
             ?: return SkillResult.Error("Missing required parameter: path")
         val content = params["content"]?.jsonPrimitive?.contentOrNull
             ?: return SkillResult.Error("Missing required parameter: content")
         val file = try {
-            resolvePath(path)
+            resolvePath(path, write = true, cleanOwnerRun = cleanOwnerRun)
         } catch (e: IllegalArgumentException) {
             return SkillResult.Error(e.message ?: "Invalid path")
         }

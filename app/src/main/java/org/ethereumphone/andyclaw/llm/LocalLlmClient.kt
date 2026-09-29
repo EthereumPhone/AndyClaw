@@ -345,7 +345,9 @@ class LocalLlmClient(
 
                 if (name.isNotBlank() && name in toolNames) {
                     blocks.add(ContentBlock.ToolUseBlock(
-                        id = "local-tool-${System.currentTimeMillis()}",
+                        // Unique per call: two calls parsed in the same millisecond shared an id,
+                        // so their tool_results could not be told apart.
+                        id = "local-tool-${java.util.UUID.randomUUID()}",
                         name = name,
                         input = args,
                     ))

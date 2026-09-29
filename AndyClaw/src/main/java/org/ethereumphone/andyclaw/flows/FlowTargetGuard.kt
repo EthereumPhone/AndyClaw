@@ -20,7 +20,7 @@ import org.ethereumphone.andyclaw.skills.ToolEffect
 object FlowTargetGuard {
 
     /** Semantic types that are controls, so their words describe what tapping them does. */
-    private val CONTROL_TYPES = setOf(
+    internal val CONTROL_TYPES = setOf(
         "button", "icon_button", "nav_button", "menu_item", "link", "toggle", "checkbox",
         "radio_button", "tab", "spinner", "text_field", "search_bar",
     )
@@ -77,6 +77,34 @@ object FlowTargetGuard {
         return NodeTreeChecksum.textOf(tree, viewId).lineSequence().any { text ->
             text.trim().equals(wanted, ignoreCase = true) || whole.containsMatchIn(text)
         }
+    }
+
+    /**
+     * A value the live row carrying [viewId] names only as the start of a longer word — "Bobby"
+     * for "Bob", the way a search's fuzzy hit looks — and never as a whole word, or null. A search
+     * that finds one such hit leaves the id unique, so no ambiguity check fires, and a flow
+     * compiled before taps carried an identity assert would open the wrong chat.
+     *
+     * Narrow on purpose, since a false hit retires a good flow: only non-controls (a button's
+     * words are what it does, "Done" is no near miss for "Do"), only the row's name — not a
+     * `summary` or `value`, where a chat preview "this is fine" would read as a near miss for a
+     * message "this" — and only word prefixes ("hi" inside "this" is nobody).
+     */
+    fun partialValueMatch(tree: String?, viewId: String, values: Collection<String>): String? {
+        val wanted = values.map { it.trim() }.filter { it.length >= 2 }
+        if (wanted.isEmpty()) return null
+        for (node in NodeTreeChecksum.nodesWithViewId(tree, viewId)) {
+            val type = node.str("type") ?: node.str("cls")
+            if (type != null && (type in CONTROL_TYPES || type.endsWith("Button") || type.contains("EditText"))) continue
+            val texts = listOf("label", "text", "desc").mapNotNull { node.str(it) }
+            for (value in wanted) {
+                val prefix = Regex("(?<![\\p{L}\\p{N}])" + Regex.escape(value) + "(?=[\\p{L}\\p{N}])", RegexOption.IGNORE_CASE)
+                if (texts.none { prefix.containsMatchIn(it) }) continue
+                val whole = Regex("(?<![\\p{L}\\p{N}])" + Regex.escape(value) + "(?![\\p{L}\\p{N}])", RegexOption.IGNORE_CASE)
+                if (texts.none { whole.containsMatchIn(it) }) return value
+            }
+        }
+        return null
     }
 
     /**

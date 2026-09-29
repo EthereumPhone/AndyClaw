@@ -10,7 +10,7 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
-import kotlinx.serialization.json.int
+import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import org.ethereumphone.andyclaw.skills.AndyClawSkill
@@ -82,7 +82,8 @@ class PhoneSkill(private val context: Context) : AndyClawSkill {
     }
 
     private fun getCallLog(params: JsonObject): SkillResult {
-        val limit = params["limit"]?.jsonPrimitive?.int ?: 20
+        // Clamped: the model picks this, and every row lands in the prompt.
+        val limit = (params["limit"]?.jsonPrimitive?.intOrNull ?: 20).coerceIn(1, 100)
         return try {
             val entries = mutableListOf<JsonObject>()
             val cursor = context.contentResolver.query(

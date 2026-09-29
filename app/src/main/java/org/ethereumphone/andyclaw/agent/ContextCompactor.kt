@@ -137,6 +137,33 @@ REMINDER: Do NOT call any tools. Respond with text only.
 """.trimIndent()
 
         /**
+         * Rough size of what [history] puts on the wire, in characters: every text, tool
+         * input, tool result and image payload, not just the text [extractText] sees. Only
+         * ever compared with itself — reactive compaction uses it to insist that a retry is
+         * actually smaller than the request that was just rejected as too long.
+         */
+        fun estimateSize(history: List<Message>): Long = history.sumOf { msg ->
+            when (val content = msg.content) {
+                is MessageContent.Text -> content.value.length.toLong()
+                is MessageContent.Blocks -> content.blocks.sumOf { block ->
+                    when (block) {
+                        is ContentBlock.TextBlock -> block.text.length.toLong()
+                        is ContentBlock.ThinkingBlock -> block.thinking.length.toLong()
+                        is ContentBlock.RedactedThinkingBlock -> 0L
+                        is ContentBlock.ToolUseBlock -> (block.name.length + block.input.toString().length).toLong()
+                        is ContentBlock.ToolResult -> block.content.length.toLong() +
+                            (block.contentBlocks?.sumOf { part ->
+                                when (part) {
+                                    is org.ethereumphone.andyclaw.llm.ToolResultContent.Text -> part.text.length.toLong()
+                                    is org.ethereumphone.andyclaw.llm.ToolResultContent.Image -> part.source.data.length.toLong()
+                                }
+                            } ?: 0L)
+                    }
+                }
+            }
+        }
+
+        /**
          * Strips the `<analysis>` scratchpad and extracts the `<summary>` content
          * from the raw LLM compaction output.
          */

@@ -63,8 +63,8 @@ class DeviceInfoSkill(private val context: Context) : AndyClawSkill {
                 val stat = StatFs(Environment.getDataDirectory().path)
                 val totalBytes = stat.totalBytes
                 val freeBytes = stat.availableBytes
-                put("storage_total_gb", String.format("%.1f", totalBytes / 1_073_741_824.0))
-                put("storage_free_gb", String.format("%.1f", freeBytes / 1_073_741_824.0))
+                put("storage_total_gb", String.format(java.util.Locale.ROOT, "%.1f", totalBytes / 1_073_741_824.0))
+                put("storage_free_gb", String.format(java.util.Locale.ROOT, "%.1f", freeBytes / 1_073_741_824.0))
 
                 // Network
                 val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
@@ -92,8 +92,8 @@ class DeviceInfoSkill(private val context: Context) : AndyClawSkill {
                 val activityManager = context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
                 val memInfo = ActivityManager.MemoryInfo()
                 activityManager.getMemoryInfo(memInfo)
-                put("ram_total_gb", String.format("%.1f", memInfo.totalMem / 1_073_741_824.0))
-                put("ram_available_gb", String.format("%.1f", memInfo.availMem / 1_073_741_824.0))
+                put("ram_total_gb", String.format(java.util.Locale.ROOT, "%.1f", memInfo.totalMem / 1_073_741_824.0))
+                put("ram_available_gb", String.format(java.util.Locale.ROOT, "%.1f", memInfo.availMem / 1_073_741_824.0))
             }
             SkillResult.Success(info.toString())
         } catch (e: Exception) {

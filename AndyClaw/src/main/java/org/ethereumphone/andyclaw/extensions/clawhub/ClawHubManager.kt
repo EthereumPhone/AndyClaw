@@ -77,6 +77,8 @@ class ClawHubManager(
      * security analysis) for a skill. Results are cached per slug.
      */
     suspend fun getRiskData(slug: String): ClawHubRiskData? {
+        // The slug is spliced into the API path; don't let `../` walk it.
+        if (!SafePaths.isValidClawHubSlug(slug)) return null
         riskDataCache[slug]?.let { return it }
         return try {
             val detail = api.getSkill(slug)
@@ -127,6 +129,7 @@ class ClawHubManager(
      * Get detailed info about a specific skill.
      */
     suspend fun getSkillInfo(slug: String): ClawHubSkillDetail? {
+        if (!SafePaths.isValidClawHubSlug(slug)) return null
         return try {
             api.getSkill(slug)
         } catch (e: Exception) {
@@ -153,7 +156,8 @@ class ClawHubManager(
         version: String? = null,
         force: Boolean = false,
     ): InstallResult = operationMutex.withLock {
-        val targetDir = File(managedSkillsDir, slug)
+        val targetDir = skillDir(slug)
+            ?: return@withLock InstallResult.Failed(slug, INVALID_SLUG)
 
         if (targetDir.isDirectory && !force) {
             if (lockFile.isInstalled(slug)) {
@@ -177,29 +181,12 @@ class ClawHubManager(
             )
         }
 
-        val success = try {
-            if (targetDir.isDirectory) targetDir.deleteRecursively()
-            api.downloadAndExtract(slug, resolvedVersion, targetDir)
-        } catch (e: Exception) {
-            log.warning("Download failed for '$slug': ${e.message}")
-            return@withLock InstallResult.Failed(slug, "Download failed: ${e.message}")
+        val staged = when (val s = downloadToStaging(slug, resolvedVersion)) {
+            is Staged.Ok -> s.dir
+            is Staged.Error -> return@withLock InstallResult.Failed(slug, s.reason)
         }
-
-        if (!success) {
-            return@withLock InstallResult.Failed(slug, "Download or extraction failed")
-        }
-
-        if (findSkillMd(targetDir) == null) {
-            val extracted = targetDir.walkTopDown()
-                .filter { it.isFile }
-                .map { it.relativeTo(targetDir).path }
-                .toList()
-            log.warning(
-                "Skill '$slug' ZIP missing SKILL.md at root. " +
-                    "Extracted ${extracted.size} file(s): ${extracted.take(10)}",
-            )
-            targetDir.deleteRecursively()
-            return@withLock InstallResult.Failed(slug, "Skill bundle missing SKILL.md")
+        if (!swapIn(staged, targetDir)) {
+            return@withLock InstallResult.Failed(slug, "Could not move the skill into place")
         }
 
         lockFile.recordInstall(slug, resolvedVersion)
@@ -226,7 +213,8 @@ class ClawHubManager(
         version: String? = null,
         force: Boolean = false,
     ): DownloadAssessResult = operationMutex.withLock {
-        val targetDir = File(managedSkillsDir, slug)
+        val targetDir = skillDir(slug)
+            ?: return@withLock DownloadAssessResult.Failed(slug, INVALID_SLUG)
 
         if (targetDir.isDirectory && !force) {
             if (lockFile.isInstalled(slug)) {
@@ -254,26 +242,12 @@ class ClawHubManager(
             )
         }
 
-        try {
-            if (targetDir.isDirectory) targetDir.deleteRecursively()
-            if (!api.downloadAndExtract(slug, resolvedVersion, targetDir)) {
-                return@withLock DownloadAssessResult.Failed(slug, "Download or extraction failed")
-            }
-        } catch (e: Exception) {
-            return@withLock DownloadAssessResult.Failed(slug, "Download failed: ${e.message}")
+        val staged = when (val s = downloadToStaging(slug, resolvedVersion)) {
+            is Staged.Ok -> s.dir
+            is Staged.Error -> return@withLock DownloadAssessResult.Failed(slug, s.reason)
         }
-
-        if (findSkillMd(targetDir) == null) {
-            val extracted = targetDir.walkTopDown()
-                .filter { it.isFile }
-                .map { it.relativeTo(targetDir).path }
-                .toList()
-            log.warning(
-                "Skill '$slug' ZIP missing SKILL.md at root. " +
-                    "Extracted ${extracted.size} file(s): ${extracted.take(10)}",
-            )
-            targetDir.deleteRecursively()
-            return@withLock DownloadAssessResult.Failed(slug, "Skill bundle missing SKILL.md")
+        if (!swapIn(staged, targetDir)) {
+            return@withLock DownloadAssessResult.Failed(slug, "Could not move the skill into place")
         }
 
         val versionSecurity = try {
@@ -305,7 +279,8 @@ class ClawHubManager(
         version: String?,
     ): InstallResult = operationMutex.withLock {
         pendingVersions.remove(slug)
-        val targetDir = File(managedSkillsDir, slug)
+        val targetDir = skillDir(slug)
+            ?: return@withLock InstallResult.Failed(slug, INVALID_SLUG)
 
         if (!targetDir.isDirectory || findSkillMd(targetDir) == null) {
             return@withLock InstallResult.Failed(
@@ -325,7 +300,7 @@ class ClawHubManager(
      */
     suspend fun cancelPendingInstall(slug: String) = operationMutex.withLock {
         pendingVersions.remove(slug)
-        val targetDir = File(managedSkillsDir, slug)
+        val targetDir = skillDir(slug) ?: return@withLock
         if (targetDir.isDirectory && !lockFile.isInstalled(slug)) {
             targetDir.deleteRecursively()
             log.info("Cancelled pending install of skill '$slug'")
@@ -342,7 +317,16 @@ class ClawHubManager(
      * @return true if the skill was found and removed.
      */
     suspend fun uninstall(slug: String): Boolean = operationMutex.withLock {
-        val targetDir = File(managedSkillsDir, slug)
+        val targetDir = skillDir(slug)
+        if (targetDir == null) {
+            // Never a directory we may delete. A lockfile row by that name can only
+            // have come from a hand-edited or restored lockfile; drop the row so it
+            // stops showing as installed, and touch nothing on disk.
+            if (!lockFile.isInstalled(slug)) return@withLock false
+            lockFile.recordUninstall(slug)
+            reloadSkillRegistry()
+            return@withLock true
+        }
 
         if (!targetDir.isDirectory && !lockFile.isInstalled(slug)) {
             log.warning("Skill '$slug' is not installed")
@@ -384,7 +368,8 @@ class ClawHubManager(
             return@withLock UpdateResult.NotInstalled(slug)
         }
 
-        val targetDir = File(managedSkillsDir, slug)
+        val targetDir = skillDir(slug)
+            ?: return@withLock UpdateResult.Failed(slug, INVALID_SLUG)
         val currentVersion = lockFile.getEntry(slug)?.version
 
         val detail = try {
@@ -403,16 +388,36 @@ class ClawHubManager(
             return@withLock UpdateResult.AlreadyUpToDate(slug, currentVersion)
         }
 
-        // Download the new version
-        val success = try {
-            if (targetDir.isDirectory) targetDir.deleteRecursively()
-            api.downloadAndExtract(slug, targetVersion, targetDir)
-        } catch (e: Exception) {
-            return@withLock UpdateResult.Failed(slug, "Download failed: ${e.message}")
+        // Download the new version beside the installed one. The installed copy is
+        // only replaced once the new one has extracted cleanly and passed the same
+        // threat assessment an install gets — an update used to delete first and
+        // assess never, so a failed download lost the skill and a skill that turned
+        // malicious in a later version was swapped in without a look.
+        val staged = when (val s = downloadToStaging(slug, targetVersion)) {
+            is Staged.Ok -> s.dir
+            is Staged.Error -> return@withLock UpdateResult.Failed(slug, s.reason)
         }
 
-        if (!success) {
-            return@withLock UpdateResult.Failed(slug, "Download or extraction failed")
+        val newAssessment = SkillThreatAnalyzer.deepAssess(
+            staged,
+            ClawHubRiskData(detail.moderation, versionSecurityOf(slug, targetVersion)),
+        )
+        val currentLevel = if (targetDir.isDirectory && findSkillMd(targetDir) != null) {
+            SkillThreatAnalyzer.deepAssess(
+                targetDir,
+                ClawHubRiskData(detail.moderation, currentVersion?.let { versionSecurityOf(slug, it) }),
+            ).level
+        } else {
+            null
+        }
+        updateBlockReason(currentLevel, newAssessment.level)?.let { reason ->
+            staged.deleteRecursively()
+            log.warning("Refused update of '$slug' to v$targetVersion: $reason")
+            return@withLock UpdateResult.Failed(slug, reason)
+        }
+
+        if (!swapIn(staged, targetDir)) {
+            return@withLock UpdateResult.Failed(slug, "Could not move the new version into place")
         }
 
         lockFile.recordInstall(slug, targetVersion)
@@ -445,16 +450,18 @@ class ClawHubManager(
      */
     fun listInstalled(): List<InstalledClawHubSkill> {
         return lockFile.getAllEntries().map { (slug, entry) ->
-            val targetDir = File(managedSkillsDir, slug)
-            val skillMd = if (targetDir.isDirectory) findSkillMd(targetDir) else null
-            val skill = skillMd?.let { SkillLoader.parseSkillFile(it, targetDir) }
+            // An unsafe slug still lists (so it can be uninstalled), but nothing is
+            // read from wherever it would resolve to.
+            val targetDir = skillDir(slug)
+            val skillMd = if (targetDir?.isDirectory == true) findSkillMd(targetDir) else null
+            val skill = skillMd?.let { SkillLoader.parseSkillFile(it, targetDir!!) }
 
             InstalledClawHubSkill(
                 slug = slug,
                 displayName = skill?.name ?: slug,
                 version = entry.version,
                 installedAt = entry.installedAt,
-                localDir = targetDir.absolutePath,
+                localDir = targetDir?.absolutePath ?: "",
             )
         }
     }
@@ -470,7 +477,7 @@ class ClawHubManager(
      * version was recorded during [downloadAndAssess].
      */
     fun hasPendingInstall(slug: String): Boolean {
-        val targetDir = File(managedSkillsDir, slug)
+        val targetDir = skillDir(slug) ?: return false
         return targetDir.isDirectory && !lockFile.isInstalled(slug) && pendingVersions.containsKey(slug)
     }
 
@@ -487,7 +494,7 @@ class ClawHubManager(
      *         the SKILL.md file cannot be read.
      */
     fun readSkillContent(slug: String): String? {
-        val targetDir = File(managedSkillsDir, slug)
+        val targetDir = skillDir(slug) ?: return null
         val skillMd = findSkillMd(targetDir) ?: return null
         return try {
             skillMd.readText()
@@ -498,6 +505,87 @@ class ClawHubManager(
     }
 
     // ── Internals ───────────────────────────────────────────────────
+
+    /**
+     * The install directory for [slug], or null if the slug is not one ClawHub
+     * could have issued or would resolve anywhere but directly under
+     * [managedSkillsDir]. Every entry point goes through this: `File(dir, "..")`
+     * is `filesDir`, and an install deletes its target before extracting.
+     */
+    private fun skillDir(slug: String): File? =
+        if (SafePaths.isValidClawHubSlug(slug)) SafePaths.childOf(managedSkillsDir, slug) else null
+
+    /**
+     * `.clawhub/staging/` (and `.clawhub/replaced/` in [swapIn]) — not direct
+     * children with a SKILL.md, so the skill loader never picks them up.
+     */
+    private val stagingRoot: File get() = File(managedSkillsDir, STAGING_DIR)
+
+    private sealed class Staged {
+        data class Ok(val dir: File) : Staged()
+        data class Error(val reason: String) : Staged()
+    }
+
+    /**
+     * Download and extract [slug]@[version] into a fresh staging directory and
+     * check it has a SKILL.md. Leaves the installed copy (if any) untouched.
+     */
+    private suspend fun downloadToStaging(slug: String, version: String): Staged {
+        val staging = File(stagingRoot, slug)
+        staging.deleteRecursively()
+        val ok = try {
+            api.downloadAndExtract(slug, version, staging)
+        } catch (e: Exception) {
+            log.warning("Download failed for '$slug': ${e.message}")
+            staging.deleteRecursively()
+            return Staged.Error("Download failed: ${e.message}")
+        }
+        if (!ok) {
+            staging.deleteRecursively()
+            return Staged.Error("Download or extraction failed")
+        }
+        if (findSkillMd(staging) == null) {
+            val extracted = staging.walkTopDown()
+                .filter { it.isFile }
+                .map { it.relativeTo(staging).path }
+                .toList()
+            log.warning(
+                "Skill '$slug' ZIP missing SKILL.md at root. " +
+                    "Extracted ${extracted.size} file(s): ${extracted.take(10)}",
+            )
+            staging.deleteRecursively()
+            return Staged.Error("Skill bundle missing SKILL.md")
+        }
+        return Staged.Ok(staging)
+    }
+
+    /**
+     * Replace [targetDir] with [staged]. The old copy is moved aside first and put
+     * back if the rename fails, so a failure leaves the previous version installed.
+     */
+    private fun swapIn(staged: File, targetDir: File): Boolean {
+        val old = File(managedSkillsDir, "$REPLACED_DIR/${targetDir.name}")
+        old.deleteRecursively()
+        old.parentFile?.mkdirs()
+        if (targetDir.exists() && !targetDir.renameTo(old)) {
+            staged.deleteRecursively()
+            return false
+        }
+        if (!staged.renameTo(targetDir)) {
+            if (old.exists()) old.renameTo(targetDir)
+            staged.deleteRecursively()
+            return false
+        }
+        old.deleteRecursively()
+        return true
+    }
+
+    private suspend fun versionSecurityOf(slug: String, version: String): ClawHubVersionSecurity? =
+        try {
+            api.getVersionDetail(slug, version).version?.security
+        } catch (_: Exception) {
+            null
+        }
 
     /**
      * Find the SKILL.md file in a directory, case-insensitively.
@@ -522,6 +610,29 @@ class ClawHubManager(
         skillRegistry.requestReload()
     }
 
+    companion object {
+        private const val STAGING_DIR = ".clawhub/staging"
+        private const val REPLACED_DIR = ".clawhub/replaced"
+        private const val INVALID_SLUG = "Invalid skill slug"
+
+        /**
+         * Whether an update from a version assessed at [current] to one assessed at
+         * [next] must be refused, and why. An update is not interactive (the agent's
+         * `clawhub_update`, the settings button, `updateAll`), so it may not raise
+         * the risk the user accepted at install: CRITICAL is always refused, and a
+         * MEDIUM-or-worse version is refused when it is worse than what is installed.
+         * With nothing assessable installed, anything the install flow would have
+         * prompted for (MEDIUM+) is refused — reinstall to see the prompt.
+         */
+        fun updateBlockReason(current: ThreatLevel?, next: ThreatLevel): String? = when {
+            next == ThreatLevel.CRITICAL ->
+                "New version assessed as ${next.displayName}; not installed"
+            next >= ThreatLevel.MEDIUM && (current == null || next > current) ->
+                "New version assessed as ${next.displayName} (installed: ${current?.displayName ?: "unknown"}); " +
+                    "reinstall it to review the risk"
+            else -> null
+        }
+    }
 }
 
 // ── Result types ────────────────────────────────────────────────────

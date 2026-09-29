@@ -71,10 +71,14 @@ class ScreenTimeSkill(private val context: Context) : AndyClawSkill {
         val now = System.currentTimeMillis()
         val startTime = params["start_time"]?.jsonPrimitive?.long ?: (now - 24L * 60 * 60 * 1000)
         val endTime = params["end_time"]?.jsonPrimitive?.long ?: now
-        val limit = params["limit"]?.jsonPrimitive?.contentOrNull?.toIntOrNull() ?: 20
+        // Clamped: the model picks this, and every row lands in the prompt.
+        val limit = (params["limit"]?.jsonPrimitive?.contentOrNull?.toIntOrNull() ?: 20).coerceIn(1, 100)
         return try {
             val usm = context.getSystemService(Context.USAGE_STATS_SERVICE) as UsageStatsManager
-            val stats = usm.queryUsageStats(UsageStatsManager.INTERVAL_BEST, startTime, endTime)
+            // Aggregated per package over the whole range: queryUsageStats(INTERVAL_BEST) returns
+            // one row per package *per bucket*, so a multi-day range listed the same app several
+            // times, each with a partial total.
+            val stats = usm.queryAndAggregateUsageStats(startTime, endTime)?.values
             if (stats.isNullOrEmpty()) {
                 return SkillResult.Error("No usage stats available. Ensure PACKAGE_USAGE_STATS permission is granted.")
             }
@@ -114,8 +118,8 @@ class ScreenTimeSkill(private val context: Context) : AndyClawSkill {
         val endTime = params["end_time"]?.jsonPrimitive?.long ?: now
         return try {
             val usm = context.getSystemService(Context.USAGE_STATS_SERVICE) as UsageStatsManager
-            val stats = usm.queryUsageStats(UsageStatsManager.INTERVAL_BEST, startTime, endTime)
-            val appStat = stats?.find { it.packageName == packageName }
+            // Aggregated: find() on the per-bucket list took one bucket's partial total.
+            val appStat = usm.queryAndAggregateUsageStats(startTime, endTime)?.get(packageName)
                 ?: return SkillResult.Error("No usage data found for $packageName")
             val pm = context.packageManager
             val label = try {

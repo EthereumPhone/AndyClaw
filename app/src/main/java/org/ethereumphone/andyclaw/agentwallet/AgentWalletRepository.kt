@@ -366,9 +366,12 @@ class AgentWalletRepository(
                 .createEthCallTransaction(owner, contract, encoded),
             DefaultBlockParameterName.LATEST,
         ).send()
-        if (response.hasError()) return BigInteger.ZERO
+        // A failed read is not a zero balance. Throwing leaves the token out of this scan (the
+        // caller's runCatching) instead of asserting the wallet holds none of it.
+        if (response.hasError()) throw IllegalStateException("balanceOf failed: ${response.error?.message}")
         val decoded = FunctionReturnDecoder.decode(response.value, function.outputParameters)
-        return (decoded.firstOrNull()?.value as? BigInteger) ?: BigInteger.ZERO
+        return decoded.firstOrNull()?.value as? BigInteger
+            ?: throw IllegalStateException("balanceOf returned nothing for $contract")
     }
 
     // ── Sending ─────────────────────────────────────────────────────────
@@ -464,10 +467,11 @@ class AgentWalletRepository(
                     chainId = chainId,
                     rpcEndpoint = rpc,
                 )
-                when {
-                    result == "decline" -> GasTopUpResult.Declined
-                    result.startsWith("0x") -> GasTopUpResult.Success(result)
-                    else -> GasTopUpResult.Failure(result.removePrefix("Error:").trim())
+                // Only a real userOpHash is a success; see UserWalletResult.
+                when (val outcome = UserWalletResult.parse(result)) {
+                    UserWalletResult.Declined -> GasTopUpResult.Declined
+                    is UserWalletResult.Submitted -> GasTopUpResult.Success(outcome.userOpHash)
+                    is UserWalletResult.Failed -> GasTopUpResult.Failure(outcome.message)
                 }
             }
         } catch (e: Exception) {

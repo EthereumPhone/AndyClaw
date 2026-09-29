@@ -4,6 +4,7 @@ import android.util.Log
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
+import org.ethereumphone.andyclaw.extensions.clawhub.SafePaths
 import java.io.File
 
 // ── Data models ─────────────────────────────────────────────────────────
@@ -29,6 +30,16 @@ class CliToolRegistry(private val baseDir: File) {
     companion object {
         private const val TAG = "CliToolRegistry"
         private const val REGISTRY_FILE = "registry.json"
+
+        /**
+         * What `cli_tools_add` accepts as a new id. The id names a directory under
+         * `filesDir/cli-tools`, a Termux temp dir and the config-store key prefix
+         * `cli.<id>.`, so it is kept to a single plain word: no separators, no dots
+         * (`..` was `filesDir`, and `a.b` would share `a`'s config keys).
+         */
+        val ID_REGEX = Regex("^[a-z0-9][a-z0-9_-]{0,63}$")
+
+        fun isValidNewId(id: String): Boolean = ID_REGEX.matches(id)
     }
 
     private val json = Json { ignoreUnknownKeys = true; prettyPrint = true }
@@ -54,11 +65,12 @@ class CliToolRegistry(private val baseDir: File) {
 
     @Synchronized
     fun add(entry: CliToolEntry) {
+        require(isValidNewId(entry.id)) { "Invalid CLI tool id" }
         val entries = getAll().toMutableList()
         entries.removeAll { it.id == entry.id }
         entries.add(entry)
         save(entries)
-        getToolDir(entry.id).mkdirs()
+        getToolDir(entry.id)?.mkdirs()
     }
 
     @Synchronized
@@ -76,20 +88,37 @@ class CliToolRegistry(private val baseDir: File) {
         val entries = getAll().toMutableList()
         entries.removeAll { it.id == id }
         save(entries)
-        getToolDir(id).deleteRecursively()
+        getToolDir(id)?.deleteRecursively()
     }
 
-    fun getToolDir(id: String): File = File(baseDir, id)
+    /**
+     * The cache directory for [id], or null if [id] would not resolve to its own
+     * directory directly under [baseDir]. Ids registered before [ID_REGEX] existed
+     * still get their directory as long as they are a single safe component.
+     */
+    fun getToolDir(id: String): File? {
+        if (id == REGISTRY_FILE) return null
+        return SafePaths.childOf(baseDir, id)
+    }
 
+    /**
+     * A cached doc file, or null. [relativePath] comes straight from the model via
+     * `cli_tools_info` (a READ tool, no prompt), so it must land strictly inside the
+     * tool's directory — `../../shared_prefs/…` used to read anything in the sandbox.
+     */
     fun getSkillMdContent(id: String, relativePath: String = "SKILL.md"): String? {
-        val file = File(getToolDir(id), relativePath)
-        return if (file.exists()) file.readText() else null
+        val dir = getToolDir(id) ?: return null
+        val file = SafePaths.resolveInside(dir, relativePath) ?: return null
+        return if (file.isFile) file.readText() else null
     }
 
-    fun saveSkillMd(id: String, relativePath: String, content: String) {
-        val file = File(getToolDir(id), relativePath)
+    /** Cache a doc file; false (and nothing written) if it would land outside the tool's dir. */
+    fun saveSkillMd(id: String, relativePath: String, content: String): Boolean {
+        val dir = getToolDir(id) ?: return false
+        val file = SafePaths.resolveInside(dir, relativePath) ?: return false
         file.parentFile?.mkdirs()
         file.writeText(content)
+        return true
     }
 
     private fun save(entries: List<CliToolEntry>) {

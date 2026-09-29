@@ -17,6 +17,7 @@ import androidx.core.app.NotificationCompat
 import java.io.File
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
@@ -35,6 +36,7 @@ import org.ethereumphone.andyclaw.skills.builtin.CronjobSkill
 import org.ethereumphone.andyclaw.skills.tier.OsCapabilities
 import org.ethereumphone.andyclaw.telegram.TelegramAgentRunner
 import org.ethereumphone.andyclaw.telegram.TelegramBotClient
+import org.ethereumphone.andyclaw.telegram.TelegramOwner
 import org.ethereumhpone.messengersdk.MessengerSDK
 
 /**
@@ -54,6 +56,13 @@ class HeartbeatBindingService : Service() {
         private const val LOW_BALANCE_CHANNEL_ID = "andyclaw_low_balance"
         private const val LOW_BALANCE_NOTIFICATION_ID = 1001
         private const val LOW_BALANCE_THRESHOLD = 5.0
+        private const val MAX_DEFERRED_UNTIL_UNLOCK = 20
+        /**
+         * A hang guard, not a budget: the wake lock covers [HEARTBEAT_TIMEOUT_MS], the run itself
+         * may take longer, but one that never ends must not hold the XMTP queue or a Telegram
+         * chat's lock forever.
+         */
+        private const val BACKGROUND_RUN_MAX_MS = 10L * 60 * 1000
 
         // Binder transact constants for OS-level Telegram registration.
         // These match AndyClawHeartbeatService.java's onTransact() codes.
@@ -122,18 +131,35 @@ class HeartbeatBindingService : Service() {
         }
     )
 
-    private var runtimeReady = false
+    // Written under the service's monitor (ensureRuntimeReady is @Synchronized), read from
+    // binder threads and coroutines alike.
+    @Volatile private var runtimeReady = false
+    private var telegramPrefsObserved = false
     private var messengerSdk: MessengerSDK? = null
-    private var telegramAgentRunner: TelegramAgentRunner? = null
-    private var telegramBotClient: TelegramBotClient? = null
-    private val telegramChatMutexes = mutableMapOf<Long, Mutex>()
+    // Replaced by the pref observers on a coroutine while binder threads read them.
+    @Volatile private var telegramAgentRunner: TelegramAgentRunner? = null
+    @Volatile private var telegramBotClient: TelegramBotClient? = null
+    private val telegramChatMutexes = java.util.concurrent.ConcurrentHashMap<Long, Mutex>()
     private val xmtpMutex = Mutex()
+    private val xmtpGate = org.ethereumphone.andyclaw.heartbeat.XmtpRelayGate()
+
+    /**
+     * Work the OS delivered before the user first unlocked. Every one of these calls is oneway
+     * and the OS does not redeliver, so a reminder, a cron job or a Telegram message dropped
+     * here was simply gone. Bounded: a device that sits locked for days must not grow this.
+     */
+    private val deferredUntilUnlock = ArrayList<Pair<String, () -> Unit>>()
+    private var unlockReceiver: android.content.BroadcastReceiver? = null
 
     private val binder = object : IHeartbeatService.Stub() {
         override fun heartbeatNow() {
             enforceSystemCaller()
             Log.i(TAG, "heartbeatNow() called by OS (uid=${Binder.getCallingUid()})")
-            ensureRuntimeReady()
+            // The next tick comes on its own; one before the first unlock is not worth keeping.
+            if (!ensureRuntimeReady()) {
+                Log.i(TAG, "heartbeatNow: runtime not ready (locked since boot?), skipping this tick")
+                return
+            }
             // Also ambient ingestion's scheduled sweep — before the heartbeat's own on/off check,
             // because the cards are their own feature. Its cooldown decides whether it runs.
             (application as NodeApp).onAmbientTick()
@@ -143,35 +169,61 @@ class HeartbeatBindingService : Service() {
         override fun heartbeatNowWithXmtpMessages(senderAddress: String, messageText: String) {
             enforceSystemCaller()
             Log.i(TAG, "heartbeatNowWithXmtpMessages() called by OS (uid=${Binder.getCallingUid()}) sender=$senderAddress text=\"${messageText.take(80)}\"")
-            ensureRuntimeReady()
+            // The messenger itself cannot run before the first unlock, so nothing is lost here
+            // in practice; and a stranger's message is not worth holding on to.
+            if (!ensureRuntimeReady()) {
+                Log.w(TAG, "heartbeatNowWithXmtpMessages: runtime not ready, dropping message from $senderAddress")
+                return
+            }
             performHeartbeatWithXmtp(senderAddress, messageText)
         }
 
         override fun reminderFired(reminderId: Int, time: Long, message: String, label: String) {
             enforceSystemCaller()
             Log.i(TAG, "reminderFired() from OS: id=$reminderId label=$label message=\"${message.take(80)}\"")
-            ensureRuntimeReady()
-            ReminderReceiver.removeStoredReminder(applicationContext, reminderId)
-            performReminder(reminderId, time, message, label)
+            // The reminder was deleted OS-side the moment it fired, so this is the only chance to
+            // tell the user. The notification is posted unconditionally, before anything that can
+            // fail: whether the agent run happens (wallet auth, a locked device, the model's own
+            // choice) used to decide whether the user heard about their reminder at all.
+            try {
+                ReminderReceiver.fireNotification(applicationContext, reminderId, message, label)
+            } catch (e: Exception) {
+                Log.e(TAG, "reminderFired: could not post the reminder notification", e)
+            }
+            removeStoredReminderQuietly(reminderId)
+            whenRuntimeReady("reminder $reminderId", deferIfLocked = true) {
+                removeStoredReminderQuietly(reminderId)
+                performReminder(reminderId, time, message, label)
+            }
         }
 
         override fun cronjobFired(cronjobId: Int, intervalMs: Long, reason: String, label: String) {
             enforceSystemCaller()
             Log.i(TAG, "cronjobFired() from OS: id=$cronjobId label=$label interval=${intervalMs / 60000}min reason=\"${reason.take(80)}\"")
-            ensureRuntimeReady()
-            performCronjob(cronjobId, intervalMs, reason, label)
+            whenRuntimeReady("cron job $cronjobId", deferIfLocked = true) {
+                performCronjob(cronjobId, intervalMs, reason, label)
+            }
         }
 
         override fun telegramMessageReceived(chatId: Long, text: String, username: String?, firstName: String?) {
             enforceSystemCaller()
             Log.i(TAG, "telegramMessageReceived() from OS: chat=$chatId user=$username text=\"${text.take(80)}\"")
-            ensureRuntimeReady()
-            performTelegramMessage(chatId, text, username, firstName)
+            // The OS polls Telegram from boot, and has already consumed the update: dropping it
+            // here would lose the owner's message for good.
+            whenRuntimeReady("Telegram message for chat $chatId", deferIfLocked = true) {
+                performTelegramMessage(chatId, text, username, firstName)
+            }
         }
 
         override fun notificationReceived(prompt: String) {
             enforceSystemCaller()
             Log.i(TAG, "notificationReceived() from OS: prompt=\"${prompt.take(120)}\"")
+            // The settings below live in credential-encrypted storage: reading them before the
+            // first unlock threw on the binder thread. A summary is refreshed by the next one.
+            if (!ensureRuntimeReady()) {
+                Log.i(TAG, "notificationReceived: runtime not ready, skipping")
+                return
+            }
             // Gate the LLM call on the user's opt-in. Previously this fired
             // unconditionally on every system notification, burning tokens
             // even when "Executive summary" was off in Settings — a silent
@@ -185,17 +237,103 @@ class HeartbeatBindingService : Service() {
                 Log.i(TAG, "notificationReceived: executive summary disabled by user — skipping LLM call")
                 return
             }
-            ensureRuntimeReady()
             Log.i(TAG, "notificationReceived: launching executive summary generation")
             serviceScope.launch {
-                try {
-                    val startMs = System.currentTimeMillis()
-                    (application as NodeApp).executiveSummaryManager.generateAndStoreForNotification(prompt)
-                    val elapsedMs = System.currentTimeMillis() - startMs
-                    Log.i(TAG, "notificationReceived: executive summary completed in ${elapsedMs}ms")
-                } catch (e: Exception) {
-                    Log.e(TAG, "Failed to handle notification summary update", e)
+                // Under a wake lock like every other OS-triggered run: the oneway call returns
+                // at once and the device could otherwise sleep halfway through the LLM call.
+                runWithWakeLock {
+                    try {
+                        val startMs = System.currentTimeMillis()
+                        (application as NodeApp).executiveSummaryManager.generateAndStoreForNotification(prompt)
+                        val elapsedMs = System.currentTimeMillis() - startMs
+                        Log.i(TAG, "notificationReceived: executive summary completed in ${elapsedMs}ms")
+                    } catch (e: Exception) {
+                        if (e is kotlinx.coroutines.CancellationException) throw e
+                        Log.e(TAG, "Failed to handle notification summary update", e)
+                    }
                 }
+            }
+        }
+    }
+
+    private fun removeStoredReminderQuietly(reminderId: Int) {
+        // Credential-encrypted SharedPreferences: throws before the first unlock. The deferred
+        // path removes it again once the user has unlocked.
+        try {
+            ReminderReceiver.removeStoredReminder(applicationContext, reminderId)
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not remove stored reminder $reminderId yet: ${e.message}")
+        }
+    }
+
+    private fun isUserUnlocked(): Boolean =
+        getSystemService(android.os.UserManager::class.java)?.isUserUnlocked == true
+
+    /**
+     * Runs [action] once the runtime is ready. Before the first unlock, [deferIfLocked] work is
+     * kept (bounded) and run on ACTION_USER_UNLOCKED; anything else, or anything that finds the
+     * runtime failing on an unlocked device, is dropped with a log line.
+     */
+    private fun whenRuntimeReady(what: String, deferIfLocked: Boolean, action: () -> Unit) {
+        if (ensureRuntimeReady()) {
+            action()
+            return
+        }
+        if (!deferIfLocked || isUserUnlocked()) {
+            Log.w(TAG, "Runtime not ready; dropping $what")
+            return
+        }
+        synchronized(deferredUntilUnlock) {
+            if (deferredUntilUnlock.size >= MAX_DEFERRED_UNTIL_UNLOCK) {
+                Log.w(TAG, "Locked since boot and $MAX_DEFERRED_UNTIL_UNLOCK items already waiting; dropping $what")
+                return
+            }
+            deferredUntilUnlock += what to action
+            Log.i(TAG, "Locked since boot; keeping $what until the user unlocks")
+            if (unlockReceiver == null) {
+                val receiver = object : android.content.BroadcastReceiver() {
+                    override fun onReceive(context: Context, intent: Intent) {
+                        serviceScope.launch { drainDeferredUntilUnlock() }
+                    }
+                }
+                unlockReceiver = receiver
+                androidx.core.content.ContextCompat.registerReceiver(
+                    this,
+                    receiver,
+                    android.content.IntentFilter(Intent.ACTION_USER_UNLOCKED),
+                    androidx.core.content.ContextCompat.RECEIVER_NOT_EXPORTED,
+                )
+            }
+        }
+        // The unlock may have happened between the check above and the registration.
+        if (isUserUnlocked()) serviceScope.launch { drainDeferredUntilUnlock() }
+    }
+
+    private fun drainDeferredUntilUnlock() {
+        if (!ensureRuntimeReady()) {
+            // Still locked, or unlocked but the runtime fails: keep what is queued while locked,
+            // it is bounded; once unlocked there is nothing to wait for.
+            if (isUserUnlocked()) {
+                synchronized(deferredUntilUnlock) {
+                    if (deferredUntilUnlock.isNotEmpty()) {
+                        Log.w(TAG, "Runtime failed after unlock; dropping ${deferredUntilUnlock.size} deferred item(s)")
+                    }
+                    deferredUntilUnlock.clear()
+                }
+            }
+            return
+        }
+        val work = synchronized(deferredUntilUnlock) {
+            val copy = deferredUntilUnlock.toList()
+            deferredUntilUnlock.clear()
+            copy
+        }
+        for ((what, action) in work) {
+            Log.i(TAG, "Running $what, deferred until unlock")
+            try {
+                action()
+            } catch (e: Exception) {
+                Log.e(TAG, "Deferred $what failed", e)
             }
         }
     }
@@ -253,6 +391,11 @@ class HeartbeatBindingService : Service() {
         telegramChatMutexes.clear()
         messengerSdk?.identity?.unbind()
         messengerSdk = null
+        synchronized(deferredUntilUnlock) {
+            unlockReceiver?.let { runCatching { unregisterReceiver(it) } }
+            unlockReceiver = null
+            deferredUntilUnlock.clear()
+        }
         serviceScope.cancel()
         super.onDestroy()
     }
@@ -271,26 +414,56 @@ class HeartbeatBindingService : Service() {
         return true
     }
 
-    private fun ensureRuntimeReady() {
-        if (runtimeReady) return
-        runtimeReady = true
+    /**
+     * Wires the runtime once. False when it cannot be wired now.
+     *
+     * The service is directBootAware so the OS can bind it before the first unlock, and the OS
+     * calls in on its own schedule from then on. Everything set up here (the LLM client, the
+     * secure prefs, HEARTBEAT.md) lives in credential-encrypted storage. The flag used to be set
+     * first: a tick before the first unlock threw halfway, the flag stayed true, and the runtime
+     * kept its NoOpAgentRunner until the process died — reminders and cron jobs "ran" and did
+     * nothing, and XMTP senders were answered with the literal "HEARTBEAT_OK". Now the flag is
+     * set only once the setup has succeeded, and a failure is retried on the next call.
+     */
+    @Synchronized
+    private fun ensureRuntimeReady(): Boolean {
+        if (runtimeReady) return true
+        if (!isUserUnlocked()) return false
 
         val app = application as NodeApp
         val runtime = app.runtime
+        try {
+            runtime.nativeSkillRegistry = app.nativeSkillRegistry
+            runtime.llmClient = app.getLlmClient()
+            runtime.agentRunner = HeartbeatAgentRunner(app, app.heartbeatLogStore)
 
-        runtime.nativeSkillRegistry = app.nativeSkillRegistry
-        runtime.llmClient = app.getLlmClient()
-        runtime.agentRunner = HeartbeatAgentRunner(app, app.heartbeatLogStore)
+            runtime.heartbeatConfig = heartbeatConfig(app)
 
-        runtime.heartbeatConfig = heartbeatConfig(app)
+            seedHeartbeatFile()
+            runtime.initialize()
+        } catch (e: Exception) {
+            Log.e(TAG, "Runtime setup failed; will retry on the next call", e)
+            return false
+        }
+        runtimeReady = true
 
-        seedHeartbeatFile()
-        runtime.initialize()
-
-        startTelegramBot()
-        observeTelegramPrefs()
+        // Telegram is its own feature: a failure here must not take the heartbeat with it, and
+        // the observers must be started once however often this is reached.
+        try {
+            startTelegramBot()
+            if (!telegramPrefsObserved) {
+                telegramPrefsObserved = true
+                observeTelegramPrefs()
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Telegram setup failed", e)
+        }
 
         Log.i(TAG, "Runtime initialized for OS-triggered heartbeat")
+        // Anything the OS delivered while the device was still locked.
+        val hasDeferred = synchronized(deferredUntilUnlock) { deferredUntilUnlock.isNotEmpty() }
+        if (hasDeferred) serviceScope.launch { drainDeferredUntilUnlock() }
+        return true
     }
 
     private fun startTelegramBot() {
@@ -304,7 +477,7 @@ class HeartbeatBindingService : Service() {
 
         // Create client first, then runner (runner needs the client for approval buttons)
         telegramBotClient = TelegramBotClient(token = { app.securePrefs.telegramBotToken.value })
-        telegramAgentRunner = TelegramAgentRunner(app, telegramBotClient!!)
+        telegramAgentRunner = newTelegramRunner(telegramBotClient!!)
 
         // Tell the OS system service to start polling via direct binder transact
         registerTelegramWithOs(token)
@@ -318,7 +491,7 @@ class HeartbeatBindingService : Service() {
                 val token = app.securePrefs.telegramBotToken.value
                 if (enabled && token.isNotBlank()) {
                     telegramBotClient = TelegramBotClient(token = { app.securePrefs.telegramBotToken.value })
-                    telegramAgentRunner = TelegramAgentRunner(app, telegramBotClient!!)
+                    telegramAgentRunner = newTelegramRunner(telegramBotClient!!)
                     registerTelegramWithOs(token)
                 } else {
                     unregisterTelegramWithOs()
@@ -336,7 +509,7 @@ class HeartbeatBindingService : Service() {
                 if (enabled && token.isNotBlank()) {
                     telegramAgentRunner?.clearAllHistory()
                     telegramBotClient = TelegramBotClient(token = { app.securePrefs.telegramBotToken.value })
-                    telegramAgentRunner = TelegramAgentRunner(app, telegramBotClient!!)
+                    telegramAgentRunner = newTelegramRunner(telegramBotClient!!)
                     registerTelegramWithOs(token)
                 } else if (token.isBlank()) {
                     unregisterTelegramWithOs()
@@ -396,10 +569,10 @@ class HeartbeatBindingService : Service() {
                     appendLine("- Scheduled time: $time (epoch ms)")
                     appendLine("- Current time: ${System.currentTimeMillis()} (epoch ms)")
                     appendLine()
-                    appendLine("Act on this reminder now. If the user asked you to do something")
-                    appendLine("(e.g. check battery, look something up, send a message), do it using")
-                    appendLine("your available tools. If it's a simple reminder to alert the user,")
-                    appendLine("create a notification so they see it.")
+                    appendLine("The user has already been shown a notification with this label and")
+                    appendLine("message, so do not create another one just to alert them.")
+                    appendLine("If the user asked you to do something (e.g. check battery, look")
+                    appendLine("something up, send a message), do it now using your available tools.")
                 }
                 // A reminder runs with the authority of whoever set it, and no more: one a
                 // stranger's message created stays untrusted when it fires.
@@ -462,61 +635,81 @@ class HeartbeatBindingService : Service() {
 
         // Lazily initialize runner/client — the OS may deliver messages before
         // the first heartbeat fires (which normally calls startTelegramBot()).
-        if (telegramBotClient == null) {
-            telegramBotClient = TelegramBotClient(token = { app.securePrefs.telegramBotToken.value })
+        // Under a lock: two messages arriving together each built their own runner, and the
+        // one that lost kept a private history nobody else saw.
+        val (runner, client) = synchronized(this) {
+            val c = telegramBotClient
+                ?: TelegramBotClient(token = { app.securePrefs.telegramBotToken.value })
+                    .also { telegramBotClient = it }
+            val r = telegramAgentRunner ?: newTelegramRunner(c).also { telegramAgentRunner = it }
+            r to c
         }
-        if (telegramAgentRunner == null) {
-            telegramAgentRunner = TelegramAgentRunner(app, telegramBotClient!!)
-        }
-
-        val runner = telegramAgentRunner!!
-        val client = telegramBotClient!!
 
         app.telegramChatStore.record(chatId, username, firstName)
 
         serviceScope.launch {
-            try {
-                // Handle /start command
-                if (text.startsWith("/start")) {
-                    val aiName = app.userStoryManager.getAiName() ?: "AndyClaw"
-                    client.sendMessage(chatId, "Hello! I'm $aiName. How can I help you?")
-                    return@launch
-                }
-
-                // Handle /clear command
-                if (text == "/clear") {
-                    runner.clearHistory(chatId)
-                    client.sendMessage(chatId, "Conversation history cleared.")
-                    return@launch
-                }
-
-                // Anyone but the owner writing in a loop must not become a stream of paid runs.
-                if (app.telegramChatStore.getOwnerChatId() != chatId &&
-                    !app.triggerBudget.tryAcquire("telegram:$chatId")
-                ) {
-                    Log.w(TAG, "Telegram chat $chatId is over its message budget; not running the agent")
-                    return@launch
-                }
-
-                // Regular messages: acquire per-chat mutex to prevent interleaving
-                val mutex = synchronized(telegramChatMutexes) {
-                    telegramChatMutexes.getOrPut(chatId) { Mutex() }
-                }
-                mutex.withLock {
-                    client.sendChatAction(chatId)
-                    val response = runner.run(chatId, text)
-                    if (response.isNotBlank()) {
-                        client.sendMessage(chatId, response)
-                    }
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to process Telegram message for chat $chatId", e)
-                try {
-                    client.sendMessage(chatId, "Sorry, something went wrong processing your message.")
-                } catch (_: Exception) {}
-            }
+            // A wake lock, like the other OS-triggered runs: the oneway call has already returned.
+            runWithWakeLock { handleTelegramMessage(app, runner, client, chatId, text) }
         }
     }
+
+    private suspend fun handleTelegramMessage(
+        app: NodeApp,
+        runner: TelegramAgentRunner,
+        client: TelegramBotClient,
+        chatId: Long,
+        text: String,
+    ) {
+        try {
+            // Handle /start command
+            if (text.startsWith("/start")) {
+                val aiName = app.userStoryManager.getAiName() ?: "AndyClaw"
+                client.sendMessage(chatId, "Hello! I'm $aiName. How can I help you?")
+                return
+            }
+
+            // Handle /clear command
+            if (text == "/clear") {
+                runner.clearHistory(chatId)
+                client.sendMessage(chatId, "Conversation history cleared.")
+                return
+            }
+
+            // Anyone but the owner writing in a loop must not become a stream of paid runs.
+            // The owner is the chat verified at setup, not whichever chat wrote first.
+            if (!TelegramOwner.isOwner(app.securePrefs.telegramOwnerChatId.value, chatId) &&
+                !app.triggerBudget.tryAcquire("telegram:$chatId")
+            ) {
+                Log.w(TAG, "Telegram chat $chatId is over its message budget; not running the agent")
+                return
+            }
+
+            // Regular messages: acquire per-chat mutex to prevent interleaving
+            val mutex = telegramChatMutexes.getOrPut(chatId) { Mutex() }
+            mutex.withLock {
+                client.sendChatAction(chatId)
+                val response = runner.run(chatId, text)
+                if (response.isNotBlank()) {
+                    client.sendMessage(chatId, response)
+                }
+            }
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to process Telegram message for chat $chatId", e)
+            try {
+                client.sendMessage(chatId, "Sorry, something went wrong processing your message.")
+            } catch (_: Exception) {}
+        }
+    }
+
+    /**
+     * The OS polls Telegram with allowed_updates=["message"], so an inline Approve/Decline press
+     * never reaches this app: every approval the runner asked for sat three minutes holding the
+     * chat's lock and then declined itself. On this path the call is queued for the phone instead.
+     */
+    private fun newTelegramRunner(client: TelegramBotClient) =
+        TelegramAgentRunner(application as NodeApp, client, inlineApprovals = false)
 
     private fun performHeartbeatWithXmtp(senderAddress: String, messageText: String) {
         if ((application as NodeApp).securePrefs.heartbeatIntervalMinutes.value <= 0) {
@@ -524,23 +717,37 @@ class HeartbeatBindingService : Service() {
             return
         }
         if (!isWalletAuthReady()) return
+        // Admitted before the budget is asked: a relayed duplicate or a message the full queue
+        // would drop must not spend the sender's runs.
+        when (xmtpGate.admit(senderAddress, messageText)) {
+            org.ethereumphone.andyclaw.heartbeat.XmtpRelayGate.Admission.DUPLICATE -> {
+                Log.i(TAG, "performHeartbeatWithXmtp: same message from $senderAddress relayed again, skipping")
+                return
+            }
+            org.ethereumphone.andyclaw.heartbeat.XmtpRelayGate.Admission.QUEUE_FULL -> {
+                Log.w(TAG, "performHeartbeatWithXmtp: XMTP queue full, dropping message from $senderAddress")
+                return
+            }
+            org.ethereumphone.andyclaw.heartbeat.XmtpRelayGate.Admission.ADMITTED -> Unit
+        }
         // A stranger writing in a loop must not become a stream of paid runs.
         if (!(application as NodeApp).triggerBudget.tryAcquire("xmtp:${senderAddress.lowercase()}")) {
+            xmtpGate.release()
             Log.w(TAG, "performHeartbeatWithXmtp: $senderAddress is over its message budget; not running the agent")
             return
         }
         serviceScope.launch {
-            // Prevent duplicate processing (OS may relay the same event twice)
-            if (!xmtpMutex.tryLock()) {
-                Log.i(TAG, "XMTP handling already in progress, skipping duplicate")
-                return@launch
-            }
+            // One at a time, in order. This was tryLock(), meant to drop a relayed duplicate, and it
+            // dropped every message that arrived while another was being answered — after the
+            // budget had been spent on it. Duplicates are now caught by xmtpGate instead.
             try {
-                runWithWakeLock {
-                    handleXmtpMessage(senderAddress, messageText)
+                xmtpMutex.withLock {
+                    // Held until the run ends, not until the wake lock is let go: the next
+                    // message must not start while this one is still being answered.
+                    runWithWakeLock { handleXmtpMessage(senderAddress, messageText) }.join()
                 }
             } finally {
-                xmtpMutex.unlock()
+                xmtpGate.release()
             }
         }
     }
@@ -551,7 +758,8 @@ class HeartbeatBindingService : Service() {
      * with the message + context as a prompt, and sends the response back to the sender.
      */
     private suspend fun handleXmtpMessage(senderAddress: String, messageText: String) {
-        ensureRuntimeReady()
+        // Never on the NoOpAgentRunner: it answers every sender with "HEARTBEAT_OK".
+        if (!ensureRuntimeReady()) return
         val app = application as NodeApp
 
         Log.i(TAG, "XMTP: handling message from $senderAddress: \"${messageText.take(80)}\"")
@@ -679,24 +887,43 @@ class HeartbeatBindingService : Service() {
         }
     }
 
-    private suspend fun runWithWakeLock(block: suspend () -> Unit) {
+    /**
+     * Runs [block] under a wake lock and returns the job running it.
+     *
+     * The wake lock is bounded, the work is not: it runs in [serviceScope] and outlives the wait.
+     * This used to be `withTimeoutOrNull(55 s) { block() }`, which cancelled the run itself — an
+     * XMTP reply or a cron task was cut off mid-way, after the model had been paid for, with no
+     * answer sent. The same shape as [org.ethereumphone.andyclaw.NodeRuntime.runHeartbeatNow].
+     * Callers that must not overlap the next run join the returned job.
+     */
+    private suspend fun runWithWakeLock(block: suspend () -> Unit): Job {
         val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
         val wakeLock = powerManager.newWakeLock(
             PowerManager.PARTIAL_WAKE_LOCK,
             WAKE_LOCK_TAG,
         ).apply { setReferenceCounted(false) }
 
+        val work = serviceScope.launch {
+            try {
+                val finished = withTimeoutOrNull(BACKGROUND_RUN_MAX_MS) { block(); true }
+                if (finished == null) Log.w(TAG, "Background run gave up after ${BACKGROUND_RUN_MAX_MS}ms")
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.e(TAG, "Error during background run", e)
+            }
+        }
         try {
             wakeLock.acquire(HEARTBEAT_TIMEOUT_MS + 5000)
             Log.i(TAG, "Wake lock acquired, running heartbeat...")
 
-            val result = withTimeoutOrNull(HEARTBEAT_TIMEOUT_MS) {
-                block()
-            }
+            val result = withTimeoutOrNull(HEARTBEAT_TIMEOUT_MS) { work.join() }
 
             if (result == null) {
-                Log.w(TAG, "Heartbeat timed out after ${HEARTBEAT_TIMEOUT_MS}ms")
+                Log.w(TAG, "Still running after ${HEARTBEAT_TIMEOUT_MS}ms; releasing the wake lock, the run carries on")
             }
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
         } catch (e: Exception) {
             Log.e(TAG, "Error during heartbeat", e)
         } finally {
@@ -705,6 +932,7 @@ class HeartbeatBindingService : Service() {
                 Log.i(TAG, "Wake lock released")
             }
         }
+        return work
     }
 
     /**

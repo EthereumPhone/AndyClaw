@@ -17,8 +17,10 @@ data class FrameRetention(
      */
     val maxFramesPerSession: Int = 600,
     /**
-     * Bytes in one conversation's recordings. Without it one runaway session could exceed
-     * [maxBytes] on its own, and pruning would then delete that very session.
+     * Bytes in one recording. Without it one runaway recording could exceed [maxBytes] on its
+     * own, and pruning would then delete that very session. Per recording like the frame cap:
+     * counted from the bytes already in the conversation's directory, a chat that had once
+     * recorded 16 MB recorded nothing ever again, silently.
      */
     val maxBytesPerSession: Long = 16L * 1024 * 1024,
 )
@@ -75,7 +77,9 @@ class SessionFrameStore(
         runCatching { dir.mkdirs() }
         val existing = frameFiles(dir)
         synchronized(openDirs) { openDirs.add(dir.name) }
-        return FrameSession(sessionId, dir, existing.size, existing.sumOf { it.length() })
+        // The index continues the conversation's numbering; the byte count starts at zero,
+        // because the caps are this recording's (see FrameRetention.maxBytesPerSession).
+        return FrameSession(sessionId, dir, existing.size, sessionBytes = 0L)
     }
 
     /** Sessions a recording is writing to right now; pruning never touches them. */

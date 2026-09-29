@@ -1,5 +1,6 @@
 package org.ethereumphone.andyclaw.skills.builtin
 
+import org.ethereumphone.andyclaw.ExecutionEngine.rethrowIfCancelled
 import android.content.Context
 import android.util.Log
 import kotlinx.coroutines.Dispatchers
@@ -224,6 +225,7 @@ class MessengerSkill(private val context: Context) : AndyClawSkill {
                 }
                 SkillResult.Error(msg)
             } catch (e: Exception) {
+                rethrowIfCancelled(e)
                 Log.e(TAG, "Unexpected error initializing identity: ${e.message}", e)
                 SkillResult.Error("Failed to initialize XMTP messaging: ${e.message}")
             }
@@ -283,6 +285,7 @@ class MessengerSkill(private val context: Context) : AndyClawSkill {
                 }
             }
         } catch (e: Exception) {
+            rethrowIfCancelled(e)
             Log.w(TAG, "Could not create AI contact: ${e.message}", e)
         }
 
@@ -304,6 +307,7 @@ class MessengerSkill(private val context: Context) : AndyClawSkill {
         val userAddress = try {
             withContext(Dispatchers.IO) { walletSDK.getAddress() }
         } catch (e: Exception) {
+            rethrowIfCancelled(e)
             Log.e(TAG, "sendMessageToUser: walletSDK.getAddress() threw: ${e.javaClass.simpleName}: ${e.message}", e)
             return SkillResult.Error("Failed to resolve user's wallet address: ${e.message}")
         }
@@ -348,6 +352,7 @@ class MessengerSkill(private val context: Context) : AndyClawSkill {
             Log.e(TAG, "Failed to list conversations: ${e.message}", e)
             SkillResult.Error("Failed to list XMTP conversations: ${e.message}")
         } catch (e: Exception) {
+            rethrowIfCancelled(e)
             Log.e(TAG, "Unexpected error listing conversations: ${e.message}", e)
             SkillResult.Error("Failed to list conversations: ${e.message}")
         }
@@ -356,7 +361,8 @@ class MessengerSkill(private val context: Context) : AndyClawSkill {
     private suspend fun readMessages(params: JsonObject): SkillResult {
         val conversationId = params["conversation_id"]?.jsonPrimitive?.contentOrNull
             ?: return SkillResult.Error("Missing required parameter: conversation_id")
-        val limit = params["limit"]?.jsonPrimitive?.intOrNull ?: 20
+        // Clamped: the model picks this, and every message lands in the prompt.
+        val limit = (params["limit"]?.jsonPrimitive?.intOrNull ?: 20).coerceIn(1, 100)
 
         ensureIdentityReady()?.let { return it }
 
@@ -383,6 +389,7 @@ class MessengerSkill(private val context: Context) : AndyClawSkill {
             Log.e(TAG, "Failed to read messages: ${e.message}", e)
             SkillResult.Error("Failed to read XMTP messages: ${e.message}")
         } catch (e: Exception) {
+            rethrowIfCancelled(e)
             Log.e(TAG, "Unexpected error reading messages: ${e.message}", e)
             SkillResult.Error("Failed to read messages: ${e.message}")
         }
@@ -424,6 +431,7 @@ class MessengerSkill(private val context: Context) : AndyClawSkill {
             Log.e(TAG, "Failed to send message: ${e.message}", e)
             SkillResult.Error("Failed to send XMTP message: ${e.message}")
         } catch (e: Exception) {
+            rethrowIfCancelled(e)
             Log.e(TAG, "Unexpected error sending message: ${e.message}", e)
             SkillResult.Error("Failed to send message: ${e.message}")
         }

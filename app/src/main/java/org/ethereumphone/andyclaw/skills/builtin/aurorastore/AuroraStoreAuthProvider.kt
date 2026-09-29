@@ -6,6 +6,7 @@
 
 package org.ethereumphone.andyclaw.skills.builtin.aurorastore
 
+import org.ethereumphone.andyclaw.ExecutionEngine.rethrowIfCancelled
 import android.util.Log
 import com.aurora.gplayapi.data.models.AuthData
 import com.aurora.gplayapi.data.serializers.PropertiesSerializer
@@ -107,6 +108,7 @@ class AuroraStoreAuthProvider(
                         return@withContext Result.success(authData)
 
                     } catch (e: Exception) {
+                        rethrowIfCancelled(e)
                         Log.e(TAG, "Failed to authenticate with $dispenserUrl", e)
                         lastException = e
                     }

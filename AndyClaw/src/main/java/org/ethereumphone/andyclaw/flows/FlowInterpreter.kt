@@ -317,7 +317,7 @@ class FlowInterpreter(
                         val position = step.index ?: 0
                         awaitTarget(index, viewId, position)?.let { return it }
                         // Against the tree the target was just seen in: the last read before the tap.
-                        checkTarget(flow, index, step, viewId, tree, typing = false)?.let { (reason, message) ->
+                        checkTarget(flow, index, step, viewId, tree, typing = false, params = params)?.let { (reason, message) ->
                             return abort(reason, message, index)
                         }
                         if (stopped()) return abort(FlowAbortReason.STOPPED, "stopped by the user", index)
@@ -333,7 +333,7 @@ class FlowInterpreter(
                         val viewId = step.target.viewId
                             ?: return abort(FlowAbortReason.UNSUPPORTED, "type without a view_id", index)
                         awaitTarget(index, viewId, 0)?.let { return it }
-                        checkTarget(flow, index, step, viewId, tree, typing = true)?.let { (reason, message) ->
+                        checkTarget(flow, index, step, viewId, tree, typing = true, params = params)?.let { (reason, message) ->
                             return abort(reason, message, index)
                         }
                         if (stopped()) return abort(FlowAbortReason.STOPPED, "stopped by the user", index)
@@ -492,6 +492,7 @@ class FlowInterpreter(
         viewId: String,
         tree: String?,
         typing: Boolean,
+        params: Map<String, String>,
     ): Pair<FlowAbortReason, String>? {
         FlowTargetGuard.privateAppOn(tree)?.let {
             return FlowAbortReason.SENSITIVE_TARGET to "$it is a private app"
@@ -506,6 +507,14 @@ class FlowInterpreter(
         if (matches > 1 && (acts(step) || !FlowTargetGuard.identityAssertedAfter(flow.steps, index))) {
             return FlowAbortReason.AMBIGUOUS_TARGET to
                 "$viewId matches $matches nodes and nothing before the next irreversible step proves which one was meant"
+        }
+        // A lone search hit that is only a near miss for the value the flow was given is somebody
+        // else. Checked on every tap, not just compiled ones with an identity assert, because
+        // flows already on devices predate those asserts.
+        if (!typing) {
+            FlowTargetGuard.partialValueMatch(tree, viewId, params.values)?.let {
+                return FlowAbortReason.AMBIGUOUS_TARGET to "$viewId shows '$it' only inside a longer word"
+            }
         }
         return null
     }

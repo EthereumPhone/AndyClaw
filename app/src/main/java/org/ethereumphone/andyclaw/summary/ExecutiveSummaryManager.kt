@@ -10,6 +10,7 @@ import org.ethereumphone.andyclaw.NodeApp
 import java.io.File
 import org.ethereumphone.andyclaw.llm.AnthropicModels
 import org.ethereumphone.andyclaw.llm.ContentBlock
+import org.ethereumphone.andyclaw.llm.LlmProvider
 import org.ethereumphone.andyclaw.llm.Message
 import org.ethereumphone.andyclaw.llm.MessagesRequest
 import org.ethereumphone.andyclaw.llm.MessagesResponse
@@ -40,6 +41,24 @@ class ExecutiveSummaryManager(private val app: NodeApp) {
         private const val OS_BINDER_DESCRIPTOR = "com.android.server.IAndyClawHeartbeat"
         private const val TRANSACTION_SET = 2 // IBinder.FIRST_CALL_TRANSACTION + 2
         private const val TRANSACTION_GET = 3 // IBinder.FIRST_CALL_TRANSACTION + 3
+
+        /**
+         * The model id to put on the wire for [provider].
+         *
+         * CUSTOM and OPEN_ROUTER serve ids the AnthropicModels enum does not know (a
+         * self-hosted "llama3.2:latest", any OpenRouter catalogue id). Falling back to
+         * MINIMAX_M3 for those sent a model the user's endpoint may not serve, so the
+         * summary failed on every heartbeat. Mirror ChatViewModel's customModelIdOverride:
+         * pass the raw id through there. Everywhere else — and for ids the enum knows, so
+         * legacy aliases still canonicalise — keep the enum resolution and its fallback.
+         */
+        internal fun resolveSummaryModelId(provider: LlmProvider, modelId: String): String {
+            val known = AnthropicModels.fromModelId(modelId)
+            if (known != null) return known.modelId
+            val passthrough = provider == LlmProvider.CUSTOM || provider == LlmProvider.OPEN_ROUTER
+            if (passthrough && modelId.isNotBlank()) return modelId.trim()
+            return AnthropicModels.MINIMAX_M3.modelId
+        }
 
         private const val HEARTBEAT_SYSTEM_PROMPT = """Write a lockscreen executive summary as bullet points (• prefix). Summarize ONLY: device state (battery, connectivity), pending notifications, and upcoming tasks/reminders. Do NOT include the current time or date. Max 4-5 bullets, each one short sentence. Output ONLY the bullet points, nothing else."""
 
@@ -206,13 +225,19 @@ class ExecutiveSummaryManager(private val app: NodeApp) {
         } else {
             app.securePrefs.heartbeatModel.value
         }
-        val model = AnthropicModels.fromModelId(modelId) ?: AnthropicModels.MINIMAX_M3
+        // Same provider getHeartbeatLlmClient() picked the client for.
+        val provider = if (useSameModel) {
+            app.securePrefs.selectedProvider.value
+        } else {
+            app.securePrefs.heartbeatProvider.value
+        }
+        val wireModelId = resolveSummaryModelId(provider, modelId)
         val augmentedPrompt = augmentPromptWithDismissals(systemPrompt)
 
-        Log.i(TAG, "callLlm: model=${model.modelId}, provider=${model.provider}, useSame=$useSameModel, userMsg=${userMessage.take(150)}")
+        Log.i(TAG, "callLlm: model=$wireModelId, provider=$provider, useSame=$useSameModel, userMsg=${userMessage.take(150)}")
 
         val request = MessagesRequest(
-            model = model.modelId,
+            model = wireModelId,
             messages = listOf(
                 Message.user(userMessage),
             ),
@@ -243,13 +268,19 @@ class ExecutiveSummaryManager(private val app: NodeApp) {
         } else {
             app.securePrefs.heartbeatModel.value
         }
-        val model = AnthropicModels.fromModelId(modelId) ?: AnthropicModels.MINIMAX_M3
+        // Same provider getHeartbeatLlmClient() picked the client for.
+        val provider = if (useSameModel) {
+            app.securePrefs.selectedProvider.value
+        } else {
+            app.securePrefs.heartbeatProvider.value
+        }
+        val wireModelId = resolveSummaryModelId(provider, modelId)
         val augmentedPrompt = augmentPromptWithDismissals(systemPrompt)
 
-        Log.i(TAG, "callLlmStreaming: model=${model.modelId}, provider=${model.provider}, useSame=$useSameModel")
+        Log.i(TAG, "callLlmStreaming: model=$wireModelId, provider=$provider, useSame=$useSameModel")
 
         val request = MessagesRequest(
-            model = model.modelId,
+            model = wireModelId,
             messages = listOf(
                 Message.user(userMessage),
             ),

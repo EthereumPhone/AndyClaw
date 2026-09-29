@@ -1,5 +1,6 @@
 package org.ethereumphone.andyclaw.autopilot
 
+import org.ethereumphone.andyclaw.flows.AssertStep
 import org.ethereumphone.andyclaw.flows.CheckpointStep
 import org.ethereumphone.andyclaw.flows.Flow
 import org.ethereumphone.andyclaw.flows.FlowCodec
@@ -7,6 +8,7 @@ import org.ethereumphone.andyclaw.flows.FlowIntent
 import org.ethereumphone.andyclaw.flows.FlowIntentStep
 import org.ethereumphone.andyclaw.flows.FlowStep
 import org.ethereumphone.andyclaw.flows.FlowStepEffects
+import org.ethereumphone.andyclaw.flows.FlowTargetGuard
 import org.ethereumphone.andyclaw.flows.FlowValidation
 import org.ethereumphone.andyclaw.flows.FlowValidator
 import org.ethereumphone.andyclaw.flows.NodeExists
@@ -44,8 +46,9 @@ object AutopilotFlowCompiler {
         // A flow replays from the app's own start; its first target would not be there.
         if (plan.startIntent != null) return Result.Skipped("started_at_intent")
 
+        val typedKeys = actions.mapNotNull { (it.option as? StepOption.Type)?.valueKey }.distinct()
         val steps = ArrayList<FlowStep>()
-        for (a in actions) {
+        for ((i, a) in actions.withIndex()) {
             val target = a.target ?: return Result.Skipped("untargeted_action")
             val viewId = target.viewId ?: return Result.Skipped("no_view_id")
             if (a.screenBefore.elements.count { it.viewId == viewId } != 1) return Result.Skipped("view_id_not_unique")
@@ -60,10 +63,32 @@ object AutopilotFlowCompiler {
                 is StepOption.Type -> TypeStep(target = Selector(viewId = viewId), value = "{{${o.valueKey}}}")
                 else -> return Result.Skipped("unsupported_action:${o.key.substringBefore(':')}")
             }
+            // A row that is only there because of what was typed — a search hit — is chosen by
+            // the typed value, but the flow keeps only its view id. On replay with another value
+            // the lone hit may be somebody else ("Bob" finds only "Bobby"), the id is still unique,
+            // and nothing would notice. So such a tap carries an identity check, or is not compiled.
+            val identity = if (a.option is StepOption.Tap) {
+                when (val d = valueDependence(actions, i, target, plan.values, typedKeys)) {
+                    ValueDependence.None -> null
+                    ValueDependence.Unprovable -> return Result.Skipped("value_dependent_target")
+                    is ValueDependence.Named -> d
+                }
+            } else null
+            // Before the tap: the very node about to be tapped must name the value (whole word,
+            // polled by the interpreter), which catches the single fuzzy hit.
+            identity?.let { steps += AssertStep(viewId = viewId, nodeTextContains = "{{${it.key}}}") }
             if (FlowStepEffects.of(step) == ToolEffect.IRREVERSIBLE) {
                 steps += CheckpointStep(name = "commit_${steps.size}")
             }
             steps += step
+            // After the tap, when the next screen names the value somewhere it did not before
+            // (the chat's title): that is what proves the row, should the id ever repeat, and it
+            // lands before any checkpoint because the next checkpoint is only added later.
+            identity?.let { d ->
+                val after = actions.getOrNull(i + 1)?.screenBefore ?: result.finalScreen
+                provingNode(a.screenBefore, after, viewId, d.value)
+                    ?.let { steps += AssertStep(viewId = it, nodeTextContains = "{{${d.key}}}") }
+            }
         }
 
         val first = actions.first()
@@ -90,6 +115,58 @@ object AutopilotFlowCompiler {
             is FlowValidation.Valid -> Result.Compiled(flow)
             is FlowValidation.Invalid -> Result.Skipped("invalid:" + v.errors.joinToString { it.code })
         }
+    }
+
+    private sealed interface ValueDependence {
+        data object None : ValueDependence
+        /** Chosen by a typed value that its text does not name as a whole word: nothing can check it. */
+        data object Unprovable : ValueDependence
+        data class Named(val key: String, val value: String) : ValueDependence
+    }
+
+    /**
+     * Whether the tapped [target] of action [i] was picked because of a typed value: its text
+     * carries one, or it is a non-control that only appeared after a value was typed. A button
+     * that appears once there is text (a messenger's Send) is not a pick among results.
+     */
+    private fun valueDependence(
+        actions: List<ExecutedAction>,
+        i: Int,
+        target: ScreenElement,
+        values: Map<String, String>,
+        typedKeys: List<String>,
+    ): ValueDependence {
+        val texts = listOfNotNull(target.label, target.value, target.summary)
+        var contained = false
+        // Longest first: "Anna Schmidt" is the better witness than "Anna".
+        for (key in typedKeys.sortedByDescending { values[it]?.length ?: 0 }) {
+            val value = values[key]?.trim()?.takeIf { it.isNotEmpty() } ?: continue
+            if (texts.none { it.contains(value, ignoreCase = true) }) continue
+            if (texts.any { wholeWord(value).containsMatchIn(it) }) return ValueDependence.Named(key, value)
+            contained = true
+        }
+        if (contained) return ValueDependence.Unprovable
+        val previous = actions.getOrNull(i - 1)
+        val appearedAfterTyping = previous?.option is StepOption.Type &&
+            previous.screenBefore.elements.none { it.viewId == target.viewId }
+        return if (appearedAfterTyping && target.type !in FlowTargetGuard.CONTROL_TYPES) ValueDependence.Unprovable
+        else ValueDependence.None
+    }
+
+    /**
+     * A view id on [after] (not the tapped one, and not editable — a search box echoes what was
+     * typed whichever row is tapped) that names [wanted], where nothing under that id named it on
+     * [before]. A header that already said "Results for Anna" would pass whichever row was tapped.
+     */
+    private fun provingNode(before: ScreenSnapshot, after: ScreenSnapshot?, tapped: String, wanted: String): String? {
+        after ?: return null
+        val word = wholeWord(wanted)
+        fun ScreenElement.names() = listOfNotNull(this.label, this.value, this.summary).any { word.containsMatchIn(it) }
+        val candidates = after.elements.filter { it.viewId != null && it.viewId != tapped && !it.editable && it.names() }
+        return candidates.firstOrNull { c ->
+            after.elements.count { it.viewId == c.viewId } == 1 &&
+                before.elements.none { it.viewId == c.viewId && it.names() }
+        }?.viewId
     }
 
     /**

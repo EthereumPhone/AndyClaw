@@ -20,7 +20,11 @@ import kotlinx.serialization.json.put
 import org.ethereumphone.andyclaw.BuildConfig
 import org.ethereumphone.andyclaw.ExecutionEngine.rethrowIfCancelled
 import org.ethereumphone.andyclaw.agentwallet.AgentWalletChains
+import org.ethereumphone.andyclaw.agentwallet.AmountFormat
+import org.ethereumphone.andyclaw.agentwallet.Erc20Check
+import org.ethereumphone.andyclaw.agentwallet.EthAddress
 import org.ethereumphone.andyclaw.agentwallet.SubWalletResult
+import org.ethereumphone.andyclaw.agentwallet.UserWalletResult
 import org.ethereumphone.andyclaw.skills.AndyClawSkill
 import org.ethereumphone.andyclaw.skills.SkillManifest
 import org.ethereumphone.andyclaw.skills.SkillResult
@@ -895,6 +899,44 @@ class WalletSkill(
                 "Ensure this device runs ethOS with the wallet service enabled."
     )
 
+    /**
+     * The user wallet's answer as a tool result. Only a real userOpHash is a submission: the SDK
+     * returns a bundler rejection as `"Error: …"`, which was reported as `status: "submitted"`.
+     */
+    private inline fun userWalletResult(raw: String?, onSubmitted: (String) -> SkillResult): SkillResult =
+        when (val outcome = UserWalletResult.parse(raw)) {
+            is UserWalletResult.Submitted -> onSubmitted(outcome.userOpHash)
+            UserWalletResult.Declined -> SkillResult.Error("Transaction was declined by the user.")
+            is UserWalletResult.Failed -> SkillResult.Error("Transaction was not submitted: ${outcome.message}")
+        }
+
+    /**
+     * The decimals to send [contractAddress] with: the registry's for a vetted token (whatever
+     * the model claimed), otherwise the chain's, checked by [Erc20Check] — which also refuses an
+     * address with no code on this chain.
+     */
+    private suspend fun resolveTokenDecimals(
+        contractAddress: String,
+        chainId: Int,
+        claimedDecimals: Int?,
+    ): Erc20Check.Verdict {
+        resolveDecimalsByAddress(contractAddress, chainId)?.let { return Erc20Check.Verdict.Ok(it) }
+        if (!EthAddress.isWellFormed(contractAddress)) {
+            return Erc20Check.Verdict.Refused(
+                "Not a contract address: '$contractAddress' (expected 0x + 40 hex characters)."
+            )
+        }
+        val rpc = chainIdToRpc(chainId)
+            ?: return Erc20Check.Verdict.Refused("Unsupported chain ID: $chainId.")
+        val onChain = withContext(Dispatchers.IO) { Erc20Check.read(rpc, contractAddress) }
+        return Erc20Check.verdict(
+            contract = contractAddress,
+            chainName = AgentWalletChains.chainDisplayName(chainId),
+            onChain = onChain,
+            claimedDecimals = claimedDecimals,
+        )
+    }
+
     // ── User wallet operations ──────────────────────────────────────────
 
     private suspend fun getUserWalletAddress(wallet: WalletSDK): SkillResult {
@@ -1035,11 +1077,9 @@ class WalletSkill(
                     rpcEndpoint = rpcEndpoint,
                 )
             }
-            if (result == "decline") {
-                SkillResult.Error("Transaction was declined by the user.")
-            } else {
+            userWalletResult(result) { hash ->
                 SkillResult.Success(buildJsonObject {
-                    put("user_op_hash", result)
+                    put("user_op_hash", hash)
                     put("status", "submitted")
                     put("chain_id", chainId)
                 }.toString())
@@ -1057,7 +1097,7 @@ class WalletSkill(
             ?: return SkillResult.Error("Missing required parameter: to")
         val amount = params["amount"]?.jsonPrimitive?.contentOrNull
             ?: return SkillResult.Error("Missing required parameter: amount")
-        val decimals = params["decimals"]?.jsonPrimitive?.intOrNull
+        val claimedDecimals = params["decimals"]?.jsonPrimitive?.intOrNull
             ?: return SkillResult.Error("Missing required parameter: decimals")
         val chainId = params["chain_id"]?.jsonPrimitive?.intOrNull
             ?: return SkillResult.Error("Missing required parameter: chain_id")
@@ -1067,6 +1107,13 @@ class WalletSkill(
                 "Unsupported chain ID: $chainId. " +
                         "Supported chains: ${CHAIN_NAMES.keys.sorted().joinToString()}"
             )
+
+        // The model's decimals are checked like agent_send_token's: the registry wins for a
+        // vetted token, and anything else must be a contract on this chain that agrees.
+        val decimals = when (val verdict = resolveTokenDecimals(contractAddress, chainId, claimedDecimals)) {
+            is Erc20Check.Verdict.Ok -> verdict.decimals
+            is Erc20Check.Verdict.Refused -> return SkillResult.Error(verdict.reason)
+        }
 
         val rawAmount = try {
             BigDecimal(amount)
@@ -1104,11 +1151,9 @@ class WalletSkill(
                     rpcEndpoint = rpcEndpoint,
                 )
             }
-            if (result == "decline") {
-                SkillResult.Error("Transaction was declined by the user.")
-            } else {
+            userWalletResult(result) { hash ->
                 SkillResult.Success(buildJsonObject {
-                    put("user_op_hash", result)
+                    put("user_op_hash", hash)
                     put("status", "submitted")
                     put("chain_id", chainId)
                     put("token", contractAddress)
@@ -1145,7 +1190,12 @@ class WalletSkill(
     private fun recipientError(to: String): String? =
         org.ethereumphone.andyclaw.agentwallet.EthAddress.validationError(to)?.let { "Not sent: $it ($to)." }
 
-    private suspend fun agentSendTransaction(params: JsonObject): SkillResult {
+    private suspend fun agentSendTransaction(
+        params: JsonObject,
+        /** What the history row shows, when the caller knows better than raw wei. */
+        historyAmount: String? = null,
+        historyToken: String? = null,
+    ): SkillResult {
         val to = params["to"]?.jsonPrimitive?.contentOrNull
             ?: return SkillResult.Error("Missing required parameter: to")
         recipientError(to)?.let { return SkillResult.Error(it) }
@@ -1184,7 +1234,17 @@ class WalletSkill(
                         chainId = chainId,
                     )
                 },
-                record = { hash -> saveAgentTx(hash, chainId, to, value, "RAW", "agent_send_transaction") },
+                record = { hash ->
+                    // A plain value transfer is a native send: show "0.01 ETH", not "10000000000000000 RAW".
+                    val native = historyAmount == null && data.removePrefix("0x").isEmpty()
+                    val wei = if (native) value.toBigIntegerOrNull() else null
+                    saveAgentTx(
+                        hash, chainId, to,
+                        historyAmount ?: wei?.let { AmountFormat.fromBaseUnits(it, NATIVE_TOKENS[chainId]?.decimals ?: 18) } ?: value,
+                        historyToken ?: if (wei != null) AgentWalletChains.nativeSymbol(chainId) else "RAW",
+                        "agent_send_transaction",
+                    )
+                },
             )
             when (outcome) {
                 is SubWalletResult.Failure ->
@@ -1238,7 +1298,7 @@ class WalletSkill(
         recipientError(to)?.let { return SkillResult.Error(it) }
         val amount = params["amount"]?.jsonPrimitive?.contentOrNull
             ?: return SkillResult.Error("Missing required parameter: amount")
-        val decimals = params["decimals"]?.jsonPrimitive?.intOrNull
+        val claimedDecimals = params["decimals"]?.jsonPrimitive?.intOrNull
             ?: return SkillResult.Error("Missing required parameter: decimals")
         val chainId = params["chain_id"]?.jsonPrimitive?.intOrNull
             ?: return SkillResult.Error("Missing required parameter: chain_id")
@@ -1248,6 +1308,13 @@ class WalletSkill(
                 "Unsupported chain ID: $chainId. " +
                         "Supported chains: ${CHAIN_NAMES.keys.sorted().joinToString()}"
             )
+
+        // The model's decimals are checked like agent_send_token's: the registry wins for a
+        // vetted token, and anything else must be a contract on this chain that agrees.
+        val decimals = when (val verdict = resolveTokenDecimals(contractAddress, chainId, claimedDecimals)) {
+            is Erc20Check.Verdict.Ok -> verdict.decimals
+            is Erc20Check.Verdict.Refused -> return SkillResult.Error(verdict.reason)
+        }
 
         val rawAmount = try {
             BigDecimal(amount)
@@ -1395,7 +1462,9 @@ class WalletSkill(
         val txParams = JsonObject(mapOf(
             "to" to JsonPrimitive(to),
             "value" to JsonPrimitive(weiAmount.toString()),
-            "data" to JsonPrimitive("0"),
+            // Empty calldata. "0" decoded to one 0x00 byte, which a contract recipient's
+            // receive() never sees — it hits the fallback, and a non-payable one reverts.
+            "data" to JsonPrimitive("0x"),
             "chain_id" to JsonPrimitive(chainId),
         ))
         val result = proposeTransaction(txParams)
@@ -1489,7 +1558,13 @@ class WalletSkill(
                 }
             )
 
-        val (contractAddress, decimals) = resolved
+        val (contractAddress, claimedDecimals) = resolved
+        // A registry token passes straight through; an explicit contract_address must be a
+        // contract on this chain whose decimals() agrees — see Erc20Check.
+        val decimals = when (val verdict = resolveTokenDecimals(contractAddress, chainId, claimedDecimals)) {
+            is Erc20Check.Verdict.Ok -> verdict.decimals
+            is Erc20Check.Verdict.Refused -> return SkillResult.Error(verdict.reason)
+        }
 
         // Convert human-readable amount to smallest-unit amount using token decimals
         // e.g. "1" USDC (6 decimals) → 1_000_000 smallest units
@@ -1539,11 +1614,9 @@ class WalletSkill(
                     rpcEndpoint = rpcEndpoint,
                 )
             }
-            if (result == "decline") {
-                SkillResult.Error("Transaction was declined by the user.")
-            } else {
+            userWalletResult(result) { hash ->
                 SkillResult.Success(buildJsonObject {
-                    put("user_op_hash", result)
+                    put("user_op_hash", hash)
                     put("status", "submitted")
                     put("chain_id", chainId)
                     put("token", contractAddress)
@@ -1592,7 +1665,7 @@ class WalletSkill(
             "data" to JsonPrimitive("0x"),
             "chain_id" to JsonPrimitive(chainId),
         ))
-        val result = agentSendTransaction(txParams)
+        val result = agentSendTransaction(txParams, historyAmount = amount, historyToken = nativeToken.symbol)
 
         if (result is SkillResult.Success) {
             return SkillResult.Success(buildJsonObject {
@@ -1637,7 +1710,13 @@ class WalletSkill(
                 }
             )
 
-        val (contractAddress, decimals) = resolved
+        val (contractAddress, claimedDecimals) = resolved
+        // A registry token passes straight through; an explicit contract_address must be a
+        // contract on this chain whose decimals() agrees — see Erc20Check.
+        val decimals = when (val verdict = resolveTokenDecimals(contractAddress, chainId, claimedDecimals)) {
+            is Erc20Check.Verdict.Ok -> verdict.decimals
+            is Erc20Check.Verdict.Refused -> return SkillResult.Error(verdict.reason)
+        }
 
         // Convert human-readable amount to smallest-unit amount using token decimals
         // e.g. "5" USDC (6 decimals) → 5_000_000 smallest units
@@ -1726,14 +1805,17 @@ class WalletSkill(
         chainId: Int,
         explicitDecimals: Int?,
     ): Triple<String, Int, String?>? {
-        // Native currency keywords
-        val nativeKeywords = setOf("ETH", "MATIC", "POL", "BNB", "AVAX")
-        if (token.uppercase() in nativeKeywords) {
-            return Triple(ETH_TOKEN_ADDRESS, 18, token.uppercase())
+        // Native currency keyword — only this chain's own. "POL" on Ethereum is an
+        // ERC-20, not native ETH; mapping every native keyword to 0xEeee… sold ETH
+        // when asked to sell POL, with no prompt on the agent wallet.
+        if (isNativeKeyword(token, chainId)) {
+            return Triple(ETH_TOKEN_ADDRESS, 18, NATIVE_TOKENS[chainId]?.symbol ?: "ETH")
         }
 
-        // 0x-prefixed contract address
+        // 0x-prefixed contract address. Exactly 40 hex digits: it goes straight into the 0x
+        // quote URL, where anything else could add or override query parameters.
         if (token.startsWith("0x")) {
+            if (!EthAddress.isWellFormed(token)) return null
             val decimals = resolveDecimalsByAddress(token, chainId)
                 ?: explicitDecimals
                 ?: return null
@@ -1750,6 +1832,12 @@ class WalletSkill(
         }
 
         return null
+    }
+
+    private fun isNativeKeyword(token: String, chainId: Int): Boolean {
+        val upper = token.trim().uppercase(java.util.Locale.ROOT)
+        val native = NATIVE_TOKENS[chainId]?.symbol ?: return false
+        return upper == native || (native == "POL" && upper == "MATIC")
     }
 
     private fun isEthLike(address: String, symbol: String?, chainId: Int): Boolean {
@@ -1789,7 +1877,7 @@ class WalletSkill(
                         "Use a well-known symbol (USDC, WETH, DAI, …), 'ETH' for native, " +
                         "or provide a 0x-prefixed address with sell_decimals."
             )
-        val (sellAddress, sellDecimals, sellSymbol) = sellResolved
+        val (sellAddress, claimedSellDecimals, sellSymbol) = sellResolved
 
         // Resolve buy token
         val buyResolved = resolveSwapToken(buyTokenParam, chainId, explicitBuyDecimals)
@@ -1798,15 +1886,29 @@ class WalletSkill(
                         "Use a well-known symbol (USDC, WETH, DAI, …), 'ETH' for native, " +
                         "or provide a 0x-prefixed address with buy_decimals."
             )
-        val (buyAddress, buyDecimals, _) = buyResolved
+        val (buyAddress, buyDecimals, buySymbol) = buyResolved
 
         val isSellingEth = isEthLike(sellAddress, sellSymbol, chainId)
 
+        // Nothing asks the user before an agent swap, so an unlisted sell token's decimals are
+        // the chain's, not the model's: 18 for a 6-decimal token sold 10^12 times the amount.
+        val sellDecimals = if (isSellingEth) claimedSellDecimals else {
+            when (val verdict = resolveTokenDecimals(sellAddress, chainId, claimedSellDecimals)) {
+                is Erc20Check.Verdict.Ok -> verdict.decimals
+                is Erc20Check.Verdict.Refused -> return SkillResult.Error(verdict.reason)
+            }
+        }
+
         // Convert human-readable amount to smallest unit
+        // Exact: "1.1234567" USDC used to sell 1.123456 while the result echoed the input.
         val rawSellAmount = try {
             BigDecimal(sellAmount)
                 .multiply(BigDecimal.TEN.pow(sellDecimals))
-                .toBigInteger()
+                .toBigIntegerExact()
+        } catch (e: ArithmeticException) {
+            return SkillResult.Error(
+                "sell_amount '$sellAmount' has more than $sellDecimals decimal places for this token."
+            )
         } catch (e: Exception) {
             return SkillResult.Error("Invalid sell_amount '$sellAmount': ${e.message}")
         }
@@ -1898,10 +2000,12 @@ class WalletSkill(
                     if (allowanceNode !is kotlinx.serialization.json.JsonNull) {
                         val spender = allowanceNode.jsonObject["spender"]?.jsonPrimitive?.contentOrNull
                         if (spender != null) {
-                            val maxApproval = BigInteger("2").pow(256).subtract(BigInteger.ONE)
+                            // Exactly this swap's amount. An unlimited approval to a spender
+                            // read from the API response is a standing drain on the whole
+                            // balance of the token if that response is ever wrong.
                             val approveFn = Function(
                                 "approve",
-                                listOf(Address(spender), Uint256(maxApproval)),
+                                listOf(Address(spender), Uint256(rawSellAmount)),
                                 emptyList<TypeReference<*>>(),
                             )
                             txList.add(SubWalletSDK.TxParams(
@@ -1933,7 +2037,12 @@ class WalletSkill(
                     )
                 },
                 record = { hash ->
-                    saveAgentTx(hash, chainId, "", sellAmount, "$sellTokenParam->$buyTokenParam", "agent_swap")
+                    // No "to": the proceeds come back to this wallet, and the settler contract the
+                    // batch calls is not a recipient — the history screen hides a blank one.
+                    saveAgentTx(
+                        hash, chainId, "", sellAmount,
+                        "${sellSymbol ?: sellTokenParam}->${buySymbol ?: buyTokenParam}", "agent_swap",
+                    )
                 },
             )
 
@@ -2003,10 +2112,13 @@ class WalletSkill(
             ) {
                 // Native balance
                 val nativeInfo = NATIVE_TOKENS[chainId]
-                val balanceWei = withContext(Dispatchers.IO) {
-                    web3j.ethGetBalance(agentAddress, DefaultBlockParameterName.LATEST)
-                        .send().balance
+                val response = withContext(Dispatchers.IO) {
+                    web3j.ethGetBalance(agentAddress, DefaultBlockParameterName.LATEST).send()
                 }
+                if (response.hasError()) {
+                    return SkillResult.Error("Could not read the balance: ${response.error?.message}")
+                }
+                val balanceWei = response.balance
                 val humanBalance = BigDecimal(balanceWei)
                     .divide(BigDecimal.TEN.pow(nativeInfo?.decimals ?: 18), 18, RoundingMode.HALF_UP)
                     .stripTrailingZeros()
@@ -2069,15 +2181,20 @@ class WalletSkill(
                 if (callResult.isReverted) {
                     return SkillResult.Error("balanceOf call reverted: ${callResult.revertReason}")
                 }
+                // A failed call and an address with no code both decode to nothing, which read
+                // as a balance of 0 — a wrong answer the model then acts on. Say "unknown".
+                if (callResult.hasError()) {
+                    return SkillResult.Error("Could not read the balance: ${callResult.error?.message}")
+                }
 
                 val decoded = FunctionReturnDecoder.decode(
                     callResult.value, balanceOfFn.outputParameters
                 )
-                val rawBalance = if (decoded.isNotEmpty()) {
-                    decoded[0].value as BigInteger
-                } else {
-                    BigInteger.ZERO
-                }
+                val rawBalance = decoded.firstOrNull()?.value as? BigInteger
+                    ?: return SkillResult.Error(
+                        "No balance returned by $contractAddress on chain $chainId — it may not be " +
+                            "a token contract on this chain."
+                    )
 
                 val result = buildJsonObject {
                     put("address", agentAddress)

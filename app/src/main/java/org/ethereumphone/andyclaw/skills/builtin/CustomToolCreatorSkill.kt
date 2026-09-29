@@ -34,7 +34,6 @@ class CustomToolCreatorSkill(
 
     companion object {
         private const val TAG = "CustomToolCreatorSkill"
-        private val NAME_REGEX = Regex("^[a-z][a-z0-9_]{0,48}$")
         private val DATE_FMT = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.US)
     }
 
@@ -179,8 +178,8 @@ class CustomToolCreatorSkill(
             return SkillResult.Error("Invalid test_params: must be a JSON object")
         }
 
-        // Validate name format
-        if (!NAME_REGEX.matches(name)) {
+        // Validate name format (the store enforces the same rule on every access)
+        if (!CustomToolStore.isValidName(name)) {
             return SkillResult.Error(
                 "Invalid tool name '$name'. Must start with a lowercase letter, " +
                     "contain only lowercase letters, numbers, and underscores, " +

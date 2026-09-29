@@ -33,6 +33,6 @@ class CustomToolAdapter(
     override val privilegedManifest: SkillManifest? = null
 
     override suspend fun execute(tool: String, params: JsonObject, tier: Tier): SkillResult {
-        return executor.execute(toolDef.code, params)
+        return executor.executeCancellable(toolDef.code, params)
     }
 }

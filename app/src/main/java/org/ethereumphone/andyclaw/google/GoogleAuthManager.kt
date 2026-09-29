@@ -1,5 +1,6 @@
 package org.ethereumphone.andyclaw.google
 
+import org.ethereumphone.andyclaw.ExecutionEngine.rethrowIfCancelled
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
@@ -99,7 +100,9 @@ class GoogleAuthManager(private val securePrefs: SecurePrefs) {
             return@withContext
         }
 
-        val server = ServerSocket(0) // bind to random available port
+        // Random port on loopback only. ServerSocket(0) listened on every interface, so a
+        // device on the same Wi-Fi could connect to the port the auth code is delivered on.
+        val server = ServerSocket(0, 1, java.net.InetAddress.getLoopbackAddress())
         val port = server.localPort
         val redirectUri = "http://127.0.0.1:$port"
 
@@ -135,6 +138,9 @@ class GoogleAuthManager(private val securePrefs: SecurePrefs) {
 
             // Wait for the browser to redirect back to our loopback server
             val socket = server.accept()
+            // The accept timeout does not cover the read: a client that connects and sends
+            // nothing would otherwise hold this flow (and its IO thread) forever.
+            socket.soTimeout = 15_000
             val reader = BufferedReader(InputStreamReader(socket.getInputStream()))
             val requestLine = reader.readLine() ?: ""
             // e.g. "GET /?code=4/0Abc...&state=...&scope=... HTTP/1.1"
@@ -176,6 +182,7 @@ class GoogleAuthManager(private val securePrefs: SecurePrefs) {
         } catch (e: java.net.SocketTimeoutException) {
             Log.w(TAG, "OAuth flow timed out — user did not complete sign-in within 5 minutes")
         } catch (e: Exception) {
+            rethrowIfCancelled(e)
             Log.e(TAG, "OAuth flow error: ${e.message}", e)
         } finally {
             try { server.close() } catch (_: Exception) {}

@@ -11,6 +11,8 @@ data class AutoCompactTrackingState(
     var compacted: Boolean = false,
     var turnCounter: Int = 0,
     var consecutiveFailures: Int = 0,
+    /** Reactive compactions attempted in this run, successful or not. */
+    var reactiveAttempts: Int = 0,
 )
 
 /**
@@ -30,6 +32,13 @@ class ReactiveCompaction(
         private const val TAG = "ReactiveCompaction"
         /** Stop retrying after this many consecutive compaction failures. */
         const val MAX_CONSECUTIVE_FAILURES = 3
+        /**
+         * Hard cap per run. Each attempt is a paid summary call, and a success resets
+         * [AutoCompactTrackingState.consecutiveFailures] — so when the oversize sits in what
+         * compaction keeps (the recent tail, the system prompt, the tools), compact → 413 →
+         * compact went on forever, paying every cycle.
+         */
+        const val MAX_REACTIVE_ATTEMPTS_PER_RUN = 3
         /** When reacting to a prompt-too-long error, keep fewer recent messages
          *  to maximize the amount we compact away. */
         private const val REACTIVE_KEEP_RECENT = 4
@@ -67,15 +76,28 @@ class ReactiveCompaction(
             Log.w(TAG, "Circuit breaker tripped: ${tracking.consecutiveFailures} consecutive failures, skipping compaction")
             return null
         }
+        if (tracking.reactiveAttempts >= MAX_REACTIVE_ATTEMPTS_PER_RUN) {
+            Log.w(TAG, "Reactive compaction cap reached (${tracking.reactiveAttempts} this run), giving up")
+            return null
+        }
+        tracking.reactiveAttempts++
 
-        Log.i(TAG, "Attempting reactive compaction (consecutive failures: ${tracking.consecutiveFailures})")
+        Log.i(TAG, "Attempting reactive compaction (attempt ${tracking.reactiveAttempts}, consecutive failures: ${tracking.consecutiveFailures})")
         return try {
+            val before = ContextCompactor.estimateSize(history)
             val result = compactor.compact(
                 history = history.toList(),
                 modelId = modelId,
                 keepRecentOverride = REACTIVE_KEEP_RECENT,
             )
-            if (result.wasCompacted) {
+            val after = if (result.wasCompacted) ContextCompactor.estimateSize(result.compactedHistory) else before
+            if (result.wasCompacted && after >= before) {
+                // "Compacted" but no smaller — re-summarising a summary, or everything large is
+                // in the kept tail. Retrying the request would 413 again, so this is a failure.
+                tracking.consecutiveFailures++
+                Log.w(TAG, "Reactive compaction did not shrink the prompt ($before -> $after chars), giving up")
+                null
+            } else if (result.wasCompacted) {
                 tracking.consecutiveFailures = 0
                 tracking.compacted = true
                 Log.i(TAG, "Reactive compaction succeeded: removed ${result.removedMessageCount} messages, " +
@@ -87,6 +109,8 @@ class ReactiveCompaction(
                 null
             }
         } catch (e: Exception) {
+            // A cancelled turn stops; it is not a compaction failure to count and carry on from.
+            org.ethereumphone.andyclaw.ExecutionEngine.rethrowIfCancelled(e)
             tracking.consecutiveFailures++
             Log.e(TAG, "Reactive compaction failed (failure ${tracking.consecutiveFailures}): ${e.message}", e)
             null

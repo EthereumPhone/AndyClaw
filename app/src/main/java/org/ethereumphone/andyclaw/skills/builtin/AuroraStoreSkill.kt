@@ -1,5 +1,6 @@
 package org.ethereumphone.andyclaw.skills.builtin
 
+import org.ethereumphone.andyclaw.ExecutionEngine.rethrowIfCancelled
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
@@ -209,6 +210,7 @@ class AuroraStoreSkill(private val context: Context) : AndyClawSkill {
                 put("apps", results)
             }.toString())
         } catch (e: Exception) {
+            rethrowIfCancelled(e)
             Log.e(TAG, "Search failed for '$query'", e)
             SkillResult.Error("Failed to search for apps: ${e.message}")
         }
@@ -246,6 +248,7 @@ class AuroraStoreSkill(private val context: Context) : AndyClawSkill {
                 }
             }.toString())
         } catch (e: Exception) {
+            rethrowIfCancelled(e)
             Log.e(TAG, "Failed to get details for $packageName", e)
             SkillResult.Error("Failed to get app details: ${e.message}")
         }
@@ -337,6 +340,7 @@ class AuroraStoreSkill(private val context: Context) : AndyClawSkill {
             }.toString())
 
         } catch (e: Exception) {
+            rethrowIfCancelled(e)
             Log.e(TAG, "Failed to install $packageName", e)
             SkillResult.Error("Failed to install app: ${e.message}")
         }
@@ -422,6 +426,7 @@ class AuroraStoreSkill(private val context: Context) : AndyClawSkill {
                 Log.i(TAG, "Downloaded: ${file.name} (${outputFile.length()} bytes)")
                 outputFile
             } catch (e: Exception) {
+                rethrowIfCancelled(e)
                 Log.e(TAG, "Failed to download ${file.name}", e)
                 null
             }
@@ -457,6 +462,7 @@ class AuroraStoreSkill(private val context: Context) : AndyClawSkill {
             Log.d(TAG, "Created install session: $sessionId")
 
             packageInstaller.openSession(sessionId).use { session ->
+              try {
                 apkFiles.forEachIndexed { index, apkFile ->
                     val name = if (apkFiles.size == 1) "base.apk" else "${index}_${apkFile.name}"
                     Log.d(TAG, "Writing APK: $name (${apkFile.length()} bytes)")
@@ -483,10 +489,17 @@ class AuroraStoreSkill(private val context: Context) : AndyClawSkill {
 
                 Log.i(TAG, "Committing install session for $packageName")
                 session.commit(pendingIntent.intentSender)
+              } catch (e: Exception) {
+                // close() alone leaves an uncommitted session (and its staged bytes) behind for
+                // days; abandon it so a failed write doesn't pile up half-installed sessions.
+                try { session.abandon() } catch (_: Exception) { }
+                throw e
+              }
             }
 
             Result.success(Unit)
         } catch (e: Exception) {
+            rethrowIfCancelled(e)
             Log.e(TAG, "Failed to install APKs for $packageName", e)
             Result.failure(e)
         }

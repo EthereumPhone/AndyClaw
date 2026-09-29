@@ -24,6 +24,14 @@ object PdfTextExtractor {
     private const val MAX_INPUT_BYTES = 24 * 1024 * 1024
     private const val MAX_INFLATED_BYTES = 8 * 1024 * 1024
 
+    /**
+     * Whole-document budgets. The per-stream cap alone did not bound anything: a hostile PDF
+     * of many small streams, each a zip bomb to 8 MB, inflated and collected without limit,
+     * and the OutOfMemoryError crash-looped ingest on every retry of that mail.
+     */
+    internal const val MAX_TOTAL_INFLATED_BYTES = 16 * 1024 * 1024
+    internal const val MAX_TEXT_CHARS = 256 * 1024
+
     fun looksLikePdf(bytes: ByteArray): Boolean =
         bytes.size >= 5 && String(bytes, 0, 5, Charsets.ISO_8859_1) == "%PDF-"
 
@@ -32,8 +40,9 @@ object PdfTextExtractor {
         val latin = String(pdf, Charsets.ISO_8859_1)
         val out = StringBuilder()
 
+        var inflatedBudget = MAX_TOTAL_INFLATED_BYTES
         var i = 0
-        while (true) {
+        while (out.length < MAX_TEXT_CHARS) {
             val start = latin.indexOf(STREAM, i)
             if (start < 0) break
             // "endstream" ends in "stream"; do not mistake it for the start of one.
@@ -52,23 +61,26 @@ object PdfTextExtractor {
             val dictStart = latin.lastIndexOf("<<", start)
             val dict = if (dictStart >= 0) latin.substring(dictStart, start) else ""
             val raw = pdf.copyOfRange(dataStart, end.coerceAtLeast(dataStart))
-            val content = if (dict.contains("/FlateDecode")) inflate(raw) else raw
+            val content = if (dict.contains("/FlateDecode")) {
+                if (inflatedBudget <= 0) break
+                inflate(raw, minOf(MAX_INFLATED_BYTES, inflatedBudget))?.also { inflatedBudget -= it.size }
+            } else raw
 
             if (content != null && content.isNotEmpty()) {
-                out.append(collectStrings(String(content, Charsets.ISO_8859_1)))
+                out.append(collectStrings(String(content, Charsets.ISO_8859_1), MAX_TEXT_CHARS - out.length))
             }
             i = end + END_STREAM.length
         }
 
         // An uncompressed PDF written by hand has no object streams worth walking; read the
         // literals straight out of the file rather than returning nothing.
-        if (out.isEmpty()) out.append(collectStrings(latin))
-        return out.toString()
+        if (out.isEmpty()) out.append(collectStrings(latin, MAX_TEXT_CHARS))
+        return if (out.length > MAX_TEXT_CHARS) out.substring(0, MAX_TEXT_CHARS) else out.toString()
     }
 
     // ── Streams ───────────────────────────────────────────────────────
 
-    private fun inflate(data: ByteArray): ByteArray? {
+    private fun inflate(data: ByteArray, limit: Int): ByteArray? {
         for (nowrap in listOf(false, true)) {
             val inflater = Inflater(nowrap)
             try {
@@ -78,8 +90,8 @@ object PdfTextExtractor {
                 while (!inflater.finished()) {
                     val n = inflater.inflate(buffer)
                     if (n == 0 && (inflater.needsInput() || inflater.needsDictionary())) break
-                    out.write(buffer, 0, n)
-                    if (out.size() > MAX_INFLATED_BYTES) break
+                    out.write(buffer, 0, minOf(n, limit - out.size()))
+                    if (out.size() >= limit) break
                 }
                 if (out.size() > 0) return out.toByteArray()
             } catch (e: Exception) {
@@ -94,10 +106,10 @@ object PdfTextExtractor {
     // ── Strings ───────────────────────────────────────────────────────
 
     /** Every `(literal)` and `<hex>` string in [content], in order, decoded. */
-    internal fun collectStrings(content: String): String {
+    internal fun collectStrings(content: String, maxChars: Int = Int.MAX_VALUE): String {
         val out = StringBuilder()
         var i = 0
-        while (i < content.length) {
+        while (i < content.length && out.length < maxChars) {
             when (content[i]) {
                 '(' -> {
                     val (text, next) = readLiteral(content, i)

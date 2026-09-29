@@ -1,7 +1,9 @@
 package org.ethereumphone.andyclaw.llm
 
 import android.util.Log
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.withContext
 import org.ethereumphone.andyclaw.BuildConfig
 import okhttp3.MediaType.Companion.toMediaType
@@ -73,20 +75,19 @@ class OpenAiNativeClient(
             Log.d(TAG, "sendMessage: model=${request.model}, messages=${request.messages.size}")
 
             val httpRequest = buildRequest(openAiJson)
-            val response = client.newCall(httpRequest).execute()
-
-            if (!response.isSuccessful) {
-                val errorBody = response.body?.string() ?: "Unknown error"
-                Log.e(TAG, "sendMessage: HTTP ${response.code} from $providerLabel, error=$errorBody")
-                // The request body is otherwise never logged; on a schema rejection
-                // (e.g. Venice "Unrecognized key(s) in object: '<key>'") this shows
-                // exactly which key was sent. Debug builds only — body has chat content.
-                if (BuildConfig.DEBUG) Log.e(TAG, "sendMessage: rejected request body=$openAiJson")
-                throw AnthropicApiException(response.code, errorBody, provider = providerLabel)
+            val responseBody = client.newCall(httpRequest).executeCancellable { response ->
+                if (!response.isSuccessful) {
+                    val errorBody = response.body?.string() ?: "Unknown error"
+                    Log.e(TAG, "sendMessage: HTTP ${response.code} from $providerLabel, error=$errorBody")
+                    // The request body is otherwise never logged; on a schema rejection
+                    // (e.g. Venice "Unrecognized key(s) in object: '<key>'") this shows
+                    // exactly which key was sent. Debug builds only — body has chat content.
+                    if (BuildConfig.DEBUG) Log.e(TAG, "sendMessage: rejected request body=$openAiJson")
+                    throw AnthropicApiException(response.code, errorBody, response.header("retry-after")?.toIntOrNull(), provider = providerLabel)
+                }
+                response.body?.string()
+                    ?: throw AnthropicApiException(500, "Empty response", provider = providerLabel)
             }
-
-            val responseBody = response.body?.string()
-                ?: throw AnthropicApiException(500, "Empty response", provider = providerLabel)
             OpenAiFormatAdapter.fromOpenAiResponseJson(responseBody)
         }
 
@@ -98,31 +99,28 @@ class OpenAiNativeClient(
         Log.d(TAG, "streamMessage: model=${request.model}, messages=${request.messages.size}")
 
         val httpRequest = buildRequest(openAiJson)
-        val response = client.newCall(httpRequest).execute()
+        val job = coroutineContext[Job]
+        // Thrown, like AnthropicClient: a failure passed to callback.onError never reached
+        // withRetry or the caller, and the turn carried on as an empty reply.
+        client.newCall(httpRequest).executeCancellable { response ->
+            if (!response.isSuccessful) {
+                val errorBody = response.body?.string() ?: "Unknown error"
+                Log.e(TAG, "streamMessage: HTTP ${response.code} from $providerLabel, error=$errorBody")
+                if (BuildConfig.DEBUG) Log.e(TAG, "streamMessage: rejected request body=$openAiJson")
+                throw AnthropicApiException(response.code, errorBody, response.header("retry-after")?.toIntOrNull(), provider = providerLabel)
+            }
 
-        if (!response.isSuccessful) {
-            val errorBody = response.body?.string() ?: "Unknown error"
-            Log.e(TAG, "streamMessage: HTTP ${response.code} from $providerLabel, error=$errorBody")
-            if (BuildConfig.DEBUG) Log.e(TAG, "streamMessage: rejected request body=$openAiJson")
-            callback.onError(AnthropicApiException(response.code, errorBody, provider = providerLabel))
-            return@withContext
-        }
-
-        val accumulator = OpenAiStreamAccumulator(callback)
-        val reader = BufferedReader(InputStreamReader(response.body!!.byteStream()))
-        try {
-            reader.forEachLine { line ->
-                if (line.startsWith("data: ")) {
-                    val data = line.removePrefix("data: ")
-                    accumulator.onData(data)
+            val accumulator = OpenAiStreamAccumulator(callback, providerLabel)
+            BufferedReader(InputStreamReader(response.body!!.byteStream())).use { reader ->
+                while (true) {
+                    val line = reader.readLine() ?: break
+                    if (job?.isActive == false) throw CancellationException("LLM stream cancelled")
+                    if (line.startsWith("data: ")) {
+                        if (accumulator.onData(line.removePrefix("data: "))) break
+                    }
                 }
             }
-        } catch (e: Exception) {
-            Log.e(TAG, "streamMessage: streaming error", e)
-            callback.onError(e)
-        } finally {
-            reader.close()
-            response.close()
+            accumulator.finishStream()
         }
     }
 }

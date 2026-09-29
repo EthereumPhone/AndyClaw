@@ -19,6 +19,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -175,6 +176,19 @@ class LauncherBindingService : Service() {
     /** Currently registered exec summary streaming callback from the launcher. */
     private var execSummaryCallback: IExecSummaryCallback? = null
 
+    /**
+     * A second prompt for a session used to overwrite its [activePromptJobs] entry without
+     * stopping the first, so both runs appended to the same unsynchronised history and the first
+     * could no longer be stopped. The launcher only follows the newest turn (its callback for an
+     * older turn is ignored), so the newer prompt wins: the older is cancelled, and joined so it
+     * has stopped touching the history before this one starts.
+     */
+    private suspend fun replacePreviousTurn(previous: Job?) {
+        if (previous == null || previous.isCompleted) return
+        Log.i(TAG, "New prompt while an older turn of the session is running; cancelling the older one")
+        previous.cancelAndJoin()
+    }
+
     private val binder = object : ILauncherService.Stub() {
 
         override fun isSetup(): Boolean {
@@ -191,8 +205,11 @@ class LauncherBindingService : Service() {
 
         override fun sendPrompt(prompt: String, sessionId: String, callback: ILauncherCallback) {
             enforceCallerIsLauncher()
-            val job = scope.launch {
+            // Lazy, so it can be registered before it runs and wait for the turn it replaces.
+            var previous: Job? = null
+            val job = scope.launch(start = kotlinx.coroutines.CoroutineStart.LAZY) {
                 try {
+                    replacePreviousTurn(previous)
                     runAgentLoop(prompt, sessionId, callback)
                 } catch (e: kotlinx.coroutines.CancellationException) {
                     Log.i(TAG, "Inference cancelled for session $sessionId")
@@ -210,7 +227,8 @@ class LauncherBindingService : Service() {
                     coroutineContext[Job]?.let { activePromptJobs.remove(sessionId, it) }
                 }
             }
-            activePromptJobs[sessionId] = job
+            previous = activePromptJobs.put(sessionId, job)
+            job.start()
         }
 
         override fun transcribeAudio(audioFd: ParcelFileDescriptor, callback: ILauncherCallback) {
@@ -220,12 +238,14 @@ class LauncherBindingService : Service() {
                 // WhisperTranscriber (which needs a file path) can access it.
                 val tempFile = File(cacheDir, "launcher_audio_${System.currentTimeMillis()}.wav")
                 try {
-                    FileInputStream(audioFd.fileDescriptor).use { input ->
-                        FileOutputStream(tempFile).use { output ->
-                            input.copyTo(output)
+                    // The descriptor is closed however the copy ends: a failed copy used to leak it.
+                    audioFd.use { fd ->
+                        FileInputStream(fd.fileDescriptor).use { input ->
+                            FileOutputStream(tempFile).use { output ->
+                                input.copyTo(output)
+                            }
                         }
                     }
-                    audioFd.close()
 
                     val app = application as NodeApp
                     val text = app.whisperTranscriber.transcribe(tempFile.absolutePath)
@@ -254,8 +274,11 @@ class LauncherBindingService : Service() {
             callback: ILauncherCallback,
         ) {
             enforceCallerIsLauncher()
-            val job = scope.launch {
+            // Lazy, so it can be registered before it runs and wait for the turn it replaces.
+            var previous: Job? = null
+            val job = scope.launch(start = kotlinx.coroutines.CoroutineStart.LAZY) {
                 try {
+                    replacePreviousTurn(previous)
                     runAgentLoop(prompt, sessionId, callback, fromLockscreen = true)
                 } catch (e: kotlinx.coroutines.CancellationException) {
                     Log.i(TAG, "Lockscreen inference cancelled for session $sessionId")
@@ -273,7 +296,8 @@ class LauncherBindingService : Service() {
                     coroutineContext[Job]?.let { activePromptJobs.remove(sessionId, it) }
                 }
             }
-            activePromptJobs[sessionId] = job
+            previous = activePromptJobs.put(sessionId, job)
+            job.start()
         }
 
         override fun getRecentSessions(limit: Int): String {
@@ -306,13 +330,22 @@ class LauncherBindingService : Service() {
             return runBlocking(Dispatchers.IO) {
                 try {
                     val messages = app.sessionManager.getMessages(sessionId)
+                    // Bounded: an unbounded session overflowed the 1 MB binder transaction.
+                    val rows = SessionMessagesCap.cap(
+                        messages.map { SessionMessagesCap.Row(it.role.name.lowercase(), it.content, it.timestamp) }
+                    )
                     val arr = JSONArray()
-                    for (m in messages) {
+                    for (m in rows) {
                         arr.put(JSONObject().apply {
-                            put("role", m.role.name.lowercase())
+                            put("role", m.role)
                             put("content", m.content)
                             put("timestamp", m.timestamp)
+                            if (m.truncated) put("truncated", true)
+                            if (m.omittedBefore > 0) put("omittedBefore", m.omittedBefore)
                         })
+                    }
+                    if (rows.size < messages.size || rows.any { it.truncated }) {
+                        Log.i(TAG, "getSessionMessages: $sessionId capped to ${rows.size}/${messages.size} rows")
                     }
                     arr.toString()
                 } catch (e: Exception) {

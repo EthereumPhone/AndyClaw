@@ -21,12 +21,45 @@ class CliToolConfigStore(context: Context) {
         private const val KEY_PREFIX = "cli."
     }
 
-    private val prefs: SharedPreferences by lazy {
+    private val prefs: SharedPreferences by lazy { openPrefs(context) }
+
+    /**
+     * Open the encrypted store, starting a fresh one if the existing file can't be
+     * opened. The file's Tink keyset is wrapped by a keystore key that does not
+     * travel with the file: after a restore onto another device, a keystore reset
+     * or a lost master key, `create` throws — and, being `lazy`, threw again on
+     * every access, so every cli_tools_* call failed until the app data was
+     * cleared. The unreadable file is copied aside (not deleted, in case the key
+     * comes back) and the store starts empty; the user re-enters the tool keys.
+     */
+    private fun openPrefs(context: Context): SharedPreferences = try {
+        createPrefs(context)
+    } catch (e: Exception) {
+        if (e !is java.security.GeneralSecurityException && e !is java.io.IOException) throw e
+        Log.e(TAG, "Encrypted CLI tool config unreadable; starting a fresh one", e)
+        val file = java.io.File(context.dataDir, "shared_prefs/$PREFS_NAME.xml")
+        try {
+            if (file.isFile) {
+                file.copyTo(
+                    java.io.File(file.parentFile, "$PREFS_NAME.unreadable-${System.currentTimeMillis()}.bak"),
+                    overwrite = true,
+                )
+            }
+        } catch (copyError: Exception) {
+            Log.w(TAG, "Could not keep a copy of the unreadable config", copyError)
+        }
+        // deleteSharedPreferences also evicts the in-process cache; renaming the
+        // file alone would hand EncryptedSharedPreferences the same stale contents.
+        context.deleteSharedPreferences(PREFS_NAME)
+        createPrefs(context)
+    }
+
+    private fun createPrefs(context: Context): SharedPreferences {
         val masterKey = MasterKey.Builder(context)
             .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
             .build()
 
-        EncryptedSharedPreferences.create(
+        return EncryptedSharedPreferences.create(
             context,
             PREFS_NAME,
             masterKey,

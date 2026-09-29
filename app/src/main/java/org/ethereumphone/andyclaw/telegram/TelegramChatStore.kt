@@ -42,10 +42,24 @@ class TelegramChatStore(context: Context) {
     @Synchronized
     fun get(chatId: Long): ChatInfo? = chats[chatId]
 
+    /**
+     * The first chat that ever wrote to the bot, for display only. It is not an identity: anyone
+     * can be first — after a re-setup, or once this file is lost. Owner decisions go through
+     * [TelegramOwner] and the chat id verified at setup.
+     */
     @Synchronized
-    fun getOwnerChatId(): Long? {
+    fun firstKnownChatId(): Long? {
         return chats.values.firstOrNull()?.chatId
     }
+
+    /**
+     * Always null now. This returned [firstKnownChatId], and callers treated it as the owner:
+     * `send_telegram_message` fell back to it when no owner was verified, which sent the owner's
+     * messages to whichever stranger had written first. Kept, returning null, so that fallback
+     * reports "no verified owner" instead.
+     */
+    @Deprecated("Not an identity. Use SecurePrefs.telegramOwnerChatId via TelegramOwner.")
+    fun getOwnerChatId(): Long? = null
 
     private fun load() {
         if (!file.exists()) return
@@ -79,7 +93,14 @@ class TelegramChatStore(context: Context) {
                 }
                 root.put(id.toString(), obj)
             }
-            file.writeText(root.toString())
+            // Temp file, then rename: a process killed mid-write left a truncated file that
+            // loaded as empty, and every chat was forgotten.
+            val tmp = File(file.parentFile, "$FILENAME.tmp")
+            tmp.writeText(root.toString())
+            if (!tmp.renameTo(file)) {
+                tmp.delete()
+                Log.w(TAG, "Failed to replace chat store")
+            }
         } catch (e: Exception) {
             Log.w(TAG, "Failed to save chat store: ${e.message}")
         }

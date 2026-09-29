@@ -16,6 +16,11 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.ethereumphone.andyclaw.BuildConfig
+import org.ethereumphone.andyclaw.ExecutionEngine.rethrowIfCancelled
+import org.ethereumphone.andyclaw.agentwallet.AgentWalletChains
+import org.ethereumphone.andyclaw.agentwallet.Erc20Check
+import org.ethereumphone.andyclaw.agentwallet.EthAddress
+import org.ethereumphone.andyclaw.agentwallet.UserWalletResult
 import org.ethereumphone.andyclaw.skills.AndyClawSkill
 import org.ethereumphone.andyclaw.skills.SkillManifest
 import org.ethereumphone.andyclaw.skills.SkillResult
@@ -40,6 +45,10 @@ class BankrTradingSkill(private val context: Context) : AndyClawSkill {
         private const val BASE_URL = "https://api.bankr.bot/trading/order"
         private const val APP_FEE_BPS = 15
         private const val APP_FEE_RECIPIENT = "0xFE5cDA3C48d52b4EdF53361bF28C4213fDa7eA09"
+
+        /** The typed-data type `PrivateWalletService.signMessage` understands. */
+        private const val SIGN_TYPED_DATA = "eth_signTypedData"
+        private const val DECLINE = "decline"
 
         private val CHAIN_NAMES = mapOf(
             1 to "eth-mainnet", 10 to "opt-mainnet", 137 to "polygon-mainnet",
@@ -189,7 +198,8 @@ class BankrTradingSkill(private val context: Context) : AndyClawSkill {
                     "sell_decimals" to JsonObject(mapOf(
                         "type" to JsonPrimitive("integer"),
                         "description" to JsonPrimitive(
-                            "Decimals of the sell token (e.g. 18 for WETH, 6 for USDC). Default: 18"
+                            "Decimals of the sell token (e.g. 18 for WETH, 6 for USDC). Optional: known tokens " +
+                                "and the contract itself are checked, and a mismatch is refused."
                         ),
                     )),
                     "chain_id" to JsonObject(mapOf(
@@ -402,7 +412,7 @@ class BankrTradingSkill(private val context: Context) : AndyClawSkill {
             ?: return SkillResult.Error("'buy_token' is required")
         val sellAmountHuman = params["sell_amount"]?.jsonPrimitive?.contentOrNull
             ?: return SkillResult.Error("'sell_amount' is required")
-        val sellDecimals = params["sell_decimals"]?.jsonPrimitive?.intOrNull ?: 18
+        val claimedSellDecimals = params["sell_decimals"]?.jsonPrimitive?.intOrNull
         val chainId = params["chain_id"]?.jsonPrimitive?.intOrNull ?: 8453
         val slippageBps = (params["slippage_bps"]?.jsonPrimitive?.intOrNull ?: 100).coerceIn(0, 2000)
         val expirationHours = params["expiration_hours"]?.jsonPrimitive?.intOrNull ?: 24
@@ -432,6 +442,14 @@ class BankrTradingSkill(private val context: Context) : AndyClawSkill {
             config.put("maxExecutions", execs)
         }
 
+        // Sell decimals are the token's, not the model's. They used to default to 18: a USDC
+        // order was scaled by 10^12, and with allowPartial the signed order could sell the whole
+        // balance while the reply showed the small human amount.
+        val sellDecimals = when (val verdict = sellTokenDecimals(sellToken, chainId, claimedSellDecimals)) {
+            is Erc20Check.Verdict.Ok -> verdict.decimals
+            is Erc20Check.Verdict.Refused -> return SkillResult.Error(verdict.reason)
+        }
+
         // Resolve wallet
         val wallet = getOrCreateWallet(chainId)
             ?: return SkillResult.Error("Wallet not available for chain $chainId")
@@ -441,7 +459,9 @@ class BankrTradingSkill(private val context: Context) : AndyClawSkill {
         // Convert human amount to raw
         val rawSellAmount = try {
             val bd = java.math.BigDecimal(sellAmountHuman)
-            bd.multiply(java.math.BigDecimal.TEN.pow(sellDecimals)).toBigInteger().toString()
+            bd.multiply(java.math.BigDecimal.TEN.pow(sellDecimals)).toBigIntegerExact().toString()
+        } catch (e: ArithmeticException) {
+            return SkillResult.Error("sell_amount '$sellAmountHuman' has more than $sellDecimals decimal places for this token.")
         } catch (e: Exception) {
             return SkillResult.Error("Invalid sell_amount: $sellAmountHuman")
         }
@@ -492,10 +512,16 @@ class BankrTradingSkill(private val context: Context) : AndyClawSkill {
                             chainId = chainId,
                             rpcEndpoint = rpc,
                         )
-                        if (txResult == "decline") {
-                            return@withContext SkillResult.Error("Order cancelled: approval declined by user")
+                        // A rejected approval comes back as "Error: …", not an exception; carrying
+                        // on signed an order that could never fill and reported it created.
+                        when (val outcome = UserWalletResult.parse(txResult)) {
+                            UserWalletResult.Declined ->
+                                return@withContext SkillResult.Error("Order cancelled: approval declined by user")
+                            is UserWalletResult.Failed -> return@withContext SkillResult.Error(
+                                "Order not created: the approval transaction failed (${outcome.message})"
+                            )
+                            is UserWalletResult.Submitted -> Log.d(TAG, "Approval userOp: ${outcome.userOpHash}")
                         }
-                        Log.d(TAG, "Approval tx: $txResult")
                     }
                 }
 
@@ -512,22 +538,11 @@ class BankrTradingSkill(private val context: Context) : AndyClawSkill {
                             wallet.changeChain(chainId, rpc, chainIdToBundler(chainId))
                         }
 
-                        val typeStrings = listOf(
-                            "eth_signTypedData_v4", "eth_signTypedData",
-                            "typed_data", "signTypedData", "typed",
-                        )
-                        for (ts in typeStrings) {
-                            val sig = wallet.signMessage(typedDataJson, chainId, ts)
-                            if (sig != null && sig != "decline" && !sig.startsWith("error", true) &&
-                                sig.startsWith("0x") && sig.length >= 130
-                            ) {
-                                signature = sig
-                                break
-                            }
-                            if (sig == "decline") {
-                                return@withContext SkillResult.Error("Order cancelled: signing declined by user")
-                            }
+                        val sig = signTypedData(wallet, typedDataJson, chainId)
+                        if (sig == DECLINE) {
+                            return@withContext SkillResult.Error("Order cancelled: signing declined by user")
                         }
+                        signature = sig
                         if (signature == null) {
                             return@withContext SkillResult.Error("Failed to sign order — wallet may not support EIP-712 typed data signing")
                         }
@@ -566,10 +581,25 @@ class BankrTradingSkill(private val context: Context) : AndyClawSkill {
                     appendLine("Expires: ${formatTimestamp(expirationDate)}")
                 })
             } catch (e: Exception) {
+                rethrowIfCancelled(e)
                 Log.e(TAG, "Failed to create Bankr order", e)
                 SkillResult.Error("Failed to create order: ${e.message}")
             }
         }
+    }
+
+    /** Registry decimals for [sellToken], else the contract's own — see [Erc20Check]. */
+    private suspend fun sellTokenDecimals(sellToken: String, chainId: Int, claimed: Int?): Erc20Check.Verdict {
+        val address = sellToken.trim()
+        if (!EthAddress.isWellFormed(address)) {
+            return Erc20Check.Verdict.Refused(
+                "'sell_token' must be a contract address (0x + 40 hex characters), got '$sellToken'."
+            )
+        }
+        AgentWalletChains.resolveDecimalsByAddress(address, chainId)?.let { return Erc20Check.Verdict.Ok(it) }
+        val rpc = chainIdToRpc(chainId) ?: return Erc20Check.Verdict.Refused("Unsupported chain $chainId")
+        val onChain = withContext(Dispatchers.IO) { Erc20Check.read(rpc, address) }
+        return Erc20Check.verdict(address, chainDisplayName(chainId), onChain, claimed)
     }
 
     // ── cancel_bankr_order ────────────────────────────────────────────────
@@ -629,23 +659,9 @@ class BankrTradingSkill(private val context: Context) : AndyClawSkill {
                     wallet.changeChain(chainId, rpc, chainIdToBundler(chainId))
                 }
 
-                var signature: String? = null
-                val typedDataStr = cancelTypedData.toString()
-                val typeStrings = listOf(
-                    "eth_signTypedData_v4", "eth_signTypedData",
-                    "typed_data", "signTypedData", "typed",
-                )
-                for (ts in typeStrings) {
-                    val sig = wallet.signMessage(typedDataStr, chainId, ts)
-                    if (sig != null && sig != "decline" && !sig.startsWith("error", true) &&
-                        sig.startsWith("0x") && sig.length >= 130
-                    ) {
-                        signature = sig
-                        break
-                    }
-                    if (sig == "decline") {
-                        return@withContext SkillResult.Error("Cancellation declined by user")
-                    }
+                val signature = signTypedData(wallet, cancelTypedData.toString(), chainId)
+                if (signature == DECLINE) {
+                    return@withContext SkillResult.Error("Cancellation declined by user")
                 }
                 if (signature == null) {
                     return@withContext SkillResult.Error("Failed to sign cancellation")
@@ -662,6 +678,7 @@ class BankrTradingSkill(private val context: Context) : AndyClawSkill {
                     SkillResult.Error("Cancellation failed. Status: ${cancelJson.optString("status")}")
                 }
             } catch (e: Exception) {
+                rethrowIfCancelled(e)
                 Log.e(TAG, "Failed to cancel order", e)
                 SkillResult.Error("Failed to cancel order: ${e.message}")
             }
@@ -721,6 +738,25 @@ class BankrTradingSkill(private val context: Context) : AndyClawSkill {
     }
 
     // ── Signing helper ───────────────────────────────────────────────────
+
+    /**
+     * Sign EIP-712 [typedDataJson] with the user's wallet: the signature, [DECLINE], or null.
+     *
+     * One attempt, with the one type PrivateWalletService accepts. The old loop led with
+     * "eth_signTypedData_v4", which the OS refuses ("Unknown sign message type") only after the
+     * user has approved on the terminal screen, so every order asked for approval twice.
+     */
+    private suspend fun signTypedData(wallet: WalletSDK, typedDataJson: String, chainId: Int): String? {
+        val sig = wallet.signMessage(typedDataJson, chainId, SIGN_TYPED_DATA)
+        return when {
+            sig == DECLINE -> DECLINE
+            sig != null && sig.startsWith("0x") && sig.length >= 130 -> sig
+            else -> {
+                Log.w(TAG, "Typed-data signing failed: $sig")
+                null
+            }
+        }
+    }
 
     private fun buildSignableTypedData(typedData: JSONObject): String {
         val result = JSONObject()

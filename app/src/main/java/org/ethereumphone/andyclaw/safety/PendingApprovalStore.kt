@@ -51,7 +51,7 @@ class PendingApprovalStore(
     constructor(context: Context) : this(
         dir = context.filesDir,
         mac = KeystoreApprovalMac(),
-        holdsSecret = { text -> LeakDetector().scan(text).matches.any { it.action != LeakAction.WARN } },
+        holdsSecret = Companion::holdsSecret,
     )
 
     companion object {
@@ -69,6 +69,17 @@ class PendingApprovalStore(
 
         /** The state recorded for a request a dead process may have run. */
         const val UNKNOWN = "UNKNOWN"
+
+        /**
+         * What the store refuses to write down. The default leak patterns are for API keys and
+         * only WARN on hex, and had nothing for a wallet: a `0x` private key or a recovery phrase
+         * the agent had read went to disk and onto a card. A transaction hash has the same shape
+         * as a key, so an input carrying one is decline-only as well — the cost is a card that
+         * cannot be approved, never a secret at rest.
+         */
+        fun holdsSecret(text: String): Boolean =
+            LeakDetector.holdsKeyMaterial(text) ||
+                LeakDetector().scan(text).matches.any { it.action != LeakAction.WARN }
 
         /** Keys sorted all the way down, so equal inputs give equal bytes and equal signatures. */
         fun canonical(e: JsonElement): String = sorted(e).toString()

@@ -14,16 +14,14 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import org.ethereumphone.andyclaw.ExecutionEngine.Provenance
 import org.ethereumphone.andyclaw.ExecutionEngine.currentProvenance
+import org.ethereumphone.andyclaw.ExecutionEngine.rethrowIfCancelled
 import org.ethereumphone.andyclaw.skills.AndyClawSkill
 import org.ethereumphone.andyclaw.skills.SkillManifest
 import org.ethereumphone.andyclaw.skills.SkillResult
 import org.ethereumphone.andyclaw.skills.Tier
 import org.ethereumphone.andyclaw.skills.ToolDefinition
 import org.ethereumphone.andyclaw.skills.ToolEffect
-import java.io.ByteArrayOutputStream
 import java.io.PrintStream
-import java.util.concurrent.Executors
-import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
 import kotlin.coroutines.ContinuationInterceptor
 import kotlin.coroutines.CoroutineContext
@@ -46,8 +44,6 @@ class CodeExecutionSkill(
         private const val MAX_OUTPUT_CHARS = 50_000
     }
 
-    private val executor = Executors.newSingleThreadExecutor()
-
     override val baseManifest = SkillManifest(
         description = buildString {
             appendLine("Execute Java/BeanShell code directly on the Android device.")
@@ -59,7 +55,7 @@ class CodeExecutionSkill(
             appendLine("- Interact with system services, databases, or device hardware programmatically")
             appendLine("- Run computations or algorithms that need a real programming language")
             appendLine()
-            appendLine("Pre-bound variables available in every execution:")
+            appendLine("Pre-bound variables (only in runs the user started; background runs get just `tools`):")
             appendLine("- context: android.content.Context (the application context)")
             appendLine("- packageManager: android.content.pm.PackageManager")
             appendLine("- contentResolver: android.content.ContentResolver")
@@ -94,7 +90,7 @@ class CodeExecutionSkill(
         tools = listOf(
             ToolDefinition(
                 name = "execute_code",
-                description = "Execute Java/BeanShell code on the device (Java 1.5 syntax — NO Map.of/List.of/var/lambdas, use new HashMap()/ArrayList()). Pre-bound: context, packageManager, contentResolver, filesDir. Call other tools: tools.call(name, hashMap) or tools.callParallel(name, arrayList) for batch. Use for multi-tool pipelines in one shot.",
+                description = "Execute Java/BeanShell code on the device (Java 1.5 syntax — NO Map.of/List.of/var/lambdas, use new HashMap()/ArrayList()). Pre-bound in user-started runs: context, packageManager, contentResolver, filesDir. Call other tools: tools.call(name, hashMap) or tools.callParallel(name, arrayList) for batch. Use for multi-tool pipelines in one shot.",
                 inputSchema = JsonObject(mapOf(
                     "type" to JsonPrimitive("object"),
                     "properties" to JsonObject(mapOf(
@@ -134,14 +130,15 @@ class CodeExecutionSkill(
         }
     }
 
-    private fun executeCode(params: JsonObject, provenance: Provenance, runContext: CoroutineContext): SkillResult {
+    private suspend fun executeCode(params: JsonObject, provenance: Provenance, runContext: CoroutineContext): SkillResult {
         val code = params["code"]?.jsonPrimitive?.contentOrNull
             ?: return SkillResult.Error("Missing required parameter: code")
         val timeoutMs = params["timeout_ms"]?.jsonPrimitive?.intOrNull?.toLong()
             ?.coerceIn(1000, MAX_TIMEOUT_MS) ?: DEFAULT_TIMEOUT_MS
 
-        val outputStream = ByteArrayOutputStream()
-        val printStream = PrintStream(outputStream)
+        // Bytes; UTF-8 needs at most 4 a char, so MAX_OUTPUT_CHARS always fits.
+        val outputStream = BoundedOutputStream(MAX_OUTPUT_CHARS * 4)
+        val printStream = PrintStream(outputStream, true, "UTF-8")
 
         val startTime = System.currentTimeMillis()
 
@@ -157,12 +154,24 @@ class CodeExecutionSkill(
             )
         } else null
 
-        val future = executor.submit<Any?> {
+        // The raw Android handles bypass every gate ToolBridge applies (provenance, privacy,
+        // egress): with `filesDir` a stranger-triggered run could rewrite
+        // trigger_provenance.json, with `contentResolver` read SMS for a reply to someone else.
+        // So only a run the user started gets them; everything else reaches the device through
+        // `tools` alone.
+        // Residual: BeanShell sees the whole classpath, so determined code can still reach a
+        // Context reflectively (ActivityThread.currentApplication()). This removes the handed-over
+        // capability, not the sandbox escape; ProvenanceGate classifying execute_code as
+        // IRREVERSIBLE (approval for background runs) is what actually bounds it.
+        val bindAndroidHandles = provenance == Provenance.USER
+        val future = SandboxThread.start("execute_code") {
             val interpreter = Interpreter(null, printStream, printStream, false)
-            interpreter.set("context", context)
-            interpreter.set("packageManager", context.packageManager)
-            interpreter.set("contentResolver", context.contentResolver)
-            interpreter.set("filesDir", context.filesDir)
+            if (bindAndroidHandles) {
+                interpreter.set("context", context)
+                interpreter.set("packageManager", context.packageManager)
+                interpreter.set("contentResolver", context.contentResolver)
+                interpreter.set("filesDir", context.filesDir)
+            }
             if (toolBridge != null) {
                 interpreter.set("tools", toolBridge)
             }
@@ -170,16 +179,16 @@ class CodeExecutionSkill(
         }
 
         return try {
-            val returnValue = future.get(timeoutMs, TimeUnit.MILLISECONDS)
+            val returnValue = SandboxThread.await(future, timeoutMs)
             val executionTimeMs = System.currentTimeMillis() - startTime
-            var output = outputStream.toString("UTF-8")
+            var output = outputStream.toString()
             // Append programmatic call summary if tools were called
             toolBridge?.buildCallSummary()?.let { summary ->
                 output += summary
                 android.util.Log.i(TAG, "Programmatic tool calls: ${toolBridge.callLog.size} call(s), " +
                     "${toolBridge.callLog.sumOf { it.durationMs }}ms total")
             }
-            val truncated = output.length > MAX_OUTPUT_CHARS
+            val truncated = output.length > MAX_OUTPUT_CHARS || outputStream.overflowed
 
             val result = buildJsonObject {
                 if (returnValue != null) {
@@ -198,9 +207,10 @@ class CodeExecutionSkill(
             }
             SkillResult.Success(result.toString())
         } catch (e: TimeoutException) {
-            future.cancel(true)
+            // SandboxThread.await already interrupted it; a loop that ignores interrupts keeps
+            // its own thread and no longer blocks the next call.
             val executionTimeMs = System.currentTimeMillis() - startTime
-            val output = outputStream.toString("UTF-8")
+            val output = outputStream.toString()
             val result = buildJsonObject {
                 put("error_type", "timeout")
                 put("error_message", "Code execution timed out after ${timeoutMs}ms")
@@ -209,8 +219,9 @@ class CodeExecutionSkill(
             }
             SkillResult.Error(result.toString())
         } catch (e: Exception) {
+            rethrowIfCancelled(e)
             val executionTimeMs = System.currentTimeMillis() - startTime
-            val output = outputStream.toString("UTF-8")
+            val output = outputStream.toString()
             val cause = e.cause
             val (errorType, errorMessage) = when (cause) {
                 is EvalError -> "eval_error" to (cause.message ?: "BeanShell evaluation error")

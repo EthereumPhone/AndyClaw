@@ -204,7 +204,7 @@ object OpenAiFormatAdapter {
         }
 
         val choice = choices[0].jsonObject
-        val message = choice["message"]?.jsonObject
+        val message = choice["message"] as? JsonObject
         val finishReason = choice["finish_reason"]?.jsonPrimitive?.contentOrNull
 
         val contentBlocks = mutableListOf<ContentBlock>()
@@ -216,19 +216,17 @@ object OpenAiFormatAdapter {
         }
 
         // Tool calls
-        val toolCalls = message?.get("tool_calls")?.takeIf { it !is kotlinx.serialization.json.JsonNull }?.jsonArray
+        val toolCalls = message?.get("tool_calls") as? JsonArray
         if (toolCalls != null) {
             for (tc in toolCalls) {
                 val tcObj = tc.jsonObject
                 val tcId = tcObj["id"]?.jsonPrimitive?.contentOrNull ?: ""
-                val function = tcObj["function"]?.jsonObject
+                val function = tcObj["function"] as? JsonObject
                 val fnName = function?.get("name")?.jsonPrimitive?.contentOrNull ?: ""
-                val fnArgs = function?.get("arguments")?.jsonPrimitive?.contentOrNull ?: "{}"
-                val input = try {
-                    parser.parseToJsonElement(fnArgs).jsonObject
-                } catch (_: Exception) {
-                    JsonObject(emptyMap())
-                }
+                // Broken or truncated arguments are marked, not run as `{}` (see ToolArguments).
+                val rawArgs = function?.get("arguments")
+                val input = rawArgs as? JsonObject
+                    ?: ToolArguments.parse((rawArgs as? JsonPrimitive)?.contentOrNull)
                 contentBlocks.add(ContentBlock.ToolUseBlock(id = tcId, name = fnName, input = input))
             }
         }
@@ -242,9 +240,10 @@ object OpenAiFormatAdapter {
         }
 
         // Usage (including prompt cache metrics)
-        val usageObj = root["usage"]?.jsonObject
+        // `as?`: providers send `"usage": null` / `"prompt_tokens_details": null`.
+        val usageObj = root["usage"] as? JsonObject
         val usage = if (usageObj != null) {
-            val promptDetails = usageObj["prompt_tokens_details"]?.jsonObject
+            val promptDetails = usageObj["prompt_tokens_details"] as? JsonObject
             val cachedTokens = promptDetails?.get("cached_tokens")?.jsonPrimitive?.contentOrNull?.toIntOrNull() ?: 0
             Usage(
                 inputTokens = usageObj["prompt_tokens"]?.jsonPrimitive?.contentOrNull?.toIntOrNull() ?: 0,

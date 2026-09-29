@@ -204,12 +204,27 @@ class SessionFrameStoreTest {
     }
 
     @Test
-    fun `one conversation cannot outgrow its byte share`() {
+    fun `one recording cannot outgrow its byte share`() {
         val s = store(FrameRetention(maxBytesPerSession = 100))
         val session = s.beginSession("big")
         assertTrue(session.write(jpeg(1, size = 60)) != null)
         assertNull(session.write(jpeg(2, size = 60)))
         assertTrue(session.truncated)
         session.close()
+    }
+
+    @Test
+    fun `the byte cap is per recording, so a chat that once hit it still records`() {
+        val s = store(FrameRetention(maxBytesPerSession = 100))
+        val first = s.beginSession("chat")
+        assertTrue(first.write(jpeg(1, size = 90)) != null)
+        assertNull(first.write(jpeg(2, size = 90)))
+        assertTrue(first.truncated)
+        first.close()
+        val second = s.beginSession("chat")
+        assertTrue("a later recording in the same chat still records", second.write(jpeg(3, size = 90)) != null)
+        assertFalse(second.truncated)
+        second.close()
+        assertEquals(2, s.frames("chat").size)
     }
 }

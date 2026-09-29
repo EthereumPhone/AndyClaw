@@ -20,6 +20,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.withResumed
 import kotlinx.coroutines.launch
 import org.ethereumphone.andyclaw.navigation.AppNavigation
 import org.ethereumphone.andyclaw.ui.theme.AndyClawTheme
@@ -32,7 +33,12 @@ class MainActivity : ComponentActivity() {
         val app = application as NodeApp
         app.permissionRequester = PermissionRequester(this)
 
-        requestBatteryOptimizationExemption()
+        // Only on a fresh launch: onCreate also runs for every configuration change
+        // (rotation, dark mode, font scale), and re-raising the system dialog there
+        // pestered a user who had already said no.
+        if (savedInstanceState == null) {
+            requestBatteryOptimizationExemption()
+        }
         requestNotificationPermission()
 
         val isEthOS = getSystemService("wallet") != null
@@ -92,6 +98,9 @@ class MainActivity : ComponentActivity() {
 
         val requester = (application as NodeApp).permissionRequester ?: return
         lifecycleScope.launch {
+            // Called from onCreate, before the activity is resumed; requestIfMissing
+            // does not prompt from an activity that is not in front, so wait for it.
+            lifecycle.withResumed {}
             val result = requester.requestIfMissing(listOf(Manifest.permission.POST_NOTIFICATIONS))
             Log.i("MainActivity", "POST_NOTIFICATIONS result: $result")
         }
@@ -103,10 +112,27 @@ class MainActivity : ComponentActivity() {
             Log.i("MainActivity", "Already exempt from battery optimizations")
             return
         }
+        // Asked once per install. A Deny is an answer; the user can still grant it from
+        // system settings, and background work degrades rather than breaks without it.
+        val uiPrefs = getSharedPreferences(UI_PREFS_NAME, MODE_PRIVATE)
+        if (uiPrefs.getBoolean(BATTERY_PROMPTED_KEY, false)) {
+            Log.i("MainActivity", "Battery optimization exemption already requested once; not asking again")
+            return
+        }
+        uiPrefs.edit().putBoolean(BATTERY_PROMPTED_KEY, true).apply()
         Log.i("MainActivity", "Requesting battery optimization exemption for background network access")
         val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
             data = Uri.parse("package:$packageName")
         }
-        startActivity(intent)
+        try {
+            startActivity(intent)
+        } catch (e: android.content.ActivityNotFoundException) {
+            Log.w("MainActivity", "No battery optimization settings screen on this device", e)
+        }
+    }
+
+    private companion object {
+        const val UI_PREFS_NAME = "main_activity"
+        const val BATTERY_PROMPTED_KEY = "batteryOptimization.prompted"
     }
 }

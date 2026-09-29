@@ -6,11 +6,13 @@ import android.Manifest
 import android.net.Uri
 import android.provider.Settings
 import android.app.AlertDialog
+import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.result.ActivityResultLauncher
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
 import androidx.core.app.ActivityCompat
+import androidx.lifecycle.Lifecycle
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
@@ -20,6 +22,10 @@ import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlin.coroutines.resume
 
 class PermissionRequester(private val activity: ComponentActivity) {
+  private companion object {
+    const val TAG = "PermissionRequester"
+  }
+
   private val mutex = Mutex()
   private var pending: CompletableDeferred<Map<String, Boolean>>? = null
 
@@ -41,6 +47,21 @@ class PermissionRequester(private val activity: ComponentActivity) {
         }
       if (missing.isEmpty()) {
         return permissions.associateWith { true }
+      }
+
+      // Background callers (the heartbeat, a tool in a run the user is not watching)
+      // reach this too. With the activity not in front, a system permission dialog
+      // cannot come up — the launch is dropped or blocked as a background start and the
+      // caller waited out the whole timeout — and a dialog over some other app would be
+      // worse. Answer with what is granted now and leave asking to a foreground moment.
+      val inForeground = withContext(Dispatchers.Main) {
+        activity.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)
+      }
+      if (!inForeground) {
+        Log.i(TAG, "Not resumed; not raising a permission prompt for $missing")
+        return permissions.associateWith { perm ->
+          ContextCompat.checkSelfPermission(activity, perm) == PackageManager.PERMISSION_GRANTED
+        }
       }
 
       val needsRationale =
@@ -96,7 +117,8 @@ class PermissionRequester(private val activity: ComponentActivity) {
       }
     }
 
-  private fun showSettingsDialog(permissions: List<String>) {
+  // Callers run on IO; AlertDialog needs a Looper thread and threw off it.
+  private suspend fun showSettingsDialog(permissions: List<String>) = withContext(Dispatchers.Main) {
     AlertDialog.Builder(activity)
       .setTitle("Enable permission in Settings")
       .setMessage(buildSettingsMessage(permissions))
@@ -110,6 +132,7 @@ class PermissionRequester(private val activity: ComponentActivity) {
       }
       .setNegativeButton("Cancel", null)
       .show()
+    Unit
   }
 
   private fun buildRationaleMessage(permissions: List<String>): String {

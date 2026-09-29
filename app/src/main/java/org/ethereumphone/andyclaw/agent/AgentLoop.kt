@@ -27,6 +27,7 @@ import org.ethereumphone.andyclaw.autopilot.AutopilotRunContext
 import org.ethereumphone.andyclaw.llm.AnthropicApiException
 import org.ethereumphone.andyclaw.llm.AnthropicModels
 import org.ethereumphone.andyclaw.llm.CannotRetryException
+import org.ethereumphone.andyclaw.llm.ToolArguments
 import org.ethereumphone.andyclaw.llm.LlmClient
 import org.ethereumphone.andyclaw.llm.LocalLlmClient
 import org.ethereumphone.andyclaw.llm.withRetry
@@ -457,11 +458,29 @@ class AgentLoop(
         fun onAskUserDisplayed(request: AskUserRequest) {}
         /** Autopilot progress, for a live view. Default: ignored. */
         fun onAgentStep(event: AutopilotEvent) {}
+        /**
+         * A model call that had already streamed [discardedChars] characters through [onToken]
+         * dropped and is being retried from the start; drop the tail of the live text or the
+         * retried reply shows up twice. Default: ignored (callers that only read `fullText`
+         * in [onComplete] are already correct).
+         */
+        fun onStreamRetry(discardedChars: Int) {}
         fun onComplete(fullText: String, tokenUsage: TokenUsageSnapshot? = null)
         fun onError(error: Throwable)
     }
 
-    suspend fun run(userMessage: String, conversationHistory: List<Message>, callbacks: Callbacks) {
+    /**
+     * @param justCompacted whether [conversationHistory] was compacted since the last turn, so
+     *   memory is re-injected. Null derives it from the history — which only says a summary
+     *   exists, and so stays true on every later turn of a compacted chat (a memory fetch and a
+     *   changed system prompt, i.e. no prompt-cache hit, on every one of them).
+     */
+    suspend fun run(
+        userMessage: String,
+        conversationHistory: List<Message>,
+        callbacks: Callbacks,
+        justCompacted: Boolean? = null,
+    ) {
         runStartedMs = System.currentTimeMillis()
         runToken = AgentRunToken(
             job = currentCoroutineContext()[Job],
@@ -539,7 +558,7 @@ class AgentLoop(
         // (context loss). Mid-conversation, everything is already in the prompt —
         // the model can call memory_search explicitly if it needs more context.
         val isFirstTurn = conversationHistory.isEmpty()
-        val isPostCompaction = conversationHistory.any { msg ->
+        val isPostCompaction = justCompacted ?: conversationHistory.any { msg ->
             val text = extractText(msg)
             text.startsWith("<context_summary>")
         }
@@ -757,11 +776,14 @@ class AgentLoop(
 
                 val responseBlocks = mutableListOf<ContentBlock>()
                 val streamText = StringBuilder()
+                var streamError: Throwable? = null
                 val runContext = autopilotRunContext(effectiveModelId, callbacks)
 
                 // Streaming tool executor: starts executing tools as they arrive from the stream
                 val streamingExecutor = StreamingToolExecutor(
-                    executeToolCall = { block ->
+                    executeToolCall = executeToolCall@{ block ->
+                        // Arguments that were cut off or were not JSON: answered, never run.
+                        ToolArguments.errorResultOrNull(block)?.let { return@executeToolCall it }
                         // Not announced here: the engine's onToolStarted does, once the call has
                         // passed the gates, so a refused call never shows as running.
                         val engine = ExecutionEngineFactory.create(
@@ -819,12 +841,17 @@ class AgentLoop(
                     }
 
                     override fun onError(error: Throwable) {
-                        callbacks.onError(error)
+                        // Thrown after streamMessage returns (below), once, through the same
+                        // path as every other failure. Reported here, the turn went on to
+                        // complete with an empty reply after the UI had already shown an error.
+                        if (streamError == null) streamError = error
                     }
                 }
 
                 Log.i(TAG, "Sending streaming request to LLM (iteration $iterations, messages=${messages.size})...")
                 val iterStartMs = System.currentTimeMillis()
+                // fullText spans iterations; a retried attempt must give back what it added.
+                val fullTextMark = fullText.length
                 try {
                     withRetry { attempt ->
                         if (attempt > 0) {
@@ -839,13 +866,18 @@ class AgentLoop(
                                         "Check what happened before asking again."
                                 )
                             }
-                            // Reset accumulators on retry so we don't double-count
+                            // Reset accumulators on retry so we don't double-count — the reply
+                            // text too: without it the retried answer followed the partial one.
                             responseBlocks.clear()
+                            if (streamText.isNotEmpty()) callbacks.onStreamRetry(streamText.length)
                             streamText.clear()
+                            fullText.setLength(fullTextMark)
                         }
+                        streamError = null
                         modelCalls.incrementAndGet()
                         modelIdsUsed.add(effectiveModelId)
                         client.streamMessage(request, streamCallback)
+                        streamError?.let { throw it }
                     }
                 } catch (e: CannotRetryException) {
                     val apiEx = e.originalError as? AnthropicApiException
@@ -853,14 +885,19 @@ class AgentLoop(
                         Log.w(TAG, "Prompt too long (HTTP ${apiEx.statusCode}), attempting reactive compaction...")
                         val compactResult = reactiveCompaction.tryReactiveCompact(messages, compactTracking)
                         if (compactResult != null) {
-                            // Replace history with compacted version and retry this iteration
+                            // Replace history with compacted version and retry. The retry costs an
+                            // iteration: refunding it let compact → 413 → compact run unbounded.
                             messages.clear()
                             messages.addAll(compactResult.compactedHistory)
                             Log.i(TAG, "Reactive compaction succeeded, retrying with ${messages.size} messages")
-                            iterations-- // don't count this as an iteration
                             continue
                         }
-                        Log.e(TAG, "Reactive compaction failed or circuit breaker tripped, propagating error")
+                        Log.e(TAG, "Reactive compaction failed, did not shrink the prompt, or hit its cap")
+                        throw IllegalStateException(
+                            "This conversation is too long for the model, and compacting it did not " +
+                                "make it fit. Start a new chat.",
+                            apiEx,
+                        )
                     }
                     throw e.originalError
                 }
@@ -1014,7 +1051,10 @@ class AgentLoop(
                             intent = recordedIntent,
                             runContext = runContext,
                         )
-                        val engineCalls = ExecutionEngineFactory.toToolCalls(regularNotInExecutor)
+                        // Arguments that were cut off or were not JSON: answered, never run.
+                        val (invalidCalls, runnableCalls) = regularNotInExecutor.partition { ToolArguments.isInvalid(it.input) }
+                        invalidCalls.forEach { allToolResults.add(ToolArguments.errorResultOrNull(it)!!) }
+                        val engineCalls = ExecutionEngineFactory.toToolCalls(runnableCalls)
                         val batchResult = engine.executeBatch(engineCalls)
                         val engineMetrics = batchResult.metrics
                         noteBatch(engineMetrics)
@@ -1477,7 +1517,9 @@ class AgentLoop(
                     intent = recordedIntent,
                     runContext = autopilotRunContext(effectiveModelId, callbacks),
                 )
-                val engineCalls = ExecutionEngineFactory.toToolCalls(execCalls)
+                val (invalidCalls, runnableCalls) = execCalls.partition { ToolArguments.isInvalid(it.input) }
+                invalidCalls.forEach { toolResults.add(ToolArguments.errorResultOrNull(it)!!) }
+                val engineCalls = ExecutionEngineFactory.toToolCalls(runnableCalls)
                 val batchResult = engine.executeBatch(engineCalls)
                 noteBatch(batchResult.metrics)
                 toolResults.addAll(ExecutionEngineFactory.toContentBlocks(batchResult.results))

@@ -43,6 +43,7 @@ class ReminderSkill(private val context: Context) : AndyClawSkill {
         private const val PREFS_NAME = "andyclaw_reminders"
         private const val ACTION_REMINDER_SCHEDULE = "org.ethereumphone.andyclaw.REMINDER_SCHEDULE"
         private const val ACTION_REMINDER_CANCEL = "org.ethereumphone.andyclaw.REMINDER_CANCEL"
+        private const val OS_PACKAGE = "android"
         /** The dgen1's own alarm app, preferred when more than one app takes alarms. */
         private const val ETHOS_ALARM_PACKAGE = "com.dgen.alarm"
     }
@@ -175,7 +176,9 @@ class ReminderSkill(private val context: Context) : AndyClawSkill {
             )
         }
 
-        val reminderId = (now % Int.MAX_VALUE).toInt()
+        val reminderId = TriggerIds.next(now) { id ->
+            context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).contains(id.toString())
+        }
 
         return if (OsCapabilities.hasPrivilegedAccess) {
             createReminderViaOs(reminderId, time, message, label, now)
@@ -199,6 +202,10 @@ class ReminderSkill(private val context: Context) : AndyClawSkill {
                 putExtra("message", message)
                 putExtra("label", label)
             }
+            // Explicit: the receiver is AndyClawHeartbeatService in system_server (package
+            // "android"). Implicit, any installed app could register for the action and read
+            // every reminder text and cron prompt.
+            intent.setPackage(OS_PACKAGE)
             context.sendBroadcast(intent)
             Log.i(TAG, "Sent OS reminder broadcast: id=$reminderId at $time (in ${time - now}ms)")
 
@@ -296,10 +303,10 @@ class ReminderSkill(private val context: Context) : AndyClawSkill {
                 "Set it in the clock app on the agent display instead.")
         return try {
             context.startActivity(intent.setPackage(target))
-            Log.i(TAG, "set_alarm ${"%02d:%02d".format(hour, minutes)} via $target")
+            Log.i(TAG, "set_alarm ${"%02d:%02d".format(java.util.Locale.ROOT, hour, minutes)} via $target")
             SkillResult.Success(buildJsonObject {
                 put("alarm_set", true)
-                put("time", "%02d:%02d".format(hour, minutes))
+                put("time", "%02d:%02d".format(java.util.Locale.ROOT, hour, minutes))
                 label?.let { put("label", it) }
                 if (!days.isNullOrEmpty()) put("days", JsonArray(days.map { JsonPrimitive(it) }))
                 put("app", target)
@@ -372,6 +379,10 @@ class ReminderSkill(private val context: Context) : AndyClawSkill {
             val intent = Intent(ACTION_REMINDER_CANCEL).apply {
                 putExtra("reminder_id", reminderId)
             }
+            // Explicit: the receiver is AndyClawHeartbeatService in system_server (package
+            // "android"). Implicit, any installed app could register for the action and read
+            // every reminder text and cron prompt.
+            intent.setPackage(OS_PACKAGE)
             context.sendBroadcast(intent)
             Log.i(TAG, "Sent OS reminder cancel broadcast: id=$reminderId")
 

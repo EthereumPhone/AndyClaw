@@ -1,5 +1,6 @@
 package org.ethereumphone.andyclaw.safety
 
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonPrimitive
 import org.ethereumphone.andyclaw.ExecutionEngine.Provenance
@@ -85,6 +86,12 @@ object ProvenanceGate {
     ): PreflightVerdict {
         val effect = ToolEffects.of(call.name, toolDef)
 
+        standingInstructionVerdict(call.name, readThirdPartyContent)?.let { return it }
+
+        // Before the approval below, which returns early: a calendar invitation is irreversible
+        // and needs approval, and that early Pass used to skip the block meant for it.
+        taintedTrustedEgressVerdict(provenance, call.name, readPrivateData, readThirdPartyContent, call.input)?.let { return it }
+
         if (taintedTrustedRunNeedsApproval(provenance, effect, call.name, readThirdPartyContent)) {
             // The approval check a few steps on raises this anyway for such a tool.
             if (toolDef?.requiresApproval == true) return PreflightVerdict.Pass
@@ -94,10 +101,8 @@ object ProvenanceGate {
             )
         }
 
-        taintedTrustedEgressVerdict(provenance, call.name, readPrivateData, readThirdPartyContent)?.let { return it }
-
         if (provenance == Provenance.UNTRUSTED) {
-            privacyVerdict(call.name, audience, readPrivateData)?.let { return it }
+            privacyVerdict(call.name, audience, readPrivateData, call.input)?.let { return it }
 
             // Fixed-recipient tools reach the device owner and nobody else. This is
             // the "it can raise a card for the user" leg of the model — keep it open
@@ -136,11 +141,33 @@ object ProvenanceGate {
         audience: ReplyAudience? = null,
         readPrivateData: Boolean = false,
         readThirdPartyContent: Boolean = false,
+        /** The call's input, for the checks that depend on it; null counts as the worst case. */
+        input: JsonObject? = null,
     ): Boolean =
         matrix(provenance, effect) is PreflightVerdict.Pass &&
+            standingInstructionVerdict(toolName, readThirdPartyContent) == null &&
             !taintedTrustedRunNeedsApproval(provenance, effect, toolName, readThirdPartyContent) &&
-            taintedTrustedEgressVerdict(provenance, toolName, readPrivateData, readThirdPartyContent) == null &&
-            (provenance != Provenance.UNTRUSTED || privacyVerdict(toolName, audience, readPrivateData) == null)
+            taintedTrustedEgressVerdict(provenance, toolName, readPrivateData, readThirdPartyContent, input) == null &&
+            (provenance != Provenance.UNTRUSTED || privacyVerdict(toolName, audience, readPrivateData, input) == null)
+
+    /**
+     * The soul is read into every trusted run as the owner's own standing instructions, so a
+     * line injected into it outlives the run that wrote it: every heartbeat after acts on it. A
+     * run that has read another person's words — a page, a notification, a message — may not
+     * rewrite it, whoever set the run off. A block, not an approval: the launcher approves
+     * everything it is asked, and a heartbeat's card would ask the owner to proof-read a whole
+     * soul for one planted sentence. The owner changes it from a fresh message instead.
+     *
+     * Untrusted runs never set the flag; their writes already need approval from the matrix.
+     */
+    fun standingInstructionVerdict(toolName: String, readThirdPartyContent: Boolean): PreflightVerdict.Block? {
+        if (!readThirdPartyContent || toolName !in ToolEffects.STANDING_INSTRUCTION_WRITES) return null
+        return PreflightVerdict.Block(
+            "[Provenance] This turn has read something written by someone other than the owner, so " +
+                "'$toolName' cannot run in it: the result would become standing instructions for every " +
+                "later run. Tell the user what you would change and let them ask for it in a new message."
+        )
+    }
 
     /**
      * A trusted run nobody watches — a heartbeat, the owner's own cron job — acts on its own
@@ -171,9 +198,10 @@ object ProvenanceGate {
         toolName: String,
         readPrivateData: Boolean,
         readThirdPartyContent: Boolean,
+        input: JsonObject? = null,
     ): PreflightVerdict.Block? {
         if (provenance != Provenance.TRUSTED || !readPrivateData || !readThirdPartyContent) return null
-        if (toolName !in ToolEffects.NETWORK_EGRESS) return null
+        if (!ToolEffects.isNetworkEgress(toolName, input)) return null
         return PreflightVerdict.Block(
             "[Provenance] This run has read something written by someone else and the owner's " +
                 "private data, so it cannot send anything to the web. Finish without it."
@@ -191,7 +219,12 @@ object ProvenanceGate {
      * asking "what's in the clipboard" got the clipboard back, and a notification carrying
      * instructions could have a background run read the SMS inbox and put it in a URL.
      */
-    fun privacyVerdict(toolName: String, audience: ReplyAudience?, readPrivateData: Boolean): PreflightVerdict.Block? {
+    fun privacyVerdict(
+        toolName: String,
+        audience: ReplyAudience?,
+        readPrivateData: Boolean,
+        input: JsonObject? = null,
+    ): PreflightVerdict.Block? {
         if (toolName in ToolEffects.CLIPBOARD_READS) {
             return PreflightVerdict.Block(
                 "[Provenance] The clipboard often holds a password or a code the owner just copied, " +
@@ -205,7 +238,7 @@ object ProvenanceGate {
                     "without it."
             )
         }
-        if (toolName in ToolEffects.NETWORK_EGRESS && readPrivateData && audience == null) {
+        if (readPrivateData && audience == null && ToolEffects.isNetworkEgress(toolName, input)) {
             return PreflightVerdict.Block(
                 "[Provenance] This run was set off by content written by someone else and has read " +
                     "the owner's private data, so it cannot send anything to the web. Finish without it."
@@ -241,7 +274,12 @@ object ProvenanceGate {
                     "be shown to stay in the conversation this request came from. Blocked."
             )
 
-        return if (sameConversation(target, triggerConversationId)) {
+        val same = if (call.name in PHONE_TARGET_TOOLS) {
+            sameSmsConversation(target, triggerConversationId)
+        } else {
+            sameConversation(target, triggerConversationId)
+        }
+        return if (same) {
             // Replying to the thread the message arrived on is explicitly allowed.
             PreflightVerdict.Pass
         } else {
@@ -256,25 +294,40 @@ object ProvenanceGate {
     }
 
     /**
-     * Whether two conversation identifiers name the same thread.
-     *
-     * Wallet addresses differ only in EIP-55 casing and phone numbers pick up spaces,
-     * dashes and a country-code prefix on the way through an SMS stack, so neither
-     * survives a raw `==`.
+     * The prefix an SMS trigger's conversation id carries (`sms:+4917…`). Nothing raises an
+     * untrusted run from an SMS today; one that does must say so this way, or `send_sms` has no
+     * thread to reply into.
      */
-    internal fun sameConversation(a: String, b: String): Boolean {
-        val x = a.trim()
-        val y = b.trim()
-        if (x.equals(y, ignoreCase = true)) return true
+    const val SMS_TRIGGER_PREFIX = "sms:"
 
+    /** Outbound tools whose target is a phone number. They reply only into an SMS trigger. */
+    private val PHONE_TARGET_TOOLS = setOf("send_sms")
+
+    /**
+     * Whether two conversation identifiers name the same thread. Wallet addresses differ only in
+     * EIP-55 casing, so the compare ignores case; nothing else is loosened.
+     */
+    internal fun sameConversation(a: String, b: String): Boolean =
+        a.trim().equals(b.trim(), ignoreCase = true)
+
+    /**
+     * Whether [target], a phone number, is the sender of the SMS trigger [trigger]. Phone numbers
+     * pick up spaces, dashes and a country-code prefix on the way through an SMS stack, so they
+     * are compared by their trailing digits — but only against a trigger that is an SMS. A
+     * Telegram chat id is digits too: matched the same way, a stranger's chat id `5123456789` let
+     * the run text `+1 512-345-6789` without approval.
+     */
+    internal fun sameSmsConversation(target: String, trigger: String): Boolean {
+        val t = trigger.trim()
+        if (!t.startsWith(SMS_TRIGGER_PREFIX, ignoreCase = true)) return false
+        val x = target.trim()
+        val y = t.substring(SMS_TRIGGER_PREFIX.length).trim()
+        val phoneLike = { s: String -> s.isNotEmpty() && s.all { it.isDigit() || it in "+ -()." } }
+        if (!phoneLike(x) || !phoneLike(y)) return false
         val dx = x.filter { it.isDigit() }
         val dy = y.filter { it.isDigit() }
-        // Only treat them as phone numbers when both are digits-and-punctuation.
-        val phoneLike = { s: String -> s.isNotEmpty() && s.all { it.isDigit() || it in "+ -()." } }
-        if (phoneLike(x) && phoneLike(y) && dx.length >= 7 && dy.length >= 7) {
-            val n = minOf(dx.length, dy.length)
-            return dx.takeLast(n) == dy.takeLast(n)
-        }
-        return false
+        if (dx.length < 7 || dy.length < 7) return false
+        val n = minOf(dx.length, dy.length)
+        return dx.takeLast(n) == dy.takeLast(n)
     }
 }

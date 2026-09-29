@@ -1,11 +1,11 @@
 package org.ethereumphone.andyclaw.llm
 
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
-import kotlinx.serialization.json.jsonArray
-import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.jsonPrimitive
+import java.io.IOException
 
 /**
  * Translates OpenAI SSE streaming chunks (`data: {ChatCompletionChunk}` / `data: [DONE]`)
@@ -13,25 +13,48 @@ import kotlinx.serialization.json.jsonPrimitive
  *
  * OpenAI streams produce `choices[0].delta` with incremental text and tool call fragments.
  * This accumulator collects them and emits matching Anthropic-style events.
+ *
+ * The transport feeds [onData] and then **must** call [finishStream] when the body ends.
+ * [onData] never throws — it runs inside the Go bridge's callback, where an exception has
+ * nowhere sane to go — so a failure is recorded, [onData] returns true to stop the read,
+ * and [finishStream] throws it. A body that simply stopped, without `[DONE]` or a
+ * `finish_reason`, is a dropped connection ([IOException]), not a finished reply: accepting
+ * it used to end a turn "successfully" with half an answer.
  */
-class OpenAiStreamAccumulator(private val callback: StreamingCallback) {
+class OpenAiStreamAccumulator(
+    private val callback: StreamingCallback,
+    private val provider: String = "OpenAI-compatible",
+) {
 
     private val json = Json { ignoreUnknownKeys = true }
     private val contentBlocks = mutableListOf<ContentBlock>()
     private val textAccumulator = StringBuilder()
-    private val toolCallArgs = mutableMapOf<Int, StringBuilder>()
-    private val toolCallIds = mutableMapOf<Int, String>()
-    private val toolCallNames = mutableMapOf<Int, String>()
+
+    /** One tool call being assembled. */
+    private class ToolSlot(val ordinal: Int) {
+        var id: String? = null
+        var name: String? = null
+        val args = StringBuilder()
+    }
+    private val toolSlots = mutableListOf<ToolSlot>()
+    private val slotsById = mutableMapOf<String, ToolSlot>()
+    private val slotsByIndex = mutableMapOf<Int, ToolSlot>()
+    private var lastSlot: ToolSlot? = null
+
     private var responseId = ""
     private var model = ""
     private var finishReason: String? = null
     private var usage: Usage? = null
+    private var completed = false
+    private var failure: Exception? = null
 
     /**
      * Feed a single SSE data payload. Call with the raw string after `data: `.
-     * Returns true if this was the `[DONE]` sentinel and streaming is complete.
+     * Returns true when the transport should stop reading: the `[DONE]` sentinel, or a
+     * failure that [finishStream] will report.
      */
     fun onData(data: String): Boolean {
+        if (completed || failure != null) return true
         val trimmed = data.trim()
         if (trimmed == "[DONE]") {
             finish()
@@ -39,85 +62,123 @@ class OpenAiStreamAccumulator(private val callback: StreamingCallback) {
         }
 
         try {
-            val root = json.parseToJsonElement(trimmed).jsonObject
-            responseId = root["id"]?.jsonPrimitive?.contentOrNull ?: responseId
-            model = root["model"]?.jsonPrimitive?.contentOrNull ?: model
+            val root = json.parseToJsonElement(trimmed) as? JsonObject
+                ?: throw IOException("unexpected stream chunk")
 
-            // Capture usage if present (OpenAI includes it in the final chunk)
-            root["usage"]?.jsonObject?.let { usageObj ->
-                val promptDetails = usageObj["prompt_tokens_details"]?.jsonObject
-                val cachedTokens = promptDetails?.get("cached_tokens")?.jsonPrimitive?.contentOrNull?.toIntOrNull() ?: 0
+            // A provider that fails mid-stream says so in-band (OpenRouter, vLLM, LiteLLM).
+            root["error"]?.let { err ->
+                failure = StreamErrors.fromStreamError(err, provider)
+                return true
+            }
+
+            responseId = (root["id"] as? JsonPrimitive)?.contentOrNull ?: responseId
+            model = (root["model"] as? JsonPrimitive)?.contentOrNull ?: model
+
+            // Capture usage if present (OpenAI includes it in the final chunk). Some
+            // providers send `"usage": null` on every other chunk — not an object.
+            (root["usage"] as? JsonObject)?.let { usageObj ->
+                val promptDetails = usageObj["prompt_tokens_details"] as? JsonObject
+                val cachedTokens = (promptDetails?.get("cached_tokens") as? JsonPrimitive)?.contentOrNull?.toIntOrNull() ?: 0
                 usage = Usage(
-                    inputTokens = usageObj["prompt_tokens"]?.jsonPrimitive?.contentOrNull?.toIntOrNull() ?: 0,
-                    outputTokens = usageObj["completion_tokens"]?.jsonPrimitive?.contentOrNull?.toIntOrNull() ?: 0,
+                    inputTokens = (usageObj["prompt_tokens"] as? JsonPrimitive)?.contentOrNull?.toIntOrNull() ?: 0,
+                    outputTokens = (usageObj["completion_tokens"] as? JsonPrimitive)?.contentOrNull?.toIntOrNull() ?: 0,
                     cacheReadTokens = cachedTokens,
                 )
             }
 
-            val choices = root["choices"]?.jsonArray ?: return false
+            val choices = root["choices"] as? JsonArray ?: return false
             if (choices.isEmpty()) return false
 
-            val choice = choices[0].jsonObject
-            finishReason = choice["finish_reason"]?.jsonPrimitive?.contentOrNull ?: finishReason
-            val delta = choice["delta"]?.jsonObject ?: return false
+            val choice = choices[0] as? JsonObject ?: return false
+            finishReason = (choice["finish_reason"] as? JsonPrimitive)?.contentOrNull ?: finishReason
+            val delta = choice["delta"] as? JsonObject ?: return false
 
             // Text content delta
-            val textDelta = delta["content"]?.jsonPrimitive?.contentOrNull
+            val textDelta = (delta["content"] as? JsonPrimitive)?.contentOrNull
             if (!textDelta.isNullOrEmpty()) {
                 textAccumulator.append(textDelta)
                 callback.onToken(textDelta)
             }
 
-            // Tool call deltas (guard against explicit null from some providers)
-            val toolCalls = delta["tool_calls"]?.takeIf { it !is kotlinx.serialization.json.JsonNull }?.jsonArray
+            // Tool call deltas (an explicit null from some providers is simply not an array)
+            val toolCalls = delta["tool_calls"] as? JsonArray
             if (toolCalls != null) {
                 for (tc in toolCalls) {
-                    val tcObj = tc.jsonObject
-                    val index = tcObj["index"]?.jsonPrimitive?.contentOrNull?.toIntOrNull() ?: 0
+                    val tcObj = tc as? JsonObject ?: continue
+                    val index = (tcObj["index"] as? JsonPrimitive)?.contentOrNull?.toIntOrNull()
+                    val id = (tcObj["id"] as? JsonPrimitive)?.contentOrNull?.takeIf { it.isNotEmpty() }
+                    val slot = slotFor(index, id)
 
-                    // First chunk for this tool call: has id and function.name
-                    val id = tcObj["id"]?.jsonPrimitive?.contentOrNull
-                    if (id != null) {
-                        toolCallIds[index] = id
-                    }
-
-                    val function = tcObj["function"]?.jsonObject
+                    val function = tcObj["function"] as? JsonObject
                     if (function != null) {
-                        val name = function["name"]?.jsonPrimitive?.contentOrNull
-                        if (name != null) {
-                            toolCallNames[index] = name
-                        }
-
-                        val argDelta = function["arguments"]?.jsonPrimitive?.contentOrNull
-                        if (argDelta != null) {
-                            toolCallArgs.getOrPut(index) { StringBuilder() }.append(argDelta)
-                        }
+                        (function["name"] as? JsonPrimitive)?.contentOrNull?.let { slot.name = it }
+                        (function["arguments"] as? JsonPrimitive)?.contentOrNull?.let { slot.args.append(it) }
                     }
                 }
             }
         } catch (e: Exception) {
-            callback.onError(e)
+            // A chunk we cannot read is content we lost; the reply is not whole.
+            failure = e as? IOException ?: IOException("malformed stream chunk: ${e.message}", e)
+            return true
         }
 
         return false
     }
 
+    /**
+     * Where a tool-call fragment belongs. Keyed by `index` when the provider sends one, as
+     * OpenAI does. Some providers omit `index`, or send every parallel call at index 0 with
+     * its own `id`; defaulting to 0 merged their arguments into one unparseable call. So a
+     * new `id` always opens a new call, and a fragment with neither continues the last one.
+     */
+    private fun slotFor(index: Int?, id: String?): ToolSlot {
+        val slot = when {
+            id != null -> slotsById[id]
+                ?: index?.let { slotsByIndex[it] }?.takeIf { it.id == null }
+                ?: newSlot()
+            index != null -> slotsByIndex[index] ?: newSlot()
+            else -> lastSlot ?: newSlot()
+        }
+        if (id != null) {
+            slot.id = id
+            slotsById[id] = slot
+        }
+        if (index != null) slotsByIndex[index] = slot
+        lastSlot = slot
+        return slot
+    }
+
+    private fun newSlot(): ToolSlot = ToolSlot(toolSlots.size).also { toolSlots += it }
+
+    /**
+     * The transport's body ended (or [onData] asked it to stop). Throws a recorded failure;
+     * otherwise completes the response if it had not been completed already. A provider that
+     * never sends `[DONE]` but did send a `finish_reason` has finished; one that sent neither
+     * was cut off.
+     */
+    fun finishStream() {
+        failure?.let { throw it }
+        if (completed) return
+        if (finishReason != null) {
+            finish()
+            return
+        }
+        throw IOException("$provider stream ended before the response was complete")
+    }
+
     private fun finish() {
+        if (completed) return
+        completed = true
         // Finalize text block
         if (textAccumulator.isNotEmpty()) {
             contentBlocks.add(ContentBlock.TextBlock(textAccumulator.toString()))
         }
 
-        // Finalize tool calls
-        for (index in toolCallArgs.keys.sorted()) {
-            val id = toolCallIds[index] ?: "call_$index"
-            val name = toolCallNames[index] ?: ""
-            val argsJson = toolCallArgs[index]?.toString() ?: "{}"
-            val input = try {
-                json.parseToJsonElement(argsJson).jsonObject
-            } catch (_: Exception) {
-                JsonObject(emptyMap())
-            }
+        // Finalize tool calls, in the order they first appeared
+        for (slot in toolSlots) {
+            val id = slot.id ?: "call_${slot.ordinal}"
+            val name = slot.name ?: ""
+            val input = ToolArguments.parse(slot.args.toString())
             contentBlocks.add(ContentBlock.ToolUseBlock(id = id, name = name, input = input))
             callback.onToolUse(id, name, input)
         }

@@ -55,6 +55,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -392,22 +395,40 @@ private class MirrorController(private val onMirror: (Boolean) -> Unit) {
     suspend fun acquire(): Boolean {
         if (mirror != null) return true
         val v = view ?: return false
-        val sc = withContext(Dispatchers.IO) {
-            try {
-                AgentDisplayBinder.serviceOrNull()?.mirrorAgentDisplay()
-            } catch (e: Exception) {
-                Log.d("AutopilotLiveView", "mirror unavailable: ${e.message}")
-                null
+        val caller = currentCoroutineContext()[Job]
+        // The OS creates the mirror layer whether or not this coroutine is still wanted, and a
+        // cancelled withContext throws on return and drops what it got: a mirror layer nobody
+        // holds and nobody releases. So the call and the decision what to do with its result run
+        // under NonCancellable (on this thread — only the binder call moves to IO, and it resumes
+        // into the non-cancellable block), and an unwanted mirror is released right there.
+        return withContext(NonCancellable) {
+            val sc = withContext(Dispatchers.IO) {
+                try {
+                    AgentDisplayBinder.serviceOrNull()?.mirrorAgentDisplay()
+                } catch (e: Exception) {
+                    Log.d("AutopilotLiveView", "mirror unavailable: ${e.message}")
+                    null
+                }
+            } ?: return@withContext false
+            // Cancelled meanwhile (the display was parked, the surface went, the view left), or
+            // another acquire already holds one: this one is not shown.
+            if (caller?.isActive == false || mirror != null || !v.holder.surface.isValid) {
+                discard(sc)
+                return@withContext mirror != null
             }
-        } ?: return false
-        if (!v.holder.surface.isValid) {
-            sc.release()
-            return false
+            mirror = sc
+            place(v.width, v.height)
+            onMirror(true)
+            true
         }
-        mirror = sc
-        place(v.width, v.height)
-        onMirror(true)
-        return true
+    }
+
+    private fun discard(sc: SurfaceControl) {
+        try {
+            SurfaceControl.Transaction().reparent(sc, null).apply()
+        } catch (_: Exception) {
+        }
+        try { sc.release() } catch (_: Exception) {}
     }
 
     fun release() {

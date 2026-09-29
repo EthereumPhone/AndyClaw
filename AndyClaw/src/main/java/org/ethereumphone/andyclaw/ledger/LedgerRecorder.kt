@@ -76,7 +76,9 @@ class LedgerRecorder(
     }
 
     private suspend fun writeRow(draft: LedgerDraft) {
-        val lost = synchronized(this) { val n = dropped; dropped = 0; n }
+        // Read, don't reset: the count is cleared only once the overflow row is written. Zeroing
+        // it first meant a failed append lost the record of the gap along with the rows.
+        val lost = synchronized(this) { dropped }
         if (lost > 0) {
             runCatching {
                 // Its own session: the rows that were lost could have belonged to any run, and
@@ -98,7 +100,10 @@ class LedgerRecorder(
                         ),
                     )
                 )
-            }
+            }.onSuccess {
+                // Subtract, not zero: rows dropped while this append ran are still owed a record.
+                synchronized(this) { dropped -= lost }
+            }.onFailure { log.warning("ledger overflow row failed, will retry: ${it.message}") }
         }
         runCatching { repository.append(draft) }
             .onFailure { log.warning("ledger append failed: ${it.message}") }

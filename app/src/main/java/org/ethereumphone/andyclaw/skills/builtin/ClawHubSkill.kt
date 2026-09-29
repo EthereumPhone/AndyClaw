@@ -9,6 +9,8 @@ import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
 import kotlinx.serialization.json.putJsonObject
 import org.ethereumphone.andyclaw.extensions.clawhub.ClawHubManager
+import org.ethereumphone.andyclaw.extensions.clawhub.DownloadAssessResult
+import org.ethereumphone.andyclaw.extensions.clawhub.ThreatLevel
 import org.ethereumphone.andyclaw.extensions.clawhub.InstallResult
 import org.ethereumphone.andyclaw.extensions.clawhub.UpdateResult
 import org.ethereumphone.andyclaw.skills.AndyClawSkill
@@ -308,7 +310,25 @@ class ClawHubSkill(
                 }
             }
 
-            when (val result = manager.install(slug, version)) {
+            // No dialog showed an assessment (the launcher, YOLO, a background run): assess here,
+            // and never install a CRITICAL skill that nobody looked at. manager.install() skips
+            // the analyzer entirely.
+            val installResult = when (val assessed = manager.downloadAndAssess(slug, version)) {
+                is DownloadAssessResult.Failed -> InstallResult.Failed(assessed.slug, assessed.reason)
+                is DownloadAssessResult.AlreadyInstalled -> InstallResult.AlreadyInstalled(assessed.slug, assessed.version)
+                is DownloadAssessResult.Ready -> {
+                    if (assessed.assessment.level == ThreatLevel.CRITICAL) {
+                        manager.cancelPendingInstall(slug)
+                        return SkillResult.Error(
+                            "Refused to install '$slug': threat assessment is CRITICAL. " +
+                                assessed.assessment.summary +
+                                " The user can review and install it from the ClawHub screen."
+                        )
+                    }
+                    manager.confirmInstall(slug, assessed.version)
+                }
+            }
+            when (val result = installResult) {
                 is InstallResult.Success -> {
                     Log.i(TAG, "Installed ClawHub skill '$slug' v${result.version ?: "latest"}")
                     SkillResult.Success(

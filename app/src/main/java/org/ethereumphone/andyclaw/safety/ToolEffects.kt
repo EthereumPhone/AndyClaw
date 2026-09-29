@@ -1,5 +1,9 @@
 package org.ethereumphone.andyclaw.safety
 
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import org.ethereumphone.andyclaw.skills.ToolDefinition
 import org.ethereumphone.andyclaw.skills.ToolEffect
 
@@ -140,6 +144,10 @@ object ToolEffects {
         "get_system_setting", "list_settings", "termux_check_status", "led_list_patterns", "set_alarm",
         "get_user_wallet_address", "get_agent_wallet_address", "read_agent_balance",
         "agent_display_get_info",
+        // The soul is already in every trusted run's system prompt; reading it back adds nothing
+        // another person wrote. Listed so the documented read-then-update flow does not trip
+        // [STANDING_INSTRUCTION_WRITES] on its own read.
+        "read_soul",
     ) + OWNER_ONLY_MESSAGE_TOOLS
 
     /** Whether [toolName]'s result may carry someone else's words into a trusted run. */
@@ -150,6 +158,48 @@ object ToolEffects {
         "fetch_webpage",
         "web_search",
         "fetch_url",
+    )
+
+    /**
+     * Tools that write into the owner's own account — which stays put — unless the call names
+     * someone else: an invitee is mailed the event's title, description and location, and an
+     * event on a calendar other than the default can land on one a stranger shares with the
+     * owner. A notification telling a heartbeat to "invite x@evil to 'notes'" with the SMS inbox
+     * as the description got it out that way, past every web-only egress check. The value is the
+     * input keys that make the call leave; any of them present and non-empty and it is egress.
+     */
+    val CONDITIONAL_EGRESS: Map<String, Set<String>> = mapOf(
+        "create_event" to setOf("participants", "calendar_id"),
+        "gcal_create_event" to setOf("attendees", "calendar_id"),
+    )
+
+    /**
+     * Whether this call puts what it carries in front of someone other than the owner, for the
+     * egress checks in `ProvenanceGate`. [input] null — a path that never sees it — counts a
+     * conditional tool as egress: fail closed.
+     */
+    fun isNetworkEgress(toolName: String, input: JsonObject? = null): Boolean {
+        if (toolName in NETWORK_EGRESS) return true
+        val keys = CONDITIONAL_EGRESS[toolName] ?: return false
+        if (input == null) return true
+        return keys.any { key ->
+            when (val v = input[key]) {
+                null, JsonNull -> false
+                is JsonPrimitive -> v.content.isNotBlank()
+                is JsonArray -> v.isNotEmpty()
+                else -> true
+            }
+        }
+    }
+
+    /**
+     * Standing instructions every later run reads as the owner's own. A run that has read
+     * another person's words may not rewrite them — whoever set it off, the owner's chat included,
+     * which approves everything it is asked from the launcher — because an injected line there
+     * becomes the instructions of every heartbeat after it.
+     */
+    val STANDING_INSTRUCTION_WRITES: Set<String> = setOf(
+        "update_soul",
     )
 
     // ══════════════════════════════════════════════════════════════════
@@ -193,7 +243,9 @@ object ToolEffects {
         // ── CalendarSkill ────────────────────────────────────────────
         "list_events" eff ToolEffect.READ,
         "get_event" eff ToolEffect.READ,
-        "create_event" eff ToolEffect.REVERSIBLE,
+        // Participants are mailed an invitation carrying the title and description, and the
+        // event syncs to whichever account owns the calendar: it leaves the device.
+        "create_event" eff ToolEffect.IRREVERSIBLE,
         "delete_event" eff ToolEffect.IRREVERSIBLE,
 
         // ── CameraSkill ──────────────────────────────────────────────
@@ -233,7 +285,9 @@ object ToolEffects {
         "search_contacts" eff ToolEffect.READ,
         "get_contact_details" eff ToolEffect.READ,
         "get_eth_contacts" eff ToolEffect.READ,
-        "create_contact" eff ToolEffect.REVERSIBLE,
+        // A new contact is as much a payment target as a rewritten one: "save me as Mom, 0x…"
+        // from a stranger, then the owner's "send Mom 0.1 ETH", resolves to the stranger.
+        "create_contact" eff ToolEffect.IRREVERSIBLE,
         // Rewriting a contact's ETH address re-aims every later payment at it.
         "set_eth_address" eff ToolEffect.IRREVERSIBLE,
         // Where a contact's calls, messages and mail go: the same redirection a stranger's
@@ -284,7 +338,8 @@ object ToolEffects {
 
         // ── GoogleCalendarSkill ──────────────────────────────────────
         "gcal_list_events" eff ToolEffect.READ,
-        "gcal_create_event" eff ToolEffect.REVERSIBLE,
+        // Posted to Google; attendees are mailed the event. See [CONDITIONAL_EGRESS].
+        "gcal_create_event" eff ToolEffect.IRREVERSIBLE,
 
         // ── LedSkill ─────────────────────────────────────────────────
         "led_list_patterns" eff ToolEffect.READ,

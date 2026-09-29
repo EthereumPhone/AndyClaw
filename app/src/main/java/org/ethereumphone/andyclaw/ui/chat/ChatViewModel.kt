@@ -13,6 +13,8 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.getAndUpdate
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import org.ethereumphone.andyclaw.NodeApp
@@ -60,6 +62,14 @@ data class ChatUiMessage(
     val explorerUrl: String? = null,
     val isStreaming: Boolean = false,
     val isSecurityBlock: Boolean = false,
+    /**
+     * Context summaries only: how many conversation messages immediately before this one
+     * (user/assistant, not tool, system, transient or older summaries) stay in the model's
+     * context verbatim after it. Persisted in the row's `toolCallId` as `kept:N`.
+     */
+    val keptBefore: Int = 0,
+    /** Shown but never persisted (a slash command's echo): never sent to the model either. */
+    val transient: Boolean = false,
 )
 
 /**
@@ -194,6 +204,9 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     private var turnsSinceLastCompaction = 0
 
+    /** A summary was written since the last turn ran: the next turn re-injects memory. */
+    private var compactedSinceLastTurn = false
+
     private var currentJob: Job? = null
 
     /**
@@ -222,6 +235,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     fun loadSession(sessionId: String) {
         viewModelScope.launch {
             _sessionId.value = sessionId
+            compactedSinceLastTurn = false
             val messages = sessionManager.getMessages(sessionId)
             // Attach explorer URLs: when a tool message has one, forward it
             // to the next assistant message so the button renders there.
@@ -256,6 +270,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     fun newSession() {
         _sessionId.value = null
+        compactedSinceLastTurn = false
         _messages.value = emptyList()
         _contextWindow.value = ContextWindowState()
     }
@@ -279,7 +294,9 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             _isCompacting.value = true
             val startMs = System.currentTimeMillis()
             try {
-                val history = buildConversationHistory()
+                // Everything in the chat: this is not a turn, there is no pending user message
+                // to leave out (the old dropLast(1) dropped the latest reply from a button tap).
+                val history = buildLlmHistory(_messages.value)
                 Log.i("ChatViewModel", "compactNow: conversationHistory=${history.size} messages")
                 if (history.size < 3) {
                     Log.w("ChatViewModel", "compactNow: history too short (${history.size}), need at least 3 messages")
@@ -299,12 +316,10 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 }
                 val elapsedMs = System.currentTimeMillis() - startMs
                 if (result.wasCompacted && result.summaryText.isNotBlank()) {
-                    sessionManager.addMessage(sid, MessageRole.CONTEXT_SUMMARY, result.summaryText)
-                    _messages.value = _messages.value + ChatUiMessage(
-                        id = java.util.UUID.randomUUID().toString(),
-                        role = "context_summary",
-                        content = result.summaryText,
-                    )
+                    // The summary goes after the messages it kept; record how many, or the next
+                    // turn (and every reload) starts at the summary and loses them.
+                    val kept = history.size - result.removedMessageCount
+                    addContextSummary(sid, result.summaryText, kept)
                     turnsSinceLastCompaction = 0
                     Log.i("ChatViewModel", "compactNow DONE: summarized ${result.removedMessageCount} messages, " +
                         "summaryLength=${result.summaryText.length}, totalMs=${elapsedMs}")
@@ -375,7 +390,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 role = "user",
                 content = text,
             )
-            _messages.value = _messages.value + userMsg
+            _messages.update { it + userMsg }
 
             // Auto-title on first message
             if (_messages.value.size == 1) {
@@ -388,8 +403,9 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             _error.value = null
             ledController.onPromptStart()
 
-            // Build conversation history for agent loop
-            var conversationHistory = buildConversationHistory()
+            // Build conversation history for agent loop — everything but this turn's message,
+            // which AgentLoop adds itself.
+            var conversationHistory = buildLlmHistory(_messages.value.filter { it.id != userMsg.id })
 
             // ── Context compaction check ──
             // Old messages stay in DB/UI; only the LLM context is compacted.
@@ -416,15 +432,14 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     val compactResult = compactor.compact(conversationHistory, compactionModelId)
                     val autoCompactMs = System.currentTimeMillis() - autoCompactStart
                     if (compactResult.wasCompacted) {
-                        conversationHistory = compactResult.compactedHistory
                         if (compactResult.summaryText.isNotBlank()) {
-                            sessionManager.addMessage(sid, MessageRole.CONTEXT_SUMMARY, compactResult.summaryText)
-                            _messages.value = _messages.value + ChatUiMessage(
-                                id = java.util.UUID.randomUUID().toString(),
-                                role = "context_summary",
-                                content = compactResult.summaryText,
-                            )
+                            // The summary lands after this turn's user message (already shown
+                            // and persisted), so that message counts among the kept ones: the
+                            // tail the compactor kept, then the request itself.
+                            val kept = conversationHistory.size - compactResult.removedMessageCount
+                            addContextSummary(sid, compactResult.summaryText, kept + 1)
                         }
+                        conversationHistory = compactResult.compactedHistory
                         turnsSinceLastCompaction = 0
                         Log.i("ChatViewModel", "Auto-compact DONE: removed=${compactResult.removedMessageCount}, " +
                             "summaryLen=${compactResult.summaryText.length}, " +
@@ -448,8 +463,18 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             // returns null and falls back to MINIMAX_M3. Pass the raw string
             // through `customModelIdOverride` so the outgoing request matches
             // what the user's self-hosted backend actually serves.
-            val customModelIdOverride: String? =
-                if (activeProvider == LlmProvider.CUSTOM && modelId.isNotBlank()) modelId else null
+            //
+            // OPEN_ROUTER too, when the id is not one of ours: its picker lists the whole
+            // OpenRouter registry, and "google/gemini-…" silently ran as MiniMax M3 while
+            // Settings showed Gemini. An enum id keeps the old path (and SmartRouter's model
+            // routing). ETHOS_PREMIUM deliberately keeps the fallback: the premium backend
+            // only serves the ids it bills for.
+            val customModelIdOverride: String? = when {
+                modelId.isBlank() -> null
+                activeProvider == LlmProvider.CUSTOM -> modelId
+                activeProvider == LlmProvider.OPEN_ROUTER && AnthropicModels.fromModelId(modelId) == null -> modelId
+                else -> null
+            }
             val model = AnthropicModels.fromModelId(modelId) ?: AnthropicModels.MINIMAX_M3
             val currentTier = org.ethereumphone.andyclaw.skills.tier.OsCapabilities.currentTier()
             val currentEnabledSkillIds = if (app.securePrefs.yoloMode.value) {
@@ -496,9 +521,21 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
             // Start the likely app while the model plans; costs nothing if the turn needs no app.
             app.jevTurnRouter?.prewarm(text)
+            val justCompacted = compactedSinceLastTurn
+            compactedSinceLastTurn = false
+            // Tokens arrive on the stream's IO thread and can still trickle in after Cancel;
+            // a cancelled turn's text must not land in the next turn's bubble.
+            val turnJob = coroutineContext[Job]
             agentLoop.run(text, conversationHistory, object : AgentLoop.Callbacks {
                 override fun onToken(text: String) {
-                    _streamingText.value += text
+                    if (turnJob?.isActive == false) return
+                    _streamingText.update { it + text }
+                }
+
+                override fun onStreamRetry(discardedChars: Int) {
+                    if (turnJob?.isActive == false) return
+                    // The retried call streams the reply again from its start.
+                    _streamingText.update { it.dropLast(discardedChars) }
                 }
 
                 override fun onToolExecution(toolName: String) {
@@ -529,7 +566,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                         toolName = toolName,
                         toolSummary = formatted.summary,
                     )
-                    _messages.value = _messages.value + toolMsg
+                    _messages.update { it + toolMsg }
 
                     // Agent display preview lifecycle
                     if (toolName == "agent_display_autopilot") {
@@ -551,7 +588,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                         toolName = toolName,
                         isSecurityBlock = true,
                     )
-                    _messages.value = _messages.value + securityMsg
+                    _messages.update { it + securityMsg }
                 }
 
                 override fun onAgentStep(event: org.ethereumphone.andyclaw.autopilot.AutopilotEvent) {
@@ -679,7 +716,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     endAutopilotForTurn()
                     ledController.onPromptError()
                 }
-            })
+            }, justCompacted = justCompacted)
         }
     }
 
@@ -763,8 +800,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
      * a cancel — instead of "running" forever, and keeps its last frame for the end card.
      */
     private fun endAutopilotForTurn(stopped: Boolean = false) {
-        val ap = _autopilot.value
-        _autopilot.value = ap?.endOfTurn(stopped)
+        val ap = _autopilot.getAndUpdate { it?.endOfTurn(stopped) }
         stopDisplayCapture(clearFrame = ap == null)
     }
 
@@ -777,11 +813,13 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun onAutopilotEvent(event: org.ethereumphone.andyclaw.autopilot.AutopilotEvent) {
-        val current = _autopilot.value
-        val base = if (current == null || current.runId != event.runId) {
-            org.ethereumphone.andyclaw.ui.autopilot.AutopilotUiState(runId = event.runId)
-        } else current
-        _autopilot.value = base.reduce(event)
+        // update{}: events arrive from the run's threads; a read-then-write lost one when two raced.
+        _autopilot.update { current ->
+            val base = if (current == null || current.runId != event.runId) {
+                org.ethereumphone.andyclaw.ui.autopilot.AutopilotUiState(runId = event.runId)
+            } else current
+            base.reduce(event)
+        }
         autopilotHaptics.on(event)
         when (event.kind) {
             org.ethereumphone.andyclaw.autopilot.AutopilotEvent.Kind.STARTED ->
@@ -855,7 +893,9 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun flushStreamingText(sessionId: String) {
-        val currentText = _streamingText.value
+        // Taken and cleared in one step: a token landing between a read and a separate
+        // clear (the stream is on another thread) was lost from both bubbles.
+        val currentText = _streamingText.getAndUpdate { "" }
         if (currentText.isNotBlank()) {
             val urls = pendingExplorerUrls.toList()
             pendingExplorerUrls.clear()
@@ -865,47 +905,28 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 content = currentText,
                 explorerUrl = urls.lastOrNull(),
             )
-            _messages.value = _messages.value + assistantMsg
+            _messages.update { it + assistantMsg }
             viewModelScope.launch {
                 sessionManager.addMessage(sessionId, MessageRole.ASSISTANT, currentText)
             }
         }
-        _streamingText.value = ""
     }
 
-    private fun buildConversationHistory(): List<Message> {
-        // Convert persisted messages to Message objects (excluding last user msg which AgentLoop adds)
-        val msgs = _messages.value.dropLast(1) // Drop the user msg we just added
-
-        // If a CONTEXT_SUMMARY exists, use it as the boundary:
-        // only include the summary + messages after it for the LLM.
-        // Old messages before the summary stay in the UI but are not sent to the LLM.
-        val lastSummaryIndex = msgs.indexOfLast { it.role == "context_summary" }
-        val effectiveMsgs = if (lastSummaryIndex >= 0) {
-            Log.d("ChatViewModel", "buildConversationHistory: found CONTEXT_SUMMARY at index $lastSummaryIndex/${msgs.size}, " +
-                "using ${msgs.size - lastSummaryIndex} of ${msgs.size} messages for LLM")
-            msgs.subList(lastSummaryIndex, msgs.size)
-        } else {
-            Log.d("ChatViewModel", "buildConversationHistory: no CONTEXT_SUMMARY found, using all ${msgs.size} messages")
-            msgs
+    /** Shows and persists a context summary that keeps the [kept] messages before it. */
+    private suspend fun addContextSummary(sessionId: String, summary: String, kept: Int) {
+        sessionManager.addMessage(
+            sessionId, MessageRole.CONTEXT_SUMMARY, summary,
+            toolCallId = "$SUMMARY_KEPT_PREFIX$kept",
+        )
+        _messages.update {
+            it + ChatUiMessage(
+                id = java.util.UUID.randomUUID().toString(),
+                role = "context_summary",
+                content = summary,
+                keptBefore = kept,
+            )
         }
-
-        return effectiveMsgs.mapNotNull { msg ->
-            when (msg.role) {
-                "user" -> Message.user(msg.content)
-                "assistant" -> Message.assistant(listOf(ContentBlock.TextBlock(msg.content)))
-                "context_summary" -> Message.user(
-                    "<context_summary>\n" +
-                    "This is a compacted summary of older messages in this conversation. " +
-                    "If you need more details about something mentioned here, " +
-                    "use the search_memory skill to retrieve relevant context from long-term memory.\n\n" +
-                    msg.content + "\n" +
-                    "</context_summary>"
-                )
-                "tool" -> null // Tool results are handled within agent loop context
-                else -> null
-            }
-        }
+        compactedSinceLastTurn = true
     }
 
     /**
@@ -1014,6 +1035,56 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     companion object {
+        /** `toolCallId` of a CONTEXT_SUMMARY row: `kept:N` (see [ChatUiMessage.keptBefore]). */
+        internal const val SUMMARY_KEPT_PREFIX = "kept:"
+
+        /** Rows written before the count existed have none: they keep nothing, as they always did. */
+        internal fun parseKeptBefore(toolCallId: String?): Int {
+            if (toolCallId == null || !toolCallId.startsWith(SUMMARY_KEPT_PREFIX)) return 0
+            return toolCallId.removePrefix(SUMMARY_KEPT_PREFIX).toIntOrNull()?.coerceAtLeast(0) ?: 0
+        }
+
+        private fun isConversational(msg: ChatUiMessage): Boolean =
+            !msg.transient && (msg.role == "user" || msg.role == "assistant")
+
+        private fun toLlmMessage(msg: ChatUiMessage): Message? = when {
+            !isConversational(msg) -> null // tool results are handled within the agent loop
+            msg.role == "user" -> Message.user(msg.content)
+            else -> Message.assistant(listOf(ContentBlock.TextBlock(msg.content)))
+        }
+
+        /**
+         * The model's view of a chat: from the latest context summary on, older messages stay
+         * in the UI only. A summary is written *after* the messages the compactor kept (and,
+         * for auto-compaction, after the user message that triggered it), so those are taken
+         * from just before it — [ChatUiMessage.keptBefore] of them, skipping anything that is
+         * not conversation. Starting at the summary alone dropped exactly the recent context
+         * compaction exists to keep, and the request that was being answered.
+         */
+        internal fun buildLlmHistory(msgs: List<ChatUiMessage>): List<Message> {
+            val lastSummaryIndex = msgs.indexOfLast { it.role == "context_summary" }
+            if (lastSummaryIndex < 0) return msgs.mapNotNull(::toLlmMessage)
+
+            val summary = msgs[lastSummaryIndex]
+            val kept = ArrayDeque<ChatUiMessage>()
+            var i = lastSummaryIndex - 1
+            while (i >= 0 && kept.size < summary.keptBefore) {
+                if (isConversational(msgs[i])) kept.addFirst(msgs[i])
+                i--
+            }
+            val summaryMessage = Message.user(
+                "<context_summary>\n" +
+                    "This is a compacted summary of older messages in this conversation. " +
+                    "If you need more details about something mentioned here, " +
+                    "use the search_memory skill to retrieve relevant context from long-term memory.\n\n" +
+                    summary.content + "\n" +
+                    "</context_summary>"
+            )
+            return listOf(summaryMessage) +
+                kept.mapNotNull(::toLlmMessage) +
+                msgs.subList(lastSummaryIndex + 1, msgs.size).mapNotNull(::toLlmMessage)
+        }
+
         /** Without the OS mirror, the live view falls back to frames at this rate. */
         private const val AUTOPILOT_FRAME_INTERVAL_MS = 200L
         /** Matches trivial user messages that aren't worth remembering. */
@@ -1050,8 +1121,10 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             id = java.util.UUID.randomUUID().toString(),
             role = "user",
             content = rawInput,
+            // Never persisted, so never sent: "/compact" is not something the user said to the model.
+            transient = true,
         )
-        _messages.value = _messages.value + userMsg
+        _messages.update { it + userMsg }
 
         // Show system feedback (skip for /compact — result shown as context_summary card)
         if (result.message.isNotBlank() && result.message != "compact") {
@@ -1060,7 +1133,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 role = "system",
                 content = result.message,
             )
-            _messages.value = _messages.value + systemMsg
+            _messages.update { it + systemMsg }
         }
 
         _slashCommandResult.value = result
@@ -1092,7 +1165,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             role = "system",
             content = result.message,
         )
-        _messages.value = _messages.value + systemMsg
+        _messages.update { it + systemMsg }
         _slashCommandResult.value = result
     }
 
@@ -1135,6 +1208,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             content = formatted?.detail ?: content,
             toolName = toolName,
             toolSummary = formatted?.summary,
+            keptBefore = if (role == MessageRole.CONTEXT_SUMMARY) parseKeptBefore(toolCallId) else 0,
         )
     }
 }

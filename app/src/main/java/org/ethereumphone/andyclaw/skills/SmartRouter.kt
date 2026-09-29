@@ -1589,6 +1589,8 @@ class SmartRouter(
             }
             parsed
         } catch (e: Exception) {
+            // A cancelled turn must stop here, not route on without the LLM and carry on.
+            org.ethereumphone.andyclaw.ExecutionEngine.rethrowIfCancelled(e)
             Log.w(TAG, "LLM routing failed: ${e.message}")
             metrics.llmRoutingFailures++
             null

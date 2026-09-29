@@ -396,7 +396,20 @@ class AgentDisplaySkill(
     private fun readTree(svc: IAgentDisplayService = getService()): String {
         val tree = svc.accessibilityTree ?: "{}"
         SensitiveApps.sensitivePackageIn(tree)?.let { throw SensitiveScreenException(it) }
+        // The smart tree describes the top application window only, so a private app under
+        // another app's dialog never shows up in it; ask the service about every app window.
+        sensitivePackageOnDisplay(svc)?.let { throw SensitiveScreenException(it) }
         return tree
+    }
+
+    /** A private app among all the agent display's app windows, per the in-process a11y service. */
+    private fun sensitivePackageOnDisplay(svc: IAgentDisplayService): String? {
+        // Nothing to find while the list is empty; spares a binder call and a root per window on every read.
+        if (SensitiveApps.PACKAGES.isEmpty()) return null
+        val a11y = org.ethereumphone.andyclaw.services.AgentDisplayAccessibilityService.instance ?: return null
+        val displayId = runCatching { svc.displayId }.getOrDefault(-1)
+        if (displayId < 0) return null
+        return a11y.sensitivePackageOnDisplay(displayId)
     }
 
     override suspend fun execute(tool: String, params: JsonObject, tier: Tier): SkillResult {
@@ -524,6 +537,7 @@ class AgentDisplaySkill(
     private fun captureScreenshot(): SkillResult {
         Log.w(DTAG, "⚠️ SCREENSHOT_REQUESTED — LLM chose agent_display_screenshot instead of using a11y tree!")
         // FLAG_SECURE covers only the secret screen itself; the rest of a private app is still drawn.
+        // readTree also checks every app window, since a frame shows all of them, not the top one.
         readTree()
         Log.d(LTAG, "captureScreenshot: requesting frame from service")
         val frame = getService().captureFrame()

@@ -216,32 +216,8 @@ class ClawHubApi(
      *
      * @return number of file entries extracted.
      */
-    private fun extractZip(body: ResponseBody, targetDir: File): Int {
-        var count = 0
-        ZipInputStream(body.byteStream()).use { zis ->
-            var entry = zis.nextEntry
-            while (entry != null) {
-                val outFile = File(targetDir, entry.name).canonicalFile
-
-                if (!outFile.path.startsWith(targetDir.canonicalPath)) {
-                    throw SecurityException("Zip entry escapes target dir: ${entry.name}")
-                }
-
-                if (entry.isDirectory) {
-                    outFile.mkdirs()
-                } else {
-                    outFile.parentFile?.mkdirs()
-                    outFile.outputStream().use { out ->
-                        zis.copyTo(out)
-                    }
-                    count++
-                }
-                zis.closeEntry()
-                entry = zis.nextEntry
-            }
-        }
-        return count
-    }
+    private fun extractZip(body: ResponseBody, targetDir: File): Int =
+        extractZipStream(body.byteStream(), targetDir)
 
     /**
      * If a ZIP was extracted with a single top-level directory wrapping all
@@ -266,6 +242,78 @@ class ClawHubApi(
 
     companion object {
         const val DEFAULT_REGISTRY = "https://clawhub.ai"
+
+        /**
+         * Caps on what one skill bundle may unpack to. A skill is a SKILL.md plus a
+         * handful of scripts and references — kilobytes, and `TermuxSkillSync`
+         * refuses anything over 2 MB anyway — so these only stop a zip bomb from
+         * filling `filesDir` (and with it every other store in the app).
+         */
+        internal const val MAX_EXTRACTED_BYTES = 50L * 1024 * 1024
+        internal const val MAX_ZIP_ENTRIES = 2_000
+
+        /**
+         * Extract [input] into [targetDir]. Throws [SecurityException] — and the
+         * caller discards the partial extraction — on an entry that escapes the
+         * target or when the bundle exceeds [maxBytes]/[maxEntries].
+         *
+         * The containment check is on `canonicalTarget + separator`: a bare
+         * `startsWith(canonicalTarget)` let skill `foo` write into a sibling
+         * `foo-bar/` via `../foo-bar/x`.
+         *
+         * @return number of file entries extracted.
+         */
+        internal fun extractZipStream(
+            input: java.io.InputStream,
+            targetDir: File,
+            maxBytes: Long = MAX_EXTRACTED_BYTES,
+            maxEntries: Int = MAX_ZIP_ENTRIES,
+        ): Int {
+            val root = targetDir.canonicalFile
+            var count = 0
+            var entries = 0
+            var total = 0L
+            ZipInputStream(input).use { zis ->
+                var entry = zis.nextEntry
+                while (entry != null) {
+                    if (++entries > maxEntries) {
+                        throw SecurityException("Zip has more than $maxEntries entries")
+                    }
+                    val outFile = File(root, entry.name).canonicalFile
+                    val inside = outFile.path.startsWith(root.path + File.separator)
+
+                    if (entry.isDirectory) {
+                        if (!inside && outFile != root) {
+                            throw SecurityException("Zip entry escapes target dir: ${entry.name}")
+                        }
+                        outFile.mkdirs()
+                    } else {
+                        if (!inside) {
+                            throw SecurityException("Zip entry escapes target dir: ${entry.name}")
+                        }
+                        outFile.parentFile?.mkdirs()
+                        outFile.outputStream().use { out ->
+                            // Count what is actually inflated; the header's size is
+                            // the archive's claim and can lie.
+                            val buf = ByteArray(8 * 1024)
+                            while (true) {
+                                val n = zis.read(buf)
+                                if (n < 0) break
+                                total += n
+                                if (total > maxBytes) {
+                                    throw SecurityException("Zip expands past $maxBytes bytes")
+                                }
+                                out.write(buf, 0, n)
+                            }
+                        }
+                        count++
+                    }
+                    zis.closeEntry()
+                    entry = zis.nextEntry
+                }
+            }
+            return count
+        }
 
         private const val V1_SEARCH = "/api/v1/search"
         private const val V1_SKILLS = "/api/v1/skills"
