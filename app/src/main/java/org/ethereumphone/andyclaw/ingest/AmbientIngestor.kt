@@ -77,6 +77,10 @@ class AmbientIngestor(
         // one. Without it, a burst of notifications all pass the check and then queue on
         // the mutex, and every one of them runs.
         return lock.withLock {
+            // Switched off while this waited: a forget ran in between, and must stay forgotten.
+            if (!enabled()) {
+                return@withLock IngestReport(signal, ran = false, skippedReason = "ambient ingestion is off", state = IngestState.OFF)
+            }
             val insideNow = clock()
             if (blockedReason(signal, insideNow) != null) {
                 return@withLock IngestReport(signal, ran = false, skippedReason = "another ingest had just run")
@@ -84,6 +88,12 @@ class AmbientIngestor(
             runIngest(signal, insideNow)
         }
     }
+
+    /**
+     * Runs [block] with no ingest in flight. Clearing the cards while one ran used to lose: the
+     * ingest wrote what it had fetched after the clear, and the cards outlived the switch-off.
+     */
+    suspend fun <T> whenIdle(block: suspend () -> T): T = lock.withLock { block() }
 
     /**
      * Why [signal] may not run now, or null. The cooldown counts from the last *success*, so a
@@ -112,6 +122,9 @@ class AmbientIngestor(
 
         // 1. The calendars. They are the authority on events: first, and reconciled.
         val calendarKeys = HashSet<String>()
+        // The same keys without an occurrence: a calendar keys each occurrence of a repeating
+        // event, an invitation by mail keys the series, and the two never met.
+        val calendarSeries = HashSet<String>()
         val calendars = listOfNotNull(GCAL to calendar, deviceCalendar?.let { DEVICE_CALENDAR to it })
         for ((label, source) in calendars) {
             when (val result = attempt { source.fetch(fromMs, toMs, zone) }) {
@@ -123,6 +136,7 @@ class AmbientIngestor(
                         val context = PredictedContextMapper.fromCalendarEvent(event, label, observedMs = nowMs) ?: continue
                         contexts.put(context)
                         calendarKeys += event.sourceKey
+                        if (event.uid != null) calendarSeries += event.copy(occurrenceMs = null).sourceKey
                         written++
                     }
                     if (result.complete) {
@@ -149,7 +163,9 @@ class AmbientIngestor(
                 }
                 // An invitation by mail is a card only where the calendar has not spoken for it:
                 // the calendar knows the accepted, current version.
-                val invitations = fromMail.calendarEvents.distinctBy { it.sourceKey }.filter { it.sourceKey !in calendarKeys }
+                val invitations = fromMail.calendarEvents.distinctBy { it.sourceKey }.filter {
+                    it.sourceKey !in calendarKeys && (it.uid == null || it.copy(occurrenceMs = null).sourceKey !in calendarSeries)
+                }
                 eventCount += invitations.size
                 for (event in invitations) {
                     val context = PredictedContextMapper.fromCalendarEvent(event, GMAIL_ICS) ?: continue

@@ -74,17 +74,9 @@ class OpenAiStreamAccumulator(
             responseId = (root["id"] as? JsonPrimitive)?.contentOrNull ?: responseId
             model = (root["model"] as? JsonPrimitive)?.contentOrNull ?: model
 
-            // Capture usage if present (OpenAI includes it in the final chunk). Some
+            // Capture usage if present (in the final chunk, when the request asked for it). Some
             // providers send `"usage": null` on every other chunk — not an object.
-            (root["usage"] as? JsonObject)?.let { usageObj ->
-                val promptDetails = usageObj["prompt_tokens_details"] as? JsonObject
-                val cachedTokens = (promptDetails?.get("cached_tokens") as? JsonPrimitive)?.contentOrNull?.toIntOrNull() ?: 0
-                usage = Usage(
-                    inputTokens = (usageObj["prompt_tokens"] as? JsonPrimitive)?.contentOrNull?.toIntOrNull() ?: 0,
-                    outputTokens = (usageObj["completion_tokens"] as? JsonPrimitive)?.contentOrNull?.toIntOrNull() ?: 0,
-                    cacheReadTokens = cachedTokens,
-                )
-            }
+            (root["usage"] as? JsonObject)?.let { usage = OpenAiFormatAdapter.usageFrom(it) }
 
             val choices = root["choices"] as? JsonArray ?: return false
             if (choices.isEmpty()) return false

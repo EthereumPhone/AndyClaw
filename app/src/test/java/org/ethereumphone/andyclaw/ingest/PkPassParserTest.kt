@@ -195,6 +195,18 @@ class PkPassParserTest {
     }
 
     @Test
+    fun `a pass that is not for a flight is no flight card`() {
+        val ticket = passJson(
+            transit = "PKTransitTypeTrain",
+            barcodes = """"barcodes":[{"format":"PKBarcodeFormatQR","message":"TICKET-123","messageEncoding":"ISO-8859-1"}],""",
+        )
+        assertNull(PkPassParser.toFlightReservation(PkPassParser.parseJson(ticket, utc)!!, august2026, utc))
+        // Unless its barcode is a boarding pass, whatever the pass calls itself.
+        val boarding = passJson(transit = "PKTransitTypeTrain")
+        assertNotNull(PkPassParser.toFlightReservation(PkPassParser.parseJson(boarding, utc)!!, august2026, utc))
+    }
+
+    @Test
     fun `a departure time on the pass is exact`() {
         val json = passJson().replace(""""key":"boardingTime","label":"BOARDS"""", """"key":"departureTime","label":"DEPARTS"""")
         val flight = PkPassParser.toFlightReservation(PkPassParser.parseJson(json, utc)!!, august2026, utc)!!

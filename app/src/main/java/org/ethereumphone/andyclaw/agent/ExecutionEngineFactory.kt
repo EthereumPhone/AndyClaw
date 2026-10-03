@@ -246,7 +246,7 @@ object ExecutionEngineFactory {
         if (!mine) {
             // Past the gate: note what a run nobody watches is about to read, so it cannot then
             // take it to the web.
-            if (blocksOnly && provenance != Provenance.USER && call.name in ToolEffects.PRIVATE_DATA_TOOLS) {
+            if (blocksOnly && provenance != Provenance.USER && ToolEffects.readsPrivateData(call.name)) {
                 runToken?.readPrivateData = true
             }
             PreflightVerdict.Pass

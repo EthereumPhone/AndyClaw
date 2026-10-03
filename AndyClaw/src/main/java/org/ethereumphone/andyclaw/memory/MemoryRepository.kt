@@ -13,6 +13,7 @@ import org.ethereumphone.andyclaw.memory.db.entity.MemoryEntryEntity
 import org.ethereumphone.andyclaw.memory.db.entity.MemoryEntryTagCrossRef
 import org.ethereumphone.andyclaw.memory.db.entity.MemoryMetaEntity
 import org.ethereumphone.andyclaw.memory.db.entity.MemoryTagEntity
+import org.ethereumphone.andyclaw.memory.embedding.EmbeddingException
 import org.ethereumphone.andyclaw.memory.embedding.EmbeddingProvider
 import org.ethereumphone.andyclaw.memory.model.MemoryEntry
 import org.ethereumphone.andyclaw.memory.model.MemorySource
@@ -243,6 +244,56 @@ class MemoryRepository(
             }
         }
 
+        count
+    }
+
+    /**
+     * Embeds the chunks [memoryId] just stored, then at most [backlogBatches] batches of the
+     * agent's older chunks still without a vector (left by an outage or a reindex).
+     *
+     * A failure ends the pass and is rethrown: an embedder that refuses one batch (no balance,
+     * an expired key, the route down) refuses the next, and every store used to send the whole
+     * backlog again. Only a batch refused for what it contains lets the pass go on; its chunks
+     * go into [rejected], which the caller keeps, so they are not sent again.
+     *
+     * @return Number of chunks that were embedded.
+     */
+    suspend fun embedNewChunks(
+        agentId: String,
+        memoryId: String,
+        provider: EmbeddingProvider,
+        rejected: MutableSet<Long>,
+        backlogBatches: Int = 1,
+        batchSize: Int = 32,
+    ): Int = withContext(Dispatchers.IO) {
+        val own = dao.getUnembeddedChunksByMemory(memoryId).filter { it.rowId !in rejected }
+        val ownIds = own.mapTo(HashSet()) { it.rowId }
+        val backlog = dao.getUnembeddedChunksByAgent(agentId)
+            .filter { it.rowId !in ownIds && it.rowId !in rejected }
+            .take(backlogBatches * batchSize)
+
+        var count = 0
+        for (batch in own.chunked(batchSize) + backlog.chunked(batchSize)) {
+            val embeddings = try {
+                provider.embed(batch.map { it.text })
+            } catch (e: Exception) {
+                rethrowIfCancelled(e)
+                if (e !is EmbeddingException || !e.rejectsInput) throw e
+                batch.mapTo(rejected) { it.rowId }
+                continue
+            }
+            val now = System.currentTimeMillis()
+            batch.zip(embeddings).forEach { (chunk, vec) ->
+                val bytes = Converters.fromFloatArray(vec) ?: return@forEach
+                dao.updateChunkEmbedding(
+                    rowId = chunk.rowId,
+                    embedding = bytes,
+                    model = provider.modelName,
+                    updatedAt = now,
+                )
+                count++
+            }
+        }
         count
     }
 

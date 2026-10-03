@@ -22,7 +22,6 @@ import org.ethereumphone.andyclaw.skills.SkillManifest
 import org.ethereumphone.andyclaw.skills.SkillResult
 import org.ethereumphone.andyclaw.skills.Tier
 import org.ethereumphone.andyclaw.skills.ToolDefinition
-import java.net.InetAddress
 import java.net.URLEncoder
 import java.util.concurrent.TimeUnit
 import java.util.regex.Pattern
@@ -41,6 +40,18 @@ class WebSearchSkill(
         .readTimeout(30, TimeUnit.SECONDS)
         .followRedirects(true)
         .followSslRedirects(true)
+        .build()
+
+    /**
+     * For pages the model names: public addresses only, at connect time as well (see
+     * [PublicNetwork]), redirects followed by hand so every hop is checked, and a deadline for the
+     * whole call — a server dripping a byte at a time held the tool past every read timeout.
+     */
+    private val fetchClient = client.newBuilder()
+        .dns(PublicNetwork.dns)
+        .followRedirects(false)
+        .followSslRedirects(false)
+        .callTimeout(60, TimeUnit.SECONDS)
         .build()
 
     override val baseManifest = SkillManifest(
@@ -122,6 +133,10 @@ class WebSearchSkill(
     override val privilegedManifest: SkillManifest? = null
 
     companion object {
+        private const val MAX_REDIRECTS = 5
+        /** Bytes of a page that are read at all; the text handed on is cut to max_length anyway. */
+        private const val MAX_PAGE_BYTES = 2 * 1024 * 1024
+
         private val SEARCH_EMOTICONS = listOf(
             "(☞ﾟ∀ﾟ)☞",
             "〈ᇂ_ᇂ |||〉",
@@ -142,7 +157,9 @@ class WebSearchSkill(
             else -> null
         }
         if (emoticon != null) {
-            ledController?.setTerminalText(emoticon)
+            // In place of the run's own emoticon only: a heartbeat or home-screen run shows none,
+            // and a tool must not take the terminal screen for itself.
+            ledController?.showToolEmoticon(emoticon)
         }
 
         return when (tool) {
@@ -183,41 +200,53 @@ class WebSearchSkill(
                 return@withContext SkillResult.Error("Invalid URL: $url")
             }
 
-            if (isSafetyEnabled() && isSsrfTarget(parsedUrl)) {
-                return@withContext SkillResult.Error(
-                    "[Safety] Blocked: URL targets a private or local network address. " +
-                            "Disable safety mode in Settings to bypass this check."
-                )
-            }
-
             try {
-                val request = Request.Builder()
-                    .url(url)
-                    .addHeader(
-                        "User-Agent",
-                        "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 " +
-                                "(KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
-                    )
-                    .addHeader("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
-                    .addHeader("Accept-Language", "en-US,en;q=0.9")
-                    .get()
-                    .build()
-
-                val response = client.newCall(request).execute()
-                if (!response.isSuccessful) {
-                    return@withContext SkillResult.Error(
-                        "Failed to fetch URL (HTTP ${response.code}): $url"
-                    )
+                var current: okhttp3.HttpUrl = parsedUrl
+                var redirects = 0
+                var response: okhttp3.Response
+                while (true) {
+                    // Every hop, whatever the safety switch says: a page may redirect to the LAN.
+                    PublicNetwork.refusal(current)?.let { reason ->
+                        return@withContext SkillResult.Error("Blocked: $reason. Only public web pages can be fetched.")
+                    }
+                    val request = Request.Builder()
+                        .url(current)
+                        .addHeader(
+                            "User-Agent",
+                            "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 " +
+                                    "(KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
+                        )
+                        .addHeader("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+                        .addHeader("Accept-Language", "en-US,en;q=0.9")
+                        .get()
+                        .build()
+                    response = fetchClient.newCall(request).execute()
+                    if (!response.isRedirect) break
+                    val next = response.header("Location")?.let { current.resolve(it) }
+                    response.close()
+                    if (next == null) return@withContext SkillResult.Error("Failed to fetch URL: a redirect without a usable Location ($url)")
+                    if (++redirects > MAX_REDIRECTS) return@withContext SkillResult.Error("Failed to fetch URL: too many redirects ($url)")
+                    current = next
                 }
 
-                val body = response.body?.string()
-                    ?: return@withContext SkillResult.Error("Empty response from URL: $url")
+                val (body, cutShort) = response.use { r ->
+                    if (!r.isSuccessful) {
+                        return@withContext SkillResult.Error(
+                            "Failed to fetch URL (HTTP ${r.code}): $url"
+                        )
+                    }
+                    // At most MAX_PAGE_BYTES, decoded in the page's own charset. The whole body read
+                    // into one String (gunzipped first) was an OutOfMemoryError: an Error, which no
+                    // catch here saw, so the app crashed.
+                    val raw = r.body ?: return@withContext SkillResult.Error("Empty response from URL: $url")
+                    readBounded(raw.byteStream(), MAX_PAGE_BYTES, raw.contentType()?.charset(Charsets.UTF_8) ?: Charsets.UTF_8)
+                }
 
                 val contentType = response.header("Content-Type") ?: ""
                 val text = if (contentType.contains("text/html", ignoreCase = true) ||
                     contentType.contains("application/xhtml", ignoreCase = true)
                 ) {
-                    extractReadableText(body)
+                    HtmlText.readable(body)
                 } else {
                     body
                 }
@@ -231,14 +260,27 @@ class WebSearchSkill(
                 val result = buildJsonObject {
                     put("url", url)
                     put("content_length", text.length)
-                    put("truncated", text.length > maxLength)
+                    put("truncated", text.length > maxLength || cutShort)
                     put("content", truncated)
                 }
                 SkillResult.Success(result.toString())
             } catch (e: Exception) {
+                org.ethereumphone.andyclaw.ExecutionEngine.rethrowIfCancelled(e)
                 SkillResult.Error("Failed to fetch webpage: ${e.message}")
             }
         }
+
+    /** At most [maxBytes] of [input], decoded as [charset], and whether there was more. */
+    private fun readBounded(input: java.io.InputStream, maxBytes: Int, charset: java.nio.charset.Charset): Pair<String, Boolean> {
+        val buf = ByteArray(maxBytes + 1)
+        var total = 0
+        while (total < buf.size) {
+            val n = input.read(buf, total, buf.size - total)
+            if (n < 0) break
+            total += n
+        }
+        return String(buf, 0, minOf(total, maxBytes), charset) to (total > maxBytes)
+    }
 
     /**
      * Searches DuckDuckGo via the HTML-lite endpoint and parses results.
@@ -407,69 +449,5 @@ class WebSearchSkill(
             .replace("&nbsp;", " ")
             .replace(Regex("\\s+"), " ")
             .trim()
-    }
-
-    /**
-     * Returns true if the URL targets a private, loopback, or link-local address
-     * that should not be fetched to prevent SSRF attacks.
-     */
-    private fun isSsrfTarget(url: okhttp3.HttpUrl): Boolean {
-        val scheme = url.scheme.lowercase()
-        if (scheme != "http" && scheme != "https") return true
-
-        val host = url.host.lowercase()
-        if (host == "localhost" || host.endsWith(".local") || host == "[::1]") return true
-
-        val addr = try {
-            InetAddress.getByName(host)
-        } catch (_: Exception) {
-            return false
-        }
-        return addr.isLoopbackAddress ||
-                addr.isLinkLocalAddress ||
-                addr.isSiteLocalAddress ||
-                addr.isAnyLocalAddress
-    }
-
-    /**
-     * Extracts readable text from HTML by removing scripts, styles,
-     * navigation, and other non-content elements.
-     */
-    private fun extractReadableText(html: String): String {
-        var text = html
-
-        // Remove elements that carry hidden content (invisible to users but parsed by extractors)
-        text = text.replace(Regex("""<[^>]+(?:display\s*:\s*none|visibility\s*:\s*hidden|opacity\s*:\s*0)[^>]*>.*?</[^>]+>""", setOf(RegexOption.DOT_MATCHES_ALL, RegexOption.IGNORE_CASE)), " ")
-        text = text.replace(Regex("""<[^>]+\bhidden\b[^>]*>.*?</[^>]+>""", setOf(RegexOption.DOT_MATCHES_ALL, RegexOption.IGNORE_CASE)), " ")
-        text = text.replace(Regex("""<template[^>]*>.*?</template>""", RegexOption.DOT_MATCHES_ALL), " ")
-        text = text.replace(Regex("""<form[^>]*>.*?</form>""", RegexOption.DOT_MATCHES_ALL), " ")
-
-        // Remove script, style, and non-content blocks entirely
-        text = text.replace(Regex("<script[^>]*>.*?</script>", RegexOption.DOT_MATCHES_ALL), " ")
-        text = text.replace(Regex("<style[^>]*>.*?</style>", RegexOption.DOT_MATCHES_ALL), " ")
-        text = text.replace(Regex("<nav[^>]*>.*?</nav>", RegexOption.DOT_MATCHES_ALL), " ")
-        text = text.replace(Regex("<footer[^>]*>.*?</footer>", RegexOption.DOT_MATCHES_ALL), " ")
-        text = text.replace(Regex("<header[^>]*>.*?</header>", RegexOption.DOT_MATCHES_ALL), " ")
-        text = text.replace(Regex("<!--.*?-->", RegexOption.DOT_MATCHES_ALL), " ")
-        text = text.replace(Regex("<noscript[^>]*>.*?</noscript>", RegexOption.DOT_MATCHES_ALL), " ")
-
-        // Convert common block elements to newlines for readability
-        text = text.replace(Regex("<br\\s*/?>", RegexOption.IGNORE_CASE), "\n")
-        text = text.replace(Regex("</(p|div|h[1-6]|li|tr|blockquote|article|section)>", RegexOption.IGNORE_CASE), "\n")
-        text = text.replace(Regex("<(p|div|h[1-6]|li|tr|blockquote|article|section)[^>]*>", RegexOption.IGNORE_CASE), "\n")
-
-        // Strip remaining HTML tags
-        text = stripHtmlTags(text)
-
-        // Strip zero-width and bidirectional override characters
-        text = text.replace(Regex("[\u200B\u200C\u200D\uFEFF\u200E\u200F\u202A\u202B\u202C\u202D\u202E\u2066\u2067\u2068\u2069]"), "")
-
-        // Clean up whitespace
-        text = text.replace(Regex("[ \\t]+"), " ")
-        text = text.replace(Regex("\\n[ \\t]+"), "\n")
-        text = text.replace(Regex("[ \\t]+\\n"), "\n")
-        text = text.replace(Regex("\\n{3,}"), "\n\n")
-
-        return text.trim()
     }
 }

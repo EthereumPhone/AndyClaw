@@ -625,47 +625,12 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
 
     // ── Actions ─────────────────────────────────────────────────────────
 
-    fun setSelectedProvider(provider: LlmProvider) {
-        prefs.setSelectedProvider(provider)
-        // Switch to the default model for the new provider
-        val defaultModel = AnthropicModels.defaultForProvider(provider)
-        prefs.setSelectedModel(defaultModel.modelId)
-        // Unload local model when switching away from LOCAL
-        if (provider != LlmProvider.LOCAL && app.llamaCpp.isModelLoaded) {
-            app.llamaCpp.unload()
-        }
-        // Sync to heartbeat and compaction when the toggle is on
-        if (prefs.syncProviderToAll.value) {
-            syncHeartbeatToProvider(provider)
-            syncCompactionToProvider(provider)
-        }
-    }
+    fun setSelectedProvider(provider: LlmProvider) = ProviderSwitch.select(app, provider)
 
     fun setSyncProviderToAll(enabled: Boolean) {
         prefs.setSyncProviderToAll(enabled)
         // When enabling, immediately sync heartbeat and compaction to the current provider
-        if (enabled) {
-            val provider = prefs.selectedProvider.value
-            syncHeartbeatToProvider(provider)
-            syncCompactionToProvider(provider)
-        }
-    }
-
-    private fun syncHeartbeatToProvider(provider: LlmProvider) {
-        prefs.setHeartbeatProvider(provider)
-        // Use the user's previous selection for this provider if available, otherwise default
-        val userModel = prefs.getHeartbeatUserModelForProvider(provider)
-        val model = userModel ?: AnthropicModels.defaultForProvider(provider).modelId
-        prefs.setHeartbeatModel(model)
-        // Also ensure heartbeat is set to use its own provider (not "same as main")
-        prefs.setHeartbeatUseSameModel(false)
-    }
-
-    private fun syncCompactionToProvider(provider: LlmProvider) {
-        prefs.setCompactionProvider(provider)
-        val model = AnthropicModels.defaultForProvider(provider).modelId
-        prefs.setCompactionModel(model)
-        prefs.setCompactionUseSameModel(false)
+        if (enabled) ProviderSwitch.syncAll(prefs, prefs.selectedProvider.value)
     }
 
     fun setTinfoilApiKey(key: String) {
@@ -745,14 +710,18 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
      * ID field as a fallback.
      */
     fun fetchCustomModels() {
+        // Only the latest fetch reports: an answer from the URL being typed over (a slow or failed
+        // one) used to land after the good one and replace it.
+        customModelsFetch?.cancel()
         val baseUrl = prefs.customBaseUrl.value.trim()
         if (baseUrl.isBlank()) {
             _customAvailableModels.value = emptyList()
             _customModelsFetchError.value = null
+            _customModelsFetching.value = false
             return
         }
         val modelsUrl = modelsUrlFromChatUrl(baseUrl)
-        viewModelScope.launch {
+        customModelsFetch = viewModelScope.launch {
             _customModelsFetching.value = true
             _customModelsFetchError.value = null
             try {
@@ -777,13 +746,16 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
                 }
                 _customAvailableModels.value = ids
             } catch (e: Exception) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
                 _customAvailableModels.value = emptyList()
                 _customModelsFetchError.value = e.message ?: "fetch failed"
             } finally {
-                _customModelsFetching.value = false
+                if (customModelsFetch == coroutineContext[kotlinx.coroutines.Job]) _customModelsFetching.value = false
             }
         }
     }
+
+    private var customModelsFetch: kotlinx.coroutines.Job? = null
 
     /** Derive the /v1/models URL from the user's chat-completions URL. */
     private fun modelsUrlFromChatUrl(chatUrl: String): String {
@@ -817,7 +789,13 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
     }
 
     fun setSelectedModel(modelId: String) {
-        prefs.setSelectedModel(modelId)
+        // A model picked under CUSTOM is the user's model id: kept as such (which also selects
+        // it), or switching away and back lost it and CUSTOM never counted as configured.
+        if (prefs.selectedProvider.value == LlmProvider.CUSTOM && modelId.isNotBlank()) {
+            prefs.setCustomModelId(modelId)
+        } else {
+            prefs.setSelectedModel(modelId)
+        }
     }
 
     fun setYoloMode(enabled: Boolean) {

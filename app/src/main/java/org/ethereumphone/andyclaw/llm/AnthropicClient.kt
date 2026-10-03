@@ -26,6 +26,10 @@ class AnthropicClient(
      *  OpenRouter, or the ethOS premium backend), so the label is set per
      *  instance rather than assumed to be "Anthropic". */
     private val provider: String = "Anthropic",
+    /** True when [baseUrl] is Anthropic's own Messages API. It rejects fields it does not
+     *  define (OpenRouter's `parallel_tool_calls` and `reasoning` made every request with
+     *  tools a 400), and a tool-use turn must carry the model's thinking blocks back. */
+    private val anthropicDirect: Boolean = false,
 ) : LlmClient {
     companion object {
         private const val API_VERSION = "2023-06-01"
@@ -106,7 +110,7 @@ class AnthropicClient(
                 throw AnthropicApiException(response.code, errorBody, retryAfter, provider = provider)
             }
 
-            val parser = SseParser(callback, provider)
+            val parser = SseParser(callback, provider, keepThinking = anthropicDirect)
             BufferedReader(InputStreamReader(response.body!!.byteStream())).use { reader ->
                 var currentEvent = ""
                 var dataBuffer = StringBuilder()
@@ -176,7 +180,7 @@ class AnthropicClient(
         return json.encodeToJsonElement(ContentBlock.serializer(), block)
     }
 
-    private fun serializeRequest(request: MessagesRequest): String {
+    internal fun serializeRequest(request: MessagesRequest): String {
         // Count images still present in the conversation for diagnostics
         var imageCount = 0
         var totalImgBase64 = 0L
@@ -199,7 +203,12 @@ class AnthropicClient(
             val contentElement = when (msg.content) {
                 is MessageContent.Text -> kotlinx.serialization.json.JsonPrimitive(msg.content.value)
                 is MessageContent.Blocks -> kotlinx.serialization.json.JsonArray(
-                    msg.content.blocks.map { block -> serializeBlock(block) }
+                    // Thinking goes back only to the API that signed it. A gateway has never been
+                    // sent any, and meets it only in a history kept across a provider switch.
+                    msg.content.blocks
+                        .filter { anthropicDirect || (it !is ContentBlock.ThinkingBlock && it !is ContentBlock.RedactedThinkingBlock) }
+                        .ifEmpty { msg.content.blocks }
+                        .map { block -> serializeBlock(block) }
                 )
             }
             kotlinx.serialization.json.buildJsonObject {
@@ -238,12 +247,20 @@ class AnthropicClient(
             put("messages", kotlinx.serialization.json.JsonArray(messagesJson))
             request.tools?.let { tools ->
                 put("tools", kotlinx.serialization.json.JsonArray(tools))
-                put("parallel_tool_calls", kotlinx.serialization.json.JsonPrimitive(request.parallelToolCalls))
+                if (!anthropicDirect) {
+                    put("parallel_tool_calls", kotlinx.serialization.json.JsonPrimitive(request.parallelToolCalls))
+                } else if (!request.parallelToolCalls) {
+                    // Parallel calls are the Messages API's default; this is its own way to turn them off.
+                    put("tool_choice", kotlinx.serialization.json.buildJsonObject {
+                        put("type", kotlinx.serialization.json.JsonPrimitive("auto"))
+                        put("disable_parallel_tool_use", kotlinx.serialization.json.JsonPrimitive(true))
+                    })
+                }
             }
             request.temperature?.takeIf { AnthropicModels.acceptsTemperature(request.model) }?.let {
                 put("temperature", kotlinx.serialization.json.JsonPrimitive(it))
             }
-            request.reasoning?.let { cfg ->
+            request.reasoning?.takeIf { !anthropicDirect }?.let { cfg ->
                 put("reasoning", kotlinx.serialization.json.buildJsonObject {
                     put("effort", kotlinx.serialization.json.JsonPrimitive(cfg.effort))
                 })

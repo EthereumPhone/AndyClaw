@@ -35,8 +35,17 @@ interface EmbeddingProvider {
 
 /**
  * Thrown when an [EmbeddingProvider] cannot produce vectors.
+ *
+ * @param statusCode The HTTP status of a refused request, when there was one.
  */
 class EmbeddingException(
     message: String,
     cause: Throwable? = null,
-) : RuntimeException(message, cause)
+    val statusCode: Int? = null,
+) : RuntimeException(message, cause) {
+    /**
+     * The request was refused for what it carried, not for who sent it or when: sending the
+     * same texts again fails again, while other texts may go through.
+     */
+    val rejectsInput: Boolean get() = statusCode == 400 || statusCode == 413 || statusCode == 422
+}

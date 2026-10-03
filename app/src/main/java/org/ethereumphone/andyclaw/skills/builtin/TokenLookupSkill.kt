@@ -255,13 +255,23 @@ class TokenLookupSkill : AndyClawSkill {
                     )
                 }
 
-                val price = fetchDexScreenerPrice(token, chainId)
+                if (CHAIN_NAMES[chainId] == null) {
+                    return@withContext SkillResult.Error(
+                        "Chain $chainId is not supported for token prices. " +
+                            "Supported chains: ${CHAIN_NAMES.keys.sorted().joinToString()}"
+                    )
+                }
+                val quote = fetchDexScreenerPrice(token, chainId)
                     ?: return@withContext SkillResult.Error(
                         "Unable to fetch price for token $token on chain $chainId"
                     )
 
-                val formatted = formatPriceValue(price)
-                SkillResult.Success("Current token price: $formatted")
+                // Which pair the number came from, so a price that looks wrong can be told apart.
+                val formatted = formatPriceValue(quote.priceUsd) ?: quote.priceUsd.toString()
+                SkillResult.Success(
+                    "Current token price: $formatted (${quote.symbol}, from the ${quote.pair} pair on " +
+                        "${quote.dex}, liquidity ${formatUsd(quote.liquidityUsd) ?: "unknown"})"
+                )
             } catch (e: Exception) {
                 Log.e(TAG, "Price lookup failed", e)
                 SkillResult.Error("Price lookup failed: ${e.message}")
@@ -363,34 +373,69 @@ class TokenLookupSkill : AndyClawSkill {
         }
     }
 
-    private fun fetchDexScreenerPrice(contractAddress: String, chainId: Int): Double? {
-        val chainName = CHAIN_NAMES[chainId] ?: "base"
+    private data class DexQuote(
+        val priceUsd: Double,
+        val symbol: String,
+        val pair: String,
+        val dex: String,
+        val liquidityUsd: Double,
+    )
+
+    /**
+     * The token's own USD price on [chainId], from the deepest pair that trades it there.
+     *
+     * `/tokens/{address}` lists pairs where the token is the base *or* the quote, and a pair's
+     * `priceUsd` is always its base's: USDC on Base came back as AERO's $0.78, and a dollar amount
+     * priced with it sent 28% too much from the agent wallet. So only a pair with the token as its
+     * base is read directly; one with it as the quote is inverted (`priceUsd / priceNative`) and
+     * used only when no base pair exists. Never another chain's pair.
+     */
+    private fun fetchDexScreenerPrice(contractAddress: String, chainId: Int): DexQuote? {
+        val chainName = CHAIN_NAMES[chainId] ?: return null
         return try {
             val url = "https://api.dexscreener.com/latest/dex/tokens/$contractAddress"
             val body = httpGet(url) ?: return null
             val json = JSONObject(body)
             val pairs = json.optJSONArray("pairs") ?: return null
 
-            var bestPrice: Double? = null
-            var bestLiquidity = 0.0
+            var best: DexQuote? = null
+            var bestIsBase = false
             for (i in 0 until pairs.length()) {
-                val pair = pairs.getJSONObject(i)
-                if (pair.optString("chainId", "").lowercase() == chainName) {
-                    val price = pair.optDouble("priceUsd", Double.NaN)
-                    val liq = pair.optJSONObject("liquidity")?.optDouble("usd", 0.0) ?: 0.0
-                    if (!price.isNaN() && price > 0 && liq > bestLiquidity) {
-                        bestPrice = price
-                        bestLiquidity = liq
-                    }
+                val pair = pairs.optJSONObject(i) ?: continue
+                if (pair.optString("chainId", "").lowercase() != chainName) continue
+                val base = pair.optJSONObject("baseToken")
+                val quote = pair.optJSONObject("quoteToken")
+                val isBase = base?.optString("address")?.equals(contractAddress, ignoreCase = true) == true
+                val isQuote = !isBase && quote?.optString("address")?.equals(contractAddress, ignoreCase = true) == true
+                if (!isBase && !isQuote) continue
+
+                val baseUsd = pair.optDouble("priceUsd", Double.NaN)
+                val price = if (isBase) baseUsd else {
+                    // priceNative is the base in quote units, so the quote's price is the base's over it.
+                    val native = pair.optString("priceNative").toDoubleOrNull() ?: Double.NaN
+                    if (native > 0) baseUsd / native else Double.NaN
+                }
+                if (price.isNaN() || price.isInfinite() || price <= 0) continue
+
+                val liq = pair.optJSONObject("liquidity")?.optDouble("usd", 0.0) ?: 0.0
+                val better = when {
+                    best == null -> true
+                    isBase != bestIsBase -> isBase
+                    else -> liq > (best?.liquidityUsd ?: 0.0)
+                }
+                if (better) {
+                    val own = if (isBase) base else quote
+                    best = DexQuote(
+                        priceUsd = price,
+                        symbol = own?.optString("symbol").orEmpty().ifBlank { contractAddress },
+                        pair = "${base?.optString("symbol").orEmpty()}/${quote?.optString("symbol").orEmpty()}",
+                        dex = pair.optString("dexId").ifBlank { "a DEX" },
+                        liquidityUsd = liq,
+                    )
+                    bestIsBase = isBase
                 }
             }
-            if (bestPrice != null) return bestPrice
-
-            for (i in 0 until pairs.length()) {
-                val price = pairs.getJSONObject(i).optDouble("priceUsd", Double.NaN)
-                if (!price.isNaN() && price > 0) return price
-            }
-            null
+            best
         } catch (e: Exception) {
             Log.w(TAG, "DexScreener price fetch failed for $contractAddress", e)
             null

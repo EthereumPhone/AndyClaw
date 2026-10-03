@@ -18,8 +18,8 @@ import org.junit.Test
 class AutopilotFlowCompilerTest {
 
     private val list = T.screen("com.msg", "Chats",
-        T.button(2, "Bob", y = 200, type = "list_item", viewId = "com.msg:id/row_bob"),
-        T.button(3, "Anna", y = 280, type = "list_item", viewId = "com.msg:id/row_anna"),
+        T.button(2, "Bob", y = 200, type = "menu_item", viewId = "com.msg:id/row_bob"),
+        T.button(3, "Anna", y = 280, type = "menu_item", viewId = "com.msg:id/row_anna"),
     )
     private val thread = T.screen("com.msg", "Anna",
         T.field(5, "Message", viewId = "com.msg:id/compose"),
@@ -153,7 +153,7 @@ class AutopilotFlowCompilerTest {
     private val searchHome = T.screen("com.msg", "Chats", T.field(1, "Search", viewId = "com.msg:id/search"))
     private fun searchResults(row: String, typed: String) = T.screen("com.msg", "Search",
         T.field(1, "Search", value = typed, viewId = "com.msg:id/search"),
-        T.button(2, row, y = 200, type = "list_item", viewId = "com.msg:id/contact_row"),
+        T.button(2, row, y = 200, type = "menu_item", viewId = "com.msg:id/contact_row"),
     )
     private fun chat(title: String, withSend: Boolean) = T.screen("com.msg", title, *listOfNotNull(
         T.text(4, title, y = 60).copy(viewId = "com.msg:id/toolbar_title"),
@@ -209,8 +209,22 @@ class AutopilotFlowCompilerTest {
     fun `a hit the typed value only partly names cannot be checked, so it is not compiled`() {
         assertEquals(AutopilotFlowCompiler.Result.Skipped("value_dependent_target"),
             AutopilotFlowCompiler.compile(searchRun("Ann", "Anna"), "msg.x", ">=1"))
-        // Searched by number, the row shows a name: nothing ties the row to the value.
+        // Searched by number, the row shows a name: nothing ties the row to the value. The row is a
+        // menu_item, as ScreenAnalyzer calls every row, and that is no control.
         assertEquals(AutopilotFlowCompiler.Result.Skipped("value_dependent_target"),
             AutopilotFlowCompiler.compile(searchRun("+4915112345678", "Anna"), "msg.x", ">=1"))
+    }
+
+    @Test
+    fun `a committing button nobody here can read is left to the autopilot`() {
+        val run = searchRun("Anna", "Anna")
+        val russian = run.copy(actions = run.actions.mapIndexed { i, a ->
+            if (i == run.actions.lastIndex) a.copy(target = a.target!!.copy(label = "Отправить")) else a
+        })
+        assertEquals(AutopilotFlowCompiler.Result.Skipped("unreadable_commit"),
+            AutopilotFlowCompiler.compile(russian, "msg.x", ">=1"))
+        // A row in that script is a name, not a verb: it still compiles.
+        val named = searchRun("Анна", "Анна")
+        assertTrue(AutopilotFlowCompiler.compile(named, "msg.x", ">=1") is AutopilotFlowCompiler.Result.Compiled)
     }
 }

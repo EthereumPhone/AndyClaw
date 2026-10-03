@@ -5,16 +5,19 @@ import android.provider.Settings
 import android.util.Log
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.JsonObject
 import org.ethereumphone.andyclaw.NodeApp
 import org.ethereumphone.andyclaw.agent.AgentLoop
 import org.ethereumphone.andyclaw.agent.TokenUsageSnapshot
 import org.ethereumphone.andyclaw.autopilot.AutopilotEvent
+import org.ethereumphone.andyclaw.autopilot.FlowsOff
 import org.ethereumphone.andyclaw.llm.AnthropicModels
 import org.ethereumphone.andyclaw.llm.LlmProvider
 import org.ethereumphone.andyclaw.skills.SkillResult
 import org.ethereumphone.andyclaw.skills.builtin.AgentDisplayBinder
+import org.ethereumphone.andyclaw.skills.builtin.FlowSkill
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -117,7 +120,8 @@ object AndyBench {
             }
         } finally {
             prefs.setAutopilotEnabled(autopilotBefore)
-            touched.forEach { (setting, old) -> if (old != null) write(app, setting.copy(value = old)) }
+            // A setting that had no value before goes back to having none, not to what the bench left.
+            touched.forEach { (setting, old) -> if (old != null) write(app, setting.copy(value = old)) else clear(app, setting) }
         }
         save(app, mode, results)
         summarize(results).forEach { Log.i(TAG, it); progress(it) }
@@ -130,7 +134,9 @@ object AndyBench {
         val provider = prefs.selectedProvider.value
         val model = AnthropicModels.fromModelId(modelId) ?: AnthropicModels.MINIMAX_M3
         val tier = org.ethereumphone.andyclaw.skills.tier.OsCapabilities.currentTier()
-        val enabled = prefs.enabledSkills.value
+        // The user's compiled flows stay out of it: replayed, the bench measures replays and counts
+        // its misses against them; compiled, its tasks land in the user's store.
+        val enabled = prefs.enabledSkills.value - FlowSkill.SKILL_ID
         val loop = AgentLoop(
             client = app.getLlmClient(),
             skillRegistry = app.nativeSkillRegistry,
@@ -147,8 +153,8 @@ object AndyBench {
             customModelIdOverride = if (provider == LlmProvider.CUSTOM && modelId.isNotBlank()) modelId else null,
             provenance = org.ethereumphone.andyclaw.ExecutionEngine.Provenance.USER,
             enforceProvenance = prefs.provenanceEnforcementEnabled.value,
-            flowRecorder = app.flowRecorder,
-            flowRepository = app.flowRepositoryOrNull,
+            flowRecorder = null,
+            flowRepository = null,
         )
 
         val done = CompletableDeferred<String?>()
@@ -181,7 +187,7 @@ object AndyBench {
 
         val started = System.currentTimeMillis()
         val error = withTimeoutOrNull(TASK_TIMEOUT_MS) {
-            loop.run(task.prompt, emptyList(), callbacks)
+            withContext(FlowsOff()) { loop.run(task.prompt, emptyList(), callbacks) }
             done.await()
         } ?: if (done.isCompleted) done.getCompleted() else "timeout"
         val duration = System.currentTimeMillis() - started
@@ -215,6 +221,20 @@ object AndyBench {
             }
         } catch (e: SecurityException) {
             Log.w(TAG, "cannot set ${s.namespace}/${s.key}: ${e.message}")
+        }
+    }
+
+    /** Back to no value at all. A setting with a validator may refuse that; it then keeps the bench's. */
+    private fun clear(app: Context, s: Check.SettingEquals) {
+        val cr = app.contentResolver
+        try {
+            when (s.namespace) {
+                "secure" -> Settings.Secure.putString(cr, s.key, null)
+                "system" -> Settings.System.putString(cr, s.key, null)
+                else -> Settings.Global.putString(cr, s.key, null)
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "cannot clear ${s.namespace}/${s.key}: ${e.message}")
         }
     }
 

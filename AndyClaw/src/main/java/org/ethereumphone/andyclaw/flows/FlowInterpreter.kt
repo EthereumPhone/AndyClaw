@@ -39,6 +39,13 @@ interface FlowDisplayDriver {
 /** Asked to cross a `checkpoint:`. False means the user did not agree, and the flow stops. */
 fun interface FlowCheckpointHandler {
     suspend fun confirm(flow: Flow, checkpoint: String, params: Map<String, String>): Boolean
+
+    /**
+     * Whether the user approved this very replay on its card — never a standing "don't ask me".
+     * Asked before the step that commits a flow taps a button nobody here can read
+     * ([FlowTargetGuard.unreadableControl]); by default nobody did.
+     */
+    suspend fun approvedThisReplay(flow: Flow): Boolean = false
 }
 
 /**
@@ -155,14 +162,12 @@ class FlowInterpreter(
     ): FlowRunResult {
         val started = clock()
         val trace = mutableListOf<String>()
-        // Crossing the checkpoint and acting after it is the moment the flow may have changed
-        // the world for good. Past it, no failure may be answered by doing the task again.
-        var crossedCheckpoint = false
+        // Acting past the checkpoint is the moment the flow may have changed the world for good,
+        // and so is an irreversible step or sending out the flow's last action, whatever its target
+        // is called: a flow that ends on "Save" has done its task there although that is no commit
+        // token ([FlowRunAccounting.commitsAt]). Past it, no failure may be answered by doing the
+        // task again — a postcondition that misses a slow screen included.
         var committed = false
-        // So is sending out the flow's last action, whatever its target is called: a flow that
-        // ends on "Save" or "Done" has done its task there although neither is a commit token, and
-        // a postcondition that misses a slow screen afterwards must not invite doing it again.
-        val lastAction = flow.steps.indexOfLast { it is TapStep || it is TypeStep }
 
         fun elapsed() = clock() - started
         fun abort(reason: FlowAbortReason, message: String, step: Int? = null): FlowRunResult.Aborted {
@@ -206,7 +211,9 @@ class FlowInterpreter(
         trace += "version:$installed in ${flow.appVersionRange}"
 
         // ── Params ────────────────────────────────────────────────────
-        val missing = flow.params.filter { params[it].isNullOrEmpty() }
+        // A blank value is no value: typed, it sends nothing; asserted, it named nobody and let the
+        // identity check that proves the right row was hit pass for anyone.
+        val missing = flow.params.filter { params[it].isNullOrBlank() }
         if (missing.isNotEmpty()) {
             return abort(FlowAbortReason.MISSING_PARAM, "missing ${missing.joinToString()}")
         }
@@ -221,17 +228,6 @@ class FlowInterpreter(
         FlowTargetGuard.privateAppOn(tree)?.let {
             return abort(FlowAbortReason.SENSITIVE_TARGET, "$it is a private app")
         }
-
-        // ── Preconditions ─────────────────────────────────────────────
-        for (condition in flow.preconditions) {
-            if (!holds(condition, tree, params)) {
-                return abort(
-                    FlowAbortReason.PRECONDITION_FAILED,
-                    "precondition ${describe(condition)} does not hold",
-                )
-            }
-        }
-        trace += "preconditions:ok"
 
         /**
          * The screen after a tap or a typed value. The accessibility service reports window
@@ -257,16 +253,17 @@ class FlowInterpreter(
         }
 
         /**
-         * Reads the screen again until it [shows] what the step needs — for [SCREEN_WAIT_MS] at
-         * most and [MAX_SCREEN_POLLS] reads, so a frozen clock cannot keep it here — checking STOP
-         * before every read. It leaves `tree` on the last screen read, which is the one the step
-         * then checks and acts on.
+         * Reads the screen again until it [shows] what the step needs — for [waitMs] at most and
+         * a read per [POLL_MS] of it, so a frozen clock cannot keep it here — checking STOP before
+         * every read. It leaves `tree` on the last screen read, which is the one the step then
+         * checks and acts on.
          */
-        suspend fun awaitScreen(step: Int, shows: (String) -> Boolean): ScreenWait {
+        suspend fun awaitScreen(step: Int?, waitMs: Long = SCREEN_WAIT_MS, shows: (String) -> Boolean): ScreenWait {
             var polls = 0
-            val deadline = clock() + SCREEN_WAIT_MS
+            val maxPolls = (waitMs / POLL_MS).toInt() + 1
+            val deadline = clock() + waitMs
             while (!shows(tree)) {
-                if (polls >= MAX_SCREEN_POLLS || clock() >= deadline) return ScreenWait.NotSeen
+                if (polls >= maxPolls || clock() >= deadline) return ScreenWait.NotSeen
                 if (stopped()) return ScreenWait.Ended(abort(FlowAbortReason.STOPPED, "stopped by the user", step))
                 sleep(POLL_MS)
                 polls++
@@ -289,6 +286,20 @@ class FlowInterpreter(
                 ScreenWait.NotSeen -> abort(FlowAbortReason.STEP_FAILED, "$viewId is not on the screen", step)
                 is ScreenWait.Ended -> wait.abort
             }
+
+        // ── Preconditions ─────────────────────────────────────────────
+        // Read until they hold, for a few seconds: the app has just been started from its launcher
+        // activity, and one read of a cold start, or of a start screen still coming up, failed them
+        // — and marked a good flow stale.
+        when (val wait = awaitScreen(null, PRECONDITION_WAIT_MS) { t -> flow.preconditions.all { holds(it, t, params) } }) {
+            ScreenWait.Held -> Unit
+            ScreenWait.NotSeen -> {
+                val failed = flow.preconditions.first { !holds(it, tree, params) }
+                return abort(FlowAbortReason.PRECONDITION_FAILED, "precondition ${describe(failed)} does not hold")
+            }
+            is ScreenWait.Ended -> return wait.abort
+        }
+        trace += "preconditions:ok"
 
         // An exception once the flow may have done its task is reported as exactly that — a
         // committed abort — and never as a failure, which is what invites doing it again. Before
@@ -339,15 +350,35 @@ class FlowInterpreter(
                             ?: return abort(FlowAbortReason.UNSUPPORTED, "tap without a view_id", index)
                         val position = step.index ?: 0
                         awaitTarget(index, viewId, position)?.let { return it }
+                        // Only what was typed before the tap can have picked the row it lands on.
+                        val typed = flow.steps.take(index).filterIsInstance<TypeStep>().map { substitute(it.value, params) }
                         // Against the tree the target was just seen in: the last read before the tap.
-                        checkTarget(flow, index, step, viewId, tree, typing = false, params = params)?.let { (reason, message) ->
+                        checkTarget(flow, index, step, viewId, tree, typing = false, typed = typed)?.let { (reason, message) ->
                             return abort(reason, message, index)
+                        }
+                        // A button in a script no check here can read, on the tap that commits the
+                        // flow: its "Send" and a "Pay" look alike to every word list, so it is tapped
+                        // only on the user's approval of this replay, and otherwise done another way.
+                        if (FlowRunAccounting.commitsAt(flow, index)) {
+                            FlowTargetGuard.unreadableControl(tree, viewId)?.let { words ->
+                                if (!checkpoints.approvedThisReplay(flow)) {
+                                    return abort(
+                                        FlowAbortReason.AMBIGUOUS_TARGET,
+                                        "$viewId reads \"$words\", which nothing here can check, on the step that cannot be undone",
+                                        index,
+                                    )
+                                }
+                            }
                         }
                         if (stopped()) return abort(FlowAbortReason.STOPPED, "stopped by the user", index)
                         observe(index, step.opcode, viewId, settled = false)
                         val sent = dispatch { driver.clickNode(viewId, position) }
-                        if (sent.mayHaveHappened && (crossedCheckpoint || acts(step) || index == lastAction)) committed = true
-                        failure(sent, "tap on $viewId")?.let { return abort(FlowAbortReason.STEP_FAILED, it, index) }
+                        if (sent.mayHaveHappened && FlowRunAccounting.commitsAt(flow, index)) committed = true
+                        failure(sent, "tap on $viewId")?.let {
+                            // Refused because STOP had just latched the display: the user's, not the flow's.
+                            if (stop.stopRequested()) return abort(FlowAbortReason.STOPPED, "stopped by the user", index)
+                            return abort(FlowAbortReason.STEP_FAILED, it, index)
+                        }
                         trace += "tap:$viewId"
                         tree = readTreeAfterAction(tree, SETTLE_TAP_MS)
                             ?: return abort(FlowAbortReason.DISPLAY_UNAVAILABLE, "the screen could not be read after tapping $viewId", index)
@@ -358,15 +389,18 @@ class FlowInterpreter(
                         val viewId = step.target.viewId
                             ?: return abort(FlowAbortReason.UNSUPPORTED, "type without a view_id", index)
                         awaitTarget(index, viewId, 0)?.let { return it }
-                        checkTarget(flow, index, step, viewId, tree, typing = true, params = params)?.let { (reason, message) ->
+                        checkTarget(flow, index, step, viewId, tree, typing = true, typed = emptyList())?.let { (reason, message) ->
                             return abort(reason, message, index)
                         }
                         if (stopped()) return abort(FlowAbortReason.STOPPED, "stopped by the user", index)
                         val value = substitute(step.value, params)
                         observe(index, step.opcode, viewId, settled = false)
                         val sent = dispatch { driver.setNodeText(viewId, value) }
-                        if (sent.mayHaveHappened && (crossedCheckpoint || acts(step) || index == lastAction)) committed = true
-                        failure(sent, "typing into $viewId")?.let { return abort(FlowAbortReason.STEP_FAILED, it, index) }
+                        if (sent.mayHaveHappened && FlowRunAccounting.commitsAt(flow, index)) committed = true
+                        failure(sent, "typing into $viewId")?.let {
+                            if (stop.stopRequested()) return abort(FlowAbortReason.STOPPED, "stopped by the user", index)
+                            return abort(FlowAbortReason.STEP_FAILED, it, index)
+                        }
                         trace += "type:$viewId"
                         tree = readTreeAfterAction(tree, SETTLE_TYPE_MS)
                             ?: return abort(FlowAbortReason.DISPLAY_UNAVAILABLE, "the screen could not be read after typing into $viewId", index)
@@ -376,6 +410,7 @@ class FlowInterpreter(
                     is WaitForStep -> {
                         val deadline = clock() + step.timeoutMs
                         var seen = false
+                        var read = false
                         var polls = 0
                         while (true) {
                             if (stopped()) return abort(FlowAbortReason.STOPPED, "stopped by the user", index)
@@ -383,6 +418,7 @@ class FlowInterpreter(
                             // screen before whatever this step is waiting for.
                             val fresh = driver.uiTree()
                             if (fresh != null) {
+                                read = true
                                 tree = fresh
                                 if (waitSatisfied(step, fresh, params)) {
                                     seen = true
@@ -393,6 +429,8 @@ class FlowInterpreter(
                             sleep(POLL_MS)
                             polls++
                         }
+                        // Not one read of the screen worked: that says nothing about the flow.
+                        if (!read) return abort(FlowAbortReason.DISPLAY_UNAVAILABLE, "the screen could not be read", index)
                         if (!seen) {
                             return abort(
                                 FlowAbortReason.WAIT_TIMEOUT,
@@ -405,6 +443,10 @@ class FlowInterpreter(
 
                     is AssertStep -> {
                         val expected = step.nodeTextContains?.let { substitute(it, params) }
+                        // An assert that asks for something and is left with nothing proves nothing.
+                        if (!step.nodeTextContains.isNullOrBlank() && expected.isNullOrBlank()) {
+                            return abort(FlowAbortReason.ASSERT_FAILED, "${step.viewId} has nothing to show", index)
+                        }
                         if (!expected.isNullOrBlank()) {
                             // The assert that proves a list row was the right one reads a screen the
                             // tap has only just asked for, so it gets the grace a target gets. And it
@@ -434,7 +476,6 @@ class FlowInterpreter(
                                 index,
                             )
                         }
-                        crossedCheckpoint = true
                         trace += "checkpoint:${step.name}"
                     }
                 }
@@ -446,14 +487,18 @@ class FlowInterpreter(
             // a failure is what invited somebody to send it again. Bounded by a poll count as well
             // as the clock, so a frozen clock cannot keep it here.
             var polls = 0
+            var read = false
             val deadline = clock() + POSTCONDITION_WAIT_MS
             while (true) {
                 if (stopped()) return abort(FlowAbortReason.STOPPED, "stopped by the user")
                 val fresh = driver.uiTree()
+                if (fresh != null) read = true
                 val failed = if (fresh == null) flow.postconditions.firstOrNull()
                 else flow.postconditions.firstOrNull { !holds(it, fresh, params) }
                 if (failed == null) break
                 if (polls >= MAX_POSTCONDITION_POLLS || clock() >= deadline) {
+                    // Not one read worked: the display failed, not the flow. Still committed, if it was.
+                    if (!read) return abort(FlowAbortReason.DISPLAY_UNAVAILABLE, "the screen could not be read to confirm it")
                     return abort(
                         FlowAbortReason.ASSERT_FAILED,
                         "postcondition ${describe(failed)} does not hold — the flow ran but cannot " +
@@ -510,7 +555,7 @@ class FlowInterpreter(
      * said "Next" must not tap it once it says "Pay €49", and a list row is only safe to take
      * by position when something afterwards proves it was the right one. [tree] is the screen
      * the target was just found on, read immediately before the action — never an older one
-     * that happened not to show it.
+     * that happened not to show it. [typed] are the values typed before this step.
      */
     private fun checkTarget(
         flow: Flow,
@@ -519,7 +564,7 @@ class FlowInterpreter(
         viewId: String,
         tree: String?,
         typing: Boolean,
-        params: Map<String, String>,
+        typed: Collection<String>,
     ): Pair<FlowAbortReason, String>? {
         FlowTargetGuard.privateAppOn(tree)?.let {
             return FlowAbortReason.SENSITIVE_TARGET to "$it is a private app"
@@ -539,7 +584,7 @@ class FlowInterpreter(
         // else. Checked on every tap, not just compiled ones with an identity assert, because
         // flows already on devices predate those asserts.
         if (!typing) {
-            FlowTargetGuard.partialValueMatch(tree, viewId, params.values)?.let {
+            FlowTargetGuard.partialValueMatch(tree, viewId, typed)?.let {
                 return FlowAbortReason.AMBIGUOUS_TARGET to "$viewId shows '$it' only inside a longer word"
             }
         }
@@ -564,8 +609,10 @@ class FlowInterpreter(
         val viewId = condition.viewId ?: return false
         return when (condition) {
             is NodeExists -> viewId in NodeTreeChecksum.viewIdsOf(tree)
-            is NodeTextContains -> NodeTreeChecksum.textOf(tree, viewId)
-                .contains(substitute(condition.value, params), ignoreCase = true)
+            // Every text contains nothing, a missing node's included: an empty value proves nothing.
+            is NodeTextContains -> substitute(condition.value, params).let { value ->
+                value.isNotBlank() && NodeTreeChecksum.textOf(tree, viewId).contains(value, ignoreCase = true)
+            }
         }
     }
 
@@ -600,6 +647,9 @@ class FlowInterpreter(
         /** How long the result of the last step may take to show. */
         const val POSTCONDITION_WAIT_MS = 3_000L
         const val MAX_POSTCONDITION_POLLS = (POSTCONDITION_WAIT_MS / POLL_MS).toInt() + 1
+
+        /** How long the app's start screen may take to show the preconditions after its launch. */
+        const val PRECONDITION_WAIT_MS = 3_000L
 
         /** Reads of the tree before an unreadable screen aborts, rather than acting on an old one. */
         const val READ_ATTEMPTS = 3

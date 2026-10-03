@@ -130,7 +130,19 @@ object ToolEffects {
         "refinement_read", "refinement_list_skills", "refinement_list_all",
         "skill_read_source", "skill_list_created", "skill_list_references",
         "list_custom_tools", "cli_tools_list", "cli_tools_info",
+        // Where they are on the network: the home Wi-Fi's name locates it, and the device's
+        // addresses identify it.
+        "get_connectivity_status",
     ) + CLIPBOARD_READS
+
+    /**
+     * Whether [toolName] counts as having read the owner's private data. A tool that is not one
+     * of the builtins — an extension, a ClawHub skill, a custom tool, a flow — cannot say what it
+     * reads, and a custom tool handed `contentResolver` reads the SMS inbox as well as `read_sms`
+     * does: unknown counts as private.
+     */
+    fun readsPrivateData(toolName: String): Boolean =
+        toolName in PRIVATE_DATA_TOOLS || toolName !in BUILTIN
 
     /**
      * Tools whose result can carry nothing another person wrote: the device's own state, the
@@ -197,9 +209,17 @@ object ToolEffects {
      * another person's words may not rewrite them — whoever set it off, the owner's chat included,
      * where YOLO approves everything — because an injected line there becomes the instructions of
      * every heartbeat after it.
+     *
+     * Memories are injected into later prompts, and refinements and AI-made skills are read as
+     * how to do a task: "remember: Bob's new address is 0x…" in a mail the owner asked to have
+     * summarised became the address a later, clean "send Bob 20 USDC" paid.
      */
     val STANDING_INSTRUCTION_WRITES: Set<String> = setOf(
         "update_soul",
+        "memory_store",
+        "refinement_create",
+        "skill_create",
+        "skill_write_file",
     )
 
     /**
@@ -287,7 +307,9 @@ object ToolEffects {
 
         // ── ClipboardSkill ───────────────────────────────────────────
         "read_clipboard" eff ToolEffect.READ,
-        "write_clipboard" eff ToolEffect.REVERSIBLE,
+        // What was on the clipboard is gone once it is overwritten: a copied 0x address swapped
+        // for another one is how a clipper steals a payment.
+        "write_clipboard" eff ToolEffect.IRREVERSIBLE,
 
         // ── CodeExecutionSkill ───────────────────────────────────────
         "execute_code" eff ToolEffect.IRREVERSIBLE,
@@ -295,7 +317,8 @@ object ToolEffects {
         // ── ConnectivitySkill ────────────────────────────────────────
         "get_connectivity_status" eff ToolEffect.READ,
         "toggle_wifi" eff ToolEffect.REVERSIBLE,
-        "connect_wifi_network" eff ToolEffect.REVERSIBLE,
+        // Joining a network routes the device's traffic through whoever runs it.
+        "connect_wifi_network" eff ToolEffect.IRREVERSIBLE,
         "forget_wifi_network" eff ToolEffect.REVERSIBLE,
         "toggle_bluetooth" eff ToolEffect.REVERSIBLE,
         "toggle_mobile_data" eff ToolEffect.REVERSIBLE,
@@ -395,15 +418,18 @@ object ToolEffects {
 
         // ── NotificationSkill ────────────────────────────────────────
         "list_notifications" eff ToolEffect.READ,
-        "dismiss_notification" eff ToolEffect.REVERSIBLE,
+        // A dismissed notification does not come back: a bank's or a new login's alert, unseen.
+        "dismiss_notification" eff ToolEffect.IRREVERSIBLE,
         "auto_triage" eff ToolEffect.REVERSIBLE,
         "set_dnd_mode" eff ToolEffect.REVERSIBLE,
         "reply_to_notification" eff ToolEffect.IRREVERSIBLE,
 
         // ── PackageManagerSkill ──────────────────────────────────────
-        "uninstall_app" eff ToolEffect.IRREVERSIBLE,
+        // Both delete an app's data, a wallet's keys among it, with no system dialog: never
+        // unattended, whoever asks (PackageManagerSkill also refuses the protected apps outright).
+        "uninstall_app" eff ToolEffect.SENSITIVE,
         "clear_app_cache" eff ToolEffect.REVERSIBLE,
-        "clear_app_data" eff ToolEffect.IRREVERSIBLE,
+        "clear_app_data" eff ToolEffect.SENSITIVE,
 
         // ── PhoneSkill ───────────────────────────────────────────────
         "get_call_log" eff ToolEffect.READ,
@@ -540,7 +566,8 @@ object ToolEffects {
         "agent_display_destroy" eff ToolEffect.REVERSIBLE,
         "agent_display_destroy_and_promote" eff ToolEffect.REVERSIBLE,
         "agent_display_resize" eff ToolEffect.REVERSIBLE,
-        "agent_display_set_clipboard" eff ToolEffect.REVERSIBLE,
+        // The device-wide clipboard, as write_clipboard.
+        "agent_display_set_clipboard" eff ToolEffect.IRREVERSIBLE,
         // Injection acts *inside* somebody else's app, which is how a send button
         // gets pressed without ever naming a messaging tool. Until Phase 2's flows
         // can declare a checkpoint before the irreversible step, the whole

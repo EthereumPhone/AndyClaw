@@ -35,7 +35,7 @@ object FlowFirst {
     ): StoredFlow? {
         val stored = flows.filter { claims(it.flow, packageName, goal, values) }.maxWithOrNull(NEWEST) ?: return null
         if (stored.meta.stale) return null
-        if (stored.flow.params.any { values[it].isNullOrEmpty() }) return null
+        if (stored.flow.params.any { values[it].isNullOrBlank() }) return null
         if (FlowToolEffect.requiresApproval(stored.flow) &&
             !FlowCheckpointPolicy.mayCross(approvedThisCall = false, noConfirm = noConfirm, provenance = provenance)
         ) return null

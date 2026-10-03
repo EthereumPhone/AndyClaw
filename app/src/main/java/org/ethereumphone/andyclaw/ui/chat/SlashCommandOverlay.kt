@@ -496,7 +496,8 @@ private fun getToggleState(cmd: SlashCommand.Toggle, prefs: SecurePrefs): Boolea
     "yolo" -> prefs.yoloMode.collectAsState().value
     "safety" -> prefs.safetyEnabled.collectAsState().value
     "notify" -> prefs.notificationReplyEnabled.collectAsState().value
-    "memory" -> prefs.getString("memory.autoStore") != "false"
+    // A plain pref, not a flow: read again whenever any such pref is written.
+    "memory" -> prefs.rawStringsVersion.collectAsState().value.let { prefs.getString("memory.autoStore") != "false" }
     "routing" -> prefs.smartRoutingEnabled.collectAsState().value
     else -> false
 }
@@ -505,7 +506,8 @@ private fun getCycleOptions(cmd: SlashCommand, prefs: SecurePrefs): List<Pair<St
     when (cmd.id) {
         "model" -> AnthropicModels.forProvider(prefs.selectedProvider.value)
             .map { it.modelId to it.modelId }
-        "provider" -> LlmProvider.entries.map { it.name to it.displayName }
+        // The providers Settings offers, in its order: the executor picks by index from the same list.
+        "provider" -> providerChoices().map { it.name to it.displayName }
         "heartbeat" -> heartbeatOptions
         "preset" -> prefs.routingPresets.value.map { it.id to it.name }
         else -> emptyList()
@@ -516,7 +518,7 @@ private fun getCurrentCycleIndex(cmd: SlashCommand, prefs: SecurePrefs): Int = w
         val models = AnthropicModels.forProvider(prefs.selectedProvider.value)
         models.indexOfFirst { it.modelId == prefs.selectedModel.value }.coerceAtLeast(0)
     }
-    "provider" -> LlmProvider.entries.indexOf(prefs.selectedProvider.value).coerceAtLeast(0)
+    "provider" -> providerChoices().indexOf(prefs.selectedProvider.value).coerceAtLeast(0)
     "heartbeat" -> {
         val minutes = prefs.heartbeatIntervalMinutes.value.toString()
         heartbeatOptions.indexOfFirst { it.first == minutes }.coerceAtLeast(0)
@@ -541,3 +543,8 @@ private fun getCurrentCycleDisplay(cmd: SlashCommand, prefs: SecurePrefs): Strin
     }
     else -> null
 }
+
+private fun providerChoices() =
+    org.ethereumphone.andyclaw.ui.settings.ProviderSwitch.choices(
+        org.ethereumphone.andyclaw.skills.tier.OsCapabilities.hasPrivilegedAccess
+    )

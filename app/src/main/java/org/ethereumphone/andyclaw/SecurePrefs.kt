@@ -24,6 +24,14 @@ import kotlinx.serialization.encodeToString
 import java.util.UUID
 
 class SecurePrefs(context: Context) : KeyValueStore {
+  /**
+   * Moves on every [putString] and [remove]: a screen showing a value read with [getString]
+   * collects it to see the change (the `/memory` switch kept showing the old state). First, so it
+   * exists before any initializer below can write.
+   */
+  private val _rawStringsVersion = MutableStateFlow(0)
+  val rawStringsVersion: StateFlow<Int> = _rawStringsVersion
+
   companion object {
     val defaultWakeWords: List<String> = listOf("openclaw", "claude")
     private const val displayNameKey = "node.displayName"
@@ -584,10 +592,12 @@ class SecurePrefs(context: Context) : KeyValueStore {
 
   override fun putString(key: String, value: String) {
     prefs.edit { putString(key, value) }
+    _rawStringsVersion.value++
   }
 
   override fun remove(key: String) {
     prefs.edit { remove(key) }
+    _rawStringsVersion.value++
   }
 
   private fun openEncryptedPrefs(context: Context, name: String): SharedPreferences =

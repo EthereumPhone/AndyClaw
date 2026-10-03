@@ -94,7 +94,7 @@ class OpenAiEmbeddingProvider(
         response.use { resp ->
             if (!resp.isSuccessful) {
                 val body = resp.body?.string()?.take(500) ?: "no body"
-                throw EmbeddingException("Embedding API returned ${resp.code}: $body")
+                throw EmbeddingException("Embedding API returned ${resp.code}: $body", statusCode = resp.code)
             }
 
             val bodyStr = resp.body?.string()

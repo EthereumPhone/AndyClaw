@@ -47,7 +47,7 @@ class ZeroBalanceFallbackClient(
     } catch (e: Exception) {
         if (!shouldFallBack(e)) throw e
         Log.w(TAG, "premium gateway is out of funds; serving locally", e)
-        local.sendMessage(request)
+        local.sendMessage(forLocal(request))
     }
 
     override suspend fun streamMessage(request: MessagesRequest, callback: StreamingCallback) {
@@ -64,26 +64,25 @@ class ZeroBalanceFallbackClient(
         } catch (e: Exception) {
             if (guard.emitted || !isInsufficientFunds(e)) throw e
             Log.w(TAG, "premium gateway is out of funds; streaming locally", e)
-            local.streamMessage(request, callback)
+            local.streamMessage(forLocal(request), callback)
         }
     }
 
     /**
-     * The local model takes far fewer tools than a cloud one, and the tool list is built
-     * before anyone knows which client will serve the request. Reporting the smaller of the
-     * two keeps a fallback from arriving at a model with more tools than it can hold.
+     * The primary's budget, because the primary serves nearly every request. The tool list is
+     * built before anyone knows which client will serve it, and reporting the local model's
+     * smaller budget here cut every background run on a funded gateway down to that many
+     * tools, the tool search among the first dropped. The fallback trims its own copy instead.
      */
     override val maxToolCount: Int
-        get() {
-            val p = primary.maxToolCount
-            val l = local.maxToolCount
-            return when {
-                !localAvailable() || !usingPremiumGateway() -> p
-                p < 0 -> l
-                l < 0 -> p
-                else -> minOf(p, l)
-            }
-        }
+        get() = primary.maxToolCount
+
+    /** [request] cut to the tools the local model can hold, the way AgentLoop cuts a list. */
+    private fun forLocal(request: MessagesRequest): MessagesRequest {
+        val max = local.maxToolCount
+        val tools = request.tools ?: return request
+        return if (max > 0 && tools.size > max) request.copy(tools = tools.take(max)) else request
+    }
 
     private fun shouldFallBack(e: Exception): Boolean =
         usingPremiumGateway() && localAvailable() && isInsufficientFunds(e)

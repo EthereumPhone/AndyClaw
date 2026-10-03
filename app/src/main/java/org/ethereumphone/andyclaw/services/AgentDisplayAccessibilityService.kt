@@ -127,7 +127,18 @@ class AgentDisplayAccessibilityService : AccessibilityService() {
 
     override fun onDestroy() {
         super.onDestroy()
-        if (instance === this) instance = null
+        if (instance === this) {
+            instance = null
+            // The proxy's binder lives as long as the process, so the OS never hears that this
+            // service went (the user turned it off): it kept the proxy, read empty windows through
+            // it until the process died, and never re-enabled the service. Cleared, the OS
+            // re-enables it on the next display it creates or reuses.
+            try {
+                frameworkService?.registerAccessibilityProxy(null)
+            } catch (e: Exception) {
+                Log.w(TAG, "Could not clear the accessibility proxy: ${e.message}")
+            }
+        }
         frameworkService = null
         Log.i(TAG, "onDestroy")
     }

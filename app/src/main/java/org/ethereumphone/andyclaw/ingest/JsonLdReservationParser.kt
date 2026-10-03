@@ -35,10 +35,10 @@ object JsonLdReservationParser {
         isLenient = true
     }
 
-    private val scriptBlock = Regex(
-        """<script[^>]*type\s*=\s*["']application/ld\+json["'][^>]*>(.*?)</script>""",
-        setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL),
-    )
+    private val ldJsonType = Regex("""type\s*=\s*["']application/ld\+json["']""", RegexOption.IGNORE_CASE)
+
+    /** Most objects one document is searched for: a booking has a handful. */
+    private const val MAX_NODES = 2_000
 
     /**
      * Every reservation in [body].
@@ -49,9 +49,7 @@ object JsonLdReservationParser {
         if (body.isBlank()) return emptyList()
 
         val documents = buildList {
-            for (match in scriptBlock.findAll(body)) {
-                add(match.groupValues[1])
-            }
+            addAll(scriptBlocks(body))
             // A body that is itself a JSON document — Gmail's API can hand back a
             // `text/plain` part that is nothing but the markup.
             val trimmed = body.trim()
@@ -70,14 +68,49 @@ object JsonLdReservationParser {
 
     // ── Shape ─────────────────────────────────────────────────────────
 
-    /** Every object reachable from [element], including through `@graph` and nested arrays. */
-    private fun flatten(element: JsonElement): List<JsonObject> = when (element) {
-        is JsonArray -> element.flatMap { flatten(it) }
-        is JsonObject -> {
-            val graph = element["@graph"]
-            if (graph != null) listOf(element) + flatten(graph) else listOf(element)
+    /**
+     * The contents of every `<script type="application/ld+json">` block, found with indexOf.
+     * A lazy `<script…>(.*?)</script>` regex ran to the end of the body again for every opening
+     * tag that had no close, which a crafted mail turned into minutes of CPU.
+     */
+    private fun scriptBlocks(body: String): List<String> {
+        val out = mutableListOf<String>()
+        var from = 0
+        while (true) {
+            val open = body.indexOf("<script", from, ignoreCase = true)
+            if (open < 0) break
+            val tagEnd = body.indexOf('>', open)
+            if (tagEnd < 0) break
+            val close = body.indexOf("</script>", tagEnd + 1, ignoreCase = true)
+            if (close < 0) break
+            if (ldJsonType.containsMatchIn(body.substring(open, tagEnd))) out += body.substring(tagEnd + 1, close)
+            from = close + "</script>".length
         }
-        else -> emptyList()
+        return out
+    }
+
+    /**
+     * Every object reachable from [element], including through `@graph` and nested arrays, in
+     * document order — walked with a stack and at most [MAX_NODES] of them. Recursion here ran
+     * outside every catch: a mail nesting arrays twenty thousand deep overflowed the stack and
+     * killed the app.
+     */
+    private fun flatten(element: JsonElement): List<JsonObject> {
+        val out = mutableListOf<JsonObject>()
+        val pending = ArrayDeque<JsonElement>()
+        pending.addLast(element)
+        var visited = 0
+        while (pending.isNotEmpty() && visited++ < MAX_NODES) {
+            when (val e = pending.removeLast()) {
+                is JsonArray -> for (i in e.indices.reversed()) pending.addLast(e[i])
+                is JsonObject -> {
+                    out += e
+                    e["@graph"]?.let { pending.addLast(it) }
+                }
+                else -> Unit
+            }
+        }
+        return out
     }
 
     private fun types(node: JsonObject): List<String> = when (val t = node["@type"]) {

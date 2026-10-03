@@ -286,8 +286,17 @@ class ClawHubSkill(
 
         return try {
             // If the approval dialog already downloaded and assessed this skill,
-            // confirm the pending install instead of re-downloading.
+            // confirm the pending install instead of re-downloading — but never a CRITICAL one,
+            // the same rule as below: nothing here knows that anyone saw that assessment (under
+            // YOLO nobody did), and the ClawHub screen is where such a skill is installed.
             if (manager.hasPendingInstall(slug)) {
+                if (manager.getPendingLevel(slug) == ThreatLevel.CRITICAL) {
+                    manager.cancelPendingInstall(slug)
+                    return SkillResult.Error(
+                        "Refused to install '$slug': threat assessment is CRITICAL. " +
+                            "The user can review and install it from the ClawHub screen."
+                    )
+                }
                 val pendingVersion = manager.getPendingVersion(slug) ?: version
                 return when (val result = manager.confirmInstall(slug, pendingVersion)) {
                     is InstallResult.Success -> {

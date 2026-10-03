@@ -78,6 +78,16 @@ class StepPolicyTest {
     }
 
     @Test
+    fun `payment reads in other languages and compounds, and the surname Tan is nobody's PIN`() {
+        assertTrue(StepPolicy.isSensitive(T.button(1, "Payer 23,40 €")))
+        assertTrue(StepPolicy.isSensitive(T.button(1, "Zahlungsart ändern")))
+        assertTrue(StepPolicy.isSensitive(T.button(1, "OK", viewId = "com.bank:id/tan_confirm")))
+        assertTrue(StepPolicy.isSensitive(T.button(1, "TAN eingeben")))
+        assertTrue(!StepPolicy.isSensitive(T.button(1, "Amy Tan", type = "menu_item")))
+        assertTrue(!StepPolicy.isSensitive(T.button(1, "Envoyer")))
+    }
+
+    @Test
     fun `a blocker overrides everything`() {
         assertEquals(StepDecision.Escalate("blocker:login"), decide(
             Questions.NEXT to T.choice("tap:3", 0.99),

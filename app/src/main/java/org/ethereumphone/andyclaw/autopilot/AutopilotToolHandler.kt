@@ -2,6 +2,7 @@ package org.ethereumphone.andyclaw.autopilot
 
 import android.content.Context
 import android.util.Log
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import org.ethereumphone.andyclaw.ExecutionEngine.Provenance
@@ -27,8 +28,6 @@ class AutopilotToolHandler(
     private val config: AutopilotConfig = AutopilotConfig(),
     /** For whether the app is installed and what it is called; null leaves both unchecked. */
     private val context: Context? = null,
-    /** The installed app the turn router chose for this request ([JevTurnRouter.routedApp]). */
-    private val routedApp: () -> String? = { null },
 ) {
 
     /**
@@ -40,19 +39,17 @@ class AutopilotToolHandler(
             return SkillResult.Error(
                 "agent_display_autopilot is turned off. Use agent_display_create and the other agent_display tools.")
         }
+        val run = coroutineContext[AutopilotRunContext]
+        // The app routed for this run's own request, if anything routed it: never another turn's.
+        val routed = run?.routedApp?.invoke()
         val plan = AutopilotPlan.fromToolInput(params).getOrElse {
             return SkillResult.Error("Invalid autopilot plan: ${it.message}")
-        }.let(::onInstalledApp)
+        }.let { onInstalledApp(it, routed) }
         AgentDisplayCapabilities.ensureListener()
         if (!AgentDisplayLease.claimForCaller()) return SkillResult.Error(AgentDisplayLease.BUSY)
         val token = currentRunToken()
         if (token?.stopRequested == true) return SkillResult.Error(AgentDisplayLease.STOPPED)
 
-        // The same task done before, compiled into a flow: replay that — no Jev, no planner,
-        // well under a second — and drive the app only if the flow no longer fits it.
-        if (flowLookup) flows()?.skill?.flowFirst(plan)?.let { return it }
-
-        val run = coroutineContext[AutopilotRunContext]
         val planner = run?.let { LlmAutopilotPlanner(it.client, it.modelId, it.onModelCall) }
         val device = AppAutopilotDevice(
             context = context,
@@ -62,6 +59,27 @@ class AutopilotToolHandler(
         // The name the user knows, and only for an app that is actually installed: the package
         // comes from the model, and nothing it made up should reach the rear screen.
         val appLabel = if (device.isLaunchable(plan.packageName)) device.appLabel(plan.packageName) else null
+        val flowsOff = coroutineContext[FlowsOff] != null
+
+        // The same task done before, compiled into a flow: replay that — no Jev, no planner,
+        // well under a second — and drive the app only if the flow no longer fits it.
+        if (flowLookup && !flowsOff) {
+            // On the rear HUD like the autopilot's own run, so its STOP is armed for the replay too.
+            val replayContext = run?.let { r ->
+                AutopilotRunContext(r.client, r.modelId, r.onModelCall, AutopilotEventSink { event ->
+                    updateHud(event, appLabel, token?.id)
+                    r.events.onEvent(event)
+                }, routedApp = r.routedApp)
+            }
+            val replayed = if (replayContext == null) flows()?.skill?.flowFirst(plan)
+                else withContext(replayContext) { flows()?.skill?.flowFirst(plan) }
+            if (replayed != null) {
+                // What the plan asked of the display is for the finished task, as after a run below.
+                if (replayed is SkillResult.Success) finishDisplay(plan.finish)
+                return replayed
+            }
+        }
+
         val events = AutopilotEventSink { event ->
             org.ethereumphone.andyclaw.autopilot.replay.ReplayRecorder.onEvent(event)
             logEvent(event)
@@ -117,9 +135,9 @@ class AutopilotToolHandler(
      * from what *is* installed, if it chose one — the model names packages from memory, and a
      * calculator or notes app that is not Google's used to end the run before it began.
      */
-    private fun onInstalledApp(plan: AutopilotPlan): AutopilotPlan {
+    private fun onInstalledApp(plan: AutopilotPlan, routedApp: String?): AutopilotPlan {
         if (context == null || isLaunchable(plan.packageName)) return plan
-        routedApp()?.takeIf { it != plan.packageName && isLaunchable(it) }?.let { routed ->
+        routedApp?.takeIf { it != plan.packageName && isLaunchable(it) }?.let { routed ->
             Log.i(TAG, "plan names ${plan.packageName}, which is not installed; using the routed $routed")
             return plan.copy(packageName = routed)
         }
@@ -168,6 +186,7 @@ class AutopilotToolHandler(
      */
     private suspend fun compileFlow(result: AutopilotResult): String? {
         if (result.status != AutopilotResult.Status.SUCCESS) return null
+        if (coroutineContext[FlowsOff] != null) return null
         val provenance = currentProvenance()
         if (provenance != Provenance.USER && provenance != Provenance.TRUSTED) return null
         val repository = flows() ?: return null

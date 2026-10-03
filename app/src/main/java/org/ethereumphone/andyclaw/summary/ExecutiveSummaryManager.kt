@@ -4,6 +4,8 @@ import android.os.IBinder
 import android.os.Parcel
 import android.util.Log
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.json.JsonObject
 import org.json.JSONArray
 import org.ethereumphone.andyclaw.NodeApp
@@ -71,6 +73,12 @@ class ExecutiveSummaryManager(private val app: NodeApp) {
     @Volatile
     var streamListener: SummaryStreamListener? = null
 
+    /**
+     * One summary at a time. Each reads the current summary and writes its successor, so two at
+     * once — a heartbeat and a notification — each overwrote the other's update.
+     */
+    private val serial = Mutex()
+
     // ── Dismissed bullets ────────────────────────────────────────────────────
     // Bullets the user swiped away. The LLM is instructed not to regenerate
     // similar content. Stored as a JSON array, max 10 entries (ring buffer).
@@ -86,7 +94,7 @@ class ExecutiveSummaryManager(private val app: NodeApp) {
         list.add(clean)
         while (list.size > maxDismissed) list.removeAt(0)
         dismissedFile.writeText(JSONArray(list).toString())
-        Log.i(TAG, "Dismissed bullet added: \"${clean.take(60)}\" (${list.size} total)")
+        Log.i(TAG, "Dismissed bullet added (${clean.length} chars, ${list.size} total)")
     }
 
     fun getDismissedBullets(): List<String> {
@@ -111,7 +119,7 @@ class ExecutiveSummaryManager(private val app: NodeApp) {
      * Generate and store an executive summary after a heartbeat or notification.
      * No-op if the feature is disabled.
      */
-    suspend fun generateAndStore(agentOutput: String) {
+    suspend fun generateAndStore(agentOutput: String): Unit = serial.withLock {
         if (!app.securePrefs.executiveSummaryEnabled.value) {
             Log.i(TAG, "generateAndStore: executive summary disabled, skipping")
             return
@@ -120,7 +128,7 @@ class ExecutiveSummaryManager(private val app: NodeApp) {
         Log.i(TAG, "generateAndStore: starting from heartbeat output (${agentOutput.length} chars)")
         try {
             val currentSummary = readSummaryFromService()
-            Log.i(TAG, "generateAndStore: current summary=${currentSummary.take(200)}")
+            Log.i(TAG, "generateAndStore: current summary ${currentSummary.length} chars")
             val prompt = buildString {
                 if (currentSummary.isNotBlank()) {
                     appendLine("Current executive summary: $currentSummary")
@@ -152,7 +160,7 @@ class ExecutiveSummaryManager(private val app: NodeApp) {
      * Generate and store an executive summary after a lockscreen voice prompt.
      * No-op if the feature is disabled.
      */
-    suspend fun generateAndStoreForLockscreen(userPrompt: String, agentOutput: String) {
+    suspend fun generateAndStoreForLockscreen(userPrompt: String, agentOutput: String): Unit = serial.withLock {
         if (!app.securePrefs.executiveSummaryEnabled.value) return
 
         try {
@@ -187,13 +195,13 @@ class ExecutiveSummaryManager(private val app: NodeApp) {
      * Generate and store an executive summary after an incoming notification.
      * The prompt already contains the current summary + notification details (built by the OS).
      */
-    suspend fun generateAndStoreForNotification(prompt: String) {
+    suspend fun generateAndStoreForNotification(prompt: String): Unit = serial.withLock {
         if (!app.securePrefs.executiveSummaryEnabled.value) {
             Log.i(TAG, "generateAndStoreForNotification: executive summary disabled, skipping")
             return
         }
 
-        Log.i(TAG, "generateAndStoreForNotification: starting, prompt=${prompt.take(200)}")
+        Log.i(TAG, "generateAndStoreForNotification: starting, prompt ${prompt.length} chars")
         try {
             val listener = streamListener
             val newSummary = if (listener != null) {
@@ -201,7 +209,7 @@ class ExecutiveSummaryManager(private val app: NodeApp) {
             } else {
                 callLlm(NOTIFICATION_SYSTEM_PROMPT, prompt)
             }
-            Log.i(TAG, "generateAndStoreForNotification: LLM returned ${newSummary.length} chars: ${newSummary.take(300)}")
+            Log.i(TAG, "generateAndStoreForNotification: LLM returned ${newSummary.length} chars")
             if (newSummary.isNotBlank()) {
                 writeSummaryToService(newSummary)
                 listener?.onComplete(newSummary)
@@ -234,7 +242,7 @@ class ExecutiveSummaryManager(private val app: NodeApp) {
         val wireModelId = resolveSummaryModelId(provider, modelId)
         val augmentedPrompt = augmentPromptWithDismissals(systemPrompt)
 
-        Log.i(TAG, "callLlm: model=$wireModelId, provider=$provider, useSame=$useSameModel, userMsg=${userMessage.take(150)}")
+        Log.i(TAG, "callLlm: model=$wireModelId, provider=$provider, useSame=$useSameModel, userMsg=${userMessage.length} chars")
 
         val request = MessagesRequest(
             model = wireModelId,
@@ -323,6 +331,9 @@ class ExecutiveSummaryManager(private val app: NodeApp) {
             }
         })
 
+        // The stream has ended. A client that returned without calling back would leave this
+        // waiting for good, and with summaries one at a time, every later summary behind it.
+        if (!completable.isCompleted) completable.complete(fullText.toString().trim())
         return completable.await()
     }
 

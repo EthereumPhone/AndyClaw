@@ -86,8 +86,10 @@ class PredictedContextRepository(
      * The row an earlier key rule filed this under, if there is one.
      *
      * Only dated keys (`flight:LH400:2026-09-01`) and only the same thing on either side of
-     * the date: a start within 12 h, or 36 h when either side knows only the day. A flight
-     * number flies once a day, so two precise times further apart than that are two flights.
+     * the date: a start within 12 h, or the same local day when either side knows only the day.
+     * A flight number flies once a day, so two precise times further apart than that are two
+     * flights — and a day-only boarding pass for tomorrow is tomorrow's flight: the 36 h window
+     * this used folded it, barcode and all, into today's card.
      */
     private suspend fun adoptable(context: PredictedContext): PredictedContextEntity? {
         val prefix = datedKeyPrefix(context.sourceKey) ?: return null
@@ -97,12 +99,17 @@ class PredictedContextRepository(
             .filter { it.sourceKey != context.sourceKey && datedKeyPrefix(it.sourceKey) == prefix }
             .map { it to abs(it.startMs - context.startMs) }
             .filter { (row, distance) ->
-                val window = if (incomingDateOnly || isDateOnly(row.payloadJson, row.startMs)) 36 * HOUR else 12 * HOUR
-                distance <= window
+                if (incomingDateOnly || isDateOnly(row.payloadJson, row.startMs)) {
+                    localDay(row.startMs) == localDay(context.startMs)
+                } else {
+                    distance <= 12 * HOUR
+                }
             }
             .minByOrNull { it.second }
             ?.first
     }
+
+    private fun localDay(ms: Long) = Instant.ofEpochMilli(ms).atZone(zone()).toLocalDate()
 
     /**
      * Whether a row knows only its day. Rows this build wrote say so; an older build's rows

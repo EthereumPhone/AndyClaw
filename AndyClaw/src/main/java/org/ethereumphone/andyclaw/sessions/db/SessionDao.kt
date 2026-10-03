@@ -37,6 +37,9 @@ interface SessionDao {
     @Query("SELECT * FROM sessions WHERE id = :sessionId")
     suspend fun getSession(sessionId: String): SessionEntity?
 
+    @Query("SELECT * FROM sessions WHERE id = :sessionId")
+    fun observeSession(sessionId: String): Flow<SessionEntity?>
+
     @Query("SELECT * FROM sessions WHERE agentId = :agentId ORDER BY updatedAt DESC")
     fun observeSessionsByAgent(agentId: String): Flow<List<SessionEntity>>
 
@@ -224,6 +227,21 @@ interface SessionDao {
     suspend fun resetSessionTransactional(sessionId: String, updatedAt: Long) {
         deleteMessages(sessionId)
         resetSession(sessionId, updatedAt)
+    }
+
+    /**
+     * Appends [message] after the session's last one, first putting [shell] back if the session
+     * row is gone. Messages carry a foreign key on their session, so a write for a conversation
+     * deleted meanwhile (from the list, by a restore) failed with a constraint error that crashed
+     * the writer. One transaction, so two writers cannot take the same index either.
+     */
+    @Transaction
+    suspend fun appendMessage(shell: SessionEntity, message: SessionMessageEntity): SessionMessageEntity {
+        insertSessionIfAbsent(shell)
+        val appended = message.copy(orderIndex = getMessageCount(message.sessionId))
+        insertMessage(appended)
+        updateSessionTimestamp(message.sessionId, message.timestamp)
+        return appended
     }
 
     // ── Backup / Restore ────────────────────────────────────────────

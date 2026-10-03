@@ -71,6 +71,9 @@ class LauncherBindingService : Service() {
     companion object {
         private const val TAG = "LauncherBindingService"
 
+        /** The agent wallet address as last verified, for answering offline. */
+        private const val AGENT_WALLET_CACHE_KEY = "agent.wallet.cachedAddress"
+
         /**
          * Callers let in by name alone: `agentbench/`'s client, which drives this service over the
          * launcher's own contract on an emulator. Debug builds only: the shipped APK is a release
@@ -869,33 +872,32 @@ class LauncherBindingService : Service() {
             val app = application as? NodeApp ?: return null
             val prefs = app.securePrefs
 
-            // The agent wallet address is counterfactual/deterministic — once
-            // known it never changes. Cache it so we never need an RPC again.
+            // The agent wallet address is counterfactual/deterministic: once known it does not
+            // change while its key lives, so it is cached and answered at once — offline too.
             //
-            // This also fixes a crash: SubWalletSDK.getAddress() performs the
-            // Alchemy eth_call on its OWN internal coroutine scope, so a network
-            // failure there throws UNCAUGHT — our try/catch below cannot see it,
-            // and it kills the whole AndyClaw process. (Repro: open dGent
-            // settings while offline.) So: return the cached value if we have
-            // one, and only ever touch the SDK when we're actually online.
-            val cacheKey = "agent.wallet.cachedAddress"
-            prefs.getString(cacheKey)?.takeIf { it.isNotBlank() }?.let { return it }
+            // The address comes from the agent wallet's own integrity check, never from a
+            // SubWalletSDK built here: the SDK's constructor runs an RPC nothing can catch (it
+            // killed the process offline), and on a keystore hiccup it replaces the key. And the
+            // cache is checked behind the answer, once a process: a key that is gone or replaced
+            // drops it, so the home screen stops showing an address nothing can spend from.
+            val cacheKey = AGENT_WALLET_CACHE_KEY
+            prefs.getString(cacheKey)?.takeIf { it.isNotBlank() }?.let { cached ->
+                scope.launch { reconcileAgentWalletCache(app) }
+                return cached
+            }
             if (!isOnline()) return null
 
             return runBlocking(Dispatchers.IO) {
                 try {
-                    val sdk = org.ethereumphone.subwalletsdk.SubWalletSDK(
-                        context = this@LauncherBindingService,
-                        web3jInstance = org.web3j.protocol.Web3j.build(
-                            org.web3j.protocol.http.HttpService(
-                                "https://eth-mainnet.g.alchemy.com/v2/${org.ethereumphone.andyclaw.BuildConfig.ALCHEMY_API}"
-                            )
-                        ),
-                        bundlerRPCUrl = "https://api.pimlico.io/v2/1/rpc?apikey=${org.ethereumphone.andyclaw.BuildConfig.BUNDLER_API}",
-                    )
-                    val addr = sdk.getAddress()
-                    if (!addr.isNullOrBlank()) prefs.putString(cacheKey, addr)
-                    addr
+                    val integrity = app.agentWalletRepository.checkIntegrity()
+                    if (integrity is org.ethereumphone.andyclaw.agentwallet.WalletIntegrity.Ok) {
+                        prefs.putString(cacheKey, integrity.address)
+                        agentWalletCacheChecked.set(true)
+                        integrity.address
+                    } else {
+                        Log.w(TAG, "Agent wallet address withheld: ${integrity::class.simpleName}")
+                        null
+                    }
                 } catch (_: Exception) { null }
             }
         }
@@ -1209,6 +1211,9 @@ class LauncherBindingService : Service() {
         override fun getPredictedCards(limit: Int): String {
             enforceCallerIsLauncher()
             val app = application as? NodeApp ?: return "[]"
+            // Only ingestion makes cards, and the user turned it off: none are shown, whatever
+            // a forget racing an ingest may have left behind.
+            if (!app.securePrefs.ambientIngestEnabled.value) return "[]"
             val n = limit.coerceIn(1, 100)
             // Someone is looking at the home screen: a presence signal for ambient ingestion.
             app.onAmbientPresence()
@@ -1519,6 +1524,36 @@ class LauncherBindingService : Service() {
         }
     }
 
+    /** Set once this process has checked the cached agent wallet address against its key. */
+    private val agentWalletCacheChecked = AtomicBoolean(false)
+
+    /**
+     * Checks the cached agent wallet address once a process: a verified address replaces a cache
+     * that disagrees with it, and a key that is gone or replaced drops the cache. An unverifiable
+     * one (offline, a keystore hiccup) is tried again on the next ask.
+     */
+    private suspend fun reconcileAgentWalletCache(app: NodeApp) {
+        if (!agentWalletCacheChecked.compareAndSet(false, true)) return
+        try {
+            when (val integrity = app.agentWalletRepository.checkIntegrity()) {
+                is org.ethereumphone.andyclaw.agentwallet.WalletIntegrity.Ok -> {
+                    if (!integrity.address.equals(app.securePrefs.getString(AGENT_WALLET_CACHE_KEY), ignoreCase = true)) {
+                        Log.w(TAG, "Cached agent wallet address disagreed with the verified one; replaced")
+                        app.securePrefs.putString(AGENT_WALLET_CACHE_KEY, integrity.address)
+                    }
+                }
+                is org.ethereumphone.andyclaw.agentwallet.WalletIntegrity.Unknown -> agentWalletCacheChecked.set(false)
+                else -> {
+                    Log.e(TAG, "Agent wallet key is gone or replaced; no longer showing its cached address")
+                    app.securePrefs.remove(AGENT_WALLET_CACHE_KEY)
+                }
+            }
+        } catch (e: Exception) {
+            org.ethereumphone.andyclaw.ExecutionEngine.rethrowIfCancelled(e)
+            agentWalletCacheChecked.set(false)
+        }
+    }
+
     /** True only when there's a validated internet-capable active network.
      *  Used to avoid kicking off RPC calls (and the SDK's crash-prone internal
      *  coroutine) while offline. */
@@ -1757,6 +1792,8 @@ class LauncherBindingService : Service() {
         } else {
             app.securePrefs.enabledSkills.value
         }
+        // Start the likely app while the model plans; never for a confidential or on-device model.
+        val turnRoute = app.jevTurnRouter?.prewarm(prompt, client)
         val agentLoop = AgentLoop(
             client = client,
             skillRegistry = registry,
@@ -1782,6 +1819,7 @@ class LauncherBindingService : Service() {
             // others.
             ledger = app.agentLedger(sessionId),
             toolPrefetch = app.jevToolPrefetch,
+            routedApp = { turnRoute?.app },
         )
 
         // The conversation so far: in memory, or rebuilt from what was stored (after a restart).
@@ -1981,7 +2019,6 @@ class LauncherBindingService : Service() {
             }
         }
 
-        app.jevTurnRouter?.prewarm(prompt)
         agentLoop.run(prompt, history, wrappedCallbacks)
 
         // Both messages into the context for the next call in this session, and into Room.

@@ -57,4 +57,13 @@ class FlowDispatchTest {
             assertTrue(of(answer).mayHaveHappened)
         }
     }
+
+    @Test
+    fun `a refusal by the STOP latch is told apart`() {
+        assertTrue(FlowDispatch.refusedByStop("""{"ok":false,"error":"stopped"}"""))
+        assertFalse(FlowDispatch.refusedByStop("""{"ok":false,"error":"busy"}"""))
+        assertFalse(FlowDispatch.refusedByStop("""{"ok":true,"method":"a11y"}"""))
+        assertFalse(FlowDispatch.refusedByStop("not json"))
+        assertFalse(FlowDispatch.refusedByStop(null))
+    }
 }

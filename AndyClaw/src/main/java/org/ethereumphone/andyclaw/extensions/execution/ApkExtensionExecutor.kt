@@ -10,6 +10,10 @@ import android.net.Uri
 import android.os.Bundle
 import android.os.IBinder
 import android.os.Parcel
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.Json
@@ -66,8 +70,14 @@ class ApkExtensionExecutor(
         const val TRANSACTION_EXECUTE = 2
     }
 
-    /** Active service connections keyed by package name. */
-    private val activeConnections = mutableMapOf<String, ServiceConnection>()
+    /** Active service connections, one per call in flight (package name + a call id). */
+    private val activeConnections = java.util.concurrent.ConcurrentHashMap<String, ServiceConnection>()
+
+    /**
+     * Where a bound extension's transact runs. A binder call blocks its thread and no coroutine
+     * timeout reaches into it, so the call waits here and the caller waits only until its deadline.
+     */
+    private val transactScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     // ── Public API ───────────────────────────────────────────────────
 
@@ -121,15 +131,15 @@ class ApkExtensionExecutor(
         timeoutMs: Long,
     ): ExtensionResult {
         val packageName = descriptor.packageName!!
+        val key = "$packageName#${java.util.UUID.randomUUID()}"
 
         return try {
             val binder = withTimeout(timeoutMs) {
-                bindToService(packageName)
+                bindToService(packageName, key)
             } ?: return ExtensionResult.Error("Failed to bind to service for ${descriptor.id}")
 
-            val result = withTimeout(timeoutMs) {
-                transactExecute(binder, function, params.toString())
-            }
+            val call = transactScope.async { transactExecute(binder, function, params.toString()) }
+            val result = withTimeout(timeoutMs) { call.await() }
 
             if (result != null) {
                 ExtensionResult.Success(result)
@@ -139,14 +149,19 @@ class ApkExtensionExecutor(
         } catch (e: kotlinx.coroutines.TimeoutCancellationException) {
             ExtensionResult.Timeout(timeoutMs)
         } catch (e: Exception) {
+            // STOP ends the wait as a cancel, not as an extension's error.
+            org.ethereumphone.andyclaw.ExecutionEngine.rethrowIfCancelled(e)
             ExtensionResult.Error("Bound service invocation failed: ${e.message}", e)
+        } finally {
+            // One call, one binding, let go when the call ends: kept, every call added another.
+            unbindService(key)
         }
     }
 
     /**
      * Bind to the extension's service and suspend until connected.
      */
-    private suspend fun bindToService(packageName: String): IBinder? {
+    private suspend fun bindToService(packageName: String, key: String): IBinder? {
         return suspendCancellableCoroutine { cont ->
             val intent = Intent(ApkExtensionScanner.ACTION_EXTENSION_SERVICE).apply {
                 setPackage(packageName)
@@ -154,23 +169,33 @@ class ApkExtensionExecutor(
 
             val connection = object : ServiceConnection {
                 override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
-                    cont.resume(service)
+                    // Called again when the extension's process restarts under BIND_AUTO_CREATE:
+                    // resuming twice threw on the main thread and took AndyClaw down with it.
+                    if (cont.isActive) cont.resume(service)
                 }
 
                 override fun onServiceDisconnected(name: ComponentName?) {
                     // Connection lost after successful bind — handled at call site
                 }
+
+                override fun onBindingDied(name: ComponentName?) {
+                    if (cont.isActive) cont.resume(null)
+                }
+
+                override fun onNullBinding(name: ComponentName?) {
+                    if (cont.isActive) cont.resume(null)
+                }
             }
 
-            activeConnections[packageName] = connection
+            activeConnections[key] = connection
             val bound = context.bindService(intent, connection, Context.BIND_AUTO_CREATE)
 
             if (!bound) {
-                activeConnections.remove(packageName)
-                cont.resume(null)
+                unbindService(key)
+                if (cont.isActive) cont.resume(null)
             }
 
-            cont.invokeOnCancellation { unbindService(packageName) }
+            cont.invokeOnCancellation { unbindService(key) }
         }
     }
 
@@ -197,8 +222,8 @@ class ApkExtensionExecutor(
         }
     }
 
-    private fun unbindService(packageName: String) {
-        activeConnections.remove(packageName)?.let {
+    private fun unbindService(key: String) {
+        activeConnections.remove(key)?.let {
             try {
                 context.unbindService(it)
             } catch (_: Exception) { /* already unbound */ }
@@ -251,7 +276,10 @@ class ApkExtensionExecutor(
         return try {
             withTimeout(timeoutMs) {
                 suspendCancellableCoroutine { cont ->
-                    val responseAction = "${packageName}.andyclaw.EXTENSION_RESPONSE"
+                    // The reply comes from another app, so the receiver must be exported — which a
+                    // NOT_EXPORTED one never was, so every call timed out. The action is unguessable
+                    // and goes only to the extension (setPackage below), so only it can answer.
+                    val responseAction = "${packageName}.andyclaw.EXTENSION_RESPONSE.${java.util.UUID.randomUUID()}"
 
                     val receiver = object : BroadcastReceiver() {
                         override fun onReceive(ctx: Context?, intent: Intent?) {
@@ -264,7 +292,8 @@ class ApkExtensionExecutor(
                                 else -> ExtensionResult.Error("Empty broadcast response")
                             }
 
-                            cont.resume(result)
+                            // A second reply must not resume it twice: that throws on the main thread.
+                            if (cont.isActive) cont.resume(result)
                             try { context.unregisterReceiver(this) } catch (_: Exception) {}
                         }
                     }
@@ -273,7 +302,7 @@ class ApkExtensionExecutor(
                     context.registerReceiver(
                         receiver,
                         IntentFilter(responseAction),
-                        Context.RECEIVER_NOT_EXPORTED,
+                        Context.RECEIVER_EXPORTED,
                     )
 
                     // Fire the request
@@ -293,6 +322,7 @@ class ApkExtensionExecutor(
         } catch (e: kotlinx.coroutines.TimeoutCancellationException) {
             ExtensionResult.Timeout(timeoutMs)
         } catch (e: Exception) {
+            org.ethereumphone.andyclaw.ExecutionEngine.rethrowIfCancelled(e)
             ExtensionResult.Error("Broadcast invocation failed: ${e.message}", e)
         }
     }

@@ -66,8 +66,10 @@ fun parseAskUserInput(input: JsonObject): AskUserRequest {
         val questions = questionsElement.map { element ->
             val obj = element.jsonObject
             val optionsElement = obj["options"]
+            // Each option once: the dialog keys its rows by the option, and a repeated one
+            // ("Yes", "Yes") threw on the main thread and took the app down.
             val options = if (optionsElement is JsonArray) {
-                optionsElement.map { it.jsonPrimitive.content }
+                optionsElement.map { it.jsonPrimitive.content }.distinct()
             } else emptyList()
             AskUserQuestion(
                 question = obj["question"]?.jsonPrimitive?.contentOrNull ?: "",

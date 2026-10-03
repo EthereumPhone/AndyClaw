@@ -179,6 +179,50 @@ class LeakDetector(
             return false
         }
 
+        /**
+         * [text] with what [holdsKeyMaterial] looks for blanked out: every 32-byte hex run and
+         * every whole recovery-phrase run. For text that is kept and shown, like a turn's request
+         * in the ledger. A transaction hash is blanked too; the text cannot tell it from a key.
+         */
+        fun redactKeyMaterial(text: String): String {
+            val ranges = RAW_32_BYTE_HEX.findAll(text).map { it.range }.toList() + recoveryPhraseRuns(text)
+            if (ranges.isEmpty()) return text
+            val sb = StringBuilder(text)
+            var nextStart = Int.MAX_VALUE
+            for (r in ranges.sortedByDescending { it.first }) {
+                val end = minOf(r.last + 1, nextStart)
+                if (end > r.first) sb.replace(r.first, end, "[REDACTED]")
+                nextStart = minOf(nextStart, r.first)
+            }
+            return sb.toString()
+        }
+
+        /**
+         * Where [containsRecoveryPhrase] finds its runs, first word to last. An escaped line break
+         * becomes two spaces rather than one, so the offsets stay those of [text].
+         */
+        private fun recoveryPhraseRuns(text: String): List<IntRange> {
+            val t = text.replace(JSON_WHITESPACE_ESCAPE, "  ")
+            val runs = mutableListOf<IntRange>()
+            var run = 0
+            var runStart = 0
+            var lastEnd = -1
+            for (m in WORD.findAll(t)) {
+                val inList = m.value.lowercase() in Bip39English.WORDS
+                val joined = lastEnd >= 0 && BETWEEN_PHRASE_WORDS.matches(t.substring(lastEnd, m.range.first))
+                if (!inList || !joined || run == 0) {
+                    if (run >= MIN_PHRASE_WORDS) runs += runStart until lastEnd
+                    run = if (inList) 1 else 0
+                    runStart = m.range.first
+                } else {
+                    run++
+                }
+                lastEnd = m.range.last + 1
+            }
+            if (run >= MIN_PHRASE_WORDS) runs += runStart until lastEnd
+            return runs
+        }
+
         fun defaultPatterns(): List<LeakPattern> = listOf(
             LeakPattern(
                 name = "openai_api_key",

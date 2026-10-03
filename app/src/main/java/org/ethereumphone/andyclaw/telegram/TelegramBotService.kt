@@ -68,11 +68,18 @@ class TelegramBotService(
 
         while (true) {
             try {
-                val updates = client.getUpdates(offset)
+                // A failed poll comes back at once (no network, a 401, a 409 from a second
+                // poller): without the wait it was a tight request loop draining the battery.
+                val updates = client.getUpdatesOrNull(offset)
+                if (updates == null) {
+                    Log.w(TAG, "Poll failed, retrying in ${retryDelay}ms")
+                    delay(retryDelay)
+                    retryDelay = (retryDelay * 2).coerceAtMost(MAX_RETRY_DELAY_MS)
+                    continue
+                }
+                retryDelay = RETRY_DELAY_MS
 
                 if (updates.isNotEmpty()) {
-                    retryDelay = RETRY_DELAY_MS
-
                     for (update in updates) {
                         offset = update.updateId + 1
                         scope.launch { handleUpdate(update) }

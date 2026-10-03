@@ -87,6 +87,13 @@ class SessionManager(
     }
 
     /**
+     * Reactive [Flow] of one session; emits null once it is deleted.
+     */
+    fun observeSession(sessionId: String): Flow<Session?> {
+        return repository.observeSession(sessionId)
+    }
+
+    /**
      * Reactive [Flow] of all sessions for this agent, newest first.
      */
     fun observeSessions(): Flow<List<Session>> {
@@ -181,7 +188,7 @@ class SessionManager(
         toolName: String? = null,
         toolCallId: String? = null,
     ): SessionMessage {
-        return repository.addMessage(sessionId, role, content, toolName, toolCallId)
+        return repository.addMessage(sessionId, role, content, toolName, toolCallId, agentId)
     }
 
     /**

@@ -42,6 +42,10 @@ class OpenAiNativeClient(
     private val isOpenAiApi: Boolean
         get() = baseUrl.contains("api.openai.com", ignoreCase = true)
 
+    /** Servers documented to take `stream_options`; a user's own server is not asked. */
+    private val asksStreamUsage: Boolean
+        get() = isOpenAiApi || baseUrl.contains("api.venice.ai", ignoreCase = true)
+
     companion object {
         private const val TAG = "OpenAiNativeClient"
         private val JSON_MEDIA_TYPE = "application/json".toMediaType()
@@ -95,7 +99,11 @@ class OpenAiNativeClient(
         request: MessagesRequest,
         callback: StreamingCallback,
     ) = withContext(Dispatchers.IO) {
-        val openAiJson = OpenAiFormatAdapter.toOpenAiRequestJson(request.copy(stream = true), useMaxCompletionTokens = isOpenAiApi)
+        val openAiJson = OpenAiFormatAdapter.toOpenAiRequestJson(
+            request.copy(stream = true),
+            useMaxCompletionTokens = isOpenAiApi,
+            includeUsage = asksStreamUsage,
+        )
         Log.d(TAG, "streamMessage: model=${request.model}, messages=${request.messages.size}")
 
         val httpRequest = buildRequest(openAiJson)

@@ -58,18 +58,32 @@ class GmailIngestSource(
         if (!isAuthenticated()) return@withContext SourceResult.Unavailable(IngestProblem.NO_ACCOUNT)
         val session = GoogleSession(getAccessToken, invalidateToken, client, TAG)
 
-        val url = "$BASE_URL/messages?q=${java.net.URLEncoder.encode(query, "UTF-8")}" +
-            "&maxResults=${maxResults.coerceIn(1, HARD_MAX_RESULTS)}"
-        val listing = when (val r = session.get(url)) {
-            is GoogleSession.Response.Ok -> r.body
-            is GoogleSession.Response.Unavailable -> return@withContext SourceResult.Unavailable(r.problem, r.detail)
-        }
-        val root = runCatching { json.parseToJsonElement(listing) as? JsonObject }.getOrNull()
-        val ids = (root?.get("messages") as? JsonArray).orEmpty().mapNotNull { (it as? JsonObject)?.str("id") }
+        val limit = maxResults.coerceIn(1, HARD_MAX_RESULTS)
+        // Mail read before takes the listing's slots too, so page on, a few pages at most,
+        // until there are [limit] fresh ones: with one page, once the newest were all read the
+        // older unread ones were never reached.
+        val fresh = LinkedHashSet<String>()
+        var pageToken: String? = null
+        var pages = 0
+        do {
+            val url = "$BASE_URL/messages?q=${java.net.URLEncoder.encode(query, "UTF-8")}" +
+                "&maxResults=$limit" +
+                (pageToken?.let { "&pageToken=${java.net.URLEncoder.encode(it, "UTF-8")}" } ?: "")
+            val listing = when (val r = session.get(url)) {
+                is GoogleSession.Response.Ok -> r.body
+                is GoogleSession.Response.Unavailable ->
+                    if (pages == 0) return@withContext SourceResult.Unavailable(r.problem, r.detail) else break
+            }
+            val root = runCatching { json.parseToJsonElement(listing) as? JsonObject }.getOrNull()
+            val ids = (root?.get("messages") as? JsonArray).orEmpty().mapNotNull { (it as? JsonObject)?.str("id") }
+            ids.filterNotTo(fresh, alreadySeen)
+            pageToken = root?.str("nextPageToken")
+            pages++
+        } while (pageToken != null && fresh.size < limit && pages < MAX_LIST_PAGES)
 
-        val fresh = ids.filterNot(alreadySeen)
-        val messages = fresh.mapNotNull { id -> runCatching { getMessage(session, id) }.getOrNull() }
-        SourceResult.Fetched(messages, complete = messages.size == fresh.size && messages.all { it.complete })
+        val wanted = fresh.take(limit)
+        val messages = wanted.mapNotNull { id -> runCatching { getMessage(session, id) }.getOrNull() }
+        SourceResult.Fetched(messages, complete = messages.size == wanted.size && messages.all { it.complete })
     }
 
     // ── Gmail API ─────────────────────────────────────────────────────
@@ -132,7 +146,8 @@ class GmailIngestSource(
             val bytes = decodeUrlBase64(inline)
             if (bytes != null) {
                 into += if (mime.startsWith("text/")) {
-                    MailPart(mime, filename, text = String(bytes, Charsets.UTF_8))
+                    // Bounded like an attachment: an inline body is whatever size the sender made it.
+                    MailPart(mime, filename, text = String(bytes, 0, minOf(bytes.size, MAX_TEXT_BYTES), Charsets.UTF_8))
                 } else {
                     MailPart(mime, filename, bytes = bytes)
                 }
@@ -209,6 +224,8 @@ class GmailIngestSource(
         private const val MAX_MIME_DEPTH = 8
         private const val MAX_PARTS = 40
         private const val MAX_ATTACHMENT_BYTES = 8L * 1024 * 1024
+        private const val MAX_TEXT_BYTES = 1024 * 1024
+        private const val MAX_LIST_PAGES = 4
 
         fun defaultClient(): OkHttpClient = OkHttpClient.Builder()
             .connectTimeout(15, TimeUnit.SECONDS)

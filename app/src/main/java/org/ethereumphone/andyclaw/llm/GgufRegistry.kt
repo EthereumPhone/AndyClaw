@@ -31,6 +31,9 @@ class GgufRegistry(
     companion object {
         private const val TAG = "GgufRegistry"
         private const val BUFFER_SIZE = 8 * 1024
+        private const val TMP_SUFFIX = ".tmp"
+        /** Every GGUF file starts with these four bytes. */
+        private val GGUF_MAGIC = "GGUF".toByteArray(Charsets.US_ASCII)
     }
 
     private val modelsDir: File = File(context.filesDir, "models").also { it.mkdirs() }
@@ -38,7 +41,15 @@ class GgufRegistry(
     private val _models = MutableStateFlow<List<GgufModel>>(emptyList())
     val models: StateFlow<List<GgufModel>> = _models.asStateFlow()
 
-    init { refresh() }
+    init {
+        // An import cut short by a process death leaves its .tmp behind, as large as the model.
+        // Not the default download's: ModelDownloadManager may be writing that one right now.
+        modelsDir.listFiles { f ->
+            f.isFile && f.name.endsWith(".gguf$TMP_SUFFIX", ignoreCase = true) &&
+                f.name != "$builtinFilename$TMP_SUFFIX"
+        }?.forEach { it.delete() }
+        refresh()
+    }
 
     /** Re-scan `filesDir/models/` and update [models]. Builtin entry sorts first. */
     fun refresh() {
@@ -67,12 +78,11 @@ class GgufRegistry(
             val origName = queryDisplayName(uri) ?: "imported-${System.currentTimeMillis()}.gguf"
             val safeName = ensureGgufExtension(sanitize(origName))
             val dest = uniqueDest(safeName)
-            context.contentResolver.openInputStream(uri)?.use { input ->
-                dest.outputStream().use { output -> input.copyTo(output, BUFFER_SIZE) }
-            } ?: error("openInputStream returned null for $uri")
-            Log.i(TAG, "imported gguf: ${dest.name} (${dest.length()} bytes)")
-            refresh()
-            _models.value.firstOrNull { it.filename == dest.name }
+            installCopy(dest) { tmp ->
+                context.contentResolver.openInputStream(uri)?.use { input ->
+                    tmp.outputStream().use { output -> input.copyTo(output, BUFFER_SIZE) }
+                } ?: error("openInputStream returned null for $uri")
+            }.also { Log.i(TAG, "imported gguf: ${dest.name} (${dest.length()} bytes)") }
         } catch (e: Exception) {
             Log.e(TAG, "import failed for $uri", e)
             null
@@ -82,29 +92,48 @@ class GgufRegistry(
     /**
      * Copy a GGUF from an open file descriptor (cross-process import from the
      * launcher via AIDL) into `filesDir/models/<filename>`, then refresh.
-     * Synchronous — call off the main thread. Writes to a `.tmp` first and
-     * renames on full-copy success so a cancelled/half copy never appears in
-     * the registry. Returns the new entry, or null on failure.
+     * Synchronous — call off the main thread. Returns the new entry, or null on failure.
      */
     fun importFromFd(fd: android.os.ParcelFileDescriptor, displayName: String): GgufModel? {
         return try {
             val safeName = ensureGgufExtension(sanitize(displayName))
             val dest = uniqueDest(safeName)
-            val tmp = File(dest.parentFile, "${dest.name}.tmp")
-            java.io.FileInputStream(fd.fileDescriptor).use { input ->
-                tmp.outputStream().use { output -> input.copyTo(output, BUFFER_SIZE) }
-            }
-            if (!tmp.renameTo(dest)) {
-                tmp.delete()
-                error("rename ${tmp.name} -> ${dest.name} failed")
-            }
-            Log.i(TAG, "imported gguf (fd): ${dest.name} (${dest.length()} bytes)")
-            refresh()
-            _models.value.firstOrNull { it.filename == dest.name }
+            installCopy(dest) { tmp ->
+                java.io.FileInputStream(fd.fileDescriptor).use { input ->
+                    tmp.outputStream().use { output -> input.copyTo(output, BUFFER_SIZE) }
+                }
+            }.also { Log.i(TAG, "imported gguf (fd): ${dest.name} (${dest.length()} bytes)") }
         } catch (e: Exception) {
             Log.e(TAG, "importFromFd failed", e)
             null
         }
+    }
+
+    /**
+     * Copies through [copy] into a `.tmp` beside [dest], and renames it into place only once
+     * the copy has finished and the file starts with the GGUF magic. A half copy, or a file
+     * that is not a model at all, never reaches the list — where the import would select it
+     * and hand it to llama.cpp — and never stays on disk.
+     */
+    private fun installCopy(dest: File, copy: (File) -> Unit): GgufModel? {
+        val tmp = File(dest.parentFile, "${dest.name}$TMP_SUFFIX")
+        try {
+            copy(tmp)
+            check(hasGgufMagic(tmp)) { "${dest.name} is not a GGUF file" }
+            check(tmp.renameTo(dest)) { "rename ${tmp.name} -> ${dest.name} failed" }
+        } finally {
+            tmp.delete()
+        }
+        refresh()
+        return _models.value.firstOrNull { it.filename == dest.name }
+    }
+
+    private fun hasGgufMagic(file: File): Boolean = try {
+        java.io.RandomAccessFile(file, "r").use { raf ->
+            ByteArray(GGUF_MAGIC.size).also { raf.readFully(it) }.contentEquals(GGUF_MAGIC)
+        }
+    } catch (_: java.io.IOException) {
+        false
     }
 
     /**

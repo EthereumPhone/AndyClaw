@@ -1,6 +1,7 @@
 package org.ethereumphone.andyclaw.flows
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -105,5 +106,16 @@ class NodeTreeChecksumTest {
         assertTrue(NodeTreeChecksum.ofV2(tree).startsWith(NodeTreeChecksum.V2_PREFIX))
         assertEquals(NodeTreeChecksum.ofV2(tree), NodeTreeChecksum.matching("2:abc", tree))
         assertEquals(NodeTreeChecksum.of(tree), NodeTreeChecksum.matching("abc", tree))
+    }
+
+    @Test
+    fun `an error answer is no screen, an empty screen is one`() {
+        assertTrue(NodeTreeChecksum.isScreen("""{"screen":{"package":"com.msg"},"elements":[]}"""))
+        assertTrue(NodeTreeChecksum.isScreen("""{"screen":{},"elements":[],"scrollable":false}"""))
+        assertTrue("the legacy format without interactive elements", NodeTreeChecksum.isScreen("""{"windows":[]}"""))
+        assertFalse(NodeTreeChecksum.isScreen("""{"error":"AccessibilityService not connected."}"""))
+        assertFalse(NodeTreeChecksum.isScreen("""{"ok":false,"error":"timeout","outcome":"unknown"}"""))
+        assertFalse(NodeTreeChecksum.isScreen("not json"))
+        assertFalse(NodeTreeChecksum.isScreen(null))
     }
 }

@@ -46,6 +46,8 @@ object PredictedContextPayload {
     const val OBSERVED_MS = "observed_ms"
     /** Mail whose DKIM signature passed, aligned with its From domain. False for everything else. */
     const val AUTHENTICATED = "authenticated"
+    /** The From domain an authenticated mail proved. Absent for everything else. */
+    const val FROM_DOMAIN = "from_domain"
     /** One of [TimePrecision.wire]. */
     const val TIME_PRECISION = "time_precision"
     /** True when only the day is known; the card spans that whole local day. */
@@ -100,6 +102,16 @@ object PredictedContextPayload {
         val t = p.long("departure_ms") ?: startMs.takeIf { it > 0 } ?: return null
         val local = java.time.Instant.ofEpochMilli(t).atZone(zone).toLocalTime()
         return if (local == java.time.LocalTime.MIDNIGHT) null else TimePrecision.EXACT
+    }
+
+    /**
+     * Whether two proven From domains are one sender: equal, or one a subdomain of the other.
+     * Either unknown (a calendar, unsigned mail, a row from before the key) counts as the same,
+     * so what was allowed before still is.
+     */
+    internal fun sameSender(a: String?, b: String?): Boolean {
+        if (a == null || b == null) return true
+        return a == b || a.endsWith(".$b") || b.endsWith(".$a")
     }
 
     fun JsonObject.str(key: String): String? = (this[key] as? JsonPrimitive)?.contentOrNull
@@ -198,12 +210,17 @@ object PredictedContextPayload {
             // A message older than what the row already reflects cannot change its fate.
             if (iCancelled && !eCancelled && iObserved in 1 until eObserved) return existing
             if (!iCancelled && eCancelled && iObserved <= (pe.long(CANCELLED_MS) ?: eObserved)) return existing
+            // Nor can a mail signed by another domain than the one that wrote the row: proving
+            // who you are is not being the airline, and anyone can sign for a domain of their own.
+            if (iCancelled != eCancelled && !sameSender(pe.str(FROM_DOMAIN), pi.str(FROM_DOMAIN))) return existing
 
             val pE = precision(pe) ?: legacyPrecision(pe, existing.startMs, zone)
             val pI = precision(pi) ?: TimePrecision.EXACT
             keepTimes = pE != null && pI < pE
             payload.putAll(pe)
             for ((k, v) in pi) if (k !in TIME_KEYS) payload[k] = v
+            // The row stays the first signer's, or a second mail from the new one could cancel.
+            pe[FROM_DOMAIN]?.let { payload[FROM_DOMAIN] = it }
             val timeSource = if (keepTimes) pe else pi
             if (keepTimes || precision(pi) != null) {
                 // The time keys travel together, all from the more precise source.

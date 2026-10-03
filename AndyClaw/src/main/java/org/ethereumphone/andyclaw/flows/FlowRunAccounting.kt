@@ -1,5 +1,7 @@
 package org.ethereumphone.andyclaw.flows
 
+import org.ethereumphone.andyclaw.skills.ToolEffect
+
 /**
  * What a replay's outcome means for the flow, and for the task.
  *
@@ -45,4 +47,17 @@ object FlowRunAccounting {
     /** Whether, after [result], the task may be done by the autopilot or the model instead. */
     fun mayFallBack(result: FlowRunResult.Aborted): Boolean =
         !result.committed && result.reason in RETRYABLE_ANOTHER_WAY
+
+    /**
+     * Whether the action at [index] of [flow] commits the flow once it may have gone out: it comes
+     * after a checkpoint (which the replay only passes by crossing it), its target is irreversible,
+     * or it is the flow's last action — a flow that ends on "Save" has done its task there.
+     */
+    fun commitsAt(flow: Flow, index: Int): Boolean {
+        val step = flow.steps.getOrNull(index) ?: return false
+        if (step !is TapStep && step !is TypeStep) return false
+        return flow.steps.take(index).any { it is CheckpointStep } ||
+            FlowStepEffects.of(step).ordinal >= ToolEffect.IRREVERSIBLE.ordinal ||
+            index == flow.steps.indexOfLast { it is TapStep || it is TypeStep }
+    }
 }

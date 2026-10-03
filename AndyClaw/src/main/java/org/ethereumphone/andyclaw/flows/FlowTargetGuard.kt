@@ -21,9 +21,22 @@ object FlowTargetGuard {
 
     /** Semantic types that are controls, so their words describe what tapping them does. */
     internal val CONTROL_TYPES = setOf(
-        "button", "icon_button", "nav_button", "menu_item", "link", "toggle", "checkbox",
-        "radio_button", "tab", "spinner", "text_field", "search_bar",
+        "button", "icon_button", "nav_button", "link", "toggle", "checkbox",
+        "radio_button", "tab", "spinner", "text_field",
     )
+
+    /**
+     * What `ScreenAnalyzer` calls every clickable container with text — a chat, a contact, a search
+     * hit (`search_bar` when its id says search), a settings row. Tappable, but its words are who
+     * or what the row is and a preview of it: content, not a verb. The analyzer's types feed the
+     * flow checksums, so they are read here as they are rather than renamed.
+     */
+    internal val ROW_TYPES = setOf("menu_item", "search_bar")
+
+    /** Whether a node of [type] is a control, whose words say what tapping it does. */
+    internal fun isControl(type: String?): Boolean =
+        type != null && type !in ROW_TYPES &&
+            (type in CONTROL_TYPES || type.endsWith("Button") || type.contains("EditText"))
 
     /** Longer than this, a non-control's label is content (a chat row's preview), not a verb. */
     private const val MAX_CONTROL_WORDS = 4
@@ -42,21 +55,39 @@ object FlowTargetGuard {
     /**
      * Why the live node(s) carrying [viewId] must not be touched, or null: a password field, or
      * a control whose words say payment or sign-in. When [typing], only the field's label, hint
-     * and description count — its value is what is being typed, not what the field is for.
+     * and description count — its value is what is being typed, not what the field is for. A
+     * row is judged by its name alone: its summary is a preview of somebody's message.
      */
     fun sensitiveReason(tree: String?, viewId: String, typing: Boolean): String? {
         for (node in NodeTreeChecksum.nodesWithViewId(tree, viewId)) {
             if ((node["password"] as? JsonPrimitive)?.booleanOrNull == true) return "is a password field"
             val type = node.str("type") ?: node.str("cls")
-            val control = type != null && (type in CONTROL_TYPES || type.endsWith("Button") || type.contains("EditText"))
-            val keys = if (typing) listOf("label", "hint", "desc") else listOf("label", "hint", "desc", "value", "summary", "text")
+            val control = isControl(type)
+            val keys = if (typing || type in ROW_TYPES) listOf("label", "hint", "desc")
+                else listOf("label", "hint", "desc", "value", "summary", "text")
             for (key in keys) {
                 val words = node.str(key) ?: continue
                 // A chat row that says "can you pay me back?" is not a Pay button.
                 if (!control && words.trim().split(WHITESPACE).size > MAX_CONTROL_WORDS) continue
-                if (FlowStepEffects.tokenize(words).any { it in FlowStepEffects.SENSITIVE_TOKENS }) {
+                if (FlowStepEffects.isSensitiveText(words)) {
                     return "now reads \"${words.take(40)}\""
                 }
+            }
+        }
+        return null
+    }
+
+    /**
+     * The words of a live control carrying [viewId] that are written in a script the word lists
+     * cannot read, or null. Nothing here can tell such a button's "Send" from its "Pay", so the
+     * step that commits a replay may not tap it unattended.
+     */
+    fun unreadableControl(tree: String?, viewId: String): String? {
+        for (node in NodeTreeChecksum.nodesWithViewId(tree, viewId)) {
+            if (!isControl(node.str("type") ?: node.str("cls"))) continue
+            for (key in listOf("label", "desc", "hint", "text")) {
+                val words = node.str(key) ?: continue
+                if (FlowStepEffects.unreadable(words)) return words.take(40)
             }
         }
         return null
@@ -88,14 +119,14 @@ object FlowTargetGuard {
      * Narrow on purpose, since a false hit retires a good flow: only non-controls (a button's
      * words are what it does, "Done" is no near miss for "Do"), only the row's name — not a
      * `summary` or `value`, where a chat preview "this is fine" would read as a near miss for a
-     * message "this" — and only word prefixes ("hi" inside "this" is nobody).
+     * message "this" — and only word prefixes ("hi" inside "this" is nobody). [values] are the
+     * ones typed before the tap: only those can have picked the row.
      */
     fun partialValueMatch(tree: String?, viewId: String, values: Collection<String>): String? {
         val wanted = values.map { it.trim() }.filter { it.length >= 2 }
         if (wanted.isEmpty()) return null
         for (node in NodeTreeChecksum.nodesWithViewId(tree, viewId)) {
-            val type = node.str("type") ?: node.str("cls")
-            if (type != null && (type in CONTROL_TYPES || type.endsWith("Button") || type.contains("EditText"))) continue
+            if (isControl(node.str("type") ?: node.str("cls"))) continue
             val texts = listOf("label", "text", "desc").mapNotNull { node.str(it) }
             for (value in wanted) {
                 val prefix = Regex("(?<![\\p{L}\\p{N}])" + Regex.escape(value) + "(?=[\\p{L}\\p{N}])", RegexOption.IGNORE_CASE)

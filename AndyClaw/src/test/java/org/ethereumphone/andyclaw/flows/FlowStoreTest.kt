@@ -102,6 +102,17 @@ class FlowStoreTest {
     }
 
     @Test
+    fun `another app's flow with the same id is neither replaced nor shadowed`() {
+        val s = store()
+        s.install(validFlow(id = "messenger.send_message"))
+        val other = validFlow(id = "messenger.send_message").copy(app = "org.ethereumhpone.messenger")
+        val result = s.install(other)
+        assertTrue(result is FlowInstallResult.Rejected)
+        assertEquals("flow_id_taken", (result as FlowInstallResult.Rejected).errors.single().code)
+        assertEquals(listOf("org.thoughtcrime.securesms"), s.listAll().map { it.flow.app })
+    }
+
+    @Test
     fun `a recompile of the same task under a new id replaces the old flow, and nothing else`() {
         // Autopilot ids gained a hash of the task: the first recompile of an older flow arrives
         // under a new name, and must not leave the old one behind as a second tool for one task.

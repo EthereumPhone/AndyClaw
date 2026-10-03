@@ -3,8 +3,12 @@ package org.ethereumphone.andyclaw.navigation
 import android.util.Log
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
+import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
@@ -16,8 +20,10 @@ import org.ethereumphone.andyclaw.onboarding.OnboardingScreen
 import org.ethereumphone.andyclaw.onboarding.WalletSignScreen
 import org.ethereumphone.andyclaw.skills.tier.OsCapabilities
 import org.ethereumphone.andyclaw.ui.chat.ChatScreen
+import org.ethereumphone.andyclaw.ui.chat.ChatViewModel
 import org.ethereumphone.andyclaw.ui.chat.SessionListScreen
 import org.ethereumphone.andyclaw.ui.clawhub.ClawHubScreen
+import org.ethereumphone.andyclaw.ui.components.ChadAlertDialog
 import org.ethereumphone.andyclaw.ui.heartbeatlogs.HeartbeatLogsScreen
 import org.ethereumphone.andyclaw.ui.settings.AgentDisplayTestScreen
 import org.ethereumphone.andyclaw.ui.settings.SettingsScreen
@@ -92,9 +98,17 @@ fun AppNavigation() {
             val activity = LocalContext.current as? android.app.Activity
             OnboardingScreen(
                 onComplete = {
-                    // Close the app so the user returns to ethOSLauncher's dgent fragment.
-                    // The launcher's onResume() will detect the completed setup.
-                    activity?.finish()
+                    if (OsCapabilities.hasPrivilegedAccess) {
+                        // Close the app so the user returns to ethOSLauncher's dgent fragment.
+                        // The launcher's onResume() will detect the completed setup.
+                        activity?.finish()
+                    } else {
+                        // Stock Android has no launcher fragment to return to: finishing just
+                        // closed the app the user had set up. On to the chat instead.
+                        navController.navigate(Routes.CHAT) {
+                            popUpTo(Routes.ONBOARDING) { inclusive = true }
+                        }
+                    }
                 },
             )
         }
@@ -131,21 +145,58 @@ fun AppNavigation() {
             )
         }
 
-        composable(Routes.SESSIONS) {
+        composable(Routes.SESSIONS) { entry ->
+            // The chat this list was opened over: the only chat on the back stack.
+            val chatEntry = remember(entry) {
+                navController.previousBackStackEntry?.takeIf {
+                    it.destination.route == Routes.CHAT || it.destination.route == Routes.CHAT_WITH_SESSION
+                }
+            }
+            val openChat: ChatViewModel? = chatEntry?.let { viewModel<ChatViewModel>(viewModelStoreOwner = it) }
+            var confirmSwitch by remember { mutableStateOf(false) }
+            var switchTarget by remember { mutableStateOf<String?>(null) }
+            // The old chat goes, ViewModel and all. popUpTo("chat") did nothing once the stack
+            // held "chat/{id}", so each switch left the previous chat alive underneath: a turn
+            // running there drove the phone unseen, and its approvals waited where nobody looked.
+            val switchTo: (String?) -> Unit = { sessionId ->
+                navController.navigate(if (sessionId != null) "chat/$sessionId" else Routes.CHAT) {
+                    chatEntry?.let { popUpTo(it.destination.id) { inclusive = true } }
+                }
+            }
             SessionListScreen(
                 onNavigateToChat = { sessionId ->
-                    if (sessionId != null) {
-                        navController.navigate("chat/$sessionId") {
-                            popUpTo(Routes.CHAT) { inclusive = true }
+                    val current = openChat?.sessionId?.value
+                    val sameChat = openChat != null &&
+                        if (sessionId == null) current == null && openChat.messages.value.isEmpty() else sessionId == current
+                    when {
+                        // The chat underneath is the one picked: back to it as it is.
+                        sameChat -> navController.popBackStack()
+                        // Leaving would end a running turn; say so instead of doing it silently.
+                        openChat?.isStreaming?.value == true -> {
+                            switchTarget = sessionId
+                            confirmSwitch = true
                         }
-                    } else {
-                        navController.navigate(Routes.CHAT) {
-                            popUpTo(Routes.CHAT) { inclusive = true }
-                        }
+                        else -> switchTo(sessionId)
                     }
                 },
                 onNavigateBack = { navController.popBackStack() },
             )
+            if (confirmSwitch) {
+                ChadAlertDialog(
+                    onDismissRequest = { confirmSwitch = false },
+                    title = "Stop the running reply?",
+                    message = "The chat you are leaving is still working. Switching stops it, " +
+                        "and anything it is waiting for you to approve is declined.",
+                    confirmButtonText = "STOP AND SWITCH",
+                    dismissButtonText = "STAY",
+                    onConfirm = {
+                        confirmSwitch = false
+                        openChat?.cancel()
+                        switchTo(switchTarget)
+                    },
+                    onDismiss = { confirmSwitch = false },
+                )
+            }
         }
 
         composable(Routes.SETTINGS) {

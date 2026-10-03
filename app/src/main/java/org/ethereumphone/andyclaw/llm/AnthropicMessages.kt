@@ -140,6 +140,8 @@ sealed class ContentBlock {
     @SerialName("thinking")
     data class ThinkingBlock(
         val thinking: String,
+        /** Anthropic's seal on the block; a tool-use turn sends both back exactly as received. */
+        val signature: String = "",
     ) : ContentBlock()
 
     @Serializable

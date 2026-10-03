@@ -17,6 +17,17 @@ class AutopilotRunContext(
     val modelId: String,
     val onModelCall: () -> Unit = {},
     val events: AutopilotEventSink = AutopilotEventSink { },
+    /** The installed app the turn router chose for this run's request ([JevTurnRouter.Route]); none for a run nobody routed. */
+    val routedApp: () -> String? = { null },
 ) : AbstractCoroutineContextElement(Key) {
     companion object Key : CoroutineContext.Key<AutopilotRunContext>
+}
+
+/**
+ * In the context of a run that must leave the user's compiled flows alone — AndyBench's: the
+ * autopilot neither replays one first nor compiles its run into one. A benchmark that replayed
+ * flows measured replays, and one that compiled them filled the user's store with its tasks.
+ */
+class FlowsOff : AbstractCoroutineContextElement(Key) {
+    companion object Key : CoroutineContext.Key<FlowsOff>
 }

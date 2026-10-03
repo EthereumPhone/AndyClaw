@@ -50,6 +50,7 @@ class MemorySearchManager(
      * @param maxResults Maximum results to return.
      * @param minScore   Drop results below this combined score.
      * @param filterTags If non-null, only include memories carrying ALL of these tags.
+     * @param useVectors False keeps [query] off the embedding provider: keyword-only.
      * @return Ranked list of [MemorySearchResult], best first.
      */
     suspend fun search(
@@ -58,6 +59,7 @@ class MemorySearchManager(
         maxResults: Int = DEFAULT_MAX_RESULTS,
         minScore: Float = DEFAULT_MIN_SCORE,
         filterTags: List<String>? = null,
+        useVectors: Boolean = true,
     ): List<MemorySearchResult> {
         val candidateLimit = maxResults * candidateMultiplier
 
@@ -71,16 +73,14 @@ class MemorySearchManager(
         val keywordHits = runKeywordSearch(query, agentId, allowedMemoryIds)
 
         // ── 2. Vector search (cosine similarity) ───────────────────
-        val vectorHits = runVectorSearch(query, agentId, candidateLimit, allowedMemoryIds)
+        val vectorHits = if (useVectors) {
+            runVectorSearch(query, agentId, candidateLimit, allowedMemoryIds)
+        } else {
+            emptyMap()
+        }
 
-        // ── 3. Merge ───────────────────────────────────────────────
-        val merged = mergeResults(keywordHits, vectorHits)
-
-        // ── 4. Filter & rank ───────────────────────────────────────
-        return merged
-            .filter { it.score >= minScore }
-            .sortedByDescending { it.score }
-            .take(maxResults)
+        // ── 3. Merge, filter & rank ────────────────────────────────
+        return mergeResults(keywordHits, vectorHits, minScore, maxResults)
     }
 
     // ────────────────────────────────────────────────────────────────
@@ -203,6 +203,8 @@ class MemorySearchManager(
     private suspend fun mergeResults(
         keywordHits: Map<Long, ScoredChunk>,
         vectorHits: Map<Long, ScoredChunk>,
+        minScore: Float,
+        maxResults: Int,
     ): List<MemorySearchResult> {
         // Union of all candidate rowIds
         val allRowIds = keywordHits.keys + vectorHits.keys
@@ -226,8 +228,12 @@ class MemorySearchManager(
             val chunk = keywordHits[rowId]?.chunk ?: vectorHits[rowId]!!.chunk
             chunk to combined
         }
+            .filter { (_, score) -> score >= minScore }
+            .sortedByDescending { (_, score) -> score }
+            .take(maxResults)
 
-        // Resolve parent entry metadata
+        // Resolve parent entry metadata — for the results only: OR-ed keywords match nearly
+        // every chunk, and two lookups per hit made a search cost grow with the whole store.
         return scored.map { (chunk, score) ->
             val entry = dao.getEntryById(chunk.memoryId)
             val tags = dao.getEntryWithTags(chunk.memoryId)

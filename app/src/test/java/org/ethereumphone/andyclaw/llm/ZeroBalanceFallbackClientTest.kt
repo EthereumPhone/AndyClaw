@@ -36,9 +36,11 @@ class ZeroBalanceFallbackClientTest {
     ) : LlmClient {
         var sendCalls = 0
         var streamCalls = 0
+        var lastRequest: MessagesRequest? = null
 
         override suspend fun sendMessage(request: MessagesRequest): MessagesResponse {
             sendCalls++
+            lastRequest = request
             failWith?.let { throw it }
             return MessagesResponse(
                 id = id, type = "message", role = "assistant",
@@ -48,6 +50,7 @@ class ZeroBalanceFallbackClientTest {
 
         override suspend fun streamMessage(request: MessagesRequest, callback: StreamingCallback) {
             streamCalls++
+            lastRequest = request
             repeat(tokensBeforeFailure) { callback.onToken("$id$it") }
             failWith?.let { throw it }
             callback.onComplete(
@@ -211,14 +214,33 @@ class ZeroBalanceFallbackClientTest {
     // ── tool budget ───────────────────────────────────────────────────
 
     @Test
-    fun `the tool budget is the smaller of the two`() {
-        // The tool list is built before anyone knows which client will serve the request,
-        // so a fallback must not arrive at a model holding more tools than it can take.
+    fun `the tool budget is the primary's, whether or not a model is on disk`() {
+        // Reporting the local model's 8 cut every background run on a funded gateway down to
+        // 8 tools, the moment the GGUF had been downloaded once.
         val primary = Fake("cloud", maxToolCount = -1)
         val local = Fake("local", maxToolCount = 8)
 
-        assertEquals(8, client(primary, local).maxToolCount)
+        assertEquals(-1, client(primary, local).maxToolCount)
         assertEquals(-1, client(primary, local, localAvailable = false).maxToolCount)
+    }
+
+    @Test
+    fun `only the fallback request is cut to the local model's tools`() = runBlocking {
+        // The local model still must not receive more tools than it can hold.
+        val tools = (1..20).map { JsonObject(mapOf("name" to kotlinx.serialization.json.JsonPrimitive("t$it"))) }
+        val withTools = request.copy(tools = tools)
+
+        val healthy = Fake("cloud")
+        client(healthy, Fake("local", maxToolCount = 8)).streamMessage(withTools, Collector())
+        assertEquals(20, healthy.lastRequest?.tools?.size)
+
+        val streamLocal = Fake("local", maxToolCount = 8)
+        client(Fake("cloud", failWith = outOfFunds()), streamLocal).streamMessage(withTools, Collector())
+        assertEquals(tools.take(8), streamLocal.lastRequest?.tools)
+
+        val sendLocal = Fake("local", maxToolCount = 8)
+        client(Fake("cloud", failWith = outOfFunds()), sendLocal).sendMessage(withTools)
+        assertEquals(tools.take(8), sendLocal.lastRequest?.tools)
     }
 
     // ── the predicate itself ──────────────────────────────────────────

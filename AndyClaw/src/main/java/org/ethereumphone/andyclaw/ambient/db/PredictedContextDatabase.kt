@@ -29,7 +29,12 @@ abstract class PredictedContextDatabase : RoomDatabase() {
         @Volatile
         private var INSTANCE: PredictedContextDatabase? = null
 
-        fun getInstance(context: Context): PredictedContextDatabase {
+        /**
+         * @param onDropped Called when a downgrade dropped the cards: whatever remembers which
+         *   mail was already read has to forget it too, or that mail is never read again and
+         *   its cards never come back.
+         */
+        fun getInstance(context: Context, onDropped: () -> Unit = {}): PredictedContextDatabase {
             return INSTANCE ?: synchronized(this) {
                 INSTANCE ?: Room.databaseBuilder(
                     context.applicationContext,
@@ -39,6 +44,9 @@ abstract class PredictedContextDatabase : RoomDatabase() {
                     // A cache, rebuilt from mail and calendar on the next ingest. A rollback to a
                     // build with an older schema must drop it rather than crash on open.
                     .fallbackToDestructiveMigrationOnDowngrade(dropAllTables = true)
+                    .addCallback(object : RoomDatabase.Callback() {
+                        override fun onDestructiveMigration(db: androidx.sqlite.db.SupportSQLiteDatabase) = onDropped()
+                    })
                     .build()
                     .also { INSTANCE = it }
             }

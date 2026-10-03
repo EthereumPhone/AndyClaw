@@ -52,6 +52,7 @@ class ClaudeOauthClient(
                 )
             },
             baseUrl = BASE_URL,
+            anthropicDirect = true,
         )
         cached = token to client
         return client

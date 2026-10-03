@@ -149,24 +149,46 @@ object ReservationExtractor {
         return IngestResult(
             reservations = stamped,
             calendarEvents = events.distinctBy { it.sourceKey }.map {
-                it.copy(authenticated = message.authenticated, observedMs = message.receivedMs)
+                it.copy(authenticated = message.authenticated, observedMs = message.receivedMs, fromDomain = message.provenDomain())
             },
         )
     }
 
-    private fun Reservation.from(message: MailMessage): Reservation = when (this) {
-        is FlightReservation -> copy(authenticated = message.authenticated, observedMs = message.receivedMs, sourceMessageId = message.id)
-        is LodgingReservation -> copy(authenticated = message.authenticated, observedMs = message.receivedMs, sourceMessageId = message.id)
-        is EventReservation -> copy(authenticated = message.authenticated, observedMs = message.receivedMs, sourceMessageId = message.id)
+    private fun Reservation.from(message: MailMessage): Reservation {
+        val domain = message.provenDomain()
+        return when (this) {
+            is FlightReservation -> copy(authenticated = message.authenticated, observedMs = message.receivedMs, sourceMessageId = message.id, fromDomain = domain)
+            is LodgingReservation -> copy(authenticated = message.authenticated, observedMs = message.receivedMs, sourceMessageId = message.id, fromDomain = domain)
+            is EventReservation -> copy(authenticated = message.authenticated, observedMs = message.receivedMs, sourceMessageId = message.id, fromDomain = domain)
+        }
     }
 
-    /** Every reservation across a batch of messages, already merged and deduplicated. */
+    /** Who a signed mail proved it is; nothing for one that proved nothing. */
+    private fun MailMessage.provenDomain(): String? =
+        if (authenticated) MailAuthentication.domainOf(from) else null
+
+    /**
+     * Every reservation across a batch of messages, already merged and deduplicated.
+     *
+     * A message that throws yields nothing and leaves the others alone — whatever it throws,
+     * a StackOverflowError included. The batch is a stranger's mail: one crafted message used to
+     * kill the app, and since it was then never marked read, kill it again on every start.
+     */
     fun extractAll(
         messages: List<MailMessage>,
         nowMs: Long,
         zone: ZoneId = ZoneId.systemDefault(),
     ): IngestResult {
-        val combined = messages.fold(IngestResult()) { acc, m -> acc + extract(m, nowMs, zone) }
+        val combined = messages.fold(IngestResult()) { acc, m ->
+            val one = try {
+                extract(m, nowMs, zone)
+            } catch (e: java.util.concurrent.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                IngestResult()
+            }
+            acc + one
+        }
         return IngestResult(
             reservations = merge(combined.reservations, emptyList()),
             calendarEvents = combined.calendarEvents.distinctBy { it.sourceKey },
@@ -214,6 +236,12 @@ object ReservationExtractor {
     private fun combine(a: FlightReservation, b: FlightReservation): FlightReservation {
         if (a.authenticated != b.authenticated) return if (a.authenticated) a else b
         val (newer, older) = if (b.observedMs > a.observedMs) b to a else a to b
+        // Signed by someone else than the older mail: it may fill in, not call the flight off.
+        val cancelled = if (newer.cancelled && !older.cancelled && !sameSender(newer.fromDomain, older.fromDomain)) {
+            older.cancelled
+        } else {
+            newer.cancelled
+        }
         val (timed, untimed) = when {
             a.departurePrecision > b.departurePrecision -> a to b
             b.departurePrecision > a.departurePrecision -> b to a
@@ -237,11 +265,22 @@ object ReservationExtractor {
             boardingPass = newer.boardingPass ?: older.boardingPass,
             departureDate = timed.departureDate ?: untimed.departureDate,
             departurePrecision = timed.departurePrecision,
-            cancelled = newer.cancelled,
+            cancelled = cancelled,
             authenticated = a.authenticated,
             observedMs = maxOf(a.observedMs, b.observedMs),
             sourceMessageId = newer.sourceMessageId,
+            fromDomain = older.fromDomain ?: newer.fromDomain,
         )
+    }
+
+    /**
+     * Two mails come from the same sender when their proven domains are equal or one is a
+     * subdomain of the other, or when either proved none (older data, a boarding pass in the
+     * same mail), which keeps what was allowed before.
+     */
+    private fun sameSender(a: String?, b: String?): Boolean {
+        if (a == null || b == null) return true
+        return a == b || a.endsWith(".$b") || b.endsWith(".$a")
     }
 
     /** Hotels and events are not field-merged: the signed one, else the newer one, stands. */

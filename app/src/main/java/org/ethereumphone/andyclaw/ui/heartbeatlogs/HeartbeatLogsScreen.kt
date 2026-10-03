@@ -216,7 +216,8 @@ private fun HeartbeatLogRow(
         )
         Spacer(Modifier.height(4.dp))
         Text(
-            text = entry.responseText.ifBlank { "(no response)" },
+            // A failed run has no response; what went wrong is the line worth showing.
+            text = entry.responseText.ifBlank { entry.error?.takeIf { it.isNotBlank() } ?: "(no response)" },
             style = contentBodyStyle,
             color = dgenWhite,
             maxLines = 2,
@@ -280,7 +281,7 @@ private fun HeartbeatLogDetail(
 
             DetailItem(
                 label = "ERROR",
-                value = entry.responseText.ifBlank { "(no response)" },
+                value = entry.error,
                 primaryColor = Color(0xFFFF6B6B)
             )
         }

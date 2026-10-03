@@ -75,7 +75,7 @@ object PredictedContextMapper {
                 event.endMs?.let { put("end_ms", it) }
                 put("all_day", event.allDay)
                 event.occurrenceMs?.let { put("occurrence_ms", it) }
-                bookkeeping(event.cancelled, observedMs, if (fromMail) event.authenticated else null)
+                bookkeeping(event.cancelled, observedMs, if (fromMail) event.authenticated else null, if (fromMail) event.fromDomain else null)
             },
         )
     }
@@ -126,7 +126,7 @@ object PredictedContextMapper {
                 pass.sequenceNumber?.let { put("sequence_number", it) }
                 pass.cabin?.let { put("cabin", it) }
             }
-            bookkeeping(flight.cancelled, flight.observedMs, flight.authenticated)
+            bookkeeping(flight.cancelled, flight.observedMs, flight.authenticated, flight.fromDomain)
         }
         return context(
             kind = PredictedKind.FLIGHT,
@@ -162,7 +162,7 @@ object PredictedContextMapper {
                 lodging.checkinDate?.let { put("checkin_date", it) }
                 if (lodging.dateOnly) put(PredictedContextPayload.DATE_ONLY, true)
                 lodging.guestName?.let { put("guest", it) }
-                bookkeeping(lodging.cancelled, lodging.observedMs, lodging.authenticated)
+                bookkeeping(lodging.cancelled, lodging.observedMs, lodging.authenticated, lodging.fromDomain)
             },
         )
     }
@@ -189,23 +189,25 @@ object PredictedContextMapper {
                 if (event.dateOnly) put(PredictedContextPayload.DATE_ONLY, true)
                 event.attendeeName?.let { put("attendee", it) }
                 event.ticketToken?.let { put("ticket_token", it) }
-                bookkeeping(event.cancelled, event.observedMs, event.authenticated)
+                bookkeeping(event.cancelled, event.observedMs, event.authenticated, event.fromDomain)
             },
         )
     }
 
     /**
      * The store's bookkeeping keys ([PredictedContextPayload]): a cancellation, when the source
-     * was seen, and — for mail — whether it was signed. Absent when not known.
+     * was seen, and — for mail — whether it was signed, and by whom. Absent when not known.
      */
     private fun kotlinx.serialization.json.JsonObjectBuilder.bookkeeping(
         cancelled: Boolean,
         observedMs: Long,
         authenticated: Boolean?,
+        fromDomain: String?,
     ) {
         if (cancelled) put(PredictedContextPayload.CANCELLED, true)
         if (observedMs > 0) put(PredictedContextPayload.OBSERVED_MS, observedMs)
         authenticated?.let { put(PredictedContextPayload.AUTHENTICATED, it) }
+        fromDomain?.let { put(PredictedContextPayload.FROM_DOMAIN, it) }
     }
 
     private fun context(

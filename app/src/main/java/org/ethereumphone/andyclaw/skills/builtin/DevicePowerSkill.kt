@@ -63,7 +63,10 @@ class DevicePowerSkill(private val context: Context) : AndyClawSkill {
         val reason = params["reason"]?.jsonPrimitive?.contentOrNull
         return try {
             val pm = context.getSystemService(Context.POWER_SERVICE) as PowerManager
-            pm.reboot(reason)
+            // The reason is logged, never passed on: PowerManager.reboot acts on it — "bootloader"
+            // and "recovery" boot somewhere else entirely.
+            android.util.Log.i("DevicePowerSkill", "reboot requested: ${reason?.take(80) ?: "(no reason)"}")
+            pm.reboot(null)
             // If we get here, something went wrong (reboot should not return)
             SkillResult.Success(buildJsonObject { put("rebooting", true) }.toString())
         } catch (e: Exception) {

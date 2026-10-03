@@ -104,4 +104,49 @@ class FlowStepEffectsTest {
         assertEquals(ToolEffect.SENSITIVE, FlowStepEffects.of(TapStep(viewId = "sign_in_button")))
         assertEquals(ToolEffect.SENSITIVE, FlowStepEffects.of(TapStep(viewId = "check-out")))
     }
+
+    @Test
+    fun `payment and sign-in read in the other languages people use`() {
+        for (label in listOf("Payer 23,40 €", "Pagar ahora", "Finalizar compra", "Betalen", "Acquista ora",
+            "Mot de passe oublié ? Se connecter", "Iniciar sesión", "Zapłać", "Ödeme yap", "Zaplatit")) {
+            assertTrue(label, FlowStepEffects.isSensitiveText(label))
+        }
+        for (label in listOf("Place order", "Top up", "Verification code", "Use a passkey", "Subscribe", "Ｐａｙ")) {
+            assertTrue(label, FlowStepEffects.isSensitiveText(label))
+        }
+        assertFalse(FlowStepEffects.isSensitiveText("Envoyer"))
+        assertFalse(FlowStepEffects.isSensitiveText("Open chat"))
+    }
+
+    @Test
+    fun `German compounds are caught by what they are built on`() {
+        for (label in listOf("Kreditkarte hinzufügen", "Zahlungsart wählen", "Bezahlvorgang", "Einmalpasswort", "Kreditkartennummer")) {
+            assertTrue(label, FlowStepEffects.isSensitiveText(label))
+        }
+        assertEquals(ToolEffect.SENSITIVE, FlowStepEffects.of(TapStep(viewId = "com.shop:id/passwordfield")))
+        assertFalse(FlowStepEffects.isSensitiveText("Nachricht senden"))
+    }
+
+    @Test
+    fun `a bank's TAN is sensitive, the name Tan is not`() {
+        assertFalse(FlowStepEffects.isSensitiveText("Tan"))
+        assertFalse(FlowStepEffects.isSensitiveText("Chat with Amy Tan"))
+        assertFalse(FlowStepEffects.isSensitiveText("tan leather"))
+        assertTrue(FlowStepEffects.isSensitiveText("TAN eingeben"))
+        assertTrue(FlowStepEffects.isSensitiveText("pushTAN freigeben"))
+        assertTrue(FlowStepEffects.isSensitiveText("com.bank:id/tan_input"))
+        assertEquals(ToolEffect.SENSITIVE, FlowStepEffects.of(TypeStep(target = Selector(viewId = "com.bank:id/tan"), value = "1")))
+    }
+
+    @Test
+    fun `a label in a script the lists cannot read says so`() {
+        assertTrue(FlowStepEffects.unreadable("Оплатить"))
+        assertTrue(FlowStepEffects.unreadable("立即支付"))
+        assertTrue(FlowStepEffects.unreadable("Отправить SMS"))
+        assertFalse(FlowStepEffects.unreadable("Payer 23,40 €"))
+        assertFalse(FlowStepEffects.unreadable("Ödeme yap, şimdi"))
+        assertFalse(FlowStepEffects.unreadable("Đặt hàng"))
+        assertFalse(FlowStepEffects.unreadable("123 ✓"))
+        assertFalse(FlowStepEffects.unreadable(null))
+    }
 }

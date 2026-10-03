@@ -45,9 +45,9 @@ data class FrameRef(
  *
  * **Retention is not optional.** A frame a second at a few tens of kilobytes fills a phone
  * in days, so the cap exists before the capture is enabled rather than after: whole
- * sessions are evicted oldest-first, by count and by total bytes, and a single session
- * stops writing at [FrameRetention.maxFramesPerSession] rather than growing without end.
- * Sessions are the eviction unit on purpose — half a recording is worse than none, because
+ * sessions are evicted oldest-first by count, whole recordings oldest-first by total bytes,
+ * and a single recording stops writing at [FrameRetention.maxFramesPerSession] rather than
+ * growing without end. Recordings are never cut — half a recording is worse than none, because
  * a replay that silently starts in the middle misrepresents what happened.
  *
  * Ids are relative paths, so an exported ledger row still names its frames after the app's
@@ -77,9 +77,12 @@ class SessionFrameStore(
         runCatching { dir.mkdirs() }
         val existing = frameFiles(dir)
         synchronized(openDirs) { openDirs.add(dir.name) }
-        // The index continues the conversation's numbering; the byte count starts at zero,
-        // because the caps are this recording's (see FrameRetention.maxBytesPerSession).
-        return FrameSession(sessionId, dir, existing.size, sessionBytes = 0L)
+        // The index continues the conversation's numbering — after its highest index, since
+        // retention may have taken its oldest recordings and a reused one would sort a new frame
+        // among old ones. The byte count starts at zero, because the caps are this recording's
+        // (see FrameRetention.maxBytesPerSession).
+        val next = existing.mapNotNull { it.name.substringBefore('-').toIntOrNull() }.maxOrNull()?.plus(1) ?: 0
+        return FrameSession(sessionId, dir, maxOf(next, existing.size), sessionBytes = 0L)
     }
 
     /** Sessions a recording is writing to right now; pruning never touches them. */
@@ -148,13 +151,36 @@ class SessionFrameStore(
             dirs = dirs.drop(1)
         }
 
+        // Over the byte cap the oldest recordings go first, each one whole. A conversation that
+        // keeps recording — the owner's Telegram chat — is protected by every close of its own, and
+        // the caps are per recording, so it grew without end while every other session was evicted
+        // for it, until the first close elsewhere wiped its whole history at once. A session being
+        // written or just closed keeps its newest recording, the one in use.
         var total = totalBytes()
-        while (total > retention.maxBytes && dirs.isNotEmpty()) {
-            val oldest = dirs.first()
-            total -= frameFiles(oldest).sumOf { it.length() }
-            runCatching { oldest.deleteRecursively() }
-            dirs = dirs.drop(1)
+        if (total <= retention.maxBytes) return
+        val oldestFirst = sessionDirs().flatMap { dir ->
+            val recordings = recordings(dir)
+            (if (dir.name in protected) recordings.dropLast(1) else recordings).map { dir to it }
+        }.sortedBy { (_, files) -> files.last().let { parseTimestamp(it.name) ?: it.lastModified() } }
+        for ((dir, files) in oldestFirst) {
+            if (total <= retention.maxBytes) break
+            total -= files.sumOf { it.length() }
+            files.forEach { runCatching { it.delete() } }
+            if (dir.name !in protected && frameFiles(dir).isEmpty()) runCatching { dir.deleteRecursively() }
         }
+    }
+
+    /**
+     * [dir]'s frames as recordings, oldest first: each starts at a frame named with
+     * [RECORDING_START]. Frames from before that name existed are one recording.
+     */
+    private fun recordings(dir: File): List<List<File>> {
+        val out = ArrayList<MutableList<File>>()
+        for (file in frameFiles(dir)) {
+            if (out.isEmpty() || file.name.endsWith(RECORDING_START)) out += mutableListOf<File>()
+            out.last() += file
+        }
+        return out
     }
 
     // ── Writing ───────────────────────────────────────────────────────
@@ -194,7 +220,9 @@ class SessionFrameStore(
                 return null
             }
             val ts = clock()
-            val name = "%06d-%d%s".format(index, ts, FRAME_SUFFIX)
+            // A recording's first frame says so in its name, so retention can take one recording of
+            // a long conversation whole. Older builds read it as any other frame.
+            val name = "%06d-%d%s".format(index, ts, if (written.isEmpty()) RECORDING_START else FRAME_SUFFIX)
             return try {
                 File(dir, name).writeBytes(jpeg)
                 index++
@@ -284,5 +312,7 @@ class SessionFrameStore(
     companion object {
         const val DIR_NAME = "session_frames"
         private const val FRAME_SUFFIX = ".jpg"
+        /** The first frame of a recording: still a `.jpg`, with the same index and timestamp. */
+        private const val RECORDING_START = ".rec.jpg"
     }
 }

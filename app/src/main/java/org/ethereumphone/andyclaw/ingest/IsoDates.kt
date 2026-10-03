@@ -86,13 +86,39 @@ object IsoDates {
             val sign = m.groupValues[1]
             val hours = m.groupValues[2].padStart(2, '0')
             val minutes = m.groupValues[3].ifEmpty { "00" }
-            return runCatching { ZoneOffset.of("$sign$hours:$minutes") }.getOrNull()
+            val offset = runCatching { ZoneOffset.of("$sign$hours:$minutes") }.getOrNull() ?: return null
+            // The label's offset is the winter one. Taken as fixed, every summer event in a zone
+            // with daylight saving showed an hour late; the cities named say which zone it is.
+            return labelledZone(id.lowercase(), offset) ?: offset
         }
         if (id.equals("utc", ignoreCase = true) || id.equals("gmt", ignoreCase = true)) return ZoneOffset.UTC
         return null
     }
 
     private val outlookLabel = Regex("""^\((?:UTC|GMT)\s*([+-])(\d{1,2})(?::(\d{2}))?\)""", RegexOption.IGNORE_CASE)
+
+    /**
+     * The zone an Outlook label's place names point at, when its standard offset is the one the
+     * label states. A fixed instant rather than the clock, so this stays a pure function.
+     */
+    private fun labelledZone(label: String, offset: ZoneOffset): ZoneId? {
+        val zone = OUTLOOK_PLACES.firstOrNull { (place, _) -> place in label }?.second?.let { ZoneId.of(it) } ?: return null
+        return zone.takeIf { it.rules.getStandardOffset(java.time.Instant.ofEpochSecond(1_767_225_600L)) == offset }
+    }
+
+    /** Places in Outlook's zone labels that observe daylight saving, and their zones. */
+    private val OUTLOOK_PLACES = listOf(
+        "amsterdam" to "Europe/Berlin", "berlin" to "Europe/Berlin",
+        "brussels" to "Europe/Paris", "paris" to "Europe/Paris", "madrid" to "Europe/Madrid",
+        "prague" to "Europe/Prague", "budapest" to "Europe/Budapest", "warsaw" to "Europe/Warsaw",
+        "london" to "Europe/London", "dublin" to "Europe/Dublin", "lisbon" to "Europe/Lisbon",
+        "athens" to "Europe/Athens", "bucharest" to "Europe/Bucharest",
+        "helsinki" to "Europe/Helsinki", "kyiv" to "Europe/Kiev", "jerusalem" to "Asia/Jerusalem",
+        "eastern time" to "America/New_York", "central time" to "America/Chicago",
+        "mountain time" to "America/Denver", "pacific time" to "America/Los_Angeles",
+        "alaska" to "America/Anchorage", "atlantic time" to "America/Halifax",
+        "sydney" to "Australia/Sydney", "melbourne" to "Australia/Melbourne", "auckland" to "Pacific/Auckland",
+    )
 
     /** The common Windows zone names (CLDR windowsZones, "001" territory). */
     private val WINDOWS_ZONES = mapOf(

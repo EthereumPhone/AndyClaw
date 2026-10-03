@@ -2,9 +2,16 @@ package org.ethereumphone.andyclaw.llm
 
 import android.util.Log
 import com.llamatik.library.platform.GenStream
-import com.llamatik.library.platform.LlamaBridge
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
@@ -42,6 +49,7 @@ class LocalLlmClient(
         private const val TAG = "LocalLlmClient"
         /** Fallback: approximate characters per token when tokenizer is unavailable. */
         private const val CHARS_PER_TOKEN = 3.5
+        private const val CANCEL_REPEAT_MS = 50L
 
         private val TOOL_CALL_REGEX = Regex(
             """<tool_call>\s*([\s\S]*?)\s*</tool_call>"""
@@ -93,53 +101,81 @@ class LocalLlmClient(
 
     /** Push the sampling knobs into Llamatik. Cheap; no model reload. */
     private fun applySamplingParams(config: LocalLlmRuntimeConfig) {
-        LlamaBridge.updateGenerateParams(
-            temperature   = config.temperature,
-            maxTokens     = config.maxTokens,
-            topP          = config.topP,
-            topK          = config.topK,
-            repeatPenalty = config.repeatPenalty,
-        )
+        llamaCpp.updateGenerateParams(config)
     }
 
+    // Both calls hold the native lock from the load check to the last token count, so an
+    // unload or another generation cannot land in between.
     override suspend fun sendMessage(request: MessagesRequest): MessagesResponse = withContext(Dispatchers.IO) {
-        check(ensureModelLoaded()) { "Local model not loaded. Download and load the model first." }
+        llamaCpp.withNativeLock(stillWanted = { isActive }) {
+            ensureActive()
+            check(ensureModelLoaded()) { "Local model not loaded. Download and load the model first." }
 
-        val prompt = formatChatML(request)
-        Log.d(TAG, "sendMessage: model=${request.model}, prompt=${prompt.length} chars")
+            val prompt = formatChatML(request)
+            Log.d(TAG, "sendMessage: model=${request.model}, prompt=${prompt.length} chars")
 
-        val raw = llamaCpp.generate(prompt)
-        val answer = stripThinking(raw)
-        buildResponse(answer, request.model, promptText = prompt, tools = request.tools)
+            val raw = llamaCpp.generate(prompt)
+            val answer = stripThinking(raw)
+            buildResponse(answer, request.model, promptText = prompt, tools = request.tools)
+        }
     }
 
     override suspend fun streamMessage(request: MessagesRequest, callback: StreamingCallback) = withContext(Dispatchers.IO) {
-        if (!ensureModelLoaded()) {
-            callback.onError(IllegalStateException("Local model not loaded. Download and load the model first."))
-            return@withContext
+        val generation = Any()
+        val finished = AtomicBoolean(false)
+        // A cancel cannot interrupt the blocking native call. This child is cancelled with the
+        // turn and stops the decode loop, so a cancelled reply ends after its current token
+        // instead of running to maxTokens while the next turn waits for the model.
+        val canceller = launch(start = CoroutineStart.UNDISPATCHED) {
+            try {
+                awaitCancellation()
+            } finally {
+                withContext(NonCancellable) {
+                    while (!finished.get()) {
+                        llamaCpp.cancelGeneration(generation)
+                        delay(CANCEL_REPEAT_MS)
+                    }
+                }
+            }
         }
+        try {
+            llamaCpp.withNativeLock(stillWanted = { isActive }) {
+                ensureActive()
+                if (!ensureModelLoaded()) {
+                    callback.onError(IllegalStateException("Local model not loaded. Download and load the model first."))
+                    return@withNativeLock
+                }
+                ensureActive()
 
-        val prompt = formatChatML(request)
-        val tokenCount = llamaCpp.tokenize(prompt)
-        Log.i(TAG, "streamMessage: model=${request.model}, prompt=${prompt.length} chars, ~$tokenCount tokens, tools=${request.tools?.size ?: 0}")
+                val prompt = formatChatML(request)
+                val tokenCount = llamaCpp.tokenize(prompt)
+                Log.i(TAG, "streamMessage: model=${request.model}, prompt=${prompt.length} chars, ~$tokenCount tokens, tools=${request.tools?.size ?: 0}")
 
-        val fullText = StringBuilder()
+                val fullText = StringBuilder()
 
-        llamaCpp.generateStream(prompt, object : GenStream {
-            override fun onDelta(text: String) {
-                fullText.append(text)
-                callback.onToken(text)
+                // Once the turn is cancelled, what the stopping decode still reports reaches nobody.
+                llamaCpp.generateStream(prompt, object : GenStream {
+                    override fun onDelta(text: String) {
+                        fullText.append(text)
+                        if (isActive) callback.onToken(text)
+                    }
+
+                    override fun onComplete() {
+                        if (!isActive) return
+                        val answer = stripThinking(fullText.toString())
+                        callback.onComplete(buildResponse(answer, request.model, promptText = prompt, tools = request.tools))
+                    }
+
+                    override fun onError(message: String) {
+                        if (!isActive) return
+                        callback.onError(RuntimeException("Local inference error: $message"))
+                    }
+                }, generation)
             }
-
-            override fun onComplete() {
-                val answer = stripThinking(fullText.toString())
-                callback.onComplete(buildResponse(answer, request.model, promptText = prompt, tools = request.tools))
-            }
-
-            override fun onError(message: String) {
-                callback.onError(RuntimeException("Local inference error: $message"))
-            }
-        })
+        } finally {
+            finished.set(true)
+            canceller.cancel()
+        }
     }
 
     /**

@@ -154,6 +154,11 @@ class AgentLoop(
      * [Provenance.USER] runs only; null everywhere else.
      */
     private val toolPrefetch: JevToolPrefetch? = null,
+    /**
+     * The installed app the turn router chose for this turn's request, read when the autopilot's
+     * plan names one that is not installed. Background runs are routed by nobody and get none.
+     */
+    private val routedApp: () -> String? = { null },
 ) {
     /**
      * Model calls made by this run, sub-agents included.
@@ -235,7 +240,11 @@ class AgentLoop(
         internal fun redactedForLedger(text: String): String {
             val scan = org.ethereumphone.andyclaw.safety.LeakDetector().scan(text)
             val secrets = scan.matches.filter { it.action != org.ethereumphone.andyclaw.safety.LeakAction.WARN }
-            return org.ethereumphone.andyclaw.safety.LeakDetector.applyRedactions(text, secrets)
+            // The scan has no recovery-phrase pattern and only warns on 64 hex digits: a pasted
+            // seed or raw key went into the ledger as typed.
+            return org.ethereumphone.andyclaw.safety.LeakDetector.redactKeyMaterial(
+                org.ethereumphone.andyclaw.safety.LeakDetector.applyRedactions(text, secrets)
+            )
         }
 
         /**
@@ -696,7 +705,6 @@ class AgentLoop(
         val messages = conversationHistory.toMutableList()
         messages.add(Message.user(userMessage))
         Log.i("AGENTDISPLAYDEBUGKEY", "USER_MESSAGE: $userMessage")
-        preExecute(prePick, toolsJson, messages, callbacks)
 
         var iterations = 0
         val fullText = StringBuilder()
@@ -728,6 +736,10 @@ class AgentLoop(
         )
 
         try {
+            // Inside the try: a cancel during Jev's wait or the pre-executed tool still ends the
+            // run — its TURN row, the lease and the cleanup — instead of escaping past them.
+            preExecute(prePick, toolsJson, messages, callbacks, effectiveModelId)
+
             Log.i(TAG, "=== AgentLoop.run starting === model=$effectiveModelId" +
                 (if (modelIdOverride != null) " [ROUTED from ${model.modelId}]" else "") +
                 ", maxTokens=$baseMaxTokens, toolsJson=${toolsJson.size}, historySize=${conversationHistory.size}")
@@ -1070,14 +1082,9 @@ class AgentLoop(
                         // Arguments that were cut off or were not JSON: answered, never run.
                         val (invalidCalls, runnableCalls) = regularNotInExecutor.partition { ToolArguments.isInvalid(it.input) }
                         invalidCalls.forEach { allToolResults.add(ToolArguments.errorResultOrNull(it)!!) }
-                        val engineCalls = ExecutionEngineFactory.toToolCalls(runnableCalls)
-                        val batchResult = engine.executeBatch(engineCalls)
-                        val engineMetrics = batchResult.metrics
-                        noteBatch(engineMetrics)
-                        Log.i(TAG, "ExecutionEngine (fallback) | ${engineMetrics.executedCount} executed, " +
-                            "${engineMetrics.blockedCount} blocked, ${engineMetrics.errorCount} errors, " +
-                            "${engineMetrics.totalDurationMs}ms total")
-                        allToolResults.addAll(ExecutionEngineFactory.toContentBlocks(batchResult.results))
+                        allToolResults.addAll(
+                            executeInOrder(engine, ExecutionEngineFactory.toToolCalls(runnableCalls), "fallback")
+                        )
                     }
 
                     // Streaming executor results (tools that started during streaming)
@@ -1235,12 +1242,16 @@ class AgentLoop(
             }
             // Off the caller's thread — the in-app chat runs this loop on Main — and past whatever
             // cancelled the run: putting the display away is binder calls, closing the recording
-            // is disk work, and neither may be skipped.
-            withContext(kotlinx.coroutines.NonCancellable + Dispatchers.IO) {
-                skillRegistry.onRunFinished(runToken.id, end)
-                // The display skill has normally done this already; if no skill did, the lease
-                // must still not outlive the run.
-                org.ethereumphone.andyclaw.skills.builtin.AgentDisplayLease.release(runToken.id)
+            // is disk work, and neither may be skipped. Nested, not `NonCancellable + IO`: a
+            // withContext that changes dispatcher throws on its way back into a cancelled run,
+            // which skipped the turn row and the cleanup below for every chat the user stopped.
+            withContext(kotlinx.coroutines.NonCancellable) {
+                withContext(Dispatchers.IO) {
+                    skillRegistry.onRunFinished(runToken.id, end)
+                    // The display skill has normally done this already; if no skill did, the lease
+                    // must still not outlive the run.
+                    org.ethereumphone.andyclaw.skills.builtin.AgentDisplayLease.release(runToken.id)
+                }
             }
 
             // The turn row goes in `finally` so there is exactly one per run however the
@@ -1271,6 +1282,7 @@ class AgentLoop(
             modelIdsUsed.add(modelId)
         },
         events = AutopilotEventSink { callbacks.onAgentStep(it) },
+        routedApp = routedApp,
     ) + runToken + (replyAudience ?: kotlin.coroutines.EmptyCoroutineContext) +
         (ledger?.let { LedgerContext(it, provenance.name, recordedIntent) } ?: kotlin.coroutines.EmptyCoroutineContext)
 
@@ -1311,6 +1323,46 @@ class AgentLoop(
         toolsBlocked.addAndGet(metrics.blockedCount)
         toolErrors.addAndGet(metrics.errorCount)
         toolTimeMs.addAndGet(metrics.totalDurationMs)
+    }
+
+    /**
+     * Runs [calls] the way [StreamingToolExecutor] runs a streamed turn: a call that is not
+     * concurrency-safe on its own and in order, the safe ones between such calls together.
+     * `executeBatch` alone runs everything at once, so a sub-agent's `[tap the field, type, Enter]`
+     * put the text and the Enter into whatever field had focus before the tap. Results come back
+     * in call order.
+     */
+    private suspend fun executeInOrder(
+        engine: org.ethereumphone.andyclaw.ExecutionEngine.ParallelExecutionEngine,
+        calls: List<org.ethereumphone.andyclaw.ExecutionEngine.ToolCall>,
+        label: String,
+    ): List<ContentBlock> {
+        val results = mutableListOf<ContentBlock>()
+        val group = mutableListOf<org.ethereumphone.andyclaw.ExecutionEngine.ToolCall>()
+        var executed = 0
+        var blocked = 0
+        var errors = 0
+        var durationMs = 0L
+        suspend fun runGroup() {
+            if (group.isEmpty()) return
+            val batch = engine.executeBatch(group.toList())
+            group.clear()
+            noteBatch(batch.metrics)
+            executed += batch.metrics.executedCount
+            blocked += batch.metrics.blockedCount
+            errors += batch.metrics.errorCount
+            durationMs += batch.metrics.totalDurationMs
+            results.addAll(ExecutionEngineFactory.toContentBlocks(batch.results))
+        }
+        for (call in calls) {
+            val alone = !StreamingToolExecutor.defaultIsConcurrencySafe(call.name)
+            if (alone) runGroup()
+            group += call
+            if (alone) runGroup()
+        }
+        runGroup()
+        Log.i(TAG, "ExecutionEngine ($label) | $executed executed, $blocked blocked, $errors errors, ${durationMs}ms total")
+        return results
     }
 
     /**
@@ -1409,6 +1461,7 @@ class AgentLoop(
         toolsJson: List<JsonObject>,
         messages: MutableList<Message>,
         callbacks: Callbacks,
+        modelId: String,
     ) {
         val pick = prePick?.await() ?: return
         if (toolsJson.none { it["name"]?.jsonPrimitive?.contentOrNull == pick.toolName }) return
@@ -1420,6 +1473,9 @@ class AgentLoop(
                 input = JsonObject(emptyMap()),
             )
             // The ordinary engine: provenance gate, ledger row and tool callbacks as for any call.
+            // And the run's context, as for any call: without its token a pre-executed read_sms
+            // never marked the run as having read someone else's words, and every taint gate
+            // after it — the launcher's card, a job's recorded provenance — decided as if clean.
             val engine = ExecutionEngineFactory.create(
                 skillRegistry = skillRegistry,
                 tier = tier,
@@ -1432,6 +1488,7 @@ class AgentLoop(
                 enforceProvenance = enforceProvenance,
                 ledger = ledger,
                 intent = recordedIntent,
+                runContext = autopilotRunContext(modelId, callbacks),
             )
             val batch = engine.executeBatch(ExecutionEngineFactory.toToolCalls(listOf(call)))
             noteBatch(batch.metrics)
@@ -1610,10 +1667,7 @@ class AgentLoop(
                 )
                 val (invalidCalls, runnableCalls) = execCalls.partition { ToolArguments.isInvalid(it.input) }
                 invalidCalls.forEach { toolResults.add(ToolArguments.errorResultOrNull(it)!!) }
-                val engineCalls = ExecutionEngineFactory.toToolCalls(runnableCalls)
-                val batchResult = engine.executeBatch(engineCalls)
-                noteBatch(batchResult.metrics)
-                toolResults.addAll(ExecutionEngineFactory.toContentBlocks(batchResult.results))
+                toolResults.addAll(executeInOrder(engine, ExecutionEngineFactory.toToolCalls(runnableCalls), "subagent"))
             }
 
             messages.add(Message("user", MessageContent.Blocks(toolResults)))

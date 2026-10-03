@@ -36,7 +36,11 @@ class IsoDatesTest {
     fun `iCal zone names come in three spellings`() {
         assertEquals(ZoneId.of("Europe/Berlin"), IsoDates.zoneFor("Europe/Berlin"))
         assertEquals(ZoneId.of("Europe/Berlin"), IsoDates.zoneFor("W. Europe Standard Time"))
-        assertEquals(ZoneOffset.ofHours(1), IsoDates.zoneFor("(UTC+01:00) Amsterdam, Berlin, Bern, Rome"))
+        // A label's cities name the zone, so summer time is kept; a fixed +01:00 put it an hour off.
+        assertEquals(ZoneId.of("Europe/Berlin"), IsoDates.zoneFor("(UTC+01:00) Amsterdam, Berlin, Bern, Rome"))
+        assertEquals(ZoneOffset.ofHours(4), IsoDates.zoneFor("(UTC+04:00) Abu Dhabi, Muscat"))
+        // Cities that do not fit the stated offset are not believed over it.
+        assertEquals(ZoneOffset.ofHours(5), IsoDates.zoneFor("(UTC+05:00) Berlin"))
         assertNull(IsoDates.zoneFor("Mars/Olympus_Mons"))
     }
 }

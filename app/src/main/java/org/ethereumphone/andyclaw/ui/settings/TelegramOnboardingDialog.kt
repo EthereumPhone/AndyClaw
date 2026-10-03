@@ -217,6 +217,7 @@ fun TelegramOnboardingDialog(
                                                 errorMessage = msg
                                                 isPolling = false
                                             },
+                                            token = token.trim(),
                                         )
                                     }
                                 },
@@ -240,7 +241,8 @@ fun TelegramOnboardingDialog(
 
                             if (waitingForMessage) {
                                 Text(
-                                    text = "Open Telegram and send any message to your bot.",
+                                    text = "Open Telegram and send any message to your bot, in a private chat with it — " +
+                                        "not in a group: whoever verifies here becomes the bot's owner.",
                                     style = contentBodyStyle,
                                     color = dgenWhite,
                                 )
@@ -312,11 +314,35 @@ private fun generateCode(): String {
     return (1..6).map { chars.random() }.joinToString("")
 }
 
+/** Why Telegram refused [token], or null when it accepted it (or could not be asked). */
+private suspend fun tokenProblem(token: String): String? = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+    val request = okhttp3.Request.Builder().url("https://api.telegram.org/bot$token/getMe").get().build()
+    try {
+        okhttp3.OkHttpClient.Builder()
+            .connectTimeout(10, java.util.concurrent.TimeUnit.SECONDS)
+            .readTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
+            .build()
+            .newCall(request).execute().use { response ->
+                when (response.code) {
+                    401, 404 -> "Telegram did not accept this bot token. Check it and try again."
+                    else -> null
+                }
+            }
+    } catch (e: Exception) {
+        Log.w(TAG, "Bot token check failed: ${e.message}")
+        null
+    }
+}
+
 private suspend fun pollForVerification(
     client: TelegramBotClient,
     onMessageReceived: (chatId: Long, code: String) -> Unit,
     onError: (String) -> Unit,
+    token: String,
 ) {
+    // A wrong token used to show nothing for half an hour and then "Timed out".
+    tokenProblem(token)?.let { onError(it); return }
+
     var offset: Long? = null
     try {
         val stale = client.getUpdates(offset = null, timeout = 0)
@@ -327,15 +353,30 @@ private suspend fun pollForVerification(
         Log.w(TAG, "Failed to flush stale updates: ${e.message}")
     }
 
-    var attempts = 0
-    val maxAttempts = 60
-    while (kotlinx.coroutines.currentCoroutineContext().isActive && attempts < maxAttempts) {
-        attempts++
+    // As long as 60 long polls take; a refused poll comes back at once, so the clock decides.
+    val deadline = System.currentTimeMillis() + 60 * 30_000L
+    var quickEmpties = 0
+    while (kotlinx.coroutines.currentCoroutineContext().isActive && System.currentTimeMillis() < deadline) {
         try {
+            val started = System.currentTimeMillis()
             val updates = client.getUpdates(offset = offset, timeout = 30)
+            if (updates.isEmpty()) {
+                // An empty answer long before the long poll's 30 s is a failed request (getUpdates
+                // returns nothing on errors): back off rather than ask again at once.
+                if (System.currentTimeMillis() - started < 5_000) {
+                    quickEmpties++
+                    delay((2_000L shl (quickEmpties - 1).coerceAtMost(3)).coerceAtMost(15_000L))
+                } else {
+                    quickEmpties = 0
+                }
+            }
             if (updates.isNotEmpty()) {
+                quickEmpties = 0
                 offset = updates.last().updateId + 1
-                val first = updates.filterIsInstance<TelegramUpdate.MessageUpdate>().firstOrNull()
+                // A private chat only. A code posted into a group is read by every member, and
+                // the chat id stored then made each of them the owner.
+                val first = updates.filterIsInstance<TelegramUpdate.MessageUpdate>()
+                    .firstOrNull { it.chatType == "private" }
                     ?: continue
 
                 val code = generateCode()
@@ -352,9 +393,13 @@ private suspend fun pollForVerification(
                 }
             }
         } catch (e: Exception) {
+            if (e is kotlinx.coroutines.CancellationException) throw e
             Log.w(TAG, "Polling error: ${e.message}")
             delay(3000)
         }
     }
-    onError("Timed out waiting for a message. Please try again.")
+    onError(
+        "Timed out waiting for a message. Please try again. If this bot is connected somewhere " +
+            "else too, Telegram hands its messages there instead."
+    )
 }

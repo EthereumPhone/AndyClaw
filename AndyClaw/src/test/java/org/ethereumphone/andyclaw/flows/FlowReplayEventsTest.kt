@@ -143,6 +143,39 @@ class FlowReplayEventsTest {
     }
 
     @Test
+    fun `a STOP after the last action went out is not told as stopped`() {
+        val late = FlowRunResult.Aborted(FlowAbortReason.STOPPED, "stopped by the user", null, 0, emptyList(), committed = true)
+        val (outcome, reason, _) = FlowReplayEvents.abortOutcome(late, handsOver = false)
+        assertEquals("failed", outcome.wire)
+        assertEquals("flow_unconfirmed", reason)
+        val early = late.copy(committed = false)
+        assertEquals("stopped", FlowReplayEvents.abortOutcome(early, handsOver = false).first.wire)
+    }
+
+    @Test
+    fun `a cancel once the send went out says it was probably done`() {
+        val sink = Recorder()
+        val events = FlowReplayEvents(flow, sink)
+        events.started()
+        // The search tap commits nothing; the send, past the checkpoint, does.
+        events.onAction(0, "tap", "search_button", settled = false)
+        events.onAction(0, "tap", "search_button", settled = true)
+        events.onAction(4, "tap", "send_button", settled = false)
+        events.cancelled()
+        val last = sink.terminals.single()
+        assertEquals("failed", last.outcome)
+        assertEquals("flow_unconfirmed", last.reason)
+
+        val before = Recorder()
+        FlowReplayEvents(flow, before).apply {
+            started()
+            onAction(0, "tap", "search_button", settled = false)
+            cancelled()
+        }
+        assertEquals("cancelled", before.terminals.single().outcome)
+    }
+
+    @Test
     fun `a sink that throws does not stop the replay`() = runTest {
         val (_, result) = replay(FakeDriver(listOf(listScreen, threadScreen, sentScreen)), AutopilotEventSink { error("boom") })
         assertTrue(result is FlowRunResult.Completed)

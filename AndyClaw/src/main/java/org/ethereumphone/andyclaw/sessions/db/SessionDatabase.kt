@@ -40,17 +40,37 @@ abstract class SessionDatabase : RoomDatabase() {
         @Volatile
         private var INSTANCE: SessionDatabase? = null
 
+        /** The schema this build writes; [build] leaves a newer one alone. */
+        private const val SCHEMA_VERSION = 2
+
         fun getInstance(context: Context): SessionDatabase {
             return INSTANCE ?: synchronized(this) {
-                INSTANCE ?: Room.databaseBuilder(
-                    context.applicationContext,
-                    SessionDatabase::class.java,
-                    DB_NAME,
-                )
-                    .addMigrations(MIGRATION_1_2)
-                    .build()
-                    .also { INSTANCE = it }
+                INSTANCE ?: build(context.applicationContext).also { INSTANCE = it }
             }
+        }
+
+        /**
+         * Sessions written by a newer build, met after a rollback, are left as they are, the way
+         * `LedgerDatabase` does it: Room has no migration down and would throw on first use, and
+         * the chat and the session list with it. This build keeps its sessions in memory then, and
+         * the roll-forward finds the file untouched.
+         */
+        private fun build(context: Context): SessionDatabase {
+            val file = context.getDatabasePath(DB_NAME)
+            val onDisk = if (file.exists()) {
+                runCatching {
+                    android.database.sqlite.SQLiteDatabase.openDatabase(
+                        file.path, null, android.database.sqlite.SQLiteDatabase.OPEN_READONLY,
+                    ).use { it.version }
+                }.getOrDefault(0)
+            } else 0
+            if (onDisk > SCHEMA_VERSION) {
+                android.util.Log.w("SessionDatabase", "sessions schema $onDisk is newer than $SCHEMA_VERSION; not opening it")
+                return Room.inMemoryDatabaseBuilder(context, SessionDatabase::class.java).build()
+            }
+            return Room.databaseBuilder(context, SessionDatabase::class.java, DB_NAME)
+                .addMigrations(MIGRATION_1_2)
+                .build()
         }
     }
 }

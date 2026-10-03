@@ -57,6 +57,8 @@ typealias NativeTokenInfo = AgentWalletChains.NativeTokenInfo
 class WalletSkill(
     private val context: Context,
     private val agentTxRepository: org.ethereumphone.andyclaw.agenttx.AgentTxRepository? = null,
+    /** The agent sub-account's anchor; without it no agent-wallet tool runs. */
+    private val agentWallet: org.ethereumphone.andyclaw.agentwallet.AgentWalletRepository? = null,
 ) : AndyClawSkill {
     override val id = "wallet"
     override val name = "Wallet"
@@ -133,9 +135,6 @@ class WalletSkill(
     /** Cache of per-chain WalletSDK instances (user's OS wallet). */
     private val walletsByChain = mutableMapOf<Int, WalletSDK>()
 
-    /** Cache of per-chain SubWalletSDK instances (agent's own wallet). */
-    private val subWalletsByChain = mutableMapOf<Int, SubWalletSDK>()
-
     /** HTTP client for direct 0x API calls (agent swap). */
     private val swapHttpClient by lazy {
         OkHttpClient.Builder()
@@ -150,14 +149,6 @@ class WalletSkill(
      */
     private val defaultWallet: WalletSDK? by lazy {
         getOrCreateWallet(1)
-    }
-
-    /**
-     * Default SubWalletSDK instance (Ethereum mainnet) used for
-     * non-chain-specific calls like getAddress().
-     */
-    private val defaultSubWallet: SubWalletSDK? by lazy {
-        getOrCreateSubWallet(1)
     }
 
     private fun getOrCreateWallet(chainId: Int): WalletSDK? {
@@ -177,20 +168,29 @@ class WalletSkill(
         }
     }
 
-    private fun getOrCreateSubWallet(chainId: Int): SubWalletSDK? {
-        subWalletsByChain[chainId]?.let { return it }
-        val rpc = chainIdToRpc(chainId) ?: return null
-        return try {
-            val sdk = SubWalletSDK(
-                context = context,
-                web3jInstance = Web3j.build(HttpService(rpc)),
-                bundlerRPCUrl = chainIdToBundler(chainId),
-            )
-            subWalletsByChain[chainId] = sdk
-            sdk
-        } catch (e: Exception) {
-            Log.w(TAG, "Failed to initialize SubWalletSDK for chain $chainId: ${e.message}")
-            null
+    /**
+     * The agent sub-account's address, while it is still the one first seen on this device
+     * ([org.ethereumphone.andyclaw.agentwallet.AgentWalletRepository.checkIntegrity]). A key that
+     * is gone, unreadable or replaced is a failure naming why: nothing reports a new, empty wallet
+     * as the agent's, and nothing is sent from it.
+     */
+    private suspend fun verifiedAgentAddress(): Result<String> {
+        val repo = agentWallet
+            ?: return Result.failure(IllegalStateException("The agent wallet cannot be verified on this device."))
+        return when (val integrity = repo.checkIntegrity()) {
+            is org.ethereumphone.andyclaw.agentwallet.WalletIntegrity.Ok -> Result.success(integrity.address)
+            else -> Result.failure(IllegalStateException(integrity.blockedReason()))
+        }
+    }
+
+    /** The agent sub-account on [chainId], verified first; built only by [SubWalletFactory]. */
+    private suspend fun agentSubWallet(chainId: Int): Result<SubWalletSDK> {
+        verifiedAgentAddress().onFailure { return Result.failure(it) }
+        val repo = agentWallet ?: return Result.failure(IllegalStateException("The agent wallet cannot be verified on this device."))
+        return when (val outcome = org.ethereumphone.andyclaw.agentwallet.SubWalletFactory.get(context, chainId, repo::anchoredAddress)) {
+            is org.ethereumphone.andyclaw.agentwallet.SubWalletFactory.Outcome.Ready -> Result.success(outcome.sdk)
+            is org.ethereumphone.andyclaw.agentwallet.SubWalletFactory.Outcome.Unavailable ->
+                Result.failure(IllegalStateException("Agent sub-account wallet not available: ${outcome.reason}"))
         }
     }
 
@@ -306,7 +306,7 @@ class WalletSkill(
                         "Only use this for advanced contract interactions where higher-level tools don't apply. " +
                         "The user will be prompted to approve. " +
                         "IMPORTANT: 'value' must be in wei (1 ETH = 1000000000000000000 wei). " +
-                        "For simple native token transfers set data to '0'. " +
+                        "For simple native token transfers set data to '0x'. " +
                         "For contract interactions provide ABI-encoded calldata as 0x-prefixed hex.",
                 inputSchema = JsonObject(mapOf(
                     "type" to JsonPrimitive("object"),
@@ -326,7 +326,7 @@ class WalletSkill(
                         "data" to JsonObject(mapOf(
                             "type" to JsonPrimitive("string"),
                             "description" to JsonPrimitive(
-                                "Transaction calldata. Use '0' for simple native token transfers. " +
+                                "Transaction calldata. Use '0x' for simple native token transfers. " +
                                         "For contract calls, provide 0x-prefixed hex-encoded calldata."
                             ),
                         )),
@@ -866,10 +866,7 @@ class WalletSkill(
             "propose_token_transfer" -> proposeTokenTransfer(params)
 
             // Agent wallet (SubWalletSDK)
-            "get_agent_wallet_address" -> {
-                val sw = defaultSubWallet ?: return subWalletUnavailableError()
-                getAgentWalletAddress(sw)
-            }
+            "get_agent_wallet_address" -> getAgentWalletAddress()
             "agent_send_transaction" -> agentSendTransaction(params)
             "agent_transfer_token" -> agentTransferToken(params)
 
@@ -891,11 +888,6 @@ class WalletSkill(
 
     private fun walletUnavailableError() = SkillResult.Error(
         "System wallet not available. " +
-                "Ensure this device runs ethOS with the wallet service enabled."
-    )
-
-    private fun subWalletUnavailableError() = SkillResult.Error(
-        "Agent sub-account wallet not available. " +
                 "Ensure this device runs ethOS with the wallet service enabled."
     )
 
@@ -1041,11 +1033,16 @@ class WalletSkill(
     }
 
     private suspend fun proposeTransaction(params: JsonObject): SkillResult {
-        val to = params["to"]?.jsonPrimitive?.contentOrNull
+        val rawTo = params["to"]?.jsonPrimitive?.contentOrNull
             ?: return SkillResult.Error("Missing required parameter: to")
+        // The terminal screen shows the address and the user approves what it shows, but one
+        // character dropped or changed in the middle of a long address reads the same at a glance:
+        // the checksum, the length and the zero address are checked before it gets there.
+        recipientError(rawTo)?.let { return SkillResult.Error(it) }
+        val to = EthAddress.checksummed(rawTo)
         val value = params["value"]?.jsonPrimitive?.contentOrNull
             ?: return SkillResult.Error("Missing required parameter: value")
-        val data = params["data"]?.jsonPrimitive?.contentOrNull
+        val data = params["data"]?.jsonPrimitive?.contentOrNull?.let(::normalizedCalldata)
             ?: return SkillResult.Error("Missing required parameter: data")
         val chainId = params["chain_id"]?.jsonPrimitive?.intOrNull
             ?: return SkillResult.Error("Missing required parameter: chain_id")
@@ -1093,8 +1090,10 @@ class WalletSkill(
     private suspend fun proposeTokenTransfer(params: JsonObject): SkillResult {
         val contractAddress = params["contract_address"]?.jsonPrimitive?.contentOrNull
             ?: return SkillResult.Error("Missing required parameter: contract_address")
-        val to = params["to"]?.jsonPrimitive?.contentOrNull
+        val rawTo = params["to"]?.jsonPrimitive?.contentOrNull
             ?: return SkillResult.Error("Missing required parameter: to")
+        recipientError(rawTo)?.let { return SkillResult.Error(it) }
+        val to = EthAddress.checksummed(rawTo)
         val amount = params["amount"]?.jsonPrimitive?.contentOrNull
             ?: return SkillResult.Error("Missing required parameter: amount")
         val claimedDecimals = params["decimals"]?.jsonPrimitive?.intOrNull
@@ -1169,16 +1168,11 @@ class WalletSkill(
 
     // ── Agent wallet operations (SubWalletSDK) ──────────────────────────
 
-    private suspend fun getAgentWalletAddress(subWallet: SubWalletSDK): SkillResult {
-        return try {
-            val address = withContext(Dispatchers.IO) { subWallet.getAddress() }
-            SkillResult.Success(
-                buildJsonObject { put("address", address) }.toString()
-            )
-        } catch (e: Exception) {
-            rethrowIfCancelled(e)
-            SkillResult.Error("Failed to get agent wallet address: ${e.message}")
+    private suspend fun getAgentWalletAddress(): SkillResult {
+        val address = verifiedAgentAddress().getOrElse {
+            return SkillResult.Error("Failed to get agent wallet address: ${it.message}")
         }
+        return SkillResult.Success(buildJsonObject { put("address", address) }.toString())
     }
 
     /**
@@ -1189,6 +1183,32 @@ class WalletSkill(
      */
     private fun recipientError(to: String): String? =
         org.ethereumphone.andyclaw.agentwallet.EthAddress.validationError(to)?.let { "Not sent: $it ($to)." }
+
+    /**
+     * Calldata for "no data". `"0"` decoded to one 0x00 byte, which a contract recipient's
+     * receive() never sees — it hits the fallback, and a non-payable one reverts.
+     */
+    private fun normalizedCalldata(data: String): String {
+        val trimmed = data.trim()
+        return if (trimmed.isEmpty() || trimmed == "0" || trimmed.equals("0x0", ignoreCase = true)) "0x" else trimmed
+    }
+
+    /**
+     * (recipient, amount, token) for the history row of an ERC-20 `transfer(address,uint256)` sent
+     * as raw calldata to [contract], or null when [data] is not one.
+     */
+    private fun decodedTransfer(contract: String, data: String, chainId: Int): Triple<String, String, String>? {
+        val hex = data.removePrefix("0x").lowercase()
+        if (hex.length != 8 + 128 || !hex.startsWith("a9059cbb")) return null
+        val recipient = "0x" + hex.substring(8 + 24, 8 + 64)
+        val raw = hex.substring(8 + 64).toBigIntegerOrNull(16) ?: return null
+        val known = WELL_KNOWN_TOKENS.firstOrNull { it.addresses[chainId]?.equals(contract, ignoreCase = true) == true }
+        return if (known != null) {
+            Triple(recipient, AmountFormat.fromBaseUnits(raw, known.decimals), known.symbol)
+        } else {
+            Triple(recipient, raw.toString(), contract)
+        }
+    }
 
     private suspend fun agentSendTransaction(
         params: JsonObject,
@@ -1201,7 +1221,7 @@ class WalletSkill(
         recipientError(to)?.let { return SkillResult.Error(it) }
         val value = params["value"]?.jsonPrimitive?.contentOrNull
             ?: return SkillResult.Error("Missing required parameter: value")
-        val data = params["data"]?.jsonPrimitive?.contentOrNull
+        val data = params["data"]?.jsonPrimitive?.contentOrNull?.let(::normalizedCalldata)
             ?: return SkillResult.Error("Missing required parameter: data")
         val chainId = params["chain_id"]?.jsonPrimitive?.intOrNull
             ?: return SkillResult.Error("Missing required parameter: chain_id")
@@ -1212,8 +1232,7 @@ class WalletSkill(
                         "Supported chains: ${CHAIN_NAMES.keys.sorted().joinToString()}"
             )
 
-        val sw = getOrCreateSubWallet(chainId)
-            ?: return subWalletUnavailableError()
+        val sw = agentSubWallet(chainId).getOrElse { return SkillResult.Error(it.message ?: "Agent wallet not available.") }
 
         return try {
             val outcome = submitAgentSend(
@@ -1238,12 +1257,19 @@ class WalletSkill(
                     // A plain value transfer is a native send: show "0.01 ETH", not "10000000000000000 RAW".
                     val native = historyAmount == null && data.removePrefix("0x").isEmpty()
                     val wei = if (native) value.toBigIntegerOrNull() else null
-                    saveAgentTx(
-                        hash, chainId, to,
-                        historyAmount ?: wei?.let { AmountFormat.fromBaseUnits(it, NATIVE_TOKENS[chainId]?.decimals ?: 18) } ?: value,
-                        historyToken ?: if (wei != null) AgentWalletChains.nativeSymbol(chainId) else "RAW",
-                        "agent_send_transaction",
-                    )
+                    // An ERC-20 transfer() as raw calldata: the row names who was paid and how much,
+                    // not the token contract as the recipient.
+                    val transfer = if (historyAmount == null) decodedTransfer(to, data, chainId) else null
+                    if (transfer != null) {
+                        saveAgentTx(hash, chainId, transfer.first, transfer.second, transfer.third, "agent_send_transaction")
+                    } else {
+                        saveAgentTx(
+                            hash, chainId, to,
+                            historyAmount ?: wei?.let { AmountFormat.fromBaseUnits(it, NATIVE_TOKENS[chainId]?.decimals ?: 18) } ?: value,
+                            historyToken ?: if (wei != null) AgentWalletChains.nativeSymbol(chainId) else "RAW",
+                            "agent_send_transaction",
+                        )
+                    }
                 },
             )
             when (outcome) {
@@ -1324,6 +1350,10 @@ class WalletSkill(
             return SkillResult.Error("Invalid amount '$amount': ${e.message}")
         }
 
+        if (rawAmount <= BigInteger.ZERO) {
+            return SkillResult.Error("Amount must be greater than zero.")
+        }
+
         val function = Function(
             "transfer",
             listOf(Address(to), Uint256(rawAmount)),
@@ -1331,8 +1361,7 @@ class WalletSkill(
         )
         val encodedData = FunctionEncoder.encode(function)
 
-        val sw = getOrCreateSubWallet(chainId)
-            ?: return subWalletUnavailableError()
+        val sw = agentSubWallet(chainId).getOrElse { return SkillResult.Error(it.message ?: "Agent wallet not available.") }
 
         return try {
             val outcome = submitAgentSend(
@@ -1432,8 +1461,10 @@ class WalletSkill(
     }
 
     private suspend fun sendNativeToken(params: JsonObject): SkillResult {
-        val to = params["to"]?.jsonPrimitive?.contentOrNull
+        val rawTo = params["to"]?.jsonPrimitive?.contentOrNull
             ?: return SkillResult.Error("Missing required parameter: to")
+        recipientError(rawTo)?.let { return SkillResult.Error(it) }
+        val to = EthAddress.checksummed(rawTo)
         val amount = params["amount"]?.jsonPrimitive?.contentOrNull
             ?: return SkillResult.Error("Missing required parameter: amount")
         val chainId = params["chain_id"]?.jsonPrimitive?.intOrNull
@@ -1532,8 +1563,10 @@ class WalletSkill(
     }
 
     private suspend fun sendToken(params: JsonObject): SkillResult {
-        val to = params["to"]?.jsonPrimitive?.contentOrNull
+        val rawTo = params["to"]?.jsonPrimitive?.contentOrNull
             ?: return SkillResult.Error("Missing required parameter: to")
+        recipientError(rawTo)?.let { return SkillResult.Error(it) }
+        val to = EthAddress.checksummed(rawTo)
         val amount = params["amount"]?.jsonPrimitive?.contentOrNull
             ?: return SkillResult.Error("Missing required parameter: amount")
         val chainId = params["chain_id"]?.jsonPrimitive?.intOrNull
@@ -1745,8 +1778,7 @@ class WalletSkill(
         )
         val encodedData = FunctionEncoder.encode(function)
 
-        val sw = getOrCreateSubWallet(chainId)
-            ?: return subWalletUnavailableError()
+        val sw = agentSubWallet(chainId).getOrElse { return SkillResult.Error(it.message ?: "Agent wallet not available.") }
 
         return try {
             val outcome = submitAgentSend(
@@ -1809,13 +1841,17 @@ class WalletSkill(
         // ERC-20, not native ETH; mapping every native keyword to 0xEeee… sold ETH
         // when asked to sell POL, with no prompt on the agent wallet.
         if (isNativeKeyword(token, chainId)) {
-            return Triple(ETH_TOKEN_ADDRESS, 18, NATIVE_TOKENS[chainId]?.symbol ?: "ETH")
+            return Triple(ETH_TOKEN_ADDRESS, NATIVE_TOKENS[chainId]?.decimals ?: 18, NATIVE_TOKENS[chainId]?.symbol ?: "ETH")
         }
 
         // 0x-prefixed contract address. Exactly 40 hex digits: it goes straight into the 0x
         // quote URL, where anything else could add or override query parameters.
         if (token.startsWith("0x")) {
             if (!EthAddress.isWellFormed(token)) return null
+            // The native placeholders are not contracts and carry no decimals of their own.
+            if (token.equals(ETH_TOKEN_ADDRESS, ignoreCase = true) || EthAddress.isZero(token)) {
+                return Triple(ETH_TOKEN_ADDRESS, NATIVE_TOKENS[chainId]?.decimals ?: 18, NATIVE_TOKENS[chainId]?.symbol ?: "ETH")
+            }
             val decimals = resolveDecimalsByAddress(token, chainId)
                 ?: explicitDecimals
                 ?: return null
@@ -1892,7 +1928,9 @@ class WalletSkill(
 
         // Nothing asks the user before an agent swap, so an unlisted sell token's decimals are
         // the chain's, not the model's: 18 for a 6-decimal token sold 10^12 times the amount.
-        val sellDecimals = if (isSellingEth) claimedSellDecimals else {
+        // Native always has the chain's decimals: sold through the 0xEeee… or zero placeholder,
+        // the model's sell_decimals went unchecked, and 24 sold a million times the amount.
+        val sellDecimals = if (isSellingEth) NATIVE_TOKENS[chainId]?.decimals ?: 18 else {
             when (val verdict = resolveTokenDecimals(sellAddress, chainId, claimedSellDecimals)) {
                 is Erc20Check.Verdict.Ok -> verdict.decimals
                 is Erc20Check.Verdict.Refused -> return SkillResult.Error(verdict.reason)
@@ -1919,8 +1957,7 @@ class WalletSkill(
         val rpcEndpoint = chainIdToRpc(chainId)
             ?: return SkillResult.Error("No RPC endpoint for chain $chainId")
 
-        val sw = getOrCreateSubWallet(chainId)
-            ?: return subWalletUnavailableError()
+        val sw = agentSubWallet(chainId).getOrElse { return SkillResult.Error(it.message ?: "Agent wallet not available.") }
 
         return try {
             val agentAddress = withContext(Dispatchers.IO) { sw.getAddress() }
@@ -2095,21 +2132,16 @@ class WalletSkill(
                         "Supported chains: ${CHAIN_NAMES.keys.sorted().joinToString()}"
             )
 
-        val sw = defaultSubWallet ?: return subWalletUnavailableError()
-        val agentAddress = try {
-            withContext(Dispatchers.IO) { sw.getAddress() }
-        } catch (e: Exception) {
-            rethrowIfCancelled(e)
-            return SkillResult.Error("Failed to get agent wallet address: ${e.message}")
+        val agentAddress = verifiedAgentAddress().getOrElse {
+            return SkillResult.Error("Failed to get agent wallet address: ${it.message}")
         }
 
         val web3j = Web3j.build(HttpService(rpcEndpoint))
 
         return try {
-            if (token.equals("native", ignoreCase = true) || token.equals("eth", ignoreCase = true)
-                || token.equals("matic", ignoreCase = true) || token.equals("pol", ignoreCase = true)
-                || token.equals("bnb", ignoreCase = true) || token.equals("avax", ignoreCase = true)
-            ) {
+            // Only this chain's own native symbol: "POL" on Ethereum is an ERC-20, and answering it
+            // with the ETH balance labelled POL was a wrong number the model then acted on.
+            if (token.equals("native", ignoreCase = true) || isNativeKeyword(token, chainId)) {
                 // Native balance
                 val nativeInfo = NATIVE_TOKENS[chainId]
                 val response = withContext(Dispatchers.IO) {

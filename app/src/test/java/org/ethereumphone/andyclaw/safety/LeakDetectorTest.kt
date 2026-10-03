@@ -71,6 +71,22 @@ class LeakDetectorTest {
     }
 
     @Test
+    fun `key material is blanked out and the words around it stay`() {
+        val twelve = "abandon ability able about above absent absorb abstract absurd abuse access accident"
+        assertEquals("import [REDACTED] ok?", LeakDetector.redactKeyMaterial("import $twelve ok?"))
+        assertEquals("import [REDACTED] ok", LeakDetector.redactKeyMaterial("import 0x$hex64 ok"))
+        assertEquals(
+            "a [REDACTED] b [REDACTED]",
+            LeakDetector.redactKeyMaterial("a ${twelve.replace(" ", "\\n")} b $hex64"),
+        )
+        val ordinary = "send 0.1 ETH to 0xdeadbeef00000000000000000000000000000002 and call mom"
+        assertEquals(ordinary, LeakDetector.redactKeyMaterial(ordinary))
+        // Eleven words is not a phrase, so nothing goes.
+        val eleven = twelve.substringBeforeLast(" ")
+        assertEquals(eleven, LeakDetector.redactKeyMaterial(eleven))
+    }
+
+    @Test
     fun `the embedded wordlist is the canonical BIP-39 English list`() {
         val words = Bip39English.ORDERED
         assertEquals(2048, words.size)

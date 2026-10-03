@@ -128,8 +128,17 @@ class NodeApp : Application() {
         private const val DEFAULT_AGENT_ID = "default"
     }
 
-    /** Application-scoped coroutine scope for background initialisation. */
-    private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    /**
+     * Application-scoped coroutine scope for background initialisation. A failure in one of its
+     * jobs is logged, not rethrown: an uncaught throw here killed the whole process, and work
+     * that runs at every start (warm-ups, ingest) turned one bad input into a crash loop.
+     */
+    private val appScope = CoroutineScope(
+        SupervisorJob() + Dispatchers.Default +
+            kotlinx.coroutines.CoroutineExceptionHandler { _, e ->
+                Log.e(TAG, "Background job failed: ${e.javaClass.simpleName}: ${e.message}", e)
+            }
+    )
 
     val runtime: NodeRuntime by lazy { NodeRuntime(this) }
     val securePrefs: SecurePrefs by lazy { SecurePrefs(this) }
@@ -318,21 +327,29 @@ class NodeApp : Application() {
 
     // ── LED matrix (dGEN1 only) ───────────────────────────────────────────
 
-    val ledController: LedMatrixController by lazy {
+    private val ledControllerLazy = lazy {
         LedMatrixController(
             context = this,
             maxRgbProvider = { securePrefs.ledMaxBrightness.value },
         )
     }
+    val ledController: LedMatrixController by ledControllerLazy
 
     // ── Memory subsystem ───────────────────────────────────────────────
 
     val memoryManager: MemoryManager by lazy {
-        MemoryManager(this, agentId = DEFAULT_AGENT_ID)
+        MemoryManager(this, agentId = DEFAULT_AGENT_ID).also {
+            it.holdsSecret = org.ethereumphone.andyclaw.safety.LeakDetector::holdsKeyMaterial
+        }
     }
 
-    private val embeddingProvider: OpenAiEmbeddingProvider by lazy {
-        if (OsCapabilities.hasPrivilegedAccess) {
+    /**
+     * The embedder, but not while the chat runs on the phone or in Tinfoil's enclave (the same
+     * clients `AgentLoop.startPrePick` keeps Jev away from): their users chose that so their words
+     * stay there, and the embeddings endpoint is neither. Memory is keyword-only meanwhile.
+     */
+    private val embeddingProvider: org.ethereumphone.andyclaw.memory.embedding.EmbeddingProvider by lazy {
+        val remote = if (OsCapabilities.hasPrivilegedAccess) {
             OpenAiEmbeddingProvider(
                 userId = { securePrefs.walletAddress.value },
                 signature = { securePrefs.walletSignature.value },
@@ -342,6 +359,10 @@ class NodeApp : Application() {
                 apiKey = { securePrefs.apiKey.value },
                 baseUrl = "https://openrouter.ai/api/v1",
             )
+        }
+        org.ethereumphone.andyclaw.memory.GatedEmbeddingProvider(remote) {
+            val client = getLlmClient()
+            client !is LocalLlmClient && client !is TinfoilClient && client !is TinfoilProxyClient
         }
     }
 
@@ -556,7 +577,9 @@ class NodeApp : Application() {
     // ── Anticipatory context (mail and calendar, parsed deterministically) ──
 
     val predictedContextRepository: PredictedContextRepository by lazy {
-        PredictedContextRepository(PredictedContextDatabase.getInstance(this).predictedContextDao())
+        PredictedContextRepository(
+            PredictedContextDatabase.getInstance(this, onDropped = { ambientIngestStores.clear() }).predictedContextDao()
+        )
     }
 
     /** Ingest bookkeeping: its state, and the mail it has already read. Under `files/ambient/`. */
@@ -611,10 +634,13 @@ class NodeApp : Application() {
     /** Drop ingested cards — those of [sources] (name prefixes), or all — and what was read. */
     private suspend fun forgetAmbientData(sources: List<String>?) {
         try {
-            if (sources == null) predictedContextRepository.clear()
-            else sources.forEach { predictedContextRepository.clearSource(it) }
-            ambientIngestStores.clear()
-            ambientIngestStores.save(org.ethereumphone.andyclaw.ingest.IngestState())
+            // After any ingest in flight, or it writes back what it had already fetched.
+            ambientIngestor.whenIdle {
+                if (sources == null) predictedContextRepository.clear()
+                else sources.forEach { predictedContextRepository.clearSource(it) }
+                ambientIngestStores.clear()
+                ambientIngestStores.save(org.ethereumphone.andyclaw.ingest.IngestState())
+            }
         } catch (e: Exception) {
             Log.w(TAG, "clearing ambient data failed: ${e.message}", e)
         }
@@ -747,7 +773,7 @@ class NodeApp : Application() {
             register(CameraSkill(this@NodeApp))
             register(SMSSkill(this@NodeApp))
             // ethOS wallet skill
-            register(WalletSkill(this@NodeApp, agentTxRepository))
+            register(WalletSkill(this@NodeApp, agentTxRepository, agentWalletRepository))
             // ENS name resolution (forward and reverse)
             register(ENSSkill())
             // Token lookup, price, and launched tokens (DexScreener + Clanker)
@@ -794,6 +820,13 @@ class NodeApp : Application() {
                 customToolExecutor = customToolExecutor,
                 nativeSkillRegistry = this,
                 onToolsChanged = { syncCustomTools() },
+                enabledSkillIdsProvider = {
+                    if (securePrefs.yoloMode.value) {
+                        nativeSkillRegistry.getAll().map { it.id }.toSet()
+                    } else {
+                        securePrefs.enabledSkills.value
+                    }
+                },
             ))
             // Reminders — schedule notifications at specific times
             register(ReminderSkill(this@NodeApp))
@@ -942,7 +975,6 @@ class NodeApp : Application() {
             enabled = { securePrefs.autopilotEnabled.value },
             flows = { flowRepositoryOrNull },
             context = this,
-            routedApp = { jevTurnRouter?.routedApp },
         )
     }
 
@@ -1240,8 +1272,18 @@ class NodeApp : Application() {
             appScope.launch {
                 org.ethereumphone.andyclaw.autopilot.AgentDisplayCapabilities.ensureListener()
             }
-            // Whatever run takes the display is recorded, launcher chat or not.
-            org.ethereumphone.andyclaw.skills.builtin.AgentDisplayLease.listener = agentDisplayRecording
+            // Whatever run takes the display is recorded, launcher chat or not. And it gets the
+            // terminal screen's status-bar slot, where its HUD and STOP live: an emoticon of ours
+            // there is a PERSISTENT frame that held the slot for the whole run.
+            org.ethereumphone.andyclaw.skills.builtin.AgentDisplayLease.listener =
+                object : org.ethereumphone.andyclaw.skills.builtin.AgentDisplayLease.Listener {
+                    override fun onClaimed(token: org.ethereumphone.andyclaw.agent.AgentRunToken) {
+                        agentDisplayRecording.onClaimed(token)
+                        if (ledControllerLazy.isInitialized()) runCatching { ledController.yieldTerminal() }
+                    }
+
+                    override fun onReleased(runId: String) = agentDisplayRecording.onReleased(runId)
+                }
         }
 
         // Pre-load the Whisper model into RAM so voice transcription is instant.

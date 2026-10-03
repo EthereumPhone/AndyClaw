@@ -324,6 +324,27 @@ class PredictedContextRepositoryTest {
     }
 
     @Test
+    fun `a mail signed by another domain cannot cancel the card, nor become its signer`() = runTest {
+        val dao = FakeDao()
+        val repo = repo(dao)
+        repo.put(flight(6 * hour, payload = """{"authenticated":true,"from_domain":"lufthansa.com","observed_ms":100}"""))
+
+        repo.put(flight(6 * hour, payload = """{"authenticated":true,"from_domain":"lufthansa-info.example","cancelled":true,"observed_ms":200}"""))
+        assertTrue(!repo.all().single().cancelled)
+
+        // An update from it lands, but the row stays the airline's, so a second mail cannot cancel either.
+        repo.put(flight(6 * hour, payload = """{"authenticated":true,"from_domain":"lufthansa-info.example","terminal":"1","observed_ms":300}"""))
+        repo.put(flight(6 * hour, payload = """{"authenticated":true,"from_domain":"lufthansa-info.example","cancelled":true,"observed_ms":400}"""))
+        val row = repo.all().single()
+        assertTrue(!row.cancelled)
+        assertEquals("lufthansa.com", PredictedContextPayload.parse(row.payloadJson)["from_domain"]?.let { (it as kotlinx.serialization.json.JsonPrimitive).content })
+
+        // The airline itself, from a subdomain, still can.
+        repo.put(flight(6 * hour, payload = """{"authenticated":true,"from_domain":"mail.lufthansa.com","cancelled":true,"observed_ms":500}"""))
+        assertTrue(repo.all().single().cancelled)
+    }
+
+    @Test
     fun `signed mail replaces what unsigned mail said`() = runTest {
         val dao = FakeDao()
         val repo = repo(dao)

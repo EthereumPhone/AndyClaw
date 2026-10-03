@@ -190,6 +190,8 @@ data class ExecutedAction(
     val subgoalIndex: Int,
     val screenBefore: ScreenSnapshot,
     val changedScreen: Boolean,
+    /** Acted on as an action that sends, posts, buys or deletes ([StepDecision.Act.commits]). */
+    val commits: Boolean = false,
 )
 
 /**
@@ -644,7 +646,7 @@ class AutopilotExecutor(
                         trace += label
                         history += HistoryEntry(label, outcome.changedScreen)
                         actions += ExecutedAction(option, target, (option as? StepOption.Type)?.valueKey,
-                            subgoal, screen, outcome.changedScreen)
+                            subgoal, screen, outcome.changedScreen, commits = resolved.commits)
                         lastActed = screen to option
                         lastChangedScreen = outcome.changedScreen
                         lastActionCommitted = resolved.commits

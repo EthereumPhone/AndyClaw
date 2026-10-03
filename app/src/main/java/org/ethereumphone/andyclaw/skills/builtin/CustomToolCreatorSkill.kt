@@ -11,6 +11,8 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
 import kotlinx.serialization.json.putJsonObject
+import org.ethereumphone.andyclaw.ExecutionEngine.Provenance
+import org.ethereumphone.andyclaw.ExecutionEngine.currentProvenance
 import org.ethereumphone.andyclaw.skills.AndyClawSkill
 import org.ethereumphone.andyclaw.skills.NativeSkillRegistry
 import org.ethereumphone.andyclaw.skills.SkillManifest
@@ -30,6 +32,8 @@ class CustomToolCreatorSkill(
     private val customToolExecutor: CustomToolExecutor,
     private val nativeSkillRegistry: NativeSkillRegistry,
     private val onToolsChanged: () -> Unit,
+    /** The skills enabled right now; `test_custom_tool` runs only a custom tool among them. */
+    private val enabledSkillIdsProvider: (() -> Set<String>)? = null,
 ) : AndyClawSkill {
 
     companion object {
@@ -139,6 +143,9 @@ class CustomToolCreatorSkill(
                         add(JsonPrimitive("test_params"))
                     }
                 },
+                // It runs the saved tool's code with whatever parameters it is given — the same
+                // call the tool itself needs approval for.
+                requiresApproval = true,
             ),
         ),
     )
@@ -158,7 +165,7 @@ class CustomToolCreatorSkill(
 
     // ── create_custom_tool ──────────────────────────────────────────────
 
-    private fun executeCreate(params: JsonObject, tier: Tier): SkillResult {
+    private suspend fun executeCreate(params: JsonObject, tier: Tier): SkillResult {
         val name = params["name"]?.jsonPrimitive?.contentOrNull
             ?: return SkillResult.Error("Missing required parameter: name")
         val description = params["description"]?.jsonPrimitive?.contentOrNull
@@ -208,9 +215,12 @@ class CustomToolCreatorSkill(
             return SkillResult.Error("Parameters schema must have 'type': 'object'")
         }
 
-        // Test-run the code with test_params
+        // Test-run the code with test_params, with the handles the saved tool would get here.
         Log.i(TAG, "Test-running custom tool '$name' before saving...")
-        val testResult = customToolExecutor.execute(code, testParams)
+        val testResult = customToolExecutor.executeCancellable(
+            code, testParams,
+            bindAndroidHandles = currentProvenance() == Provenance.USER,
+        )
 
         if (testResult is SkillResult.Error) {
             return SkillResult.Error(
@@ -290,7 +300,7 @@ class CustomToolCreatorSkill(
 
     // ── test_custom_tool ────────────────────────────────────────────────
 
-    private fun executeTest(params: JsonObject): SkillResult {
+    private suspend fun executeTest(params: JsonObject): SkillResult {
         val name = params["name"]?.jsonPrimitive?.contentOrNull
             ?: return SkillResult.Error("Missing required parameter: name")
         val testParams = try {
@@ -300,10 +310,21 @@ class CustomToolCreatorSkill(
             return SkillResult.Error("Invalid test_params: must be a JSON object")
         }
 
+        // Not a way around the switch: a custom tool the user turned off stays off here too.
+        if ("custom:$name" !in enabledSkillIdsProvider?.invoke().orEmpty()) {
+            return SkillResult.Error(
+                "Custom tool '$name' is not enabled, so it cannot be tested. The user can enable it in Settings."
+            )
+        }
+
         val tool = customToolStore.load(name)
             ?: return SkillResult.Error("Custom tool '$name' not found. Use list_custom_tools to see available tools.")
 
         Log.i(TAG, "Testing custom tool '$name'...")
-        return customToolExecutor.execute(tool.code, testParams)
+        // Cancellable, like the tool itself: STOP used to wait out the whole 30 s timeout.
+        return customToolExecutor.executeCancellable(
+            tool.code, testParams,
+            bindAndroidHandles = currentProvenance() == Provenance.USER,
+        )
     }
 }

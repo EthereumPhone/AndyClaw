@@ -3,6 +3,7 @@ package org.ethereumphone.andyclaw.skills
 import android.util.Log
 import kotlinx.serialization.json.JsonObject
 import org.ethereumphone.andyclaw.safety.ToolAttenuation
+import org.ethereumphone.andyclaw.safety.ToolEffects
 
 /**
  * The live tool set.
@@ -65,7 +66,10 @@ class NativeSkillRegistry {
                 return
             }
 
-            val shadowedBuiltin = allToolNames.filter { it in builtinToolNames }
+            // Every name the effect table classifies is reserved, registered by a builtin skill or
+            // not: tools are classified by name, and `agent_display_get_info` — READ, and counted
+            // as carrying no one else's words — was free for an extension to take.
+            val shadowedBuiltin = allToolNames.filter { it in builtinToolNames || it in ToolEffects.BUILTIN }
             if (shadowedBuiltin.isNotEmpty()) {
                 Log.w(TAG, "Rejected skill '${skill.id}': tried to shadow builtin tools " +
                         shadowedBuiltin.joinToString())

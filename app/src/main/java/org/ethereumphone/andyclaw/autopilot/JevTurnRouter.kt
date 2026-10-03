@@ -9,6 +9,10 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import org.ethereumphone.andyclaw.llm.LlmClient
+import org.ethereumphone.andyclaw.llm.LocalLlmClient
+import org.ethereumphone.andyclaw.llm.TinfoilClient
+import org.ethereumphone.andyclaw.llm.TinfoilProxyClient
 import org.ethereumphone.andyclaw.services.AgentDisplayAccessibilityService
 import org.ethereumphone.andyclaw.skills.builtin.AgentDisplayBinder
 import org.ethereumphone.andyclaw.skills.builtin.AgentDisplayLease
@@ -36,34 +40,42 @@ class JevTurnRouter(
     @Volatile private var appsLoadedUptime = 0L
 
     /**
-     * The installed app Jev chose for the current turn's request, confident enough to act on,
-     * whether or not the request looked UI-bound enough to prelaunch it. The autopilot falls back
-     * to it when the plan names a package that is not installed: the model guesses package names
+     * The installed app Jev chose for one turn's request, confident enough to act on, whether or
+     * not the request looked UI-bound enough to prelaunch it. The autopilot falls back to it when
+     * the plan names a package that is not installed: the model guesses package names
      * (`com.google.android.calculator` on a phone whose calculator is `com.dgen.dgencalculator`),
      * and this is the one place that chose from what is actually on the phone.
+     *
+     * One per turn, handed to that turn's run (`AutopilotRunContext.routedApp`). It was one value
+     * for the whole process: a cron run hours later, which never asks, opened the app the last
+     * chat had been routed to, and two turns from different screens overwrote each other's.
      */
-    @Volatile var routedApp: String? = null
-        private set
-    private val turn = java.util.concurrent.atomic.AtomicInteger()
+    class Route {
+        @Volatile var app: String? = null
+    }
 
-    /** Fire-and-forget. Never blocks or fails the turn. */
-    fun prewarm(userMessage: String) {
-        // A new request: the previous one's app must never be carried over to it.
-        routedApp = null
-        val thisTurn = turn.incrementAndGet()
-        if (!enabled()) return
-        val client = jev() ?: return
-        if (userMessage.isBlank()) return
+    /**
+     * Fire-and-forget. Never blocks or fails the turn. [client] is the model the turn runs on:
+     * a confidential (Tinfoil) or on-device model is the user's choice that the request does not
+     * leave for anyone else, and Jev is reached through the backend and OpenRouter.
+     */
+    fun prewarm(userMessage: String, client: LlmClient): Route {
+        val turnRoute = Route()
+        if (client is TinfoilProxyClient || client is TinfoilClient || client is LocalLlmClient) return turnRoute
+        if (!enabled()) return turnRoute
+        val jevClient = jev() ?: return turnRoute
+        if (userMessage.isBlank()) return turnRoute
         scope.launch {
             try {
-                route(client, userMessage, thisTurn)
+                route(jevClient, userMessage, turnRoute)
             } catch (e: Exception) {
                 Log.d(TAG, "prewarm skipped: ${e.message}")
             }
         }
+        return turnRoute
     }
 
-    private suspend fun route(client: JevHttpClient, message: String, thisTurn: Int) {
+    private suspend fun route(client: JevHttpClient, message: String, turnRoute: Route) {
         val candidates = rankedApps(message)
         // Only a message that names an installed app goes to Jev here. Everything else is not
         // an app task worth prewarming, and need not leave the device for this.
@@ -87,9 +99,9 @@ class JevTurnRouter(
         val app = response.choice(APP)
         Log.i(TAG, "route needsUi=${"%.2f".format(needsUi)} app=${app?.choice} " +
             "conf=${app?.confidence?.let { "%.2f".format(it) }} in ${SystemClock.elapsedRealtime() - started}ms")
-        // Only for the turn that asked: a slow answer must not land on the next request.
-        if (app != null && app.choice != NONE && app.confidence >= THRESHOLD && turn.get() == thisTurn) {
-            routedApp = app.choice
+        // Only on the turn that asked, which is the only one holding this route.
+        if (app != null && app.choice != NONE && app.confidence >= THRESHOLD) {
+            turnRoute.app = app.choice
         }
         if (needsUi < THRESHOLD || app == null || app.choice == NONE || app.confidence < THRESHOLD) return
         prelaunch(app.choice)

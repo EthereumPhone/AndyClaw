@@ -3,6 +3,7 @@ package org.ethereumphone.andyclaw.memory
 import android.content.Context
 import android.util.Log
 import kotlinx.coroutines.flow.Flow
+import org.ethereumphone.andyclaw.ExecutionEngine.rethrowIfCancelled
 import org.ethereumphone.andyclaw.memory.db.MemoryDatabase
 import org.ethereumphone.andyclaw.memory.embedding.EmbeddingProvider
 import org.ethereumphone.andyclaw.memory.model.MemoryEntry
@@ -45,6 +46,12 @@ class MemoryManager(
 ) {
     companion object {
         private const val TAG = "MemoryManager"
+
+        /** After a failed embedding pass, stores skip embedding for this long. */
+        private const val EMBED_RETRY_MS = 10 * 60_000L
+
+        const val REFUSED_SECRET =
+            "Not stored: it looks like a private key or a recovery phrase, which is never kept in memory."
     }
 
     private val database: MemoryDatabase = MemoryDatabase.getInstance(context)
@@ -52,6 +59,21 @@ class MemoryManager(
     private val repository = MemoryRepository(database, dao, chunkingEngine)
     private val searchManager = MemorySearchManager(dao)
     private var embeddingProvider: EmbeddingProvider? = null
+
+    /**
+     * True for text that must never be written down or sent to the embedder: [store] and
+     * [update] refuse it, and a [search] for it stays keyword-only. The app passes its
+     * key-material check, so a recovery phrase or a private key typed into chat does not become
+     * a memory that is embedded remotely and put back into every later prompt.
+     */
+    @Volatile
+    var holdsSecret: (String) -> Boolean = { false }
+
+    @Volatile
+    private var embedRetryAt = 0L
+
+    /** Chunks the embedder refused for their content, left out until the process restarts. */
+    private val rejectedChunks: MutableSet<Long> = java.util.Collections.synchronizedSet(HashSet())
 
     // ── Store ───────────────────────────────────────────────────────
 
@@ -66,6 +88,7 @@ class MemoryManager(
      * @param tags       Optional categorisation tags.
      * @param importance Weight in [0,1]; higher values surface first.
      * @return The stored [MemoryEntry].
+     * @throws MemoryRefusedException when [holdsSecret] is true for [content].
      */
     suspend fun store(
         content: String,
@@ -74,6 +97,10 @@ class MemoryManager(
         importance: Float = 0.5f,
         type: MemoryType? = null,
     ): MemoryEntry {
+        if (holdsSecret(content)) {
+            Log.w(TAG, "Refusing to store a memory that holds key material (source=$source)")
+            throw MemoryRefusedException(REFUSED_SECRET)
+        }
         Log.d(TAG, "Storing memory: source=$source, type=$type, tags=$tags, importance=$importance, " +
             "contentLength=${content.length}")
         val entry = repository.store(agentId, content, source, tags, importance, type)
@@ -81,14 +108,16 @@ class MemoryManager(
 
         // Eagerly embed new chunks so they are searchable immediately
         val provider = embeddingProvider
-        if (provider != null) {
+        if (provider != null && System.currentTimeMillis() >= embedRetryAt) {
             try {
-                val embedded = repository.embedUnprocessedChunks(agentId, provider)
+                val embedded = repository.embedNewChunks(agentId, entry.id, provider, rejectedChunks)
                 Log.d(TAG, "Embedded $embedded new chunk(s) for memory ${entry.id}")
             } catch (e: Exception) {
-                Log.w(TAG, "Failed to embed chunks at store time: ${e.message}", e)
+                rethrowIfCancelled(e)
+                embedRetryAt = System.currentTimeMillis() + EMBED_RETRY_MS
+                Log.w(TAG, "Failed to embed chunks at store time, pausing embedding: ${e.message}")
             }
-        } else {
+        } else if (provider == null) {
             Log.d(TAG, "No embedding provider set — chunks stored without embeddings")
         }
 
@@ -115,9 +144,11 @@ class MemoryManager(
         minScore: Float = MemorySearchManager.DEFAULT_MIN_SCORE,
         tags: List<String>? = null,
     ): List<MemorySearchResult> {
-        Log.d(TAG, "Searching memory: query=\"$query\", maxResults=$maxResults, " +
+        Log.d(TAG, "Searching memory: queryLength=${query.length}, maxResults=$maxResults, " +
             "minScore=$minScore, tags=$tags")
-        val results = searchManager.search(query, agentId, maxResults, minScore, tags)
+        // A memory stored before [holdsSecret] guarded writes is not put back into a prompt either.
+        val results = searchManager.search(query, agentId, maxResults, minScore, tags, useVectors = !holdsSecret(query))
+            .filterNot { holdsSecret(it.snippet) }
         Log.i(TAG, "Search returned ${results.size} result(s)" +
             if (results.isNotEmpty()) ": ${results.map { "id=${it.memoryId} score=${"%.2f".format(it.score)}" }}" else "")
         return results
@@ -180,6 +211,7 @@ class MemoryManager(
         tags: List<String>? = null,
         importance: Float? = null,
     ): MemoryEntry? {
+        if (holdsSecret(content)) throw MemoryRefusedException(REFUSED_SECRET)
         return repository.update(memoryId, content, tags, importance)
     }
 
@@ -265,3 +297,6 @@ class MemoryManager(
         database.close()
     }
 }
+
+/** A memory write [MemoryManager] declined; the message says why, for the caller to pass on. */
+class MemoryRefusedException(message: String) : IllegalArgumentException(message)

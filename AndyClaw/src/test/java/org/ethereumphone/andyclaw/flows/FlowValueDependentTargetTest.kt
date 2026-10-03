@@ -48,7 +48,7 @@ class FlowValueDependentTargetTest {
 
     private fun results(row: String) = Screen(listOf(
         Triple("search_field", "search_bar", null),
-        Triple("contact_row", "list_item", row),
+        Triple("contact_row", "menu_item", row),
     ))
     private fun thread(title: String) = Screen(listOf(
         Triple("toolbar_title", "text", title),
@@ -118,14 +118,25 @@ class FlowValueDependentTargetTest {
     @Test
     fun `a near miss is a word prefix on a row's name, never a control or a preview`() {
         fun tree(type: String, label: String) = Screen(listOf(Triple("x", type, label))).json()
-        assertEquals("Bob", FlowTargetGuard.partialValueMatch(tree("list_item", "Bobby"), "x", listOf("Bob")))
-        assertNull(FlowTargetGuard.partialValueMatch(tree("list_item", "Bob"), "x", listOf("Bob")))
-        assertNull("inside a word is not a search hit", FlowTargetGuard.partialValueMatch(tree("list_item", "this is fine"), "x", listOf("hi")))
+        // menu_item is what ScreenAnalyzer calls every aggregated row; a search hit can be search_bar.
+        assertEquals("Bob", FlowTargetGuard.partialValueMatch(tree("menu_item", "Bobby"), "x", listOf("Bob")))
+        assertEquals("Bob", FlowTargetGuard.partialValueMatch(tree("search_bar", "Bobby"), "x", listOf("Bob")))
+        assertNull(FlowTargetGuard.partialValueMatch(tree("menu_item", "Bob"), "x", listOf("Bob")))
+        assertNull("inside a word is not a search hit", FlowTargetGuard.partialValueMatch(tree("menu_item", "this is fine"), "x", listOf("hi")))
         assertNull("a button's words are what it does", FlowTargetGuard.partialValueMatch(tree("button", "Done"), "x", listOf("Do")))
-        assertNull("one-letter values say nothing", FlowTargetGuard.partialValueMatch(tree("list_item", "Bobby"), "x", listOf("B")))
+        assertNull("one-letter values say nothing", FlowTargetGuard.partialValueMatch(tree("menu_item", "Bobby"), "x", listOf("B")))
         // A preview is content, not who the row is.
-        val preview = """{"screen":{"package":"com.msg"},"elements":[{"type":"list_item","viewId":"x","label":"Anna","summary":"thisisfine"}]}"""
+        val preview = """{"screen":{"package":"com.msg"},"elements":[{"type":"menu_item","viewId":"x","label":"Anna","summary":"thisisfine"}]}"""
         assertNull(FlowTargetGuard.partialValueMatch(preview, "x", listOf("this")))
+    }
+
+    @Test
+    fun `only a value typed before the tap can make its row a near miss`() = runTest {
+        // "Hi" is a word prefix of "Hinton", but it is typed after the row is opened: it picked nothing.
+        val driver = Driver(listOf(results("Bob Hinton"), thread("Bob Hinton"), sent))
+        val result = interpreter(driver).run(legacy, mapOf("name" to "Bob", "body" to "Hi"))
+        assertTrue("expected completion, got $result", result is FlowRunResult.Completed)
+        assertEquals(listOf("contact_row", "send_button"), driver.clicks)
     }
 
     @Test

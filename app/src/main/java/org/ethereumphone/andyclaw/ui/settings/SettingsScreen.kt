@@ -190,16 +190,8 @@ fun SettingsScreen(
     val contentBodyStyle = AppTextStyles.contentBody(primaryColor)
     val rowControlSpacing = 20.dp
 
-    val providerChoices = if (viewModel.isPrivileged) {
-        // OPENAI_OAUTH (ChatGPT via Codex Responses) is built but hidden from
-        // the picker until the live round-trip is validated. The enum entry,
-        // client, token manager, model entries, and Settings UI all stay in
-        // the tree; re-add OPENAI_OAUTH here to re-enable. See chatgpt-oauth
-        // memory entry for the v1 limitations (no tools, no 401-retry).
-        listOf(LlmProvider.ETHOS_PREMIUM, LlmProvider.OPEN_ROUTER, LlmProvider.CLAUDE_OAUTH, LlmProvider.OPENAI, LlmProvider.VENICE, LlmProvider.TINFOIL, LlmProvider.LOCAL, LlmProvider.CUSTOM)
-    } else {
-        listOf(LlmProvider.OPEN_ROUTER, LlmProvider.CLAUDE_OAUTH, LlmProvider.OPENAI, LlmProvider.VENICE, LlmProvider.TINFOIL, LlmProvider.LOCAL, LlmProvider.CUSTOM)
-    }
+    // One list for this screen and `/provider` (see ProviderSwitch for why OPENAI_OAUTH is hidden).
+    val providerChoices = ProviderSwitch.choices(viewModel.isPrivileged)
 
     DgenBackNavigationBackground(
         title = when (currentSubScreen) {
@@ -578,7 +570,8 @@ fun SettingsScreen(
                             color = primaryColor,
                         )
                         Text(
-                            text = "~2.5 GB Q4_K_M quantization",
+                            // What ModelDownloadManager fetches: the Q2_K file, about 750 MB.
+                            text = "~750 MB Q2_K quantization",
                             style = contentBodyStyle,
                             color = dgenWhite,
                         )
@@ -1317,75 +1310,18 @@ fun SettingsScreen(
                 }
             }
 
-            // Telegram Bot
-            Spacer(Modifier.height(24.dp))
-            GlowingDivider(primaryColor)
-            Spacer(Modifier.height(16.dp))
-
-            Text(
-                text = "TELEGRAM BOT",
-                color = primaryColor,
-                style = sectionTitleStyle,
+            TelegramBotSection(
+                viewModel = viewModel,
+                botEnabled = telegramBotEnabled,
+                ownerChatId = telegramOwnerChatId,
+                showOnboarding = showTelegramOnboarding,
+                onShowOnboarding = { showTelegramOnboarding = it },
+                primaryColor = primaryColor,
+                sectionTitleStyle = sectionTitleStyle,
+                contentTitleStyle = contentTitleStyle,
+                contentBodyStyle = contentBodyStyle,
+                rowControlSpacing = rowControlSpacing,
             )
-            Spacer(Modifier.height(8.dp))
-
-            val telegramConfigured = telegramBotEnabled && telegramOwnerChatId != 0L
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(vertical = 16.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    if (telegramConfigured) {
-                        Text(
-                            text = "TELEGRAM BOT CONNECTED",
-                            style = contentTitleStyle,
-                            color = primaryColor,
-                        )
-                        Text(
-                            text = "The AI can send you proactive messages via Telegram",
-                            style = contentBodyStyle,
-                            color = dgenWhite,
-                        )
-                    } else {
-                        Text(
-                            text = "NOT CONFIGURED",
-                            style = contentTitleStyle,
-                            color = primaryColor,
-                        )
-                        Text(
-                            text = "Set up a Telegram bot so the AI can reach you via Telegram",
-                            style = contentBodyStyle,
-                            color = dgenWhite,
-                        )
-                    }
-                }
-                Spacer(Modifier.width(rowControlSpacing))
-                if (telegramConfigured) {
-                    DgenSmallPrimaryButton(
-                        text = "Disconnect",
-                        primaryColor = primaryColor,
-                        onClick = { viewModel.clearTelegramSetup() },
-                    )
-                } else {
-                    DgenSmallPrimaryButton(
-                        text = "Set up",
-                        primaryColor = primaryColor,
-                        onClick = { showTelegramOnboarding = true },
-                    )
-                }
-            }
-
-            if (showTelegramOnboarding) {
-                TelegramOnboardingDialog(
-                    onComplete = { token, ownerChatId ->
-                        viewModel.completeTelegramSetup(token, ownerChatId)
-                        showTelegramOnboarding = false
-                    },
-                    onDismiss = { showTelegramOnboarding = false },
-                )
-            }
 
             // Google Workspace
             Spacer(Modifier.height(24.dp))
@@ -2618,6 +2554,120 @@ private fun SelectionRow(
     }
 }
 
+/** The Telegram bot's row: connected, connected with no verified owner, or not set up. */
+@Composable
+private fun TelegramBotSection(
+    viewModel: SettingsViewModel,
+    botEnabled: Boolean,
+    ownerChatId: Long,
+    showOnboarding: Boolean,
+    onShowOnboarding: (Boolean) -> Unit,
+    primaryColor: Color,
+    sectionTitleStyle: androidx.compose.ui.text.TextStyle,
+    contentTitleStyle: androidx.compose.ui.text.TextStyle,
+    contentBodyStyle: androidx.compose.ui.text.TextStyle,
+    rowControlSpacing: androidx.compose.ui.unit.Dp,
+) {
+    // Telegram Bot
+    Spacer(Modifier.height(24.dp))
+    GlowingDivider(primaryColor)
+    Spacer(Modifier.height(16.dp))
+
+    Text(
+        text = "TELEGRAM BOT",
+        color = primaryColor,
+        style = sectionTitleStyle,
+    )
+    Spacer(Modifier.height(8.dp))
+
+    val telegramConfigured = botEnabled && ownerChatId != 0L
+    // Running, but set up before owners were verified: it answers whoever writes as a
+    // stranger. Showing that as "not configured" hid a live bot and offered no way off.
+    val telegramUnverified = botEnabled && ownerChatId == 0L
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 16.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            if (telegramConfigured) {
+                Text(
+                    text = "TELEGRAM BOT CONNECTED",
+                    style = contentTitleStyle,
+                    color = primaryColor,
+                )
+                Text(
+                    text = "The AI can send you proactive messages via Telegram",
+                    style = contentBodyStyle,
+                    color = dgenWhite,
+                )
+            } else if (telegramUnverified) {
+                Text(
+                    text = "CONNECTED, NO VERIFIED OWNER",
+                    style = contentTitleStyle,
+                    color = primaryColor,
+                )
+                Text(
+                    text = "The bot answers anyone who writes to it, as a stranger. " +
+                        "Set it up again to verify yourself, or disconnect it.",
+                    style = contentBodyStyle,
+                    color = dgenWhite,
+                )
+            } else {
+                Text(
+                    text = "NOT CONFIGURED",
+                    style = contentTitleStyle,
+                    color = primaryColor,
+                )
+                Text(
+                    text = "Set up a Telegram bot so the AI can reach you via Telegram",
+                    style = contentBodyStyle,
+                    color = dgenWhite,
+                )
+            }
+        }
+        Spacer(Modifier.width(rowControlSpacing))
+        if (telegramConfigured) {
+            DgenSmallPrimaryButton(
+                text = "Disconnect",
+                primaryColor = primaryColor,
+                onClick = { viewModel.clearTelegramSetup() },
+            )
+        } else if (telegramUnverified) {
+            Column(horizontalAlignment = Alignment.End) {
+                DgenSmallPrimaryButton(
+                    text = "Set up",
+                    primaryColor = primaryColor,
+                    onClick = { onShowOnboarding(true) },
+                )
+                Spacer(Modifier.height(8.dp))
+                DgenSmallPrimaryButton(
+                    text = "Disconnect",
+                    primaryColor = primaryColor,
+                    onClick = { viewModel.clearTelegramSetup() },
+                )
+            }
+        } else {
+            DgenSmallPrimaryButton(
+                text = "Set up",
+                primaryColor = primaryColor,
+                onClick = { onShowOnboarding(true) },
+            )
+        }
+    }
+
+    if (showOnboarding) {
+        TelegramOnboardingDialog(
+            onComplete = { token, ownerChatId ->
+                viewModel.completeTelegramSetup(token, ownerChatId)
+                onShowOnboarding(false)
+            },
+            onDismiss = { onShowOnboarding(false) },
+        )
+    }
+}
+
 @Composable
 private fun GlowingDivider(primaryColor: Color) {
     HorizontalDivider(
@@ -2846,6 +2896,8 @@ private fun AgentWalletSection(
 
 private fun providerDisabledMessage(provider: LlmProvider): String = when (provider) {
     LlmProvider.LOCAL -> "Download the model in AI Provider settings"
+    // Its key is optional; what it cannot do without is the server's URL and a model id.
+    LlmProvider.CUSTOM -> "Set the server URL and model in AI Provider settings"
     else -> "Set up API key in AI Provider settings"
 }
 

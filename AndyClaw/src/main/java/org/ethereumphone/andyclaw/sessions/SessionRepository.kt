@@ -85,6 +85,11 @@ class SessionRepository(
         dao.getSession(sessionId)?.toDomain()
     }
 
+    /** The session with id [sessionId] as it changes; null while there is none. */
+    fun observeSession(sessionId: String): Flow<Session?> {
+        return dao.observeSession(sessionId).map { it?.toDomain() }
+    }
+
     /**
      * Reactive stream of all sessions for an agent, newest first.
      */
@@ -214,7 +219,8 @@ class SessionRepository(
      * Append a message to a session's transcript.
      *
      * Automatically assigns the next [orderIndex] and bumps the
-     * session's [updatedAt].
+     * session's [updatedAt]. A session deleted in the meantime comes back as an empty shell
+     * for [agentId] rather than failing the write.
      *
      * @return The persisted [SessionMessage].
      */
@@ -224,9 +230,17 @@ class SessionRepository(
         content: String,
         toolName: String? = null,
         toolCallId: String? = null,
+        agentId: String = SessionKey.DEFAULT_AGENT_ID,
     ): SessionMessage = withContext(Dispatchers.IO) {
-        val orderIndex = dao.getMessageCount(sessionId)
         val now = System.currentTimeMillis()
+        val shell = SessionEntity(
+            id = sessionId,
+            agentId = agentId,
+            title = "New Chat",
+            createdAt = now,
+            updatedAt = now,
+            sessionKey = SessionKey.buildMainSessionKey(agentId, sessionId),
+        )
         val entity = SessionMessageEntity(
             id = UUID.randomUUID().toString(),
             sessionId = sessionId,
@@ -235,11 +249,9 @@ class SessionRepository(
             toolName = toolName,
             toolCallId = toolCallId,
             timestamp = now,
-            orderIndex = orderIndex,
+            orderIndex = 0,
         )
-        dao.insertMessage(entity)
-        dao.updateSessionTimestamp(sessionId, now)
-        entity.toDomain()
+        dao.appendMessage(shell, entity).toDomain()
     }
 
     // ── Messages: Read ───────────────────────────────────────────────

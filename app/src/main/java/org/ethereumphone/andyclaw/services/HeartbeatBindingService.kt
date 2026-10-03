@@ -17,10 +17,13 @@ import androidx.core.app.NotificationCompat
 import java.io.File
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.dropWhile
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -57,7 +60,15 @@ class HeartbeatBindingService : Service() {
         private const val LOW_BALANCE_CHANNEL_ID = "andyclaw_low_balance"
         private const val LOW_BALANCE_NOTIFICATION_ID = 1001
         private const val LOW_BALANCE_THRESHOLD = 5.0
-        private const val MAX_DEFERRED_UNTIL_UNLOCK = 20
+        /** When the low-balance alert last went up; it goes up at most once a day. */
+        private const val LOW_BALANCE_SHOWN_KEY = "lowBalance.lastShownMs"
+        private const val LOW_BALANCE_INTERVAL_MS = 24L * 60 * 60 * 1000
+        /** queryUpdate() only queues the fetch; this is how long the read waits for it. */
+        private const val BALANCE_REFRESH_WAIT_MS = 10_000L
+        /** Cron jobs and reminders kept while locked: one each, so the OS's own caps (20 + 50) bound it. */
+        private const val MAX_DEFERRED_UNTIL_UNLOCK = 80
+        /** Telegram messages kept while locked, in order. */
+        private const val MAX_DEFERRED_MESSAGES_UNTIL_UNLOCK = 100
         /**
          * A hang guard, not a budget: the wake lock covers [HEARTBEAT_TIMEOUT_MS], the run itself
          * may take longer, but one that never ends must not hold the XMTP queue or a Telegram
@@ -148,8 +159,16 @@ class HeartbeatBindingService : Service() {
      * Work the OS delivered before the user first unlocked. Every one of these calls is oneway
      * and the OS does not redeliver, so a reminder, a cron job or a Telegram message dropped
      * here was simply gone. Bounded: a device that sits locked for days must not grow this.
+     *
+     * A cron job or reminder is kept once, however often it fired meanwhile, the latest firing
+     * winning: the OS re-arms a cron job after every firing, so one armed at boot came back at
+     * the unlock as a burst of identical runs — twelve paid runs, and twelve of its side effect,
+     * for a 15-minute job three hours locked. Telegram messages are each kept, in order, in a
+     * queue of their own: the OS has already consumed them, and a burst of cron firings used to
+     * crowd them out of the shared one.
      */
-    private val deferredUntilUnlock = ArrayList<Pair<String, () -> Unit>>()
+    private val deferredUntilUnlock = LinkedHashMap<String, Pair<String, () -> Unit>>()
+    private val deferredMessagesUntilUnlock = ArrayDeque<Pair<String, () -> Unit>>()
     private var unlockReceiver: android.content.BroadcastReceiver? = null
 
     private val binder = object : IHeartbeatService.Stub() {
@@ -192,7 +211,7 @@ class HeartbeatBindingService : Service() {
                 Log.e(TAG, "reminderFired: could not post the reminder notification", e)
             }
             removeStoredReminderQuietly(reminderId)
-            whenRuntimeReady("reminder $reminderId", deferIfLocked = true) {
+            whenRuntimeReady("reminder $reminderId", deferIfLocked = true, coalesceKey = "reminder:$reminderId") {
                 removeStoredReminderQuietly(reminderId)
                 performReminder(reminderId, time, message, label)
             }
@@ -201,7 +220,7 @@ class HeartbeatBindingService : Service() {
         override fun cronjobFired(cronjobId: Int, intervalMs: Long, reason: String, label: String) {
             enforceSystemCaller()
             Log.i(TAG, "cronjobFired() from OS: id=$cronjobId label=$label interval=${intervalMs / 60000}min reason=\"${reason.take(80)}\"")
-            whenRuntimeReady("cron job $cronjobId", deferIfLocked = true) {
+            whenRuntimeReady("cron job $cronjobId", deferIfLocked = true, coalesceKey = "cron:$cronjobId") {
                 performCronjob(cronjobId, intervalMs, reason, label)
             }
         }
@@ -273,9 +292,15 @@ class HeartbeatBindingService : Service() {
     /**
      * Runs [action] once the runtime is ready. Before the first unlock, [deferIfLocked] work is
      * kept (bounded) and run on ACTION_USER_UNLOCKED; anything else, or anything that finds the
-     * runtime failing on an unlocked device, is dropped with a log line.
+     * runtime failing on an unlocked device, is dropped with a log line. With a [coalesceKey]
+     * only the latest such work is kept; without one, every item is kept in order.
      */
-    private fun whenRuntimeReady(what: String, deferIfLocked: Boolean, action: () -> Unit) {
+    private fun whenRuntimeReady(
+        what: String,
+        deferIfLocked: Boolean,
+        coalesceKey: String? = null,
+        action: () -> Unit,
+    ) {
         if (ensureRuntimeReady()) {
             action()
             return
@@ -285,12 +310,22 @@ class HeartbeatBindingService : Service() {
             return
         }
         synchronized(deferredUntilUnlock) {
-            if (deferredUntilUnlock.size >= MAX_DEFERRED_UNTIL_UNLOCK) {
-                Log.w(TAG, "Locked since boot and $MAX_DEFERRED_UNTIL_UNLOCK items already waiting; dropping $what")
-                return
+            if (coalesceKey != null) {
+                val again = coalesceKey in deferredUntilUnlock
+                if (!again && deferredUntilUnlock.size >= MAX_DEFERRED_UNTIL_UNLOCK) {
+                    Log.w(TAG, "Locked since boot and $MAX_DEFERRED_UNTIL_UNLOCK items already waiting; dropping $what")
+                    return
+                }
+                deferredUntilUnlock[coalesceKey] = what to action
+                Log.i(TAG, "Locked since boot; keeping $what until the user unlocks" + if (again) " (replacing an earlier firing)" else "")
+            } else {
+                if (deferredMessagesUntilUnlock.size >= MAX_DEFERRED_MESSAGES_UNTIL_UNLOCK) {
+                    Log.w(TAG, "Locked since boot and $MAX_DEFERRED_MESSAGES_UNTIL_UNLOCK messages already waiting; dropping $what")
+                    return
+                }
+                deferredMessagesUntilUnlock.addLast(what to action)
+                Log.i(TAG, "Locked since boot; keeping $what until the user unlocks")
             }
-            deferredUntilUnlock += what to action
-            Log.i(TAG, "Locked since boot; keeping $what until the user unlocks")
             if (unlockReceiver == null) {
                 val receiver = object : android.content.BroadcastReceiver() {
                     override fun onReceive(context: Context, intent: Intent) {
@@ -316,17 +351,21 @@ class HeartbeatBindingService : Service() {
             // it is bounded; once unlocked there is nothing to wait for.
             if (isUserUnlocked()) {
                 synchronized(deferredUntilUnlock) {
-                    if (deferredUntilUnlock.isNotEmpty()) {
-                        Log.w(TAG, "Runtime failed after unlock; dropping ${deferredUntilUnlock.size} deferred item(s)")
+                    val waiting = deferredUntilUnlock.size + deferredMessagesUntilUnlock.size
+                    if (waiting > 0) {
+                        Log.w(TAG, "Runtime failed after unlock; dropping $waiting deferred item(s)")
                     }
                     deferredUntilUnlock.clear()
+                    deferredMessagesUntilUnlock.clear()
                 }
             }
             return
         }
+        // Messages last and in their order: each one queues behind its chat's previous one.
         val work = synchronized(deferredUntilUnlock) {
-            val copy = deferredUntilUnlock.toList()
+            val copy = deferredUntilUnlock.values.toList() + deferredMessagesUntilUnlock.toList()
             deferredUntilUnlock.clear()
+            deferredMessagesUntilUnlock.clear()
             copy
         }
         for ((what, action) in work) {
@@ -396,6 +435,7 @@ class HeartbeatBindingService : Service() {
             unlockReceiver?.let { runCatching { unregisterReceiver(it) } }
             unlockReceiver = null
             deferredUntilUnlock.clear()
+            deferredMessagesUntilUnlock.clear()
         }
         serviceScope.cancel()
         super.onDestroy()
@@ -462,7 +502,9 @@ class HeartbeatBindingService : Service() {
 
         Log.i(TAG, "Runtime initialized for OS-triggered heartbeat")
         // Anything the OS delivered while the device was still locked.
-        val hasDeferred = synchronized(deferredUntilUnlock) { deferredUntilUnlock.isNotEmpty() }
+        val hasDeferred = synchronized(deferredUntilUnlock) {
+            deferredUntilUnlock.isNotEmpty() || deferredMessagesUntilUnlock.isNotEmpty()
+        }
         if (hasDeferred) serviceScope.launch { drainDeferredUntilUnlock() }
         return true
     }
@@ -486,9 +528,15 @@ class HeartbeatBindingService : Service() {
 
     private fun observeTelegramPrefs() {
         val app = application as NodeApp
+        // startTelegramBot() has just acted on the settings as they are now. Each collector's first
+        // value is those same settings, and acting on it again built two more runners at once (one
+        // after clearAllHistory), so the first messages after a restart were answered without the
+        // context of the one before. Only a change is acted on.
+        val enabledAtStart = app.securePrefs.telegramBotEnabled.value
+        val tokenAtStart = app.securePrefs.telegramBotToken.value
 
         serviceScope.launch {
-            app.securePrefs.telegramBotEnabled.collect { enabled ->
+            app.securePrefs.telegramBotEnabled.dropWhile { it == enabledAtStart }.collect { enabled ->
                 val token = app.securePrefs.telegramBotToken.value
                 if (enabled && token.isNotBlank()) {
                     telegramBotClient = TelegramBotClient(token = { app.securePrefs.telegramBotToken.value })
@@ -505,7 +553,7 @@ class HeartbeatBindingService : Service() {
         }
 
         serviceScope.launch {
-            app.securePrefs.telegramBotToken.collect { token ->
+            app.securePrefs.telegramBotToken.dropWhile { it == tokenAtStart }.collect { token ->
                 val enabled = app.securePrefs.telegramBotEnabled.value
                 if (enabled && token.isNotBlank()) {
                     telegramAgentRunner?.clearAllHistory()
@@ -546,8 +594,9 @@ class HeartbeatBindingService : Service() {
         }
         prefs.putString(HeartbeatTickGate.PREF_LAST_SCHEDULED_RUN_MS, now.toString())
         Log.i(TAG, "performHeartbeat: starting")
+        // Its own coroutine: the balance read waits for the refresh, and the run must not.
+        serviceScope.launch { checkPaymasterBalance() }
         serviceScope.launch {
-            checkPaymasterBalance()
             runWithWakeLock {
                 val app = application as NodeApp
                 // Each tick reads the settings as they are now: a toggle changed since the
@@ -661,9 +710,17 @@ class HeartbeatBindingService : Service() {
 
         app.telegramChatStore.record(chatId, username, firstName)
 
-        serviceScope.launch {
-            // A wake lock, like the other OS-triggered runs: the oneway call has already returned.
-            runWithWakeLock { handleTelegramMessage(app, runner, client, chatId, text) }
+        // One at a time per chat, in the order the OS delivered them: the chat's lock is asked for
+        // here, before this call returns (UNDISPATCHED), and the mutex hands it out first come,
+        // first served. Asked for from two worker threads, the second message could win, and
+        // "no, cancel that" ran before the "send 0.1 ETH to Bob" it was about.
+        val mutex = telegramChatMutexes.getOrPut(chatId) { Mutex() }
+        serviceScope.launch(start = CoroutineStart.UNDISPATCHED) {
+            mutex.withLock {
+                // A wake lock, like the other OS-triggered runs: the oneway call has already returned.
+                // Joined, so the next message waits for this one's run, not only for its start.
+                runWithWakeLock { handleTelegramMessage(app, runner, client, chatId, text) }.join()
+            }
         }
     }
 
@@ -698,14 +755,11 @@ class HeartbeatBindingService : Service() {
                 return
             }
 
-            // Regular messages: acquire per-chat mutex to prevent interleaving
-            val mutex = telegramChatMutexes.getOrPut(chatId) { Mutex() }
-            mutex.withLock {
-                client.sendChatAction(chatId)
-                val response = runner.run(chatId, text)
-                if (response.isNotBlank()) {
-                    client.sendMessage(chatId, response)
-                }
+            // Regular messages: already one at a time per chat (performTelegramMessage).
+            client.sendChatAction(chatId)
+            val response = runner.run(chatId, text)
+            if (response.isNotBlank()) {
+                client.sendMessage(chatId, response)
             }
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
@@ -750,7 +804,9 @@ class HeartbeatBindingService : Service() {
             Log.w(TAG, "performHeartbeatWithXmtp: $senderAddress is over its message budget; not running the agent")
             return
         }
-        serviceScope.launch {
+        // UNDISPATCHED: the lock is asked for before this call returns, so "in order" is the order
+        // the OS delivered them in, not whichever worker thread reached the mutex first.
+        serviceScope.launch(start = CoroutineStart.UNDISPATCHED) {
             // One at a time, in order. This was tryLock(), meant to drop a relayed duplicate, and it
             // dropped every message that arrived while another was being answered — after the
             // budget had been spent on it. Duplicates are now caught by xmtpGate instead.
@@ -955,7 +1011,7 @@ class HeartbeatBindingService : Service() {
      * that deep-links to WalletManager's gas top-up screen.
      */
     @SuppressLint("WrongConstant")
-    private fun checkPaymasterBalance() {
+    private suspend fun checkPaymasterBalance() {
         try {
             val proxy = getSystemService("paymaster")
             if (proxy == null) {
@@ -969,9 +1025,12 @@ class HeartbeatBindingService : Service() {
                 return
             }
 
-            // Query backend for fresh balance, then read it
+            // Query backend for fresh balance, then read it. queryUpdate() only queues the fetch,
+            // so read once it has had time to land: read at once, it was the last tick's balance,
+            // and a top-up was followed by one more "balance low".
             val queryUpdateMethod = proxyClass.getMethod("queryUpdate")
             queryUpdateMethod.invoke(proxy)
+            delay(BALANCE_REFRESH_WAIT_MS)
 
             val getBalanceMethod = proxyClass.getMethod("getBalance")
             val balanceStr = getBalanceMethod.invoke(proxy) as? String
@@ -991,14 +1050,34 @@ class HeartbeatBindingService : Service() {
 
             if (balance < LOW_BALANCE_THRESHOLD) {
                 showLowBalanceNotification(balance)
+            } else {
+                clearLowBalanceAlert()
             }
         } catch (e: Exception) {
+            if (e is kotlinx.coroutines.CancellationException) throw e
             Log.e(TAG, "Failed to check paymaster balance", e)
         }
     }
 
+    /** Topped up: the alert's figure is wrong now, and the next drop below may alert at once. */
+    private fun clearLowBalanceAlert() {
+        val prefs = (application as NodeApp).securePrefs
+        if (prefs.getString(LOW_BALANCE_SHOWN_KEY) == null) return
+        prefs.remove(LOW_BALANCE_SHOWN_KEY)
+        getSystemService(NotificationManager::class.java)?.cancel(LOW_BALANCE_NOTIFICATION_ID)
+    }
+
     private fun showLowBalanceNotification(balance: Double) {
         val manager = getSystemService(NotificationManager::class.java) ?: return
+        // Once a day at most, like the OS's own warning. The check rides on every heartbeat tick,
+        // and this high-importance alert sounded every 5–60 minutes, day and night.
+        val prefs = (application as NodeApp).securePrefs
+        val now = System.currentTimeMillis()
+        val lastShown = prefs.getString(LOW_BALANCE_SHOWN_KEY)?.toLongOrNull() ?: 0L
+        if (now - lastShown in 0 until LOW_BALANCE_INTERVAL_MS) {
+            Log.d(TAG, "Low balance alert shown ${(now - lastShown) / 60_000} min ago; not again yet")
+            return
+        }
 
         // Ensure notification channel exists
         if (manager.getNotificationChannel(LOW_BALANCE_CHANNEL_ID) == null) {
@@ -1030,9 +1109,11 @@ class HeartbeatBindingService : Service() {
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setContentIntent(pendingIntent)
             .setAutoCancel(true)
+            .setOnlyAlertOnce(true)
             .build()
 
         manager.notify(LOW_BALANCE_NOTIFICATION_ID, notification)
+        prefs.putString(LOW_BALANCE_SHOWN_KEY, now.toString())
         Log.i(TAG, "Low balance notification shown (balance=$${"%.2f".format(balance)})")
     }
 

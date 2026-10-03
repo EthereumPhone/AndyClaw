@@ -263,4 +263,21 @@ class JsonLdReservationParserTest {
         val flight = JsonLdReservationParser.parse(compact, utc).single() as FlightReservation
         assertEquals(1_788_248_400_000L, flight.departureTimeMs)
     }
+
+    @Test
+    fun `markup nested twenty thousand deep is read without overflowing the stack`() {
+        val deep = "[".repeat(20_000) + "]".repeat(20_000)
+        assertTrue(JsonLdReservationParser.parse(deep, utc).isEmpty())
+        val inScript = "<script type=\"application/ld+json\">$deep</script>"
+        assertTrue(JsonLdReservationParser.parse(inScript, utc).isEmpty())
+    }
+
+    @Test
+    fun `opening tags without a close cost one pass over the body`() {
+        val body = "<script type=\"application/ld+json\">{".repeat(50_000)
+        val started = System.nanoTime()
+        assertTrue(JsonLdReservationParser.parse(body, utc).isEmpty())
+        val ms = (System.nanoTime() - started) / 1_000_000
+        assertTrue("took $ms ms", ms < 5_000)
+    }
 }

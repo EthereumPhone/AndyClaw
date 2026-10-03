@@ -58,7 +58,9 @@ object PdfTextExtractor {
             val end = latin.indexOf(END_STREAM, dataStart)
             if (end < 0) break
 
-            val dictStart = latin.lastIndexOf("<<", start)
+            // The stream's dictionary lies after the previous stream ended. Searching back past
+            // that rescanned the whole file once per stream, quadratic for many tiny streams.
+            val dictStart = lastIndexOfWithin(latin, "<<", i, start)
             val dict = if (dictStart >= 0) latin.substring(dictStart, start) else ""
             val raw = pdf.copyOfRange(dataStart, end.coerceAtLeast(dataStart))
             val content = if (dict.contains("/FlateDecode")) {
@@ -79,6 +81,16 @@ object PdfTextExtractor {
     }
 
     // ── Streams ───────────────────────────────────────────────────────
+
+    /** The last [needle] that lies wholly in `[from, until)` of [text], or -1. */
+    private fun lastIndexOfWithin(text: String, needle: String, from: Int, until: Int): Int {
+        var k = minOf(until, text.length) - needle.length
+        while (k >= from.coerceAtLeast(0)) {
+            if (text.startsWith(needle, k)) return k
+            k--
+        }
+        return -1
+    }
 
     private fun inflate(data: ByteArray, limit: Int): ByteArray? {
         for (nowrap in listOf(false, true)) {

@@ -3,9 +3,15 @@ package org.ethereumphone.andyclaw.services
 import android.app.RemoteInput
 import android.content.Intent
 import android.os.Bundle
+import android.os.PowerManager
 import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
 import android.util.Log
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
 import org.ethereumphone.andyclaw.NodeApp
 import org.ethereumphone.andyclaw.skills.Capability
 import org.ethereumphone.andyclaw.skills.tier.OsCapabilities
@@ -14,10 +20,20 @@ class AndyClawNotificationListener : NotificationListenerService() {
 
     companion object {
         private const val TAG = "NotificationListener"
+        private const val WAKE_LOCK_TAG = "AndyClaw:notificationHeartbeat"
+        /** The same bound the OS-triggered runs hold theirs for; the run itself may go on longer. */
+        private const val WAKE_LOCK_TIMEOUT_MS = 60_000L
 
         @Volatile
         var instance: AndyClawNotificationListener? = null
             private set
+    }
+
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    override fun onDestroy() {
+        scope.cancel()
+        super.onDestroy()
     }
 
     override fun onListenerConnected() {
@@ -67,10 +83,32 @@ class AndyClawNotificationListener : NotificationListenerService() {
         )
         if (!app.notificationTriggerPolicy.shouldTrigger(posted)) return
 
+        // Like the OS-triggered heartbeat: without the wallet's sign-in every call it makes is
+        // refused, and the run is paid for nothing.
+        if (OsCapabilities.hasPrivilegedAccess && !app.securePrefs.walletSignature.value.startsWith("0x")) {
+            Log.d(TAG, "Notification from ${sbn.packageName} — wallet sign-in missing, not triggering heartbeat")
+            return
+        }
+
         Log.d(TAG, "Notification from ${sbn.packageName} — triggering heartbeat")
-        // Event-driven: this run covers the next scheduled tick, which is the whole point
-        // of inverting the hierarchy.
-        app.runtime.requestHeartbeatNow(eventDriven = true)
+        // Under a bounded wake lock, as every other trigger runs: with the screen off, the CPU
+        // sleeping halfway left the run stalled until something else woke the phone.
+        val wakeLock = (getSystemService(POWER_SERVICE) as PowerManager)
+            .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, WAKE_LOCK_TAG)
+            .apply { setReferenceCounted(false) }
+        wakeLock.acquire(WAKE_LOCK_TIMEOUT_MS)
+        scope.launch {
+            try {
+                // Event-driven: this run covers the next scheduled tick, which is the whole point
+                // of inverting the hierarchy.
+                app.runtime.runHeartbeatNow(eventDriven = true)
+            } catch (e: Exception) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
+                Log.w(TAG, "Notification-triggered heartbeat failed: ${e.message}")
+            } finally {
+                if (wakeLock.isHeld) wakeLock.release()
+            }
+        }
     }
 
     override fun onNotificationRemoved(sbn: StatusBarNotification?) {

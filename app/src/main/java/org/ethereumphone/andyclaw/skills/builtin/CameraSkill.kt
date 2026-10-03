@@ -84,15 +84,10 @@ class CameraSkill(private val context: Context) : AndyClawSkill {
         }
     }
 
+    @Suppress("UNUSED_PARAMETER")
     private fun takePhoto(params: JsonObject): SkillResult {
-        // This wraps the existing CameraCaptureManager.
-        // Since CameraCaptureManager requires lifecycle/coroutine context that's set up elsewhere,
-        // we return a message indicating the capture should be routed through the existing system.
-        val facing = params["facing"]?.jsonPrimitive?.contentOrNull ?: "back"
-        return SkillResult.Success(buildJsonObject {
-            put("status", "capture_requested")
-            put("facing", facing)
-            put("message", "Photo capture initiated. The result will be provided by the camera system.")
-        }.toString())
+        // Nothing is wired to CameraCaptureManager here: no photo is taken and none ever arrives.
+        // Reporting "capture initiated" told the user (who approved it) and the model it had.
+        return SkillResult.Error("Taking a photo is not available yet: no picture was taken.")
     }
 }

@@ -168,6 +168,10 @@ interface MemoryDao {
     )
     suspend fun getUnembeddedChunksByAgent(agentId: String): List<MemoryChunkEntity>
 
+    /** [memoryId]'s chunks that still need embedding vectors. */
+    @Query("SELECT * FROM memory_chunks WHERE memoryId = :memoryId AND embedding IS NULL ORDER BY startOffset ASC")
+    suspend fun getUnembeddedChunksByMemory(memoryId: String): List<MemoryChunkEntity>
+
     @Query(
         """
         UPDATE memory_chunks

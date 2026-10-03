@@ -106,7 +106,9 @@ class HeartbeatAgentRunner(
         val completion = CompletableDeferred<AgentResponse>()
         val collectedToolCalls = mutableListOf<HeartbeatToolCall>()
         val startTimeMs = System.currentTimeMillis()
-        ledController.onPromptStart()
+        // Nobody is looking at a background run: the LEDs only, never the terminal screen, whose
+        // status-bar slot is where the agent HUD and STOP live.
+        ledController.onPromptStart(terminal = false)
 
         val callbacks = object : AgentLoop.Callbacks {
             override fun onToken(text: String) {
@@ -230,7 +232,7 @@ class HeartbeatAgentRunner(
             override fun onComplete(fullText: String, tokenUsage: TokenUsageSnapshot?) {
                 Log.i(TAG, "=== HEARTBEAT RUN COMPLETE ===")
                 Log.i(TAG, "LLM full response: ${fullText.take(1000)}")
-                ledController.onPromptComplete(fullText)
+                ledController.onPromptComplete(fullText, terminal = false)
                 logStore.append(HeartbeatLogEntry(
                     timestampMs = System.currentTimeMillis(),
                     outcome = "success",
@@ -239,12 +241,16 @@ class HeartbeatAgentRunner(
                     toolCalls = collectedToolCalls.toList(),
                     durationMs = System.currentTimeMillis() - startTimeMs,
                 ))
-                // Generate executive summary in background (non-blocking)
-                CoroutineScope(Dispatchers.IO).launch {
-                    try {
-                        app.executiveSummaryManager.generateAndStore(fullText)
-                    } catch (e: Exception) {
-                        Log.w(TAG, "Executive summary generation failed", e)
+                // Generate executive summary in background (non-blocking). Never from an untrusted
+                // run: its output is a reply a stranger steered, and the summary is the owner's own
+                // digest on the home screen and the "current summary" every later one builds on.
+                if (provenance != Provenance.UNTRUSTED) {
+                    CoroutineScope(Dispatchers.IO).launch {
+                        try {
+                            app.executiveSummaryManager.generateAndStore(fullText)
+                        } catch (e: Exception) {
+                            Log.w(TAG, "Executive summary generation failed", e)
+                        }
                     }
                 }
                 completion.complete(AgentResponse(text = fullText))
@@ -252,7 +258,7 @@ class HeartbeatAgentRunner(
 
             override fun onError(error: Throwable) {
                 Log.e(TAG, "=== HEARTBEAT RUN FAILED ===", error)
-                ledController.onPromptError()
+                ledController.onPromptError(terminal = false)
                 logStore.append(HeartbeatLogEntry(
                     timestampMs = System.currentTimeMillis(),
                     outcome = "error",
@@ -266,11 +272,17 @@ class HeartbeatAgentRunner(
             }
         }
 
-        agentLoop.run(
-            userMessage = prompt,
-            conversationHistory = emptyList(),
-            callbacks = callbacks,
-        )
+        try {
+            agentLoop.run(
+                userMessage = prompt,
+                conversationHistory = emptyList(),
+                callbacks = callbacks,
+            )
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            // A cancelled run reports neither completion nor error: the spinner would loop on.
+            ledController.onPromptCancelled(terminal = false)
+            throw e
+        }
 
 
         return completion.await()

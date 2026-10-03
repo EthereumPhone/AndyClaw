@@ -45,6 +45,9 @@ class BackgroundMemoryExtractor(
         /** Minimum new messages required before extraction attempt. */
         private const val MIN_NEW_MESSAGES = 2
 
+        /** Earlier messages the extraction call sees for context, besides the new ones. */
+        private const val CONTEXT_MESSAGES = 6
+
         /**
          * The conversation as the extractor may see it: the text the user wrote and the text the
          * assistant wrote, nothing a tool returned. What this call stores comes back in every later
@@ -77,7 +80,7 @@ class BackgroundMemoryExtractor(
 
     @Volatile private var inProgress = false
     @Volatile private var pendingHistory: List<Message>? = null
-    private var lastProcessedMessageCount = 0
+    @Volatile private var lastProcessedMessageCount = 0
 
     /**
      * Request background extraction. If already in progress, stash for trailing run.
@@ -90,6 +93,10 @@ class BackgroundMemoryExtractor(
         // Skip for local models — too small for quality extraction
         if (client is LocalLlmClient) return
 
+        // A compaction shortened the history below what was read: only the latest exchange is new.
+        if (conversationHistory.size < lastProcessedMessageCount) {
+            lastProcessedMessageCount = (conversationHistory.size - MIN_NEW_MESSAGES).coerceAtLeast(0)
+        }
         val newMessageCount = conversationHistory.size - lastProcessedMessageCount
         if (newMessageCount < MIN_NEW_MESSAGES) return
 
@@ -106,6 +113,7 @@ class BackgroundMemoryExtractor(
             return
         }
 
+        inProgress = true
         scope.launch(Dispatchers.IO) {
             runExtraction(conversationHistory.toList())
         }
@@ -129,11 +137,16 @@ class BackgroundMemoryExtractor(
 
             val userPrompt = ExtractionPrompts.buildExtractionPrompt(newMessageCount, manifest)
 
+            // The new messages and a few before them, starting at one of the user's: the whole
+            // chat on every turn made a long conversation cost more with each message.
+            val window = history.takeLast(newMessageCount + CONTEXT_MESSAGES)
+                .let { tail -> tail.dropWhile { it.role != "user" }.ifEmpty { tail } }
+
             val request = MessagesRequest(
                 model = modelId,
                 maxTokens = EXTRACTION_MAX_TOKENS,
                 system = ExtractionPrompts.EXTRACTION_SYSTEM_PROMPT,
-                messages = extractionInput(history) + listOf(Message.user(userPrompt)),
+                messages = extractionInput(window) + listOf(Message.user(userPrompt)),
                 stream = false,
                 temperature = 0.1f,
             )

@@ -124,6 +124,9 @@ fun AgentDisplayTestScreen(
     DisposableEffect(Unit) {
         statusText = if (service != null) "Service found" else "Service NOT found"
         onDispose {
+            // Not under a run that holds the display: leaving this screen used to park the agent's
+            // live run. The test display is the run's own then, and the run puts it away.
+            if (org.ethereumphone.andyclaw.skills.builtin.AgentDisplayLease.isHeld()) return@onDispose
             try {
                 service?.destroyAgentDisplay()
             } catch (_: Exception) {}

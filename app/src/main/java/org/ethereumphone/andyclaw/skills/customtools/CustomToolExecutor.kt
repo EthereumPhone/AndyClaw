@@ -31,9 +31,20 @@ class CustomToolExecutor(private val context: Context) {
      * For a running agent turn: waits cancellably, so STOP ends the wait instead of blocking for
      * the whole timeout. The code's thread is interrupted and abandoned (see [SandboxThread]).
      */
-    suspend fun executeCancellable(code: String, params: JsonObject, timeoutMs: Long = DEFAULT_TIMEOUT_MS): SkillResult {
+    suspend fun executeCancellable(
+        code: String,
+        params: JsonObject,
+        timeoutMs: Long = DEFAULT_TIMEOUT_MS,
+        /**
+         * Whether the code gets `context`, `packageManager`, `contentResolver` and `filesDir`.
+         * They bypass every gate a tool call goes through — `contentResolver` reads the SMS inbox,
+         * `filesDir` rewrites AndyClaw's own state — so, as for `execute_code`, only a run the user
+         * started gets them.
+         */
+        bindAndroidHandles: Boolean = false,
+    ): SkillResult {
         val effectiveTimeout = timeoutMs.coerceIn(1000, MAX_TIMEOUT_MS)
-        val run = start(code, params)
+        val run = start(code, params, bindAndroidHandles)
         return try {
             finish(run, SandboxThread.await(run.future, effectiveTimeout))
         } catch (e: Exception) {
@@ -43,9 +54,14 @@ class CustomToolExecutor(private val context: Context) {
     }
 
     /** Blocking form, for the non-suspend test-run in CustomToolCreatorSkill. */
-    fun execute(code: String, params: JsonObject, timeoutMs: Long = DEFAULT_TIMEOUT_MS): SkillResult {
+    fun execute(
+        code: String,
+        params: JsonObject,
+        timeoutMs: Long = DEFAULT_TIMEOUT_MS,
+        bindAndroidHandles: Boolean = false,
+    ): SkillResult {
         val effectiveTimeout = timeoutMs.coerceIn(1000, MAX_TIMEOUT_MS)
-        val run = start(code, params)
+        val run = start(code, params, bindAndroidHandles)
         return try {
             finish(run, SandboxThread.awaitBlocking(run.future, effectiveTimeout))
         } catch (e: Exception) {
@@ -59,7 +75,7 @@ class CustomToolExecutor(private val context: Context) {
         val startTime: Long,
     )
 
-    private fun start(code: String, params: JsonObject): Run {
+    private fun start(code: String, params: JsonObject, bindAndroidHandles: Boolean): Run {
         // Bounded: an unbounded buffer let a print loop grow the heap to OutOfMemoryError.
         val outputStream = BoundedOutputStream(MAX_OUTPUT_CHARS * 4)
         val printStream = PrintStream(outputStream, true, "UTF-8")
@@ -70,11 +86,13 @@ class CustomToolExecutor(private val context: Context) {
         // every later custom tool behind it forever.
         val future = SandboxThread.start("custom_tool") {
             val interpreter = Interpreter(null, printStream, printStream, false)
-            // Pre-bind Android context variables (same as CodeExecutionSkill)
-            interpreter.set("context", context)
-            interpreter.set("packageManager", context.packageManager)
-            interpreter.set("contentResolver", context.contentResolver)
-            interpreter.set("filesDir", context.filesDir)
+            // Android context variables, as CodeExecutionSkill binds them: for the user's own runs.
+            if (bindAndroidHandles) {
+                interpreter.set("context", context)
+                interpreter.set("packageManager", context.packageManager)
+                interpreter.set("contentResolver", context.contentResolver)
+                interpreter.set("filesDir", context.filesDir)
+            }
 
             // Bind tool parameters as named variables
             for ((key, element) in params) {

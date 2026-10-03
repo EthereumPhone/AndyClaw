@@ -25,6 +25,11 @@ class ConnectivitySkill(private val context: Context) : AndyClawSkill {
     override val id = "connectivity"
     override val name = "Connectivity"
 
+    private companion object {
+        const val WIFI_CONNECT_TIMEOUT_MS = 20_000L
+        const val WIFI_CONNECT_MAX_OUTPUT = 4_000
+    }
+
     override val baseManifest = SkillManifest(
         description = "Read device connectivity status (WiFi, Bluetooth, mobile data, airplane mode).",
         tools = listOf(
@@ -142,7 +147,7 @@ class ConnectivitySkill(private val context: Context) : AndyClawSkill {
         }
     }
 
-    private fun privileged(tier: Tier, block: () -> SkillResult): SkillResult {
+    private inline fun privileged(tier: Tier, block: () -> SkillResult): SkillResult {
         return if (tier != Tier.PRIVILEGED) SkillResult.Error("This tool requires privileged OS access. Install AndyClaw as a system app on ethOS.")
         else block()
     }
@@ -205,26 +210,28 @@ class ConnectivitySkill(private val context: Context) : AndyClawSkill {
         }
     }
 
-    private fun connectWifiNetwork(params: JsonObject): SkillResult {
+    private suspend fun connectWifiNetwork(params: JsonObject): SkillResult {
         val ssid = params["ssid"]?.jsonPrimitive?.contentOrNull
             ?: return SkillResult.Error("Missing required parameter: ssid")
         return try {
-            // Use shell command for privileged WiFi connection
+            // The SSID and the password go to `cmd` as arguments of their own, never through a
+            // shell: `sh -c` ran `$(…)` and backticks in a network name as AndyClaw, and turned a
+            // password like `pa$$w0rd` into another one while still reporting "connected".
             val password = params["password"]?.jsonPrimitive?.contentOrNull
-            val cmd = if (password != null) {
-                "cmd wifi connect-network \"$ssid\" wpa2 \"$password\""
+            val argv = if (password != null) {
+                listOf("/system/bin/cmd", "wifi", "connect-network", ssid, "wpa2", password)
             } else {
-                "cmd wifi connect-network \"$ssid\" open"
+                listOf("/system/bin/cmd", "wifi", "connect-network", ssid, "open")
             }
-            val process = Runtime.getRuntime().exec(arrayOf("sh", "-c", cmd))
-            val exitCode = process.waitFor()
-            if (exitCode == 0) {
-                SkillResult.Success(buildJsonObject { put("connected", ssid) }.toString())
-            } else {
-                val error = process.errorStream.bufferedReader().readText()
-                SkillResult.Error("Failed to connect to WiFi network: $error")
+            val process = ProcessBuilder(argv).redirectErrorStream(true).start()
+            val result = BoundedProcess.await(process, WIFI_CONNECT_TIMEOUT_MS, WIFI_CONNECT_MAX_OUTPUT)
+            when {
+                result.timedOut -> SkillResult.Error("Failed to connect to WiFi network: timed out")
+                result.exitCode == 0 -> SkillResult.Success(buildJsonObject { put("connected", ssid) }.toString())
+                else -> SkillResult.Error("Failed to connect to WiFi network: ${result.output.trim()}")
             }
         } catch (e: Exception) {
+            org.ethereumphone.andyclaw.ExecutionEngine.rethrowIfCancelled(e)
             SkillResult.Error("Failed to connect to WiFi network: ${e.message}")
         }
     }

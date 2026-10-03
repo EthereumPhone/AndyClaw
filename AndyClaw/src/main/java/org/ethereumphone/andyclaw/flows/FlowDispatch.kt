@@ -65,6 +65,20 @@ enum class FlowDispatch {
                 error.startsWith("Framework service unavailable") ||
                 error == "field did not take focus"
 
+        /**
+         * Whether [result] is the OS refusing a node action because STOP latched the display — an
+         * answer that can arrive before the OS's own word of the STOP reaches this process.
+         */
+        fun refusedByStop(result: String?): Boolean {
+            if (result.isNullOrBlank()) return false
+            val answer = try {
+                FlowCodec.json.parseToJsonElement(result) as? JsonObject
+            } catch (e: Exception) {
+                null
+            } ?: return false
+            return (answer["ok"] as? JsonPrimitive)?.booleanOrNull == false && answer.string("error") == "stopped"
+        }
+
         private fun JsonObject.string(key: String): String? =
             (this[key] as? JsonPrimitive)?.takeIf { it.isString }?.content
     }

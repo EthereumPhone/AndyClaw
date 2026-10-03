@@ -93,14 +93,16 @@ object BcbpParser {
      *
      * Extracted text from a PDF or a mail runs the payload together with whatever surrounds
      * it, so every `M` followed by a leg count is tried and the first one that validates
-     * wins. Scanning candidates is cheap; [parse] is what does the deciding.
+     * wins. Scanning candidates is cheap; [parse] is what does the deciding — on the 60
+     * characters it reads, not a copy of the rest of the text per `M`, which made a few
+     * megabytes of barcode text cost minutes.
      */
     fun find(text: String, nowMs: Long): BoardingPass? {
         var i = 0
         while (i >= 0 && i <= text.length - MANDATORY_LENGTH) {
             val at = text.indexOf('M', i)
             if (at < 0 || at > text.length - MANDATORY_LENGTH) return null
-            parse(text.substring(at), nowMs)?.let { return it }
+            parse(text.substring(at, at + MANDATORY_LENGTH), nowMs)?.let { return it }
             i = at + 1
         }
         return null
@@ -113,7 +115,7 @@ object BcbpParser {
         while (i <= text.length - MANDATORY_LENGTH) {
             val at = text.indexOf('M', i)
             if (at < 0 || at > text.length - MANDATORY_LENGTH) break
-            val pass = parse(text.substring(at), nowMs)
+            val pass = parse(text.substring(at, at + MANDATORY_LENGTH), nowMs)
             if (pass != null) {
                 out += pass
                 i = at + MANDATORY_LENGTH

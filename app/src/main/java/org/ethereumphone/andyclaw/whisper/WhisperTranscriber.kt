@@ -48,12 +48,12 @@ class WhisperTranscriber(private val context: Context) {
             "\\beth\\s?os\\b"          to "ethOS",
             "\\bg\\s?wei\\b"           to "gwei",
             "\\bde\\s?fi\\b"           to "DeFi",
-            "\\bdefy\\b"               to "DeFi",
             "\\bnfts\\b"               to "NFTs",
             "\\bn\\s?f\\s?t\\b"        to "NFT",
 
-            // Tokens & stablecoins
-            "\\bu\\s?s\\s?d\\s?[cs]\\b" to "USDC",
+            // Tokens & stablecoins. Only what cannot be another word or another token:
+            // USDS is a token of its own, and "defy" is a word.
+            "\\bu\\s?s\\s?d\\s?c\\b"    to "USDC",
             "\\bu\\s?s\\s?d\\s?t\\b"    to "USDT",
             "\\bw\\s?e\\s?t\\s?h\\b"    to "WETH",
             "\\bw\\s?b\\s?t\\s?c\\b"    to "WBTC",
@@ -114,7 +114,15 @@ class WhisperTranscriber(private val context: Context) {
     fun warmUp(scope: CoroutineScope) {
         if (initialized || warmUpJob != null) return
         warmUpJob = scope.launch(Dispatchers.IO) {
-            mutex.withLock { doInitialize() }
+            try {
+                mutex.withLock { doInitialize() }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                // Never fatal: a full disk or a failed native load used to kill the process on
+                // every start. Left uninitialised, transcribe() tries again and reports it.
+                Log.e(TAG, "Whisper warm-up failed: ${e.javaClass.simpleName}: ${e.message}")
+            }
         }
     }
 
@@ -186,6 +194,9 @@ class WhisperTranscriber(private val context: Context) {
      * The file must be a 16 kHz mono 16-bit PCM WAV (which is what
      * [org.ethosmobile.ethoslauncher.dgent.AudioRecorder] produces).
      *
+     * English only: the bundled model is base.en, so speech in another language comes back as
+     * English-sounding text, not a translation. Transcripts are not logged, only their length.
+     *
      * @return The transcribed text, or throws on failure.
      */
     suspend fun transcribe(audioPath: String): String = mutex.withLock {
@@ -205,7 +216,6 @@ class WhisperTranscriber(private val context: Context) {
             val elapsedMs = System.currentTimeMillis() - startMs
 
             Log.i(TAG, "Native transcribeWav returned in ${elapsedMs}ms, raw length=${raw.length} chars")
-            Log.d(TAG, "Raw output (first 500 chars): ${raw.take(500)}")
 
             if (raw.startsWith("ERROR:")) {
                 Log.e(TAG, "Whisper error: $raw")
@@ -215,7 +225,7 @@ class WhisperTranscriber(private val context: Context) {
             // Detect and strip repetition loops
             val repetitionInfo = detectRepetition(raw)
             val deduped = if (repetitionInfo != null) {
-                Log.w(TAG, "REPETITION DETECTED: phrase=\"${repetitionInfo.first}\" repeated ${repetitionInfo.second} times in output of ${raw.length} chars — stripping to single occurrence")
+                Log.w(TAG, "REPETITION DETECTED: a ${repetitionInfo.first.length}-char phrase repeated ${repetitionInfo.second} times in output of ${raw.length} chars — stripping to single occurrence")
                 repetitionInfo.first
             } else {
                 raw
@@ -223,10 +233,7 @@ class WhisperTranscriber(private val context: Context) {
 
             val result = applyVocabCorrections(deduped)
 
-            if (result != raw) {
-                Log.i(TAG, "Vocab corrected: \"${raw.take(200)}\" -> \"${result.take(200)}\"")
-            }
-            Log.i(TAG, "Transcription result (${result.length} chars): ${result.take(300)}")
+            Log.i(TAG, "Transcription result: ${result.length} chars${if (result != deduped) ", vocab corrected" else ""}")
             result
         }
     }

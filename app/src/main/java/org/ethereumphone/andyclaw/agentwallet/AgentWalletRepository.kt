@@ -82,7 +82,6 @@ class AgentWalletRepository(
         .readTimeout(30, TimeUnit.SECONDS)
         .build()
 
-    private val subWalletsByChain = mutableMapOf<Int, SubWalletSDK>()
     private val osWalletsByChain = mutableMapOf<Int, WalletSDK>()
     // Concurrent: scanAll reads every chain at once, each from its own thread.
     private val web3ByChain = java.util.concurrent.ConcurrentHashMap<Int, Web3j>()
@@ -94,22 +93,18 @@ class AgentWalletRepository(
 
     // ── SDK access ──────────────────────────────────────────────────────
 
-    private suspend fun subWallet(chainId: Int): SubWalletSDK? = lock.withLock {
-        val existing = subWalletsByChain[chainId]
-        if (existing != null) return@withLock existing
-
-        val rpc = AgentWalletChains.chainIdToRpc(chainId) ?: return@withLock null
-        try {
-            SubWalletSDK(
-                context = appContext,
-                web3jInstance = Web3j.build(HttpService(rpc)),
-                bundlerRPCUrl = AgentWalletChains.chainIdToBundler(chainId),
-            ).also { subWalletsByChain[chainId] = it }
-        } catch (e: Exception) {
-            Log.w(TAG, "SubWalletSDK unavailable for chain $chainId: ${e.message}")
-            null
+    // Built in one place for the whole app, under one lock: see SubWalletFactory.
+    private suspend fun subWallet(chainId: Int): SubWalletSDK? =
+        when (val outcome = SubWalletFactory.get(appContext, chainId, ::anchoredAddress)) {
+            is SubWalletFactory.Outcome.Ready -> outcome.sdk
+            is SubWalletFactory.Outcome.Unavailable -> {
+                Log.w(TAG, "SubWalletSDK unavailable for chain $chainId: ${outcome.reason}")
+                null
+            }
         }
-    }
+
+    /** The sub-account address first seen on this device, or null before there was one. */
+    fun anchoredAddress(): String? = store.getString(ANCHOR_KEY)?.trim()?.takeIf { it.isNotEmpty() }
 
     private suspend fun osWallet(chainId: Int): WalletSDK? = lock.withLock {
         val existing = osWalletsByChain[chainId]

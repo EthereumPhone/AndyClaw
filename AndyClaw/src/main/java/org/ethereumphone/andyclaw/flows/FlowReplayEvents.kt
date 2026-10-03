@@ -33,11 +33,17 @@ class FlowReplayEvents(
     /** One label per action: "Tap send button", "Type into message field". */
     val subgoals: List<String> = actionSteps.map { label(flow.steps[it]) }
 
+    /** The actions that commit the flow once they may have gone out ([FlowRunAccounting.commitsAt]). */
+    private val commitSteps: Set<Int> = actionSteps.filter { FlowRunAccounting.commitsAt(flow, it) }.toSet()
+
     private val startedMs = clock()
     private var actingMs = startedMs
     private var done = 0
     private var subgoal = 0
     @Volatile private var finished = false
+
+    /** A committing action has gone out; from here a cancel may have come after the task was done. */
+    @Volatile private var committed = false
 
     fun started() = emit(Kind.STARTED)
 
@@ -46,6 +52,7 @@ class FlowReplayEvents(
         if (i < 0 || finished) return
         subgoal = i
         if (!settled) {
+            if (stepIndex in commitSteps) committed = true
             actingMs = clock()
             emit(Kind.ACTING, action = opcode)
         } else {
@@ -71,11 +78,18 @@ class FlowReplayEvents(
         }
     }
 
-    /** The turn was cancelled under the replay. */
-    fun cancelled() = end(Kind.FAILED, AutopilotOutcome.Outcome.CANCELLED, AutopilotOutcome.REASON_CANCELLED, "Cancelled")
+    /**
+     * The turn was cancelled under the replay. After the action that commits it went out, the
+     * task has most likely been done, and the card must not invite doing it again.
+     */
+    fun cancelled() =
+        if (committed) end(Kind.FAILED, AutopilotOutcome.Outcome.FAILED, REASON_UNCONFIRMED, UNCONFIRMED)
+        else end(Kind.FAILED, AutopilotOutcome.Outcome.CANCELLED, AutopilotOutcome.REASON_CANCELLED, "Cancelled")
 
     /** The replay threw before it could say how it ended. */
-    fun crashed() = end(Kind.FAILED, AutopilotOutcome.Outcome.FAILED, "internal_error", "Something went wrong on my side")
+    fun crashed() =
+        if (committed) end(Kind.FAILED, AutopilotOutcome.Outcome.FAILED, REASON_UNCONFIRMED, UNCONFIRMED)
+        else end(Kind.FAILED, AutopilotOutcome.Outcome.FAILED, "internal_error", "Something went wrong on my side")
 
     private fun end(kind: Kind, outcome: AutopilotOutcome.Outcome, reason: String?, message: String) {
         if (finished) return
@@ -125,14 +139,18 @@ class FlowReplayEvents(
             return if (name.isEmpty()) verb else "$verb $name"
         }
 
+        private const val REASON_UNCONFIRMED = "flow_unconfirmed"
+        private const val UNCONFIRMED = "Probably done, but I couldn't confirm it — check before trying again"
+
         /** outcome, reason, message — the reason in the executor's vocabulary where it has one. */
         fun abortOutcome(result: FlowRunResult.Aborted, handsOver: Boolean): Triple<AutopilotOutcome.Outcome, String, String> =
             when {
+                // Done, most likely, and never to be repeated: not a hand-over, whatever else holds —
+                // and not "Stopped" either, for a STOP that came after the action went out.
+                result.committed ->
+                    Triple(AutopilotOutcome.Outcome.FAILED, REASON_UNCONFIRMED, UNCONFIRMED)
                 result.reason == FlowAbortReason.STOPPED ->
                     Triple(AutopilotOutcome.Outcome.STOPPED, AutopilotOutcome.REASON_STOPPED, "Stopped")
-                // Done, most likely, and never to be repeated: not a hand-over, whatever else holds.
-                result.committed ->
-                    Triple(AutopilotOutcome.Outcome.FAILED, "flow_unconfirmed", "Probably done, but I couldn't confirm it — check before trying again")
                 handsOver ->
                     Triple(AutopilotOutcome.Outcome.HANDOFF, "flow_stale", "The saved steps no longer fit, so I'm doing it another way")
                 result.reason == FlowAbortReason.SENSITIVE_TARGET ->

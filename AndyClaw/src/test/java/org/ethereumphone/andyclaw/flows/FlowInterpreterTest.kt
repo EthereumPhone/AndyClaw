@@ -238,6 +238,7 @@ class FlowInterpreterSafetyTest {
         val type: String = "button",
         val label: String? = null,
         val password: Boolean = false,
+        val summary: String? = null,
     )
 
     private class Screen(val name: String, val pkg: String, vararg val nodes: Node) {
@@ -246,6 +247,7 @@ class FlowInterpreterSafetyTest {
                 buildString {
                     append("""{"id":$i,"type":"${n.type}","viewId":"${n.viewId}"""")
                     n.label?.let { append(""","label":"$it"""") }
+                    n.summary?.let { append(""","summary":"$it"""") }
                     if (n.password) append(""","password":true""")
                     append(""","actions":["click"]}""")
                 }
@@ -327,9 +329,9 @@ class FlowInterpreterSafetyTest {
     }
 
     private val list = Screen("list", "com.msg",
-        Node("conversation_list", "list"), Node("row", "list_item", "Anna"), Node("search_button"))
+        Node("conversation_list", "list"), Node("row", "menu_item", "Anna"), Node("search_button"))
     private val listTwoRows = Screen("list2", "com.msg",
-        Node("conversation_list", "list"), Node("row", "list_item", "Bob"), Node("row", "list_item", "Anna"))
+        Node("conversation_list", "list"), Node("row", "menu_item", "Bob"), Node("row", "menu_item", "Anna"))
     private val thread = Screen("thread", "com.msg",
         Node("toolbar_title", "text", "Anna"), Node("compose_text", "text_field"), Node("send_button"))
     private val sent = Screen("sent", "com.msg",
@@ -455,7 +457,7 @@ class FlowInterpreterSafetyTest {
     @Test
     fun `a chat row that mentions paying is content, not a Pay button`() = runTest {
         val chats = Screen("list", "com.msg", Node("conversation_list", "list"),
-            Node("row", "list_item", "Anna: can you pay me back for the tickets tomorrow"))
+            Node("row", "menu_item", "Anna: can you pay me back for the tickets tomorrow"))
         val driver = Driver(mapOf("list" to chats, "thread" to thread, "sent" to sent), graph, "list")
         val result = interpreter(driver).run(flow(sendSteps), emptyMap())
         assertTrue("expected completion, got $result", result is FlowRunResult.Completed)
@@ -498,7 +500,7 @@ class FlowInterpreterSafetyTest {
     @Test
     fun `a v2 checksum ignores how many rows a list has`() = runTest {
         val three = Screen("three", "com.msg", Node("conversation_list", "list"),
-            Node("row", "list_item", "a"), Node("row", "list_item", "b"), Node("row", "list_item", "c"), Node("search_button"))
+            Node("row", "menu_item", "a"), Node("row", "menu_item", "b"), Node("row", "menu_item", "c"), Node("search_button"))
         val expected = NodeTreeChecksum.ofV2(listTwoRows.copyPlus(Node("search_button")).json())
         val driver = Driver(mapOf("three" to three), emptyMap(), "three")
         val steps = listOf(AssertStep(viewId = "conversation_list", nodeTextContains = "", expectChecksum = expected))
@@ -682,7 +684,7 @@ class FlowInterpreterSafetyTest {
     fun `Hanna does not pass for Anna`() = runTest {
         // Hanna's row is first. "Hanna" contains "Anna", and the substring match sent it to her.
         val hannaFirst = Screen("list2", "com.msg",
-            Node("conversation_list", "list"), Node("row", "list_item", "Hanna"), Node("row", "list_item", "Anna"))
+            Node("conversation_list", "list"), Node("row", "menu_item", "Hanna"), Node("row", "menu_item", "Anna"))
         val hannaThread = Screen("thread", "com.msg",
             Node("toolbar_title", "text", "Hanna"), Node("compose_text", "text_field"), Node("send_button"))
         val driver = Driver(mapOf("list2" to hannaFirst, "thread" to hannaThread, "sent" to sent), graph, "list2")
@@ -728,8 +730,8 @@ class FlowInterpreterSafetyTest {
         // The list's rows carry the name under the same view id the thread's title uses. Bob is
         // first now; the first reads after the tap still return the list, which names Anna too.
         val namedList = Screen("list", "com.msg", Node("conversation_list", "list"),
-            Node("row", "list_item"), Node("name", "text", "Bob"),
-            Node("row", "list_item"), Node("name", "text", "Anna"))
+            Node("row", "menu_item"), Node("name", "text", "Bob"),
+            Node("row", "menu_item"), Node("name", "text", "Anna"))
         val bobThread = Screen("thread", "com.msg",
             Node("name", "text", "Bob"), Node("compose_text", "text_field"), Node("send_button"))
         val steps = listOf(
@@ -769,6 +771,86 @@ class FlowInterpreterSafetyTest {
         assertFalse(FlowTargetGuard.names(tree("Annabel"), "title", "Anna"))
         assertFalse(FlowTargetGuard.names(tree("Anna"), "other", "Anna"))
         assertFalse(FlowTargetGuard.names(tree("Anna"), "title", "  "))
+    }
+
+    // ── Rows, languages, a slow start, and STOP racing a tap ───────────
+
+    @Test
+    fun `a row is judged by its name, not by the preview under it`() = runTest {
+        val chats = Screen("list", "com.msg", Node("conversation_list", "list"),
+            Node("row", "menu_item", "Anna", summary = "can you pay me back?"))
+        val driver = Driver(mapOf("list" to chats, "thread" to thread, "sent" to sent), graph, "list")
+        val result = interpreter(driver).run(flow(sendSteps), emptyMap())
+        assertTrue("expected completion, got $result", result is FlowRunResult.Completed)
+
+        val wallet = Screen("list", "com.msg", Node("conversation_list", "list"), Node("row", "menu_item", "Zahlungsart"))
+        val refused = interpreter(Driver(mapOf("list" to wallet), emptyMap(), "list")).run(flow(sendSteps), emptyMap())
+        assertEquals(FlowAbortReason.SENSITIVE_TARGET, (refused as FlowRunResult.Aborted).reason)
+    }
+
+    @Test
+    fun `a French Pay button is never tapped`() = runTest {
+        val cart = Screen("cart", "com.shop", Node("conversation_list", "list"), Node("primary_action", "button", "Payer 23,40 EUR"))
+        val driver = Driver(mapOf("cart" to cart), emptyMap(), "cart")
+        val result = interpreter(driver).run(flow(listOf(TapStep(viewId = "primary_action"))), emptyMap()) as FlowRunResult.Aborted
+        assertEquals(FlowAbortReason.SENSITIVE_TARGET, result.reason)
+        assertTrue(driver.clicks.isEmpty())
+    }
+
+    @Test
+    fun `a button nobody here can read is tapped on the committing step only with the user's approval`() = runTest {
+        val russian = Screen("thread", "com.msg",
+            Node("toolbar_title", "text", "Anna"), Node("compose_text", "text_field"), Node("send_button", "icon_button", "Отправить"))
+        val driver = Driver(mapOf("list" to list, "thread" to russian, "sent" to sent), graph, "list")
+        val result = interpreter(driver).run(flow(sendSteps), emptyMap()) as FlowRunResult.Aborted
+        assertEquals(FlowAbortReason.AMBIGUOUS_TARGET, result.reason)
+        assertFalse("send_button" in driver.clicks)
+        assertFalse(result.committed)
+        assertTrue("the autopilot, which reads it, does it instead", FlowRunAccounting.mayFallBack(result))
+
+        val approving = object : FlowCheckpointHandler {
+            override suspend fun confirm(flow: Flow, checkpoint: String, params: Map<String, String>) = true
+            override suspend fun approvedThisReplay(flow: Flow) = true
+        }
+        val approved = Driver(mapOf("list" to list, "thread" to russian, "sent" to sent), graph, "list")
+        val done = FlowInterpreter(approved, approving, sleep = { }, clock = { 0L }).run(flow(sendSteps), emptyMap())
+        assertTrue("expected completion, got $done", done is FlowRunResult.Completed)
+    }
+
+    @Test
+    fun `a start screen that is still coming up is waited for`() = runTest {
+        val splash = Screen("splash", "com.msg", Node("splash_logo", "image"))
+        val driver = Driver(mapOf("list" to list, "thread" to thread, "sent" to sent), graph, "list",
+            settlesAfterReads = mapOf("list" to 8), unsettled = splash)
+        val result = interpreter(driver).run(flow(sendSteps), emptyMap())
+        assertTrue("expected completion, got $result", result is FlowRunResult.Completed)
+    }
+
+    @Test
+    fun `a blank value is a missing one`() = runTest {
+        val driver = Driver(mapOf("list" to list, "thread" to thread, "sent" to sent), graph, "list")
+        val steps = listOf(TapStep(viewId = "row"), AssertStep(viewId = "toolbar_title", nodeTextContains = "{{contact}}"),
+            CheckpointStep("send"), TapStep(viewId = "send_button"))
+        val result = interpreter(driver).run(flow(steps).copy(params = listOf("contact")), mapOf("contact" to "  "))
+        assertEquals(FlowAbortReason.MISSING_PARAM, (result as FlowRunResult.Aborted).reason)
+        assertTrue(driver.clicks.isEmpty())
+    }
+
+    @Test
+    fun `a tap the display refused because STOP had latched ends the replay as stopped`() = runTest {
+        var latched = false
+        val base = Driver(mapOf("list" to list, "thread" to thread, "sent" to sent), graph, "list",
+            answers = mapOf("send_button" to FlowDispatch.NOT_DISPATCHED))
+        val driver = object : FlowDisplayDriver by base {
+            override suspend fun clickNode(viewId: String, index: Int): FlowDispatch {
+                // The OS answers "stopped" before its listener tells the app about the STOP.
+                if (viewId == "send_button") latched = true
+                return base.clickNode(viewId, index)
+            }
+        }
+        val result = interpreter(driver, FlowStopSignal { latched }).run(flow(sendSteps), emptyMap()) as FlowRunResult.Aborted
+        assertEquals(FlowAbortReason.STOPPED, result.reason)
+        assertFalse("a STOP is not the flow's fault", FlowRunAccounting.counts(result))
     }
 
     private fun Screen.copyWithout(viewId: String) = Screen(name, pkg, *nodes.filter { it.viewId != viewId }.toTypedArray())

@@ -61,17 +61,26 @@ object ICalParser {
 
     // ── Lines ─────────────────────────────────────────────────────────
 
-    /** Split into logical lines, joining continuations. */
+    /**
+     * Split into logical lines, joining continuations — into one builder per line: adding
+     * each continuation to a copy of the line so far was quadratic in a long folded line.
+     */
     internal fun unfold(text: String): List<String> {
         val out = mutableListOf<String>()
+        val line = StringBuilder()
+        var open = false
         for (raw in text.split("\r\n", "\n", "\r")) {
             if (raw.isEmpty()) continue
-            if ((raw[0] == ' ' || raw[0] == '\t') && out.isNotEmpty()) {
-                out[out.lastIndex] = out.last() + raw.substring(1)
+            if ((raw[0] == ' ' || raw[0] == '\t') && open) {
+                line.append(raw, 1, raw.length)
             } else {
-                out += raw
+                if (open) out += line.toString()
+                line.setLength(0)
+                line.append(raw)
+                open = true
             }
         }
+        if (open) out += line.toString()
         return out
     }
 

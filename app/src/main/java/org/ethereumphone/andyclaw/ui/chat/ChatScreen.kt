@@ -873,6 +873,10 @@ private fun RankedChoiceBody(
     var dragOffsetY by remember { mutableStateOf(0f) }
     val itemHeightPx = remember { mutableStateOf(0f) }
     val haptic = LocalHapticFeedback.current
+    // The gesture below outlives recompositions (keyed on Unit); read the list it reorders
+    // fresh, or a drag across two rows moved items of the order it started with.
+    val currentOrder by androidx.compose.runtime.rememberUpdatedState(order)
+    val currentOnReorder by androidx.compose.runtime.rememberUpdatedState(onReorder)
 
     Column(modifier = Modifier.fillMaxWidth().heightIn(max = 240.dp)) {
         order.forEachIndexed { idx, item ->
@@ -897,12 +901,12 @@ private fun RankedChoiceBody(
                                     dragOffsetY += dragAmount.y
                                     val rowH = itemHeightPx.value
                                     if (rowH > 0f) {
-                                        val targetIdx = (dragIndex + (dragOffsetY / rowH).toInt()).coerceIn(0, order.size - 1)
+                                        val targetIdx = (dragIndex + (dragOffsetY / rowH).toInt()).coerceIn(0, currentOrder.size - 1)
                                         if (targetIdx != dragIndex) {
-                                            val newList = order.toMutableList()
+                                            val newList = currentOrder.toMutableList()
                                             val moved = newList.removeAt(dragIndex)
                                             newList.add(targetIdx, moved)
-                                            onReorder(newList)
+                                            currentOnReorder(newList)
                                             dragOffsetY -= (targetIdx - dragIndex) * rowH
                                             dragIndex = targetIdx
                                         }

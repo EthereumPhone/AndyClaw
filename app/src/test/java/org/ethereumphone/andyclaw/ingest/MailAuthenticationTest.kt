@@ -37,6 +37,22 @@ class MailAuthenticationTest {
     }
 
     @Test
+    fun `a free mailbox's own signature proves nothing about the sender`() {
+        for (sender in listOf("Lufthansa <lufthansa.bookings@gmail.com>", "x@outlook.com", "x@yahoo.co.uk", "x@hotmail.fr")) {
+            val domain = sender.substringAfter('@').trimEnd('>')
+            assertFalse(sender, MailAuthentication.isAuthenticated(
+                headers("mx.google.com; dkim=pass header.d=$domain; dmarc=pass header.from=$domain"),
+                sender,
+            ))
+        }
+        // A company's subdomain that merely starts with a provider's name is not one.
+        assertTrue(MailAuthentication.isAuthenticated(
+            headers("mx.google.com; dkim=pass header.d=live.ticketing.example"),
+            "tickets@live.ticketing.example",
+        ))
+    }
+
+    @Test
     fun `a signature by some other domain is not`() {
         assertFalse(MailAuthentication.isAuthenticated(
             headers("mx.google.com; dkim=pass header.i=@spammer.example; spf=pass"),

@@ -188,4 +188,24 @@ class FlowValidatorTest {
     fun `a flow id that is not a stable identifier is refused`() {
         assertTrue("bad_flow_id" in codes(flow(id = "Signal Send!")))
     }
+
+    @Test
+    fun `a text condition that names no text is refused, since every screen contains it`() {
+        assertTrue("empty_condition" in codes(flow(post = listOf(NodeTextContains(viewId = "bubble", value = "")))))
+        assertTrue("empty_condition" in codes(flow(pre = listOf(NodeTextContains(viewId = "title", value = "  ")))))
+        assertTrue(codes(flow(post = listOf(NodeTextContains(viewId = "bubble", value = "{{body}}")))).isEmpty())
+    }
+
+    @Test
+    fun `a condition may only substitute a declared param`() {
+        assertTrue("undeclared_param" in codes(flow(post = listOf(NodeTextContains(viewId = "bubble", value = "{{message}}")))))
+    }
+
+    @Test
+    fun `a payment step in another language makes the flow uncompilable too`() {
+        val steps = listOf(CheckpointStep("pay"), TapStep(viewId = "com.shop:id/btn_payer"))
+        assertTrue("sensitive_step" in codes(flow(params = emptyList(), steps = steps)))
+        val compound = listOf(TapStep(viewId = "com.shop:id/kreditkarte_hinzufuegen"))
+        assertTrue("sensitive_step" in codes(flow(params = emptyList(), steps = compound)))
+    }
 }

@@ -11,6 +11,8 @@ import androidx.compose.foundation.layout.width
 import com.example.dgenlibrary.DgenLoadingMatrix
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
@@ -36,6 +38,7 @@ fun MemorySettingsSection(
 ) {
     val primaryColor = SystemColorManager.primaryColor
     val secondaryColor = SystemColorManager.secondaryColor
+    var confirmClear by androidx.compose.runtime.saveable.rememberSaveable { androidx.compose.runtime.mutableStateOf(false) }
 
     val sectionTitleStyle = AppTextStyles.sectionTitle(primaryColor)
     val contentTitleStyle = AppTextStyles.contentTitle(primaryColor)
@@ -164,11 +167,28 @@ fun MemorySettingsSection(
             DgenSmallPrimaryButton(
                 text = "Clear All",
                 primaryColor = primaryColor,
-                onClick = onClearMemories,
+                onClick = { confirmClear = true },
                 enabled = memoryCount > 0,
                 modifier = Modifier
                     .weight(1f)
                     .padding(start = 4.dp),
+            )
+        }
+
+        // Every memory, for good, with no undo: one tap while scrolling past used to do it.
+        if (confirmClear) {
+            org.ethereumphone.andyclaw.ui.components.ChadAlertDialog(
+                onDismissRequest = { confirmClear = false },
+                title = "Delete all memories?",
+                message = "This deletes all $memoryCount memor${if (memoryCount == 1) "y" else "ies"} " +
+                    "the AI has stored. It cannot be undone.",
+                confirmButtonText = "DELETE ALL",
+                dismissButtonText = "CANCEL",
+                onConfirm = {
+                    confirmClear = false
+                    onClearMemories()
+                },
+                onDismiss = { confirmClear = false },
             )
         }
 

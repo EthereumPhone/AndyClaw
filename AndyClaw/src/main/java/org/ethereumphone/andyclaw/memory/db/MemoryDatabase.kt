@@ -66,17 +66,36 @@ abstract class MemoryDatabase : RoomDatabase() {
         @Volatile
         private var INSTANCE: MemoryDatabase? = null
 
+        /** The schema this build writes; [build] leaves a newer one alone. */
+        private const val SCHEMA_VERSION = 2
+
         fun getInstance(context: Context): MemoryDatabase {
             return INSTANCE ?: synchronized(this) {
-                INSTANCE ?: Room.databaseBuilder(
-                    context.applicationContext,
-                    MemoryDatabase::class.java,
-                    DB_NAME,
-                )
-                    .addMigrations(MIGRATION_1_2)
-                    .build()
-                    .also { INSTANCE = it }
+                INSTANCE ?: build(context.applicationContext).also { INSTANCE = it }
             }
+        }
+
+        /**
+         * Memories written by a newer build, met after a rollback, are left as they are, the way
+         * `LedgerDatabase` does it: Room has no migration down and would throw on first use. This
+         * build keeps memories in memory then, and the roll-forward finds the file untouched.
+         */
+        private fun build(context: Context): MemoryDatabase {
+            val file = context.getDatabasePath(DB_NAME)
+            val onDisk = if (file.exists()) {
+                runCatching {
+                    android.database.sqlite.SQLiteDatabase.openDatabase(
+                        file.path, null, android.database.sqlite.SQLiteDatabase.OPEN_READONLY,
+                    ).use { it.version }
+                }.getOrDefault(0)
+            } else 0
+            if (onDisk > SCHEMA_VERSION) {
+                android.util.Log.w("MemoryDatabase", "memory schema $onDisk is newer than $SCHEMA_VERSION; not opening it")
+                return Room.inMemoryDatabaseBuilder(context, MemoryDatabase::class.java).build()
+            }
+            return Room.databaseBuilder(context, MemoryDatabase::class.java, DB_NAME)
+                .addMigrations(MIGRATION_1_2)
+                .build()
         }
     }
 }

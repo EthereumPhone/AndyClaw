@@ -44,6 +44,9 @@ sealed interface Reservation {
 
     /** The mail this came from, for the card's `source`. */
     val sourceMessageId: String?
+
+    /** The From domain an [authenticated] mail proved; null for anything else. */
+    val fromDomain: String?
 }
 
 /**
@@ -95,6 +98,7 @@ data class FlightReservation(
     override val authenticated: Boolean = false,
     override val observedMs: Long = 0L,
     override val sourceMessageId: String? = null,
+    override val fromDomain: String? = null,
 ) : Reservation {
 
     override val startMs: Long? get() = departureTimeMs
@@ -143,6 +147,7 @@ data class LodgingReservation(
     override val authenticated: Boolean = false,
     override val observedMs: Long = 0L,
     override val sourceMessageId: String? = null,
+    override val fromDomain: String? = null,
 ) : Reservation {
 
     override val startMs: Long? get() = checkinMs
@@ -175,6 +180,7 @@ data class EventReservation(
     override val authenticated: Boolean = false,
     override val observedMs: Long = 0L,
     override val sourceMessageId: String? = null,
+    override val fromDomain: String? = null,
 ) : Reservation {
 
     override val startMs: Long? get() = startTimeMs
@@ -215,6 +221,8 @@ data class CalendarEvent(
     val authenticated: Boolean = false,
     /** For an invitation that arrived by mail: when the mail was received. */
     val observedMs: Long = 0L,
+    /** For an invitation that arrived by mail: the From domain it proved, if it did. */
+    val fromDomain: String? = null,
 ) {
     val sourceKey: String
         get() = "calendar:${uid ?: "${summary?.lowercase()?.take(32).orEmpty()}:${startMs ?: 0L}"}" +

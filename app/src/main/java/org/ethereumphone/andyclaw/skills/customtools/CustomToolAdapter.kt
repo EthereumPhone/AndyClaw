@@ -3,6 +3,8 @@ package org.ethereumphone.andyclaw.skills.customtools
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
+import org.ethereumphone.andyclaw.ExecutionEngine.Provenance
+import org.ethereumphone.andyclaw.ExecutionEngine.currentProvenance
 import org.ethereumphone.andyclaw.skills.AndyClawSkill
 import org.ethereumphone.andyclaw.skills.SkillManifest
 import org.ethereumphone.andyclaw.skills.SkillResult
@@ -33,6 +35,9 @@ class CustomToolAdapter(
     override val privilegedManifest: SkillManifest? = null
 
     override suspend fun execute(tool: String, params: JsonObject, tier: Tier): SkillResult {
-        return executor.executeCancellable(toolDef.code, params)
+        return executor.executeCancellable(
+            toolDef.code, params,
+            bindAndroidHandles = currentProvenance() == Provenance.USER,
+        )
     }
 }

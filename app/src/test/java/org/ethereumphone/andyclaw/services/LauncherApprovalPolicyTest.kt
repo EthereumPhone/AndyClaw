@@ -64,7 +64,7 @@ class LauncherApprovalPolicyTest {
 
     @Test
     fun `a plain request of the user's own still runs`() {
-        // requiresApproval tools (uninstall_app, termux_run_command, ...) reach here as IRREVERSIBLE.
+        // requiresApproval tools (connect_wifi_network, termux_run_command, ...) reach here as IRREVERSIBLE.
         assertEquals(Decision.RUN, decide(ToolEffect.IRREVERSIBLE))
         assertEquals(Decision.RUN, decide(ToolEffect.REVERSIBLE))
     }

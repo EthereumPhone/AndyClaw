@@ -63,6 +63,12 @@ object AutopilotFlowCompiler {
                 is StepOption.Type -> TypeStep(target = Selector(viewId = viewId), value = "{{${o.valueKey}}}")
                 else -> return Result.Skipped("unsupported_action:${o.key.substringBefore(':')}")
             }
+            // A button in a script the word lists cannot read, at a step that commits: replayed
+            // unattended, nothing could tell its "Send" from a "Pay". The autopilot does it live.
+            if (step is TapStep && FlowTargetGuard.isControl(target.type) &&
+                (a.commits || i == actions.lastIndex || FlowStepEffects.of(step).ordinal >= ToolEffect.IRREVERSIBLE.ordinal) &&
+                FlowStepEffects.unreadable(listOfNotNull(target.label, target.hint).joinToString(" "))
+            ) return Result.Skipped("unreadable_commit")
             // A row that is only there because of what was typed — a search hit — is chosen by
             // the typed value, but the flow keeps only its view id. On replay with another value
             // the lone hit may be somebody else ("Bob" finds only "Bobby"), the id is still unique,
@@ -149,7 +155,7 @@ object AutopilotFlowCompiler {
         val previous = actions.getOrNull(i - 1)
         val appearedAfterTyping = previous?.option is StepOption.Type &&
             previous.screenBefore.elements.none { it.viewId == target.viewId }
-        return if (appearedAfterTyping && target.type !in FlowTargetGuard.CONTROL_TYPES) ValueDependence.Unprovable
+        return if (appearedAfterTyping && !FlowTargetGuard.isControl(target.type)) ValueDependence.Unprovable
         else ValueDependence.None
     }
 

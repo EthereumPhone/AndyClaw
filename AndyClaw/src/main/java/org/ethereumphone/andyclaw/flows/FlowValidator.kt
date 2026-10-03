@@ -131,12 +131,23 @@ object FlowValidator {
                 "every flow carries postconditions — a flow that cannot assert it worked does not run",
             )
         }
+        val declared = flow.params.toSet()
         for (condition in flow.preconditions + flow.postconditions) {
             if (condition.viewId.isNullOrBlank()) {
                 errors += FlowValidationError(
                     "condition_without_view_id",
                     "condition '${condition.opcode}' must name a view_id",
                 )
+            }
+            if (condition is NodeTextContains) {
+                // Every text contains the empty string, so this would hold on any screen at all.
+                if (condition.value.isBlank()) {
+                    errors += FlowValidationError(
+                        "empty_condition",
+                        "node_text_contains on '${condition.viewId}' must name the text it looks for",
+                    )
+                }
+                checkPlaceholders(condition.value, declared, null, errors)
             }
         }
     }
@@ -273,7 +284,7 @@ object FlowValidator {
     private fun checkPlaceholders(
         value: String,
         declared: Set<String>,
-        index: Int,
+        index: Int?,
         errors: MutableList<FlowValidationError>,
     ) {
         for (match in PLACEHOLDER.findAll(value)) {

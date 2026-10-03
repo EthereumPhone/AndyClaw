@@ -132,7 +132,8 @@ class TelegramAgentRunner(
 
         val collectedText = StringBuilder()
         val completion = CompletableDeferred<String>()
-        ledController.onPromptStart()
+        // A Telegram run is answered in Telegram: the LEDs only, never the terminal screen.
+        ledController.onPromptStart(terminal = false)
         var usedTools = false
 
         val callbacks = object : AgentLoop.Callbacks {
@@ -335,7 +336,7 @@ class TelegramAgentRunner(
 
             override fun onComplete(fullText: String, tokenUsage: org.ethereumphone.andyclaw.agent.TokenUsageSnapshot?) {
                 Log.i(TAG, "=== TELEGRAM RUN COMPLETE (chat=$chatId) ===")
-                ledController.onPromptComplete(fullText)
+                ledController.onPromptComplete(fullText, terminal = false)
 
                 history.add(Message.user(userMessage))
                 history.add(Message.assistant(listOf(ContentBlock.TextBlock(fullText))))
@@ -350,16 +351,21 @@ class TelegramAgentRunner(
 
             override fun onError(error: Throwable) {
                 Log.e(TAG, "=== TELEGRAM RUN FAILED (chat=$chatId) ===", error)
-                ledController.onPromptError()
+                ledController.onPromptError(terminal = false)
                 completion.complete("Sorry, an error occurred: ${error.message}")
             }
         }
 
-        agentLoop.run(
-            userMessage = userMessage,
-            conversationHistory = history.toList(),
-            callbacks = callbacks,
-        )
+        try {
+            agentLoop.run(
+                userMessage = userMessage,
+                conversationHistory = history.toList(),
+                callbacks = callbacks,
+            )
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            ledController.onPromptCancelled(terminal = false)
+            throw e
+        }
 
         val executionText = completion.await()
 

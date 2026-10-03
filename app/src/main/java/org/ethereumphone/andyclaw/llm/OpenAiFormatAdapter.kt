@@ -30,12 +30,23 @@ object OpenAiFormatAdapter {
      * which api.openai.com requires for its reasoning models (GPT-5+, o-series)
      * and accepts for every other model. Other OpenAI-compatible servers
      * (Tinfoil, Venice, llama.cpp) keep getting `max_tokens`.
+     *
+     * [includeUsage] asks a stream for its token counts, which OpenAI-format streams leave
+     * out unless asked: without them the context bar read 0 and compaction never ran. Only
+     * for servers known to take the field; a user's own server is not asked.
      */
-    fun toOpenAiRequestJson(request: MessagesRequest, useMaxCompletionTokens: Boolean = false): String {
+    fun toOpenAiRequestJson(
+        request: MessagesRequest,
+        useMaxCompletionTokens: Boolean = false,
+        includeUsage: Boolean = false,
+    ): String {
         return buildJsonObject {
             put("model", request.model)
             put(if (useMaxCompletionTokens) "max_completion_tokens" else "max_tokens", request.maxTokens)
             put("stream", request.stream)
+            if (request.stream && includeUsage) {
+                put("stream_options", buildJsonObject { put("include_usage", true) })
+            }
 
             // Build messages array
             val messages = buildJsonArray {
@@ -127,31 +138,39 @@ object OpenAiFormatAdapter {
                     })
                 }
 
-                // Tool results → OpenAI tool role messages
+                // Tool results → OpenAI tool role messages. Chat Completions takes images only in
+                // user messages (a tool message carrying one is a 400 on api.openai.com), so the
+                // text stays with its call and the images follow the last tool message: the
+                // assistant's tool_calls have to be answered before anything else is said.
+                val images = buildJsonArray {
+                    for (tr in toolResults) {
+                        val parts = tr.contentBlocks?.filterIsInstance<ToolResultContent.Image>().orEmpty()
+                        if (parts.isEmpty()) continue
+                        add(buildJsonObject {
+                            put("type", "text")
+                            put("text", "Image returned by tool call ${tr.toolUseId}:")
+                        })
+                        for (part in parts) {
+                            add(buildJsonObject {
+                                put("type", "image_url")
+                                put("image_url", buildJsonObject {
+                                    put("url", "data:${part.source.mediaType};base64,${part.source.data}")
+                                })
+                            })
+                        }
+                    }
+                }
                 for (tr in toolResults) {
                     result.add(buildJsonObject {
                         put("role", "tool")
                         put("tool_call_id", tr.toolUseId)
-                        if (tr.contentBlocks != null) {
-                            put("content", buildJsonArray {
-                                for (part in tr.contentBlocks) {
-                                    when (part) {
-                                        is ToolResultContent.Text -> add(buildJsonObject {
-                                            put("type", "text")
-                                            put("text", part.text)
-                                        })
-                                        is ToolResultContent.Image -> add(buildJsonObject {
-                                            put("type", "image_url")
-                                            put("image_url", buildJsonObject {
-                                                put("url", "data:${part.source.mediaType};base64,${part.source.data}")
-                                            })
-                                        })
-                                    }
-                                }
-                            })
-                        } else {
-                            put("content", tr.content)
-                        }
+                        put("content", tr.content)
+                    })
+                }
+                if (images.isNotEmpty()) {
+                    result.add(buildJsonObject {
+                        put("role", "user")
+                        put("content", images)
                     })
                 }
 
@@ -241,16 +260,7 @@ object OpenAiFormatAdapter {
 
         // Usage (including prompt cache metrics)
         // `as?`: providers send `"usage": null` / `"prompt_tokens_details": null`.
-        val usageObj = root["usage"] as? JsonObject
-        val usage = if (usageObj != null) {
-            val promptDetails = usageObj["prompt_tokens_details"] as? JsonObject
-            val cachedTokens = promptDetails?.get("cached_tokens")?.jsonPrimitive?.contentOrNull?.toIntOrNull() ?: 0
-            Usage(
-                inputTokens = usageObj["prompt_tokens"]?.jsonPrimitive?.contentOrNull?.toIntOrNull() ?: 0,
-                outputTokens = usageObj["completion_tokens"]?.jsonPrimitive?.contentOrNull?.toIntOrNull() ?: 0,
-                cacheReadTokens = cachedTokens,
-            )
-        } else null
+        val usage = (root["usage"] as? JsonObject)?.let { usageFrom(it) }
 
         return MessagesResponse(
             id = id,
@@ -262,4 +272,29 @@ object OpenAiFormatAdapter {
             usage = usage,
         )
     }
+
+    /**
+     * An OpenAI `usage` object in this app's terms. `prompt_tokens` includes the cached part,
+     * while [Usage.inputTokens] is the uncached part only, as Anthropic counts it: AgentLoop
+     * adds the cache back to size the prompt, so passing `prompt_tokens` through counted
+     * every cached token twice.
+     */
+    internal fun usageFrom(usageObj: JsonObject): Usage {
+        fun count(obj: JsonObject?, key: String) =
+            (obj?.get(key) as? JsonPrimitive)?.contentOrNull?.toIntOrNull() ?: 0
+        val cached = count(usageObj["prompt_tokens_details"] as? JsonObject, "cached_tokens")
+        return Usage(
+            inputTokens = (count(usageObj, "prompt_tokens") - cached).coerceAtLeast(0),
+            outputTokens = count(usageObj, "completion_tokens"),
+            cacheReadTokens = cached,
+        )
+    }
+
+    /**
+     * True when the server turned a request down over `stream_options`. The Tinfoil clients
+     * then ask again without it, once, and stop asking: a refusal would fail every stream.
+     */
+    fun rejectsStreamOptions(e: Throwable): Boolean =
+        e is AnthropicApiException && e.statusCode == 400 &&
+            e.message?.contains("stream_options", ignoreCase = true) == true
 }

@@ -17,6 +17,10 @@ import org.ethereumphone.andyclaw.skills.RoutingPreset
 class SlashCommandExecutor(
     private val prefs: SecurePrefs,
     private val memoryManager: MemoryManager,
+    /** The providers `/provider` offers: the ones Settings does, in its order. */
+    private val providerChoices: List<LlmProvider> = LlmProvider.entries,
+    /** Switches the chat's provider the way Settings does; see [org.ethereumphone.andyclaw.ui.settings.ProviderSwitch]. */
+    private val switchProvider: (LlmProvider) -> Unit = prefs::setSelectedProvider,
 ) {
 
     // ── Heartbeat interval steps ────────────────────────────────────────
@@ -43,8 +47,9 @@ class SlashCommandExecutor(
         val commandId = parts[0].lowercase()
         val arg = parts.getOrNull(1)?.trim()
 
-        val command = SlashCommandRegistry.find(commandId)
-            ?: return SlashCommandResult.Error("Unknown command: /$commandId. Type /help for a list.")
+        // Not a command we know: a message that starts with "/" — a path, a fraction — and it goes
+        // to the model as written. Answered "Unknown command", it never reached it.
+        val command = SlashCommandRegistry.find(commandId) ?: return null
 
         return when (command) {
             is SlashCommand.Toggle -> executeToggle(command)
@@ -141,7 +146,7 @@ class SlashCommandExecutor(
                 )
             }
             "provider" -> {
-                val providers = LlmProvider.entries
+                val providers = providerChoices
                 val currentIdx = providers.indexOf(prefs.selectedProvider.value)
                     .coerceAtLeast(0)
                 if (arg != null) {
@@ -204,17 +209,15 @@ class SlashCommandExecutor(
     }
 
     private fun selectProvider(index: Int): SlashCommandResult {
-        val providers = LlmProvider.entries
+        val providers = providerChoices
         if (index !in providers.indices) {
             return SlashCommandResult.Error("Invalid provider index: $index (0..${providers.lastIndex})")
         }
         val chosen = providers[index]
-        prefs.setSelectedProvider(chosen)
-        // Also set a sensible default model for the new provider
-        val defaultModel = AnthropicModels.defaultForProvider(chosen)
-        prefs.setSelectedModel(defaultModel.modelId)
+        // The model comes with it: its default, or the user's own for CUSTOM.
+        switchProvider(chosen)
         return SlashCommandResult.CycleSelected(
-            message = "Provider → ${chosen.displayName} (model → ${defaultModel.modelId})",
+            message = "Provider → ${chosen.displayName} (model → ${prefs.selectedModel.value})",
             commandId = "provider",
             selectedOption = chosen.displayName,
         )

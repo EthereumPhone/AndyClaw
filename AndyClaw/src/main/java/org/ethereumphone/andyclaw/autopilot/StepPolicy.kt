@@ -173,8 +173,8 @@ object StepPolicy {
 
     fun isSensitive(e: ScreenElement): Boolean {
         if (e.password) return true
-        val tokens = FlowStepEffects.tokenize(listOfNotNull(e.label, e.hint, e.viewId).joinToString(" "))
-        return tokens.any { it in FlowStepEffects.SENSITIVE_TOKENS }
+        // One at a time: a view id is read as one ("tan_input" is the bank's TAN), a label as words.
+        return listOfNotNull(e.label, e.hint, e.viewId).any(FlowStepEffects::isSensitiveText)
     }
 
     fun isCommitLike(e: ScreenElement): Boolean {

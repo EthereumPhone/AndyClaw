@@ -86,6 +86,12 @@ object AgentDisplayCapabilities {
     fun stoppedSince(baseline: Long): Boolean = stopGen.get() != baseline
 
     /**
+     * The OS refused an action as `"stopped"`: STOP latched the display, and the listener's word of
+     * it may not have reached this process yet. The answer says the same, so the run hears it now.
+     */
+    fun noteStopLatched() = onStop()
+
+    /**
      * Whether the OS is still holding the display latched from a STOP. A latched display drops
      * every tap, key and text, so a new run that finds one live re-creates it first.
      */

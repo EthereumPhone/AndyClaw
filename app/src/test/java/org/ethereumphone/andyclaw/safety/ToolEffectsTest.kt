@@ -140,6 +140,26 @@ class ToolEffectsTest {
     }
 
     @Test
+    fun `what cannot be put back is irreversible, and deleting an app's data is sensitive`() {
+        // An overwritten clipboard or a dismissed notification does not come back, and a joined
+        // network carries the device's traffic.
+        for (tool in listOf("write_clipboard", "agent_display_set_clipboard", "dismiss_notification", "connect_wifi_network")) {
+            assertEquals(tool, ToolEffect.IRREVERSIBLE, ToolEffects.of(tool))
+        }
+        for (tool in listOf("uninstall_app", "clear_app_data")) {
+            assertEquals(tool, ToolEffect.SENSITIVE, ToolEffects.of(tool))
+        }
+    }
+
+    @Test
+    fun `a tool that is not a builtin counts as reading private data`() {
+        assertTrue(ToolEffects.readsPrivateData("read_sms"))
+        assertTrue("a custom tool cannot say what it reads", ToolEffects.readsPrivateData("sms_digest"))
+        assertTrue("the home network's name and the device's addresses", ToolEffects.readsPrivateData("get_connectivity_status"))
+        assertFalse(ToolEffects.readsPrivateData("get_device_info"))
+    }
+
+    @Test
     fun `every conditional-egress key names a real parameter`() {
         assertEquals(
             mapOf(

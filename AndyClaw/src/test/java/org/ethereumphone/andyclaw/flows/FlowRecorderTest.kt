@@ -37,6 +37,22 @@ class FlowRecorderTest {
     }
 
     @Test
+    fun `a recording cut off at its cap does not compile as the whole session`() {
+        val r = recorder()
+        r.start()
+        r.record("agent_display_create", null, null, null, null, "com.msg", null, treeA, true)
+        repeat(FlowRecorder.MAX_ACTIONS + 5) {
+            r.record("agent_display_click_node", "a", null, null, null, null, treeA, treeA, true)
+        }
+        val draft = r.draft("msg.long", "*")!!
+        assertFalse(draft.isMechanicallyComplete)
+        r.start()
+        r.record("agent_display_create", null, null, null, null, "com.msg", null, treeA, true)
+        r.record("agent_display_click_node", "a", null, null, null, null, treeA, treeB, true)
+        assertTrue("a new session starts whole", r.draft("msg.short", "*")!!.isMechanicallyComplete)
+    }
+
+    @Test
     fun `each step carries the checksum of the screen it was taken on`() {
         val r = recorder()
         r.start()

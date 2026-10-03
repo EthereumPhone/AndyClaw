@@ -25,10 +25,26 @@ object MailAuthentication {
     private val TRUSTED_AUTHSERV_IDS = setOf("mx.google.com")
 
     /**
+     * Free mailbox providers. Their signature proves the mail came from an account there, which
+     * anyone can open in a minute: it says nothing about being an airline or a hotel, and counted
+     * as proof it let a stranger's gmail.com mail rewrite or cancel a real booking's card.
+     */
+    private val WEBMAIL_DOMAINS = setOf(
+        "gmail.com", "googlemail.com", "outlook.com", "hotmail.com", "live.com", "msn.com",
+        "yahoo.com", "ymail.com", "aol.com", "icloud.com", "me.com", "mac.com",
+        "proton.me", "protonmail.com", "pm.me", "gmx.com", "gmx.de", "gmx.net", "web.de",
+        "mail.com", "yandex.com", "yandex.ru", "mail.ru", "zoho.com", "fastmail.com", "tutanota.com",
+    )
+
+    /** Second-level labels that are a webmail provider under any national suffix (yahoo.co.uk). */
+    private val WEBMAIL_LABELS = setOf("yahoo", "hotmail", "outlook", "live", "gmx", "yandex")
+
+    /**
      * [headers] in the order the message carries them, top first, as (name, value) pairs.
      */
     fun isAuthenticated(headers: List<Pair<String, String>>, from: String?): Boolean {
         val fromDomain = domainOf(from) ?: return false
+        if (isWebmail(fromDomain)) return false
         val results = headers.firstOrNull { it.first.equals("Authentication-Results", ignoreCase = true) }?.second
             ?: return false
         val sections = results.split(';').map { it.trim() }
@@ -70,6 +86,14 @@ object MailAuthentication {
         // A bare public suffix cannot hold a DKIM key, so "com" never signs for anyone here.
         if (!s.contains('.')) return false
         return s == f || f.endsWith(".$s") || s.endsWith(".$f")
+    }
+
+    /** [domain] is a free mailbox provider's: listed, or `yahoo.co.uk`, `hotmail.fr` and the like. */
+    private fun isWebmail(domain: String): Boolean {
+        if (WEBMAIL_DOMAINS.any { domain == it || domain.endsWith(".$it") }) return true
+        val labels = domain.split('.')
+        if (labels.first() !in WEBMAIL_LABELS) return false
+        return labels.size == 2 || (labels.size == 3 && labels[1] in setOf("co", "com"))
     }
 
     /** `Lufthansa <noreply@lufthansa.com>` → `lufthansa.com`. */

@@ -88,7 +88,7 @@ class ToolBridge(
             )
         }
         if (allowed) {
-            if (provenance != Provenance.USER && toolName in ToolEffects.PRIVATE_DATA_TOOLS) {
+            if (provenance != Provenance.USER && ToolEffects.readsPrivateData(toolName)) {
                 token?.readPrivateData = true
             }
             return

@@ -514,7 +514,14 @@ private fun StepProviderSelection(
             LlmProvider.LOCAL,
             LlmProvider.ETHOS_PREMIUM -> {
                 Text(
-                    text = "No API key needed. The model (~2.5 GB) will be downloaded after setup.",
+                    // Nothing downloads the model on its own, and it is ~750 MB, not 2.5 GB; nor
+                    // do the other three need a model at all.
+                    text = when (selectedProvider) {
+                        LlmProvider.LOCAL -> "No API key needed. Download the model (~750 MB) in Settings › AI Provider after setup."
+                        LlmProvider.ETHOS_PREMIUM -> "No API key needed. Usage is paid from your ethOS paymaster balance."
+                        LlmProvider.CUSTOM -> "Set your server's URL and model in Settings › AI Provider after setup."
+                        else -> "Sign in from Settings › AI Provider after setup."
+                    },
                     fontFamily = SpaceMono,
                     fontSize = 13.sp,
                     color = primaryColor.copy(alpha = 0.6f),

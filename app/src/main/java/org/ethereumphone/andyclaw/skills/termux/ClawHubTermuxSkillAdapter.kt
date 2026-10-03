@@ -77,8 +77,16 @@ class ClawHubTermuxSkillAdapter(
 
             val lock = ClawHubLockFile(managedDir).also { it.load() }
 
+            // Only what the lockfile says was installed: a directory that is not in it is a bundle
+            // nobody confirmed (an assessment abandoned with STOP, left there by an older build),
+            // which the Installed tab could neither show nor remove.
             return managedDir.listFiles()
                 ?.filter { it.isDirectory && File(it, "SKILL.md").isFile }
+                ?.filter { dir ->
+                    lock.isInstalled(dir.name).also { installed ->
+                        if (!installed) Log.w(TAG, "Not registering ${dir.name}: not in the ClawHub lockfile")
+                    }
+                }
                 ?.mapNotNull { dir ->
                     val slugName = dir.name
                     val parsedSkill = SkillLoader.parseSkillFile(
@@ -152,6 +160,10 @@ class ClawHubTermuxSkillAdapter(
         // Resolve the tool spec
         val toolSpec = resolveToolSpec(tool)
             ?: return SkillResult.Error("Unknown tool: $tool")
+        val missing = toolSpec.args.filter { (key, spec) -> spec.required && argValue(params, key).isNullOrEmpty() }.keys
+        if (missing.isNotEmpty()) {
+            return SkillResult.Error("Missing required parameter(s): ${missing.joinToString()}")
+        }
 
         // Build and execute the command
         val command = buildCommand(toolSpec, params)
@@ -221,10 +233,12 @@ class ClawHubTermuxSkillAdapter(
         val argCount = toolSpec.args.size
 
         return if (argCount <= 3 && allSimpleStrings) {
-            // Positional mode: pass each arg value directly
-            val positional = toolSpec.args.keys.mapNotNull { key ->
-                params[key]?.jsonPrimitive?.contentOrNull
-            }
+            // Positional mode: each declared arg in its own slot, its default or "" when omitted —
+            // dropped, every later value moved up into the omitted one's place. Only trailing
+            // omitted args are left off, so a script's own `$#` and `${2:-…}` checks still work.
+            val positional = toolSpec.args.map { (key, spec) -> argValue(params, key) ?: spec.default }
+                .dropLastWhile { it == null }
+                .map { it ?: "" }
             val escaped = positional.joinToString(" ") { shellEscape(it) }
             "'$scriptPath' $escaped".trim()
         } else {
@@ -233,6 +247,10 @@ class ClawHubTermuxSkillAdapter(
             "'$scriptPath' '${toolSpec.name}' '$json'"
         }
     }
+
+    /** A string argument's value; null when it is absent or not a plain value. */
+    private fun argValue(params: JsonObject, key: String): String? =
+        (params[key] as? JsonPrimitive)?.contentOrNull
 
     private fun shellEscape(value: String): String {
         // Wrap in single quotes, escaping embedded single quotes

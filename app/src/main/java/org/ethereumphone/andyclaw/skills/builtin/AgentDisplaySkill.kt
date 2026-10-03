@@ -4,6 +4,8 @@ import android.os.IAgentDisplayService
 import android.util.Base64
 import android.util.Log
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -13,6 +15,7 @@ import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.longOrNull
+import org.ethereumphone.andyclaw.BuildConfig
 import org.ethereumphone.andyclaw.agent.currentRunToken
 import org.ethereumphone.andyclaw.autopilot.AgentDisplayCapabilities
 import org.ethereumphone.andyclaw.autopilot.AgentHud
@@ -66,10 +69,26 @@ class AgentDisplaySkill(
         private val HUD_TOOLS = INPUT_TOOLS + setOf(
             "agent_display_create", "agent_display_launch_activity", "agent_display_launch_intent",
         )
+
+        /** Parameters that carry what is typed or copied, a password or a seed among it. */
+        private val TEXT_PARAMS = setOf("text", "value", "values")
+
+        /**
+         * A call's parameters as they are logged: their names only in a release build, and never
+         * the text in them — logcat ends up in bug reports.
+         */
+        private fun loggable(params: JsonObject): String =
+            if (!BuildConfig.DEBUG) params.keys.toString()
+            else JsonObject(params.mapValues { (key, value) ->
+                if (key in TEXT_PARAMS) JsonPrimitive("<${value.toString().length} chars>") else value
+            }).toString()
     }
 
     /** The last package whose name was looked up for the HUD, and that name. */
     @Volatile private var labelFor: Pair<String, String?>? = null
+
+    /** Per run: its display calls go one at a time (see [execute]). Dropped when the run ends. */
+    private val runLocks = java.util.concurrent.ConcurrentHashMap<String, Mutex>()
 
     /** The settle detection listens to the display the model is driving. */
     private fun watchDisplay() {
@@ -413,12 +432,23 @@ class AgentDisplaySkill(
     }
 
     override suspend fun execute(tool: String, params: JsonObject, tier: Tier): SkillResult {
-        Log.i(LTAG, "execute START tool=$tool params=$params tier=$tier")
-        Log.i(DTAG, "TOOL_EXECUTE: $tool | params=$params")
+        val logged = loggable(params)
+        Log.i(LTAG, "execute START tool=$tool params=$logged tier=$tier")
+        Log.i(DTAG, "TOOL_EXECUTE: $tool | params=$logged")
         val startMs = System.currentTimeMillis()
         AgentDisplayCapabilities.ensureListener()
         // One run drives the display at a time; see AgentDisplayLease.
         if (!AgentDisplayLease.claimForCaller()) return SkillResult.Error(AgentDisplayLease.BUSY)
+        // And one call of that run at a time. Its sub-agents share its token, so the lease lets each
+        // of them in, and two input streams on one display put the text and the Enter of one into
+        // whatever field the other had just focused.
+        val runLock = currentRunToken()?.let { token -> runLocks.computeIfAbsent(token.id) { Mutex() } }
+            ?: return executeHeld(tool, params, startMs)
+        return runLock.withLock { executeHeld(tool, params, startMs) }
+    }
+
+    private suspend fun executeHeld(tool: String, params: JsonObject, startMs: Long): SkillResult {
+        // Checked once the call holds the run's lock: a STOP while it waited ends it here.
         if (currentRunToken()?.stopRequested == true) return SkillResult.Error(AgentDisplayLease.STOPPED)
         return try {
             val result = when (tool) {
@@ -483,11 +513,14 @@ class AgentDisplaySkill(
                 is SkillResult.Success -> {
                     Log.i(LTAG, "execute DONE tool=$tool elapsed=${elapsed}ms resultType=Success dataLen=${result.data.length}")
                     Log.i(DTAG, "TOOL_RESULT: $tool -> SUCCESS (${elapsed}ms) dataLen=${result.data.length}")
-                    // Log first 2000 chars of result data for debugging
-                    val preview = result.data.take(2000)
-                    Log.i(DTAG, "TOOL_RESULT_DATA: $tool -> $preview")
-                    if (result.data.length > 2000) {
-                        Log.i(DTAG, "TOOL_RESULT_DATA: $tool -> ... (${result.data.length - 2000} more chars)")
+                    // A screen's text — a wallet's, a recovery phrase — does not belong in logcat,
+                    // which ends up in bug reports: debug builds only.
+                    if (BuildConfig.DEBUG) {
+                        val preview = result.data.take(2000)
+                        Log.i(DTAG, "TOOL_RESULT_DATA: $tool -> $preview")
+                        if (result.data.length > 2000) {
+                            Log.i(DTAG, "TOOL_RESULT_DATA: $tool -> ... (${result.data.length - 2000} more chars)")
+                        }
                     }
                 }
                 is SkillResult.Error -> {
@@ -518,6 +551,7 @@ class AgentDisplaySkill(
      * a heartbeat finishing mid-autopilot from tearing the display out from under the user's task.
      */
     override fun onRunFinished(runId: String, end: RunEnd) {
+        runLocks.remove(runId)
         // Put away first and given back after, as one step: a run claiming the display between
         // the two used to have it parked under it.
         AgentDisplayLease.releaseAfter(runId) {

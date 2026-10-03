@@ -90,8 +90,18 @@ class FlowRecorder(private val clock: () -> Long = System::currentTimeMillis) {
     var lastTree: String? = null
         private set
 
+    /**
+     * An action came after [MAX_ACTIONS] and was not kept. The steps then stop short of the
+     * screen [lastTree] shows, and replaying them is not the session.
+     */
+    @Volatile
+    private var truncated = false
+
     fun start() {
-        synchronized(actions) { actions.clear() }
+        synchronized(actions) {
+            actions.clear()
+            truncated = false
+        }
         packageName = null
         firstActionTree = null
         lastTree = null
@@ -106,7 +116,10 @@ class FlowRecorder(private val clock: () -> Long = System::currentTimeMillis) {
     fun record(action: RecordedAction) {
         if (!isRecording) return
         synchronized(actions) {
-            if (actions.size >= MAX_ACTIONS) return
+            if (actions.size >= MAX_ACTIONS) {
+                truncated = true
+                return
+            }
             actions += action.copy(timestampMs = if (action.timestampMs == 0L) clock() else action.timestampMs)
         }
         action.packageName?.let { if (packageName == null) packageName = it }
@@ -159,6 +172,7 @@ class FlowRecorder(private val clock: () -> Long = System::currentTimeMillis) {
         val steps = mutableListOf<FlowStep>()
         val sources = mutableListOf<RecordedAction>()
         val unsupported = mutableListOf<String>()
+        if (truncated) unsupported += "more than $MAX_ACTIONS actions (the recording was cut off)"
 
         for (action in recordedActions) {
             when (action.tool) {

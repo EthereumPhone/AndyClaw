@@ -39,15 +39,11 @@ class AgentDisplayFlowDriver(
             if (service.displayId <= 0 || AgentDisplayCapabilities.latched()) {
                 service.createAgentDisplay(displayWidth, displayHeight, displayDpi)
             }
-            val current = try {
-                service.currentActivity
-            } catch (e: Exception) {
-                null
-            }
-            if (current == null || !current.startsWith("$packageName/")) {
-                service.launchApp(packageName)
-                delay(LAUNCH_SETTLE_MS)
-            }
+            // From the app's start, every time: the launch clears its task, and a flow is compiled
+            // from there. An app already in front was left as it was — in the chat the last replay
+            // opened — and failed the preconditions there. The interpreter waits for them.
+            service.launchApp(packageName)
+            delay(LAUNCH_SETTLE_MS)
             true
         } catch (e: Exception) {
             rethrowIfCancelled(e)
@@ -57,7 +53,10 @@ class AgentDisplayFlowDriver(
     }
 
     override suspend fun uiTree(): String? = try {
-        AgentDisplayBinder.serviceOrNull()?.accessibilityTree
+        // An error answer is no screen: read as one, the display's fault counted against the flow.
+        AgentDisplayBinder.serviceOrNull()?.accessibilityTree?.takeIf { tree ->
+            NodeTreeChecksum.isScreen(tree).also { if (!it) Log.w(TAG, "uiTree: not a screen: ${tree.take(120)}") }
+        }
     } catch (e: Exception) {
         Log.w(TAG, "uiTree failed: ${e.message}")
         null
@@ -93,6 +92,9 @@ class AgentDisplayFlowDriver(
             Log.w(TAG, "$what threw; it may still have gone through, so it counts as possibly done: ${e.message}")
             return FlowDispatch.UNKNOWN
         }
+        // The OS refused it because STOP latched the display; its listener may not have told this
+        // process yet, and the replay must end as stopped, not as a failed step.
+        if (FlowDispatch.refusedByStop(answer)) AgentDisplayCapabilities.noteStopLatched()
         return FlowDispatch.ofNodeActionResult(answer).also {
             if (it != FlowDispatch.DONE) Log.w(TAG, "$what -> $it: ${answer?.take(200)}")
         }

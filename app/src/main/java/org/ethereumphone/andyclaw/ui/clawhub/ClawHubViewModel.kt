@@ -222,6 +222,26 @@ class ClawHubViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
+    /**
+     * Leaving with the warning still up is not a yes. The downloaded skill is removed rather than
+     * left where the next reload would register it without anyone having approved it.
+     */
+    override fun onCleared() {
+        val pending = _pendingInstall.value
+        _pendingInstall.value = null
+        if (pending != null) {
+            // viewModelScope is already cancelled here, and the cleanup must outlive this ViewModel.
+            kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + Dispatchers.IO).launch {
+                try {
+                    manager.cancelPendingInstall(pending.slug)
+                } catch (e: Exception) {
+                    android.util.Log.w("ClawHubViewModel", "Cleanup of an unconfirmed install failed: ${e.message}")
+                }
+            }
+        }
+        super.onCleared()
+    }
+
     private suspend fun finaliseInstall(slug: String, version: String?) {
         when (val result = manager.confirmInstall(slug, version)) {
             is InstallResult.Success ->

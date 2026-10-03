@@ -20,6 +20,8 @@ sealed class TelegramUpdate(val updateId: Long) {
         val text: String,
         val fromUsername: String?,
         val fromFirstName: String?,
+        /** Telegram's `chat.type`: "private", "group", "supergroup" or "channel"; null if absent. */
+        val chatType: String? = null,
     ) : TelegramUpdate(id)
 
     data class CallbackQueryUpdate(
@@ -58,6 +60,10 @@ class TelegramBotClient(
     private fun apiUrl(method: String): String = "$baseUrl/bot${token()}/$method"
 
     suspend fun getUpdates(offset: Long?, timeout: Int = 30): List<TelegramUpdate> =
+        getUpdatesOrNull(offset, timeout) ?: emptyList()
+
+    /** As [getUpdates], but null when the poll itself failed, so a poll loop can back off. */
+    suspend fun getUpdatesOrNull(offset: Long?, timeout: Int = 30): List<TelegramUpdate>? =
         withContext(Dispatchers.IO) {
             val body = JSONObject().apply {
                 if (offset != null) put("offset", offset)
@@ -74,18 +80,19 @@ class TelegramBotClient(
                 longPollClient.newCall(request).execute().use { response ->
                     if (!response.isSuccessful) {
                         Log.w(TAG, "getUpdates failed: ${response.code}")
-                        return@withContext emptyList()
+                        return@withContext null
                     }
-                    val json = JSONObject(response.body?.string() ?: return@withContext emptyList())
+                    val json = JSONObject(response.body?.string() ?: return@withContext null)
                     if (!json.optBoolean("ok", false)) {
                         Log.w(TAG, "getUpdates not ok: ${json.optString("description")}")
-                        return@withContext emptyList()
+                        return@withContext null
                     }
                     parseUpdates(json.getJSONArray("result"))
                 }
             } catch (e: Exception) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
                 Log.w(TAG, "getUpdates error: ${e.message}")
-                emptyList()
+                null
             }
         }
 
@@ -346,6 +353,7 @@ class TelegramBotClient(
                         text = text,
                         fromUsername = from?.optString("username", null),
                         fromFirstName = from?.optString("first_name", null),
+                        chatType = chat.optString("type", null),
                     )
                 )
                 continue

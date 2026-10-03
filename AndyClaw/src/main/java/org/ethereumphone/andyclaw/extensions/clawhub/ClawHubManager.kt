@@ -65,9 +65,14 @@ class ClawHubManager(
     private val operationMutex = Mutex()
     private val riskDataCache = ConcurrentHashMap<String, ClawHubRiskData>()
     private val pendingVersions = ConcurrentHashMap<String, String?>()
+    /** How each pending install was assessed, for a confirmation that did not show it. */
+    private val pendingLevels = ConcurrentHashMap<String, ThreatLevel>()
 
     init {
         lockFile.load()
+        // What waits in staging is a pending install of a process that is gone: nobody will
+        // confirm it now.
+        stagingRoot.deleteRecursively()
     }
 
     // ── Risk data ───────────────────────────────────────────────────
@@ -203,10 +208,11 @@ class ClawHubManager(
     /**
      * Phase 1: download a skill, extract it, and run a threat assessment.
      *
-     * The skill files are written to disk but **not** registered in the
-     * lockfile or skill registry. The caller should inspect the returned
-     * [ThreatAssessment] and then call [confirmInstall] or
-     * [cancelPendingInstall].
+     * The skill files are written to staging (`.clawhub/staging/<slug>`), **not** to the
+     * managed directory, the lockfile or the skill registry. The caller should inspect the
+     * returned [ThreatAssessment] and then call [confirmInstall] or [cancelPendingInstall].
+     * Swapped in here, a bundle nobody confirmed — a HIGH or CRITICAL one whose dialog was
+     * stopped or left — was registered as a live skill on the next reload.
      */
     suspend fun downloadAndAssess(
         slug: String,
@@ -246,9 +252,6 @@ class ClawHubManager(
             is Staged.Ok -> s.dir
             is Staged.Error -> return@withLock DownloadAssessResult.Failed(slug, s.reason)
         }
-        if (!swapIn(staged, targetDir)) {
-            return@withLock DownloadAssessResult.Failed(slug, "Could not move the skill into place")
-        }
 
         val versionSecurity = try {
             api.getVersionDetail(slug, resolvedVersion).version?.security
@@ -260,11 +263,12 @@ class ClawHubManager(
             versionSecurity = versionSecurity,
         )
 
-        val assessment = SkillThreatAnalyzer.deepAssess(targetDir, riskData)
+        val assessment = SkillThreatAnalyzer.deepAssess(staged, riskData)
         log.info("Threat assessment for '$slug': ${assessment.level}")
 
         DownloadAssessResult.Ready(slug, resolvedVersion, assessment).also {
             pendingVersions[slug] = resolvedVersion
+            pendingLevels[slug] = assessment.level
         }
     }
 
@@ -279,13 +283,19 @@ class ClawHubManager(
         version: String?,
     ): InstallResult = operationMutex.withLock {
         pendingVersions.remove(slug)
+        pendingLevels.remove(slug)
         val targetDir = skillDir(slug)
             ?: return@withLock InstallResult.Failed(slug, INVALID_SLUG)
 
-        if (!targetDir.isDirectory || findSkillMd(targetDir) == null) {
+        // Only what downloadAndAssess staged and assessed is moved in.
+        val staged = File(stagingRoot, slug)
+        if (!staged.isDirectory || findSkillMd(staged) == null) {
             return@withLock InstallResult.Failed(
                 slug, "Skill files not found — was the download completed?",
             )
+        }
+        if (!swapIn(staged, targetDir)) {
+            return@withLock InstallResult.Failed(slug, "Could not move the skill into place")
         }
 
         lockFile.recordInstall(slug, version)
@@ -300,11 +310,14 @@ class ClawHubManager(
      */
     suspend fun cancelPendingInstall(slug: String) = operationMutex.withLock {
         pendingVersions.remove(slug)
+        pendingLevels.remove(slug)
         val targetDir = skillDir(slug) ?: return@withLock
+        File(stagingRoot, slug).deleteRecursively()
+        // A pending install an older build left in the managed directory itself.
         if (targetDir.isDirectory && !lockFile.isInstalled(slug)) {
             targetDir.deleteRecursively()
-            log.info("Cancelled pending install of skill '$slug'")
         }
+        log.info("Cancelled pending install of skill '$slug'")
     }
 
     // ── Uninstall ───────────────────────────────────────────────────
@@ -473,13 +486,16 @@ class ClawHubManager(
 
     /**
      * Whether a skill has been downloaded and assessed but not yet confirmed.
-     * True when the directory exists on disk, is not in the lockfile, and the
-     * version was recorded during [downloadAndAssess].
+     * True when it is staged, is not in the lockfile, and the version was
+     * recorded during [downloadAndAssess].
      */
     fun hasPendingInstall(slug: String): Boolean {
-        val targetDir = skillDir(slug) ?: return false
-        return targetDir.isDirectory && !lockFile.isInstalled(slug) && pendingVersions.containsKey(slug)
+        skillDir(slug) ?: return false
+        return File(stagingRoot, slug).isDirectory && !lockFile.isInstalled(slug) && pendingVersions.containsKey(slug)
     }
+
+    /** How a pending install was assessed, or null when there is none. */
+    fun getPendingLevel(slug: String): ThreatLevel? = pendingLevels[slug]
 
     /**
      * Return the resolved version from a pending [downloadAndAssess] call,

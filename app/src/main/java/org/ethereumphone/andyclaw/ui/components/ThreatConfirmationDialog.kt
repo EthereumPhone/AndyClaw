@@ -12,7 +12,9 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
@@ -29,6 +31,8 @@ import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import com.example.dgenlibrary.button.DgenPrimaryButton
 import com.example.dgenlibrary.button.DgenSecondaryButton
 import com.example.dgenlibrary.ui.theme.PitagonsSans
@@ -50,6 +54,29 @@ fun ThreatConfirmationDialog(
     secondaryColor: Color,
     confirmButtonText: String = "ACCEPT & INSTALL",
     cancelButtonText: String = "CANCEL",
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    // A window of its own. Drawn inline it sat under whatever the screen emitted after it — the
+    // ClawHub page took every touch, and an install waited on a warning nobody could see.
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false),
+    ) {
+        ThreatConfirmationContent(
+            slug, assessment, primaryColor, secondaryColor, confirmButtonText, cancelButtonText, onConfirm, onDismiss,
+        )
+    }
+}
+
+@Composable
+private fun ThreatConfirmationContent(
+    slug: String,
+    assessment: ThreatAssessment,
+    primaryColor: Color,
+    secondaryColor: Color,
+    confirmButtonText: String,
+    cancelButtonText: String,
     onConfirm: () -> Unit,
     onDismiss: () -> Unit,
 ) {
@@ -77,23 +104,25 @@ fun ThreatConfirmationDialog(
                     hapticFeedback.performHapticFeedback(HapticFeedbackType.LongPress)
                     onDismiss()
                 }
-            }
-    )
-
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .pointerInput(Unit) { },
+            },
         contentAlignment = Alignment.Center
     ) {
         Column(
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(32.dp),
-            modifier = Modifier.padding(horizontal = 24.dp)
+            modifier = Modifier
+                .padding(horizontal = 24.dp, vertical = 24.dp)
+                // A tap on the warning itself is not a tap outside it.
+                .pointerInput(Unit) { detectTapGestures { } }
         ) {
+            // The text scrolls and the buttons stay: four indicators outgrew a 480 dp screen and
+            // pushed APPROVE and DENY out of reach.
             Column(
                 horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(16.dp)
+                verticalArrangement = Arrangement.spacedBy(16.dp),
+                modifier = Modifier
+                    .weight(1f, fill = false)
+                    .verticalScroll(rememberScrollState())
             ) {
                 Text(
                     text = "Security Warning",
@@ -254,7 +283,7 @@ private fun ThreatIndicatorRow(indicator: ThreatIndicator, primaryColor: Color) 
 )
 @Composable
 private fun ThreatConfirmationDialogPreview() {
-    ThreatConfirmationDialog(
+    ThreatConfirmationContent(
         slug = "ethos-swap-skill",
         assessment = ThreatAssessment(
             level = ThreatLevel.MEDIUM,
@@ -280,6 +309,8 @@ private fun ThreatConfirmationDialogPreview() {
         ),
         primaryColor = orcheCore,
         secondaryColor = orcheAsh,
+        confirmButtonText = "ACCEPT & INSTALL",
+        cancelButtonText = "CANCEL",
         onConfirm = {},
         onDismiss = {},
     )
@@ -293,7 +324,7 @@ private fun ThreatConfirmationDialogPreview() {
 )
 @Composable
 private fun ThreatApprovalDialogPreview() {
-    ThreatConfirmationDialog(
+    ThreatConfirmationContent(
         slug = "crypto-wallet-drainer",
         assessment = ThreatAssessment(
             level = ThreatLevel.CRITICAL,

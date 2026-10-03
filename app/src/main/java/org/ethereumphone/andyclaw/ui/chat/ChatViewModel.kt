@@ -39,19 +39,14 @@ import org.ethereumphone.andyclaw.llm.LlmProvider
 import org.ethereumphone.andyclaw.extensions.clawhub.DownloadAssessResult
 import org.ethereumphone.andyclaw.extensions.clawhub.ThreatAssessment
 import org.ethereumphone.andyclaw.skills.SkillResult
-import org.ethereumphone.andyclaw.skills.tier.OsCapabilities
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonPrimitive
-import okhttp3.OkHttpClient
-import okhttp3.Request
 import org.ethereumphone.andyclaw.commands.SlashCommand
 import org.ethereumphone.andyclaw.commands.SlashCommandExecutor
 import org.ethereumphone.andyclaw.commands.SlashCommandRegistry
 import org.ethereumphone.andyclaw.commands.SlashCommandResult
-import org.json.JSONObject
-import java.math.BigDecimal
 
 data class ChatUiMessage(
     val id: String,
@@ -92,10 +87,21 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private val memoryManager: MemoryManager = app.memoryManager
     private val ledController = app.ledController
 
-    /** Background memory extractor — initialized lazily per agent run. */
+    /**
+     * Background memory extractor, one per chat: it counts what it has read, and a new one per
+     * turn re-read the whole conversation every time. Reset with the session.
+     */
     private var backgroundExtractor: BackgroundMemoryExtractor? = null
+    private var backgroundExtractorFor: Pair<org.ethereumphone.andyclaw.llm.LlmClient, String>? = null
 
-    val slashExecutor = SlashCommandExecutor(app.securePrefs, memoryManager)
+    val slashExecutor = SlashCommandExecutor(
+        app.securePrefs,
+        memoryManager,
+        providerChoices = org.ethereumphone.andyclaw.ui.settings.ProviderSwitch.choices(
+            org.ethereumphone.andyclaw.skills.tier.OsCapabilities.hasPrivilegedAccess
+        ),
+        switchProvider = { org.ethereumphone.andyclaw.ui.settings.ProviderSwitch.select(app, it) },
+    )
 
     private val _slashCommandResult = MutableStateFlow<SlashCommandResult?>(null)
     val slashCommandResult: StateFlow<SlashCommandResult?> = _slashCommandResult.asStateFlow()
@@ -209,6 +215,29 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     private var currentJob: Job? = null
 
+    /** A manual /compact, so the CANCEL shown while it runs can stop it. */
+    private var compactJob: Job? = null
+
+    /** Follows the open session's row; see [watchSession]. */
+    private var sessionWatch: Job? = null
+
+    /**
+     * A turn that throws before the loop's own error path (the session store, compaction,
+     * routing) must neither crash the app nor leave the chat busy for good: [sendMessage] marks
+     * it busy before any of that runs.
+     */
+    private val turnFailed = kotlinx.coroutines.CoroutineExceptionHandler { _, e ->
+        Log.e("ChatViewModel", "Turn failed: ${e.javaClass.simpleName}: ${e.message}", e)
+        _error.value = e.message ?: "An error occurred"
+        _isStreaming.value = false
+        _currentToolExecution.value = null
+    }
+
+    /** Saving a message is best-effort next to the turn: a failed write is logged, not fatal. */
+    private val persistFailed = kotlinx.coroutines.CoroutineExceptionHandler { _, e ->
+        Log.e("ChatViewModel", "Could not save to the session: ${e.javaClass.simpleName}: ${e.message}", e)
+    }
+
     /**
      * Approvals waiting for the user, oldest first; the dialog shows the head. One slot used to
      * be shared by every caller, so when two sub-agents asked at once the first was overwritten
@@ -221,8 +250,6 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private val approvalQueue = ArrayDeque<PendingAsk>()
     private val pendingExplorerUrls = mutableListOf<String>()
 
-    private val httpClient = OkHttpClient()
-
     data class ApprovalRequest(
         val description: String,
         val toolName: String? = null,
@@ -233,6 +260,10 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     )
 
     fun loadSession(sessionId: String) {
+        // The screen loads its session again whenever it comes back into view; only another
+        // session starts the extractor's count over.
+        if (_sessionId.value != sessionId) backgroundExtractor = null
+        watchSession(sessionId)
         viewModelScope.launch {
             _sessionId.value = sessionId
             compactedSinceLastTurn = false
@@ -269,10 +300,27 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun newSession() {
+        sessionWatch?.cancel()
+        sessionWatch = null
+        backgroundExtractor = null
         _sessionId.value = null
         compactedSinceLastTurn = false
         _messages.value = emptyList()
         _contextWindow.value = ContextWindowState()
+    }
+
+    /**
+     * Follows [id]'s row. Deleted from the session list (or by a restore) while it is open and
+     * idle, the chat starts over: it used to keep showing the conversation, and the next message
+     * was written to a session that no longer existed.
+     */
+    private fun watchSession(id: String) {
+        sessionWatch?.cancel()
+        sessionWatch = viewModelScope.launch {
+            sessionManager.observeSession(id).collect { session ->
+                if (session == null && _sessionId.value == id && currentJob?.isActive != true) newSession()
+            }
+        }
     }
 
     /**
@@ -290,7 +338,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
         Log.i("ChatViewModel", "=== compactNow() manual trigger === sessionId=$sid")
-        viewModelScope.launch {
+        compactJob = viewModelScope.launch {
             _isCompacting.value = true
             val startMs = System.currentTimeMillis()
             try {
@@ -328,6 +376,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                         "summaryBlank=${result.summaryText.isBlank()}), totalMs=${elapsedMs}")
                 }
             } catch (e: Exception) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
                 val elapsedMs = System.currentTimeMillis() - startMs
                 Log.e("ChatViewModel", "compactNow FAILED after ${elapsedMs}ms: ${e.javaClass.simpleName}: ${e.message}", e)
             } finally {
@@ -337,7 +386,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun sendMessage(text: String) {
-        if (text.isBlank() || _isStreaming.value || _isCompacting.value) return
+        if (text.isBlank() || _isStreaming.value || _isCompacting.value || currentJob?.isActive == true) return
 
         // ── Slash command interception ──────────────────────────────────
         val cmdResult = slashExecutor.execute(text)
@@ -351,18 +400,28 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         if (_autopilot.value?.finished == true) _autopilot.value = null
         _replayShare.value = org.ethereumphone.andyclaw.ui.autopilot.ReplayShareState.IDLE
 
-        currentJob = viewModelScope.launch {
-            // Proactive balance check — only when using the premium gateway
-            if (OsCapabilities.hasPrivilegedAccess &&
-                app.securePrefs.selectedProvider.value == LlmProvider.ETHOS_PREMIUM
-            ) {
-                val walletAddress = app.securePrefs.walletAddress.value
-                if (walletAddress.isNotBlank()) {
-                    val balance = fetchUserBalance(walletAddress)
-                    if (balance != null && balance < BigDecimal.ONE) {
-                        _insufficientBalance.value = true
-                        return@launch
-                    }
+        // Busy, with the message on screen, before anything waits: creating the session and
+        // loading the model registry can take seconds, and a second send in that window started
+        // a second turn in the same chat that CANCEL could not reach. No balance check up front
+        // either: the gateway's own refusal (403 "Insufficient balance", onError below) shows the
+        // top-up prompt, and the check here refused users the gateway would still serve.
+        _isStreaming.value = true
+        _streamingText.value = ""
+        _error.value = null
+        val userMsg = ChatUiMessage(
+            id = java.util.UUID.randomUUID().toString(),
+            role = "user",
+            content = text,
+        )
+        _messages.update { it + userMsg }
+
+        currentJob = viewModelScope.launch(turnFailed) {
+            // Deleted from the list (or by a restore) since it was opened: a new chat, rather
+            // than writing into the conversation the user removed.
+            _sessionId.value?.let { open ->
+                if (sessionManager.getSession(open) == null) {
+                    newSession()
+                    _messages.value = listOf(userMsg)
                 }
             }
 
@@ -371,6 +430,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 val model = app.securePrefs.selectedModel.value
                 val session = sessionManager.createSession(model = model)
                 _sessionId.value = session.id
+                watchSession(session.id)
                 // Initialize context window with model limit so the bar is visible immediately
                 if (_contextWindow.value.maxTokens <= 0) {
                     // Ensure OpenRouter registry is loaded for dynamic context window resolution
@@ -385,22 +445,14 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
             // Add user message
             sessionManager.addMessage(sid, MessageRole.USER, text)
-            val userMsg = ChatUiMessage(
-                id = java.util.UUID.randomUUID().toString(),
-                role = "user",
-                content = text,
-            )
-            _messages.update { it + userMsg }
 
-            // Auto-title on first message
-            if (_messages.value.size == 1) {
+            // Auto-title on first message — the first the user said, not a slash command's
+            // echo or its output, which are shown but never saved.
+            if (_messages.value.count { it.role == "user" && !it.transient } == 1) {
                 val title = text.take(50).let { if (text.length > 50) "$it..." else it }
                 sessionManager.updateSessionTitle(sid, title)
             }
 
-            _isStreaming.value = true
-            _streamingText.value = ""
-            _error.value = null
             ledController.onPromptStart()
 
             // Build conversation history for agent loop — everything but this turn's message,
@@ -468,8 +520,12 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             } else {
                 app.securePrefs.enabledSkills.value
             }
+            val turnClient = app.getLlmClient()
+            // Start the likely app while the model plans; costs nothing if the turn needs no app.
+            // Not for a confidential or on-device model, whose request stays where the user chose.
+            val turnRoute = app.jevTurnRouter?.prewarm(text, turnClient)
             val agentLoop = AgentLoop(
-                client = app.getLlmClient(),
+                client = turnClient,
                 skillRegistry = app.nativeSkillRegistry,
                 tier = currentTier,
                 enabledSkillIds = currentEnabledSkillIds,
@@ -496,6 +552,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 // it back through a nullable would make a recorded chat depend on ordering.
                 ledger = app.agentLedger(sid),
                 toolPrefetch = app.jevToolPrefetch,
+                routedApp = { turnRoute?.app },
             )
 
             // Initialize background memory extractor for this run (opt-in)
@@ -503,11 +560,12 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             val memoryAiClient = app.getMemoryAiLlmClient()
             val memoryAiModelId = app.getMemoryAiModelId()
             backgroundExtractor = if (smartExtractionEnabled && memoryAiClient !is LocalLlmClient) {
-                BackgroundMemoryExtractor(memoryAiClient, memoryManager, memoryAiModelId)
+                val key = memoryAiClient to memoryAiModelId
+                backgroundExtractor?.takeIf { backgroundExtractorFor == key }
+                    ?: BackgroundMemoryExtractor(memoryAiClient, memoryManager, memoryAiModelId)
+                        .also { backgroundExtractorFor = key }
             } else null
 
-            // Start the likely app while the model plans; costs nothing if the turn needs no app.
-            app.jevTurnRouter?.prewarm(text)
             val justCompacted = compactedSinceLastTurn
             compactedSinceLastTurn = false
             // Tokens arrive on the stream's IO thread and can still trickle in after Cancel;
@@ -539,7 +597,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                         is SkillResult.Error -> "Error: ${result.message}"
                         is SkillResult.RequiresApproval -> "Requires approval: ${result.description}"
                     }
-                    viewModelScope.launch {
+                    viewModelScope.launch(persistFailed) {
                         sessionManager.addMessage(sid, MessageRole.TOOL, resultText, toolName = toolName)
                     }
                     val formatted = ToolResultFormatter.format(toolName, resultText, input)
@@ -629,10 +687,10 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                             publishApprovalHeadLocked()
                         }
                         cont.invokeOnCancellation {
-                            synchronized(approvalQueue) {
-                                approvalQueue.remove(ask)
-                                publishApprovalHeadLocked()
+                            val wasOpen = synchronized(approvalQueue) {
+                                approvalQueue.remove(ask).also { publishApprovalHeadLocked() }
                             }
+                            if (wasOpen) discardPendingInstall(request)
                         }
                     }
                 }
@@ -659,7 +717,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     if (tokenUsage != null) {
                         updateContextWindow(tokenUsage, modelId)
                         // Persist token usage + context window state to session DB
-                        viewModelScope.launch {
+                        viewModelScope.launch(persistFailed) {
                             sessionManager.addTokenUsage(
                                 sid,
                                 tokenUsage.totalInputTokens,
@@ -674,8 +732,13 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     // Auto-store conversation turn in memory for future context
                     autoStoreConversationTurn(text, fullText)
 
-                    // Background memory extraction (ported from Claude Code)
-                    backgroundExtractor?.extractIfNeeded(conversationHistory, viewModelScope)
+                    // Background memory extraction (ported from Claude Code), over the chat
+                    // including this exchange: the history above ends before it.
+                    backgroundExtractor?.extractIfNeeded(
+                        conversationHistory + Message.user(text) +
+                            if (fullText.isNotBlank()) listOf(Message.assistant(listOf(ContentBlock.TextBlock(fullText)))) else emptyList(),
+                        viewModelScope,
+                    )
 
                     // Show ask_user overlay now that the turn is fully complete
                     pendingAskUserRequest?.let {
@@ -745,9 +808,27 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
         for (ask in all) {
+            discardPendingInstall(ask.request)
             if (ask.cont.isActive) {
                 @Suppress("DEPRECATION")
                 ask.cont.resume(false, null)
+            }
+        }
+    }
+
+    /**
+     * A skill an install dialog downloaded and assessed, which nobody will now confirm: dropped,
+     * as a Deny drops it. Left pending, a later clawhub_install confirmed it with no look at the
+     * assessment. Off the scope of this screen, which may be going away.
+     */
+    private fun discardPendingInstall(request: ApprovalRequest) {
+        val slug = request.slug ?: return
+        if (request.toolName != "clawhub_install") return
+        kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
+            try {
+                app.clawHubManager.cancelPendingInstall(slug)
+            } catch (e: Exception) {
+                Log.w("ChatViewModel", "Cleanup of a pending install failed: ${e.message}")
             }
         }
     }
@@ -775,6 +856,9 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     fun cancel() {
         denyAllApprovals()
         currentJob?.cancel()
+        // A cancelled turn calls neither onComplete nor onError: the spinner and the emoticon stay.
+        ledController.onPromptCancelled()
+        compactJob?.cancel()
         _isStreaming.value = false
         _streamingText.value = ""
         _currentToolExecution.value = null
@@ -893,7 +977,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 explorerUrl = urls.lastOrNull(),
             )
             _messages.update { it + assistantMsg }
-            viewModelScope.launch {
+            viewModelScope.launch(persistFailed) {
                 sessionManager.addMessage(sessionId, MessageRole.ASSISTANT, currentText)
             }
         }
@@ -1083,22 +1167,6 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         private val ERROR_KEYWORDS = listOf("error", "bug", "fix", "crash", "fail", "broken", "wrong")
         private val DECISION_KEYWORDS = listOf("decided", "let's go with", "we'll use", "the plan is", "going to", "switch to")
     }
-
-    private suspend fun fetchUserBalance(walletAddress: String): BigDecimal? =
-        withContext(Dispatchers.IO) {
-            try {
-                val url = "https://api.markushaas.com/api/get-user-balance?userId=$walletAddress"
-                val request = Request.Builder().url(url).get().build()
-                httpClient.newCall(request).execute().use { response ->
-                    if (!response.isSuccessful) return@withContext null
-                    val body = response.body?.string() ?: return@withContext null
-                    val balance = JSONObject(body).optDouble("balance", 0.0)
-                    BigDecimal.valueOf(balance)
-                }
-            } catch (_: Exception) {
-                null
-            }
-        }
 
     // ── Slash command handling ────────────────────────────────────────
 

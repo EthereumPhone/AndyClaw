@@ -96,6 +96,18 @@ class FlowStore(
         return try {
             val bytes = FlowCodec.canonicalBytes(flow)
             val hash = FlowCodec.sha256Hex(bytes)
+            // An id is a name, and two apps' names end alike (`messenger.send_message`). Another
+            // app's flow is never replaced by this one, nor shadowed under the same tool name:
+            // this one is refused, and the task stays with the autopilot.
+            val installed = listAll()
+            installed.firstOrNull {
+                it.flow.app != flow.app && (it.flow.flow == flow.flow || it.flow.toolName == flow.toolName)
+            }?.let { taken ->
+                return FlowInstallResult.Rejected(listOf(FlowValidationError(
+                    "flow_id_taken",
+                    "'${flow.flow}' is already the name of a flow for ${taken.flow.app}",
+                )))
+            }
             root.mkdirs()
             // The MAC first: a flow file on disk then always has its MAC beside it, so a flow
             // file without one is an orphan of an interrupted install and never one in progress
@@ -109,9 +121,9 @@ class FlowStore(
             // A new version of a flow replaces the old one — same id, different bytes — and so does
             // a recompile of the same task under another id: autopilot ids gained a hash of the
             // task, so the first recompile of a task compiled before that arrives with a new name.
-            for (other in listAll()) {
+            for (other in installed) {
                 if (other.hash == hash) continue
-                if (other.flow.flow == flow.flow || FlowFirst.sameTask(other.flow, flow)) remove(other.hash)
+                if ((other.flow.flow == flow.flow && other.flow.app == flow.app) || FlowFirst.sameTask(other.flow, flow)) remove(other.hash)
             }
             FlowInstallResult.Installed(StoredFlow(hash, flow, meta))
         } catch (e: Exception) {

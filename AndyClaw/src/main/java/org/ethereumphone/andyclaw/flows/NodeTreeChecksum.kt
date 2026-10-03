@@ -120,6 +120,18 @@ object NodeTreeChecksum {
             ?.takeIf { it.isNotBlank() }
     }
 
+    /**
+     * Whether [treeJson] is a read of the screen at all. The OS and the accessibility service
+     * answer a read they could not do with `{"error":…}` or `{"ok":false,…}`; taken for a screen,
+     * that was one on which nothing the flow needed existed, and a fault of the display counted
+     * against the flow.
+     */
+    fun isScreen(treeJson: String?): Boolean {
+        val root = parse(treeJson) ?: return false
+        if ("elements" in root || "screen" in root || "windows" in root) return true
+        return "error" !in root && (root["ok"] as? JsonPrimitive)?.content != "false"
+    }
+
     /** The elements carrying [viewId], in tree order. More than one means the id repeats. */
     fun nodesWithViewId(treeJson: String?, viewId: String): List<JsonObject> {
         val root = parse(treeJson) ?: return emptyList()

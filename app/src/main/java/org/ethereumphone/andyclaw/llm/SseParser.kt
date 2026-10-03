@@ -2,6 +2,7 @@ package org.ethereumphone.andyclaw.llm
 
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -15,10 +16,15 @@ import java.io.IOException
  * lost content ([IOException]); both go to [withRetry] and AgentLoop's guards like any other
  * failure. The transport must call [finishStream] at end of body — a stream that stops before
  * `message_stop` was cut off, and must not be taken for a complete reply.
+ *
+ * With [keepThinking], `thinking` and `redacted_thinking` blocks are kept in the response, in
+ * order, with their signatures: Anthropic's own API rejects a tool-use turn sent back without
+ * them. Off for the gateways in front of it, which have never been sent one back.
  */
 class SseParser(
     private val callback: StreamingCallback,
     private val provider: String = "Anthropic",
+    private val keepThinking: Boolean = false,
 ) {
 
     private val json = Json { ignoreUnknownKeys = true; coerceInputValues = true }
@@ -28,6 +34,9 @@ class SseParser(
     private val toolJsonAccumulators = mutableMapOf<Int, StringBuilder>()
     private val toolNames = mutableMapOf<Int, String>()
     private val toolIds = mutableMapOf<Int, String>()
+    private val thinkingText = mutableMapOf<Int, StringBuilder>()
+    private val thinkingSignatures = mutableMapOf<Int, StringBuilder>()
+    private val redactedThinking = mutableMapOf<Int, String>()
     private var responseId = ""
     private var model = ""
     private var stopReason: String? = null
@@ -101,6 +110,13 @@ class SseParser(
                 toolNames[index] = name
                 toolJsonAccumulators[index] = StringBuilder()
             }
+            "thinking" -> if (keepThinking) {
+                thinkingText[index] = StringBuilder(block["thinking"]?.jsonPrimitive?.contentOrNull ?: "")
+                thinkingSignatures[index] = StringBuilder(block["signature"]?.jsonPrimitive?.contentOrNull ?: "")
+            }
+            "redacted_thinking" -> if (keepThinking) {
+                redactedThinking[index] = block["data"]?.jsonPrimitive?.contentOrNull ?: ""
+            }
         }
     }
 
@@ -120,12 +136,29 @@ class SseParser(
                 val partial = delta["partial_json"]?.jsonPrimitive?.contentOrNull ?: ""
                 toolJsonAccumulators[index]?.append(partial)
             }
+            "thinking_delta" -> {
+                thinkingText[index]?.append(delta["thinking"]?.jsonPrimitive?.contentOrNull ?: "")
+            }
+            "signature_delta" -> {
+                thinkingSignatures[index]?.append(delta["signature"]?.jsonPrimitive?.contentOrNull ?: "")
+            }
         }
     }
 
     private fun handleContentBlockStop(data: String) {
         val obj = json.parseToJsonElement(data).jsonObject
         val index = obj["index"]?.jsonPrimitive?.contentOrNull?.toIntOrNull() ?: return
+
+        val thinking = thinkingText.remove(index)
+        if (thinking != null) {
+            val signature = thinkingSignatures.remove(index)?.toString().orEmpty()
+            contentBlocks.add(ContentBlock.ThinkingBlock(thinking = thinking.toString(), signature = signature))
+            return
+        }
+        redactedThinking.remove(index)?.let {
+            contentBlocks.add(ContentBlock.RedactedThinkingBlock(data = it))
+            return
+        }
 
         if (toolJsonAccumulators.containsKey(index)) {
             val id = toolIds[index] ?: return
@@ -158,8 +191,17 @@ class SseParser(
         val obj = json.parseToJsonElement(data).jsonObject
         val delta = obj["delta"] as? JsonObject
         stopReason = delta?.get("stop_reason")?.jsonPrimitive?.contentOrNull
-        (obj["usage"] as? JsonObject)?.let {
-            usage = json.decodeFromJsonElement(Usage.serializer(), it)
+        // The counts here are cumulative and usually only output_tokens; a field left out keeps
+        // message_start's value. Replacing the whole object zeroed every prompt count.
+        (obj["usage"] as? JsonObject)?.let { counts ->
+            fun count(key: String) = (counts[key] as? JsonPrimitive)?.contentOrNull?.toIntOrNull()
+            val start = usage ?: Usage()
+            usage = Usage(
+                inputTokens = count("input_tokens") ?: start.inputTokens,
+                outputTokens = count("output_tokens") ?: start.outputTokens,
+                cacheWriteTokens = count("cache_creation_input_tokens") ?: start.cacheWriteTokens,
+                cacheReadTokens = count("cache_read_input_tokens") ?: start.cacheReadTokens,
+            )
         }
     }
 

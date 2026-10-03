@@ -156,6 +156,36 @@ class ClawHubManagerPathsTest {
     }
 
     @Test
+    fun `an assessed skill waits in staging until it is confirmed`() = runTest {
+        val m = manager()
+        val ready = m.downloadAndAssess("good") as DownloadAssessResult.Ready
+        // Not in the managed directory, where the next reload would have registered it.
+        assertFalse(File(skillsDir, "good").exists())
+        assertTrue(m.hasPendingInstall("good"))
+        assertEquals(ready.assessment.level, m.getPendingLevel("good"))
+
+        assertEquals(InstallResult.Success("good", "1.0.0"), m.confirmInstall("good", ready.version))
+        assertTrue(File(skillsDir, "good/SKILL.md").isFile)
+        assertTrue(m.isInstalled("good"))
+        assertFalse(m.hasPendingInstall("good"))
+    }
+
+    @Test
+    fun `an assessment nobody confirms leaves nothing behind`() = runTest {
+        val m = manager()
+        m.downloadAndAssess("good")
+        m.cancelPendingInstall("good")
+        assertFalse(File(skillsDir, "good").exists())
+        assertFalse(File(skillsDir, ".clawhub/staging/good").exists())
+        assertFalse(m.hasPendingInstall("good"))
+
+        // And one a process left in staging is gone at the next start.
+        m.downloadAndAssess("good")
+        manager()
+        assertFalse(File(skillsDir, ".clawhub/staging/good").exists())
+    }
+
+    @Test
     fun `update policy never raises risk silently`() {
         assertNull(ClawHubManager.updateBlockReason(ThreatLevel.LOW, ThreatLevel.LOW))
         assertNull(ClawHubManager.updateBlockReason(ThreatLevel.HIGH, ThreatLevel.HIGH))

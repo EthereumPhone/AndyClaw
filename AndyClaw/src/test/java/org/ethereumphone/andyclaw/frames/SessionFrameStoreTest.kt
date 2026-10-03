@@ -227,4 +227,25 @@ class SessionFrameStoreTest {
         second.close()
         assertEquals(2, s.frames("chat").size)
     }
+
+    @Test
+    fun `a conversation that keeps recording loses its oldest recordings whole, not everything else`() {
+        // Every close protects the conversation it closes; it used to grow past the cap while the
+        // other sessions were evicted for it.
+        val s = store(FrameRetention(maxSessions = 100, maxBytes = 1_000))
+        fun record(session: String, byte: Int) = s.beginSession(session).also { r -> repeat(3) { r.write(jpeg(byte, size = 100)) } }.close()
+        record("telegram", 1)
+        record("telegram", 2)
+        s.beginSession("other").also { it.write(jpeg(9, size = 100)); it.write(jpeg(9, size = 100)) }.close()
+        record("telegram", 3)
+        record("telegram", 4)
+
+        assertTrue("total ${s.totalBytes()} should be within the cap", s.totalBytes() <= 1_000)
+        assertEquals("newer than the recordings that went, so it stays", 2, s.frames("other").size)
+        val kept = s.frames("telegram")
+        assertTrue(kept.isNotEmpty())
+        assertEquals("whole recordings only", 0, kept.size % 3)
+        assertTrue("numbering continues after what was evicted", kept.zipWithNext().all { (a, b) -> a.index < b.index })
+        assertTrue("the newest recording is the one kept last", s.read(kept.last())!!.all { it == 4.toByte() })
+    }
 }

@@ -22,6 +22,44 @@ class PackageManagerSkill(private val context: Context) : AndyClawSkill {
     override val id = "package_manager"
     override val name = "Package Manager"
 
+    companion object {
+        /**
+         * Apps whose data is keys, funds or the phone itself. Uninstalling one, or clearing its
+         * data, goes through no system dialog here and loses a seed nobody backed up — whoever
+         * asks, approved or not. The user does that in Settings themselves.
+         */
+        val PROTECTED_PACKAGES: Set<String> = setOf(
+            // ethOS
+            "org.ethereumphone.walletmanager",
+            "org.ethereumhpone.messenger",
+            "org.ethosmobile.ethoslauncher",
+            "com.android.systemui",
+            "app.grapheneos.setupwizard",
+            "app.seamlessupdate.client",
+            // Wallets
+            "io.metamask",
+            "com.wallet.crypto.trustapp",
+            "me.rainbow",
+            "org.toshi",
+            "app.phantom",
+            "com.debank.rabbymobile",
+            // Password managers and authenticators
+            "com.x8bit.bitwarden",
+            "com.onepassword.android",
+            "com.agilebits.onepassword",
+            "proton.android.pass",
+            "com.kunzisoft.keepass.free",
+            "com.kunzisoft.keepass.libre",
+            "com.google.android.apps.authenticator2",
+            "com.beemdevelopment.aegis",
+            "com.authy.authy",
+        )
+
+        private fun refusal(packageName: String) =
+            "Refused: $packageName holds keys, funds or the phone's own setup, and removing it or its " +
+                "data cannot be undone. The user can do this in Settings themselves."
+    }
+
     override val baseManifest = SkillManifest(
         description = "Manage installed application packages.",
         tools = emptyList(),
@@ -87,6 +125,7 @@ class PackageManagerSkill(private val context: Context) : AndyClawSkill {
         if (packageName == context.packageName) {
             return SkillResult.Error("Cannot uninstall AndyClaw itself")
         }
+        if (packageName.trim() in PROTECTED_PACKAGES) return SkillResult.Error(refusal(packageName))
         return try {
             // Verify app exists
             context.packageManager.getApplicationInfo(packageName, 0)
@@ -151,6 +190,7 @@ class PackageManagerSkill(private val context: Context) : AndyClawSkill {
         if (packageName == context.packageName) {
             return SkillResult.Error("Cannot clear data of AndyClaw itself")
         }
+        if (packageName.trim() in PROTECTED_PACKAGES) return SkillResult.Error(refusal(packageName))
         return try {
             context.packageManager.getApplicationInfo(packageName, 0)
             // Use ActivityManager's clearApplicationUserData via reflection

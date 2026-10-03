@@ -74,6 +74,8 @@ class BackupManager(private val context: Context) {
 
     private val app get() = context.applicationContext as NodeApp
 
+    private fun heartbeatFile() = File(context.filesDir, "HEARTBEAT.md")
+
     // ── Export ──────────────────────────────────────────────────────────
 
     /**
@@ -94,6 +96,8 @@ class BackupManager(private val context: Context) {
             writeZipEntry(zip, "transactions.json", exportTransactions().toString())
             app.soulManager.read()?.let { writeZipEntry(zip, "soul.md", it) }
             app.userStoryManager.read()?.let { writeZipEntry(zip, "user_story.md", it) }
+            // The heartbeat's task list: the configuration the backup screen promises.
+            heartbeatFile().takeIf { it.exists() }?.let { writeZipEntry(zip, "heartbeat.md", it.readText()) }
             writeZipEntry(zip, "heartbeat_logs.json", exportHeartbeatLogs().toString())
             writeZipEntry(zip, "custom_tools.json", exportCustomTools().toString())
             exportSkillDir(zip, app.clawHubSkillsDir, "clawhub-skills/")
@@ -150,6 +154,10 @@ class BackupManager(private val context: Context) {
                 }
             }
             null
+        } catch (e: javax.crypto.AEADBadTagException) {
+            // A wrong password: the caller says so and asks again. Swallowed here, it read as
+            // "Could not read backup file".
+            throw e
         } catch (e: Exception) {
             Log.e(TAG, "Failed to read backup manifest", e)
             null
@@ -190,6 +198,7 @@ class BackupManager(private val context: Context) {
         entries["transactions.json"]?.let { importTransactions(JSONArray(it.decodeToString())) }
         entries["soul.md"]?.let { app.soulManager.write(it.decodeToString()) }
         entries["user_story.md"]?.let { app.userStoryManager.write(it.decodeToString()) }
+        entries["heartbeat.md"]?.let { heartbeatFile().writeText(it.decodeToString()) }
         entries["heartbeat_logs.json"]?.let { importHeartbeatLogs(JSONArray(it.decodeToString())) }
         entries["custom_tools.json"]?.let { importCustomTools(JSONArray(it.decodeToString())) }
         importSkills(entries)
@@ -300,6 +309,8 @@ class BackupManager(private val context: Context) {
                 put("agentId", entry.agentId)
                 put("content", entry.content)
                 put("source", entry.source)
+                // USER and FEEDBACK memories are the profile; without it they came back untyped.
+                entry.type?.let { put("type", it) }
                 put("importance", entry.importance.toDouble())
                 put("hash", entry.hash)
                 put("createdAt", entry.createdAt)
@@ -361,6 +372,7 @@ class BackupManager(private val context: Context) {
                 agentId = obj.getString("agentId"),
                 content = obj.getString("content"),
                 source = obj.getString("source"),
+                type = obj.nullableString("type"),
                 importance = obj.getDouble("importance").toFloat(),
                 hash = obj.getString("hash"),
                 createdAt = obj.getLong("createdAt"),
@@ -406,9 +418,22 @@ class BackupManager(private val context: Context) {
         db.withTransaction {
             memoryDao.deleteAllEntries()
             memoryDao.insertEntries(entries)
-            memoryDao.insertTags(tags)
-            memoryDao.insertEntryTagCrossRefs(xrefs)
-            if (chunks.isNotEmpty()) memoryDao.insertChunks(chunks)
+            // Tags go by name. The device's own tags survive deleteAllEntries, so a backup's tag
+            // ids could be missing here (a foreign-key failure that aborted the whole restore) or
+            // belong to another tag (memories relabelled). Anything about a memory the backup
+            // does not hold is left out, for the same reason.
+            val nameOf = tags.associate { it.id to it.name }
+            for (name in nameOf.values.distinct()) memoryDao.insertTag(MemoryTagEntity(name = name))
+            val localId = nameOf.values.distinct().mapNotNull { name -> memoryDao.getTagByName(name)?.let { name to it.id } }.toMap()
+            val memoryIds = entries.mapTo(HashSet()) { it.id }
+            memoryDao.insertEntryTagCrossRefs(
+                xrefs.mapNotNull { x ->
+                    val id = nameOf[x.tagId]?.let { localId[it] } ?: return@mapNotNull null
+                    x.copy(tagId = id).takeIf { it.memoryId in memoryIds }
+                }.distinct()
+            )
+            val ownChunks = chunks.filter { it.memoryId in memoryIds }
+            if (ownChunks.isNotEmpty()) memoryDao.insertChunks(ownChunks)
         }
 
         // External-content FTS4 does not auto-sync after batch writes — rebuild

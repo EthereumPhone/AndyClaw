@@ -50,6 +50,9 @@ object PkPassParser {
     /** Bound the unzip — a pass is tens of kilobytes and an unbounded one is a zip bomb. */
     private const val MAX_ENTRY_BYTES = 4 * 1024 * 1024
 
+    /** How much of a barcode message is searched for a BCBP record; a real one is a few hundred. */
+    private const val MAX_BARCODE_SCAN_CHARS = 4 * 1024
+
     fun looksLikePkPass(bytes: ByteArray): Boolean =
         bytes.size >= 4 && bytes[0] == 0x50.toByte() && bytes[1] == 0x4B.toByte()
 
@@ -122,9 +125,10 @@ object PkPassParser {
      * barcode wins, because it is the copy that has to be right.
      */
     fun toFlightReservation(pass: PkPass, nowMs: Long, zone: ZoneId = ZoneId.systemDefault()): FlightReservation? {
-        if (!pass.isAir && pass.barcodes.isEmpty()) return null
-
-        val bcbp = pass.barcodes.firstNotNullOfOrNull { BcbpParser.find(it.message, nowMs) }
+        val bcbp = pass.barcodes.firstNotNullOfOrNull { BcbpParser.find(it.message.take(MAX_BARCODE_SCAN_CHARS), nowMs) }
+        // A concert ticket or a store card has a barcode too. A flight is an air pass, or a pass
+        // whose barcode is a boarding pass; any barcode at all made every pass a flight card.
+        if (!pass.isAir && bcbp == null) return null
         val raw = pass.barcodes.firstOrNull()
 
         val boardingPass = bcbp?.copy(

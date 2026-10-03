@@ -9,6 +9,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import org.ethereumphone.andyclaw.skills.builtin.AgentDisplayLease
 import org.ethereumphone.terminalsdk.TerminalSDK
 
 /**
@@ -106,7 +107,17 @@ class LedMatrixController(
     private var animationJob: Job? = null
     private var completionJob: Job? = null
     private var timedClearJob: Job? = null
-    private var terminalFlushJob: Job? = null
+    // Written from the lease listener's thread too (yieldTerminal).
+    @Volatile private var terminalFlushJob: Job? = null
+
+    /**
+     * Whether one of our emoticons may be on the terminal screen. It is drawn as a PERSISTENT
+     * frame, which holds the status-bar slot the agent HUD draws in and arms STOP from — and turns
+     * the panel on — for as long as it stays. So it is taken down as soon as a run takes the agent
+     * display ([yieldTerminal]), and never drawn while one holds it.
+     */
+    @Volatile
+    private var emoticonShown = false
 
     /**
      * Set to `true` when the AI agent explicitly controls the LEDs via [LedSkill].
@@ -132,30 +143,36 @@ class LedMatrixController(
     //  Agent lifecycle hooks (automatic — driven by ChatViewModel etc.)
     // ═══════════════════════════════════════════════════════════════════════
 
-    fun onPromptStart() {
+    /**
+     * [terminal] false for a run nobody is looking at — the heartbeat, a reminder, a cron job, an
+     * XMTP or Telegram message: its emoticons took the terminal screen for the whole run, so the
+     * agent HUD never showed and STOP was not armed, and a 3 AM heartbeat lit the panel. Such a run
+     * drives the LEDs only, and leaves the terminal screen to the chat that may be using it.
+     */
+    fun onPromptStart(terminal: Boolean = true) {
         if (led == null && !isDisplayAvailable) return
         aiControlled = false
         Log.i(TAG, "onPromptStart — starting spinner, hwBrightness=${hwBrightness()}, maxRgb=${maxRgbProvider()}")
-        cancelAll()
+        if (terminal) cancelAll() else cancelLedJobs()
         if (led != null) {
             syncBrightness()
             animationJob = scope.launch {
                 runSpinnerAnimation()
             }
         }
-        if (isDisplayAvailable) {
-            scope.launch {
-                showTerminalEmoticon(THINKING_EMOTICONS.random())
+        if (terminal && isDisplayAvailable) {
+            terminalFlushJob = scope.launch {
+                drawEmoticon(THINKING_EMOTICONS.random())
             }
         }
     }
 
-    fun onPromptComplete(responseText: String) {
+    fun onPromptComplete(responseText: String, terminal: Boolean = true) {
         if (led == null && !isDisplayAvailable) return
         if (aiControlled) {
             Log.i(TAG, "onPromptComplete — skipping LED completion pattern (AI-controlled)")
         } else {
-            cancelAll()
+            if (terminal) cancelAll() else cancelLedJobs()
             val intent = LedIntent.classifyResponse(responseText)
             Log.i(TAG, "onPromptComplete — intent=$intent, hwBrightness=${hwBrightness()}, maxRgb=${maxRgbProvider()}")
             completionJob = scope.launch {
@@ -167,26 +184,27 @@ class LedMatrixController(
                 if (led != null) showChadPattern()
             }
         }
-        // Show completion emoticon on terminal — persists for 20s then flushes
-        if (isDisplayAvailable) {
+        // Show completion emoticon on terminal, then flush it. Drawn and flushed by one job: as two,
+        // the draw cancelled the flush whenever it started after it, and the frame stayed.
+        if (terminal && isDisplayAvailable) {
             terminalFlushJob?.cancel()
-            scope.launch {
-                showTerminalEmoticon(COMPLETION_EMOTICONS.random())
-            }
             terminalFlushJob = scope.launch {
-                delay(TERMINAL_COMPLETION_MS)
-                flushTerminalDisplay()
+                drawEmoticon(COMPLETION_EMOTICONS.random())
+                if (emoticonShown) {
+                    delay(TERMINAL_COMPLETION_MS)
+                    flushTerminalDisplay()
+                }
             }
         }
     }
 
-    fun onPromptError() {
+    fun onPromptError(terminal: Boolean = true) {
         if (led == null && !isDisplayAvailable) return
         if (aiControlled) {
             Log.i(TAG, "onPromptError — skipping LED error pattern (AI-controlled)")
         } else {
             Log.i(TAG, "onPromptError — showing error blink, hwBrightness=${hwBrightness()}, maxRgb=${maxRgbProvider()}")
-            cancelAll()
+            if (terminal) cancelAll() else cancelLedJobs()
             completionJob = scope.launch {
                 if (led != null) {
                     syncBrightness()
@@ -196,24 +214,57 @@ class LedMatrixController(
                 if (led != null) showChadPattern()
             }
         }
-        // Show error emoticon on terminal — persists for 20s then flushes
-        if (isDisplayAvailable) {
+        // Show error emoticon on terminal, then flush it (one job, as in onPromptComplete).
+        if (terminal && isDisplayAvailable) {
             terminalFlushJob?.cancel()
-            scope.launch {
-                showTerminalEmoticon(ERROR_EMOTICONS.random())
-            }
             terminalFlushJob = scope.launch {
-                delay(TERMINAL_COMPLETION_MS)
-                flushTerminalDisplay()
+                drawEmoticon(ERROR_EMOTICONS.random())
+                if (emoticonShown) {
+                    delay(TERMINAL_COMPLETION_MS)
+                    flushTerminalDisplay()
+                }
             }
         }
+    }
+
+    /**
+     * The run was cancelled — the user's Cancel, a newer prompt, a background run's time cap — so
+     * neither [onPromptComplete] nor [onPromptError] comes: stop the spinner, which otherwise
+     * looped forever (binder calls to the LED HAL eight times a second), and with [terminal] take
+     * our emoticon off the terminal screen.
+     */
+    fun onPromptCancelled(terminal: Boolean = true) {
+        if (led == null && !isDisplayAvailable) return
+        Log.i(TAG, "onPromptCancelled — stopping the spinner")
+        if (!aiControlled) {
+            cancelLedJobs()
+            led?.clear()
+        }
+        if (terminal && isDisplayAvailable) {
+            terminalFlushJob?.cancel()
+            terminalFlushJob = scope.launch {
+                if (emoticonShown) flushTerminalDisplay()
+            }
+        }
+    }
+
+    /**
+     * A run took the agent display: its HUD and STOP need the status-bar slot an emoticon of ours
+     * holds, so the emoticon goes now rather than when the chat's turn ends.
+     */
+    fun yieldTerminal() {
+        if (!emoticonShown) return
+        terminalFlushJob?.cancel()
+        terminalFlushJob = scope.launch { flushTerminalDisplay() }
     }
 
     fun onUserMessage() {
         aiControlled = false
         if (led == null && !isDisplayAvailable) return
-        Log.d(TAG, "onUserMessage — clearing LEDs and terminal")
-        cancelAll()
+        Log.d(TAG, "onUserMessage — clearing LEDs")
+        // LEDs only: a pending flush of the last turn's emoticon still runs, and the next prompt
+        // replaces it anyway.
+        cancelLedJobs()
         led?.clear()
     }
 
@@ -225,7 +276,7 @@ class LedMatrixController(
      */
     fun showOpeningPattern(color: String? = null) {
         if (led == null) return
-        cancelAll()
+        cancelLedJobs()
         completionJob = scope.launch {
             delay(RESUME_DELAY_MS)
             syncBrightness()
@@ -245,7 +296,7 @@ class LedMatrixController(
 
     fun displayNamedPattern(name: String, color: String? = null): Boolean {
         val led = led ?: return false
-        cancelAll()
+        cancelLedJobs()
         aiControlled = true
         syncBrightness()
         val normalized = color?.let { normalizeColor(it) }
@@ -256,7 +307,7 @@ class LedMatrixController(
 
     fun flashPattern(name: String, durationMs: Long = 1000L): Boolean {
         val led = led ?: return false
-        cancelAll()
+        cancelLedJobs()
         aiControlled = true
         syncBrightness()
         Log.i(TAG, "flashPattern name=$name, durationMs=$durationMs, hwBrightness=${hwBrightness()}")
@@ -272,7 +323,7 @@ class LedMatrixController(
 
     fun setCustomPattern(pattern: Array<Array<String>>): Boolean {
         val led = led ?: return false
-        cancelAll()
+        cancelLedJobs()
         aiControlled = true
         val hw = hwBrightness()
         val normalized = Array(3) { r ->
@@ -304,7 +355,7 @@ class LedMatrixController(
      */
     fun setAllLeds(color: String, durationMs: Long = 0L): Boolean {
         val led = led ?: return false
-        cancelAll()
+        cancelLedJobs()
         aiControlled = true
         val hw = hwBrightness()
         val normalized = normalizeColor(color)
@@ -326,7 +377,7 @@ class LedMatrixController(
         loops: Int = 1,
     ): Boolean {
         if (led == null || frames.isEmpty()) return false
-        cancelAll()
+        cancelLedJobs()
         aiControlled = true
 
         val normalizedFrames = frames.map { frame ->
@@ -354,7 +405,7 @@ class LedMatrixController(
     fun clear(): Boolean {
         val led = led ?: return false
         Log.d(TAG, "clear — turning off all LEDs")
-        cancelAll()
+        cancelLedJobs()
         led.clear()
         return true
     }
@@ -381,6 +432,7 @@ class LedMatrixController(
         terminalFlushJob = null
         val resolved = Emoticons.resolve(text)
         return try {
+            emoticonShown = true
             sdk.showText(resolved)
             Log.i(TAG, "setTerminalText: '$text' → '$resolved'")
             true
@@ -388,6 +440,16 @@ class LedMatrixController(
             Log.e(TAG, "setTerminalText failed", e)
             false
         }
+    }
+
+    /**
+     * A tool's emoticon (a web search, a fetch) in place of the one the run is showing. Only in
+     * place of one: a headless or home-screen run shows none, and a tool must not take the
+     * terminal screen for itself — nothing would ever flush it.
+     */
+    suspend fun showToolEmoticon(text: String) {
+        if (!emoticonShown) return
+        drawEmoticon(text)
     }
 
     /**
@@ -400,20 +462,28 @@ class LedMatrixController(
     }
 
     /**
-     * Show an emoticon on the terminal without auto-flush.
-     * Used by lifecycle hooks (thinking indicator) — flush happens on prompt complete/error.
+     * Show an emoticon on the terminal without auto-flush; the caller flushes it. Not while a run
+     * holds the agent display: the slot is its HUD's then. True when it was drawn.
      */
-    private suspend fun showTerminalEmoticon(text: String) {
-        val sdk = terminal ?: return
-        if (!sdk.isDisplayAvailable) return
-        terminalFlushJob?.cancel()
-        terminalFlushJob = null
+    private suspend fun drawEmoticon(text: String): Boolean {
+        val sdk = terminal ?: return false
+        if (!sdk.isDisplayAvailable || AgentDisplayLease.isHeld()) return false
         try {
+            // Set first: a draw cut short by a cancel may still have reached the panel.
+            emoticonShown = true
             sdk.showText(text)
             Log.i(TAG, "showTerminalEmoticon: '$text'")
         } catch (e: Exception) {
+            if (e is kotlinx.coroutines.CancellationException) throw e
             Log.e(TAG, "showTerminalEmoticon failed", e)
+            return false
         }
+        // A run took the display while this was being drawn: the slot is its now.
+        if (AgentDisplayLease.isHeld()) {
+            flushTerminalDisplay()
+            return false
+        }
+        return true
     }
 
     /**
@@ -424,6 +494,7 @@ class LedMatrixController(
         return try {
             display.resume(display.ID_STATUSBAR)
             display.destroyTouchHandler()
+            emoticonShown = false
             Log.d(TAG, "flushTerminalDisplay: restored status bar")
             true
         } catch (e: Exception) {
@@ -542,13 +613,18 @@ class LedMatrixController(
     }
 
     private fun cancelAll() {
+        cancelLedJobs()
+        terminalFlushJob?.cancel()
+        terminalFlushJob = null
+    }
+
+    /** The LED animations only; the terminal screen's emoticon and its pending flush stay. */
+    private fun cancelLedJobs() {
         animationJob?.cancel()
         animationJob = null
         completionJob?.cancel()
         completionJob = null
         timedClearJob?.cancel()
         timedClearJob = null
-        terminalFlushJob?.cancel()
-        terminalFlushJob = null
     }
 }
