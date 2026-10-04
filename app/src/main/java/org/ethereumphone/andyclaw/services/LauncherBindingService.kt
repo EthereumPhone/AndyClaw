@@ -512,8 +512,9 @@ class LauncherBindingService : Service() {
                     "reflexEnabled" -> prefs.setReflexEnabled(value.toBooleanStrict())
                     "reflexInstant" -> prefs.setReflexInstantEnabled(value.toBooleanStrict())
                     "reflexActorDownload" -> {
-                        val reflex = app.reflexRuntime ?: return false
-                        reflex.scope.launch { reflex.downloadActor() }
+                        // Claimed before this returns: the launcher reloads at once and must
+                        // already see "downloading".
+                        (app.reflexRuntime ?: return false).startActorDownload()
                     }
                     // Through the app, not the prefs: the receivers have to follow the
                     // switch, or nothing happens until the next boot.

@@ -524,8 +524,10 @@ run skip with `HeartbeatSkipReason.RECENT_EVENT_TRIGGER`.
 Two tiny models trained in `~/dgen1-llm/` (its `docs/` explain them; `release/` holds the files).
 **M1** (`reflex-encoder-v1-q8_0.gguf` + heads, APK assets, 37 MB) reads every `USER` turn in ~15 ms:
 its top tools are loaded for the agent ahead of search (`addDiscoveredTools`) and sorted first for a
-local model. **M2** (Gemma 270M, 292 MB, sha256-pinned, at `ReflexRuntime.ACTOR_URL` in
-`gs://dgen-updates/models/reflex/`) fills arguments for alarms, reminders, volume, apps and LEDs.
+local model. **M2** (Gemma 270M, 292 MB, sha256-pinned) fills arguments for alarms, reminders,
+volume, apps and LEDs. It is fetched from `ReflexRuntime.ACTOR_URLS`: Cloudflare R2 at
+`updates.freedomfactory.io/models/reflex/` first (no egress charge), `gs://dgen-updates/models/reflex/`
+only when that fails — upload a new model version to both.
 Users drive AndyClaw from the launcher and never see its own settings, so M2 downloads by itself
 (`maybeFetchActor`: unmetered + validated network, no Battery Saver, ≥ 1.3 GB free, 6 h after a
 failure), and the launcher's settings show `reflexEnabled`, `reflexInstant`, `reflexActorState`,

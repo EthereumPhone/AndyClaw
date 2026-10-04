@@ -11,6 +11,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.ethereumphone.andyclaw.autopilot.SensitiveApps
@@ -117,7 +118,28 @@ class ReflexRuntime(
         ) return
         if (context.getSystemService(android.os.PowerManager::class.java)?.isPowerSaveMode == true) return
         if (context.filesDir.usableSpace < ACTOR_BYTES + MIN_FREE_BYTES) return
+        startActorDownload()
+    }
+
+    /**
+     * Claims the download and starts it; false if M2 is already here or already downloading.
+     * The claim is made before this returns, so a settings read right after (the launcher's
+     * DOWNLOAD NOW reloads at once) already says "downloading", and a second tap or the automatic
+     * fetch cannot start another download into the same temp file.
+     */
+    fun startActorDownload(): Boolean {
+        if (actorFile().isFile) {
+            _actorState.value = ActorState.READY
+            return false
+        }
+        while (true) {
+            val current = _actorState.value
+            if (current == ActorState.DOWNLOADING || current == ActorState.READY) return false
+            if (_actorState.compareAndSet(current, ActorState.DOWNLOADING)) break
+        }
+        _actorProgress.value = 0f
         scope.launch { downloadActor() }
+        return true
     }
 
     /** One line for the launcher's settings: what shadow mode has seen so far. */
@@ -151,36 +173,47 @@ class ReflexRuntime(
     private fun actorFile() = File(dir, ACTOR)
 
     /**
-     * Downloads M2 from [ACTOR_URL] to a temp file, checks its sha256 against [PINNED], and only
-     * then moves it into place. A wrong hash is deleted, never loaded.
+     * Downloads M2 to a temp file from each of [ACTOR_URLS] in turn until one gives a file whose
+     * sha256 matches [PINNED], and only then moves it into place. A wrong hash is deleted, never
+     * loaded. Runs only after [startActorDownload] has claimed the download.
      */
-    suspend fun downloadActor(): Boolean = withContext(Dispatchers.IO) {
-        if (actorFile().isFile) return@withContext true
-        if (_actorState.value == ActorState.DOWNLOADING) return@withContext false
-        _actorState.value = ActorState.DOWNLOADING
-        _actorProgress.value = 0f
+    private suspend fun downloadActor(): Boolean = withContext(Dispatchers.IO) {
         dir.mkdirs()
         val tmp = File(dir, "$ACTOR.tmp")
+        var done = false
         try {
             val http = OkHttpClient.Builder().readTimeout(60, TimeUnit.SECONDS).build()
-            http.newCall(Request.Builder().url(ACTOR_URL).build()).execute().use { resp ->
-                check(resp.isSuccessful) { "HTTP ${resp.code}" }
-                val body = checkNotNull(resp.body)
-                val total = body.contentLength().takeIf { it > 0 } ?: ACTOR_BYTES
-                val sha = copyHashing(body.byteStream(), tmp) { done -> _actorProgress.value = (done.toFloat() / total).coerceIn(0f, 1f) }
-                check(sha == PINNED.getValue(ACTOR)) { "sha256 mismatch" }
+            for (url in ACTOR_URLS) {
+                try {
+                    _actorProgress.value = 0f
+                    http.newCall(Request.Builder().url(url).build()).execute().use { resp ->
+                        check(resp.isSuccessful) { "HTTP ${resp.code}" }
+                        val body = checkNotNull(resp.body)
+                        val total = body.contentLength().takeIf { it > 0 } ?: ACTOR_BYTES
+                        val sha = copyHashing(body.byteStream(), tmp) { n -> _actorProgress.value = (n.toFloat() / total).coerceIn(0f, 1f) }
+                        check(sha == PINNED.getValue(ACTOR)) { "sha256 mismatch" }
+                    }
+                    check(tmp.renameTo(actorFile())) { "rename failed" }
+                    done = true
+                    break
+                } catch (e: Exception) {
+                    org.ethereumphone.andyclaw.ExecutionEngine.rethrowIfCancelled(e)
+                    // The host, not the URL, goes in the log.
+                    Log.w(TAG, "actor download from ${url.toHttpUrlOrNull()?.host} failed: ${e.message}")
+                    tmp.delete()
+                }
             }
-            check(tmp.renameTo(actorFile())) { "rename failed" }
-            _actorState.value = ActorState.READY
-            true
-        } catch (e: Exception) {
-            org.ethereumphone.andyclaw.ExecutionEngine.rethrowIfCancelled(e)
-            Log.w(TAG, "actor download failed: ${e.message}")
-            tmp.delete()
-            _actorState.value = ActorState.FAILED
-            lastFetchFailureMs = System.currentTimeMillis()
-            false
+        } finally {
+            // A cancel ends here too: never leave the state at DOWNLOADING with nothing running.
+            if (done) {
+                _actorState.value = ActorState.READY
+            } else {
+                tmp.delete()
+                _actorState.value = ActorState.FAILED
+                lastFetchFailureMs = System.currentTimeMillis()
+            }
         }
+        done
     }
 
     /** Copies asset [name] to [dir] once, verified; later starts reuse the verified copy. */
@@ -281,8 +314,14 @@ class ReflexRuntime(
         val INSTANT_LABELS: Set<String> =
             (ReflexSpec.ACTIONS.keys + ReflexSpec.INTENTS.keys) - setOf("airplane_on", "mobile_data_off")
 
-        /** Where M2 is fetched from. Pinned by [PINNED]; the host is trusted for availability only. */
-        const val ACTOR_URL = "https://storage.googleapis.com/dgen-updates/models/reflex/$ACTOR"
+        /**
+         * Where M2 is fetched from, in order. Pinned by [PINNED]; a host is trusted for
+         * availability only. Cloudflare R2 first (no egress charge); GCS only when R2 fails.
+         */
+        val ACTOR_URLS = listOf(
+            "https://updates.freedomfactory.io/models/reflex/$ACTOR",
+            "https://storage.googleapis.com/dgen-updates/models/reflex/$ACTOR",
+        )
 
         val PINNED = mapOf(
             ENCODER to "beb8936a5fbcd63caddb76deb542bf4ec90613d59ad4e283deb66694ac4f67b7",

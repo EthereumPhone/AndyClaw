@@ -3232,7 +3232,7 @@ private fun ReflexSettingsRows(
                 actorState == org.ethereumphone.andyclaw.llm.reflex.ReflexRuntime.ActorState.FAILED
             ) {
                 Spacer(Modifier.width(rowControlSpacing))
-                TextButton(onClick = { scope.launch { runtime.downloadActor() } }) {
+                TextButton(onClick = { runtime.startActorDownload() }) {
                     Text("DOWNLOAD", color = primaryColor)
                 }
             }
