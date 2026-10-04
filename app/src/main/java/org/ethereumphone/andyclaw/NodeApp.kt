@@ -1022,6 +1022,19 @@ class NodeApp : Application() {
 
     val llamaCpp: LlamaCpp by lazy { LlamaCpp() }
 
+    /**
+     * The on-device reflex models (`llm/reflex/`). Null on an x86 host (the agentbench emulator):
+     * Llamatik ships arm64 only.
+     */
+    val reflexRuntime: org.ethereumphone.andyclaw.llm.reflex.ReflexRuntime? by lazy {
+        if (android.os.Build.SUPPORTED_ABIS.firstOrNull()?.startsWith("x86") == true) null
+        else org.ethereumphone.andyclaw.llm.reflex.ReflexRuntime(this, llamaCpp)
+    }
+
+    /** [reflexRuntime] for a turn, when the user has not switched the reflexes off. */
+    val reflexForTurn: org.ethereumphone.andyclaw.llm.reflex.ReflexRuntime?
+        get() = reflexRuntime?.takeIf { securePrefs.reflexEnabled.value }
+
     val modelDownloadManager: ModelDownloadManager by lazy {
         ModelDownloadManager(this)
     }
@@ -1293,6 +1306,11 @@ class NodeApp : Application() {
         if (android.os.Build.SUPPORTED_ABIS.firstOrNull()?.startsWith("x86") != true) {
             whisperTranscriber.warmUp(appScope)
         }
+
+        // Copy and load the reflex encoder (37 MB, ~0.3 s) now, so the first turn has it. A turn
+        // never waits for this: until it is done, turns run as if the reflexes were off. M2 is
+        // fetched on Wi-Fi; launcher users never see AndyClaw's own settings to ask for it.
+        reflexForTurn?.let { it.routerIfReady(); it.maybeFetchActor() }
 
         // Refresh OpenRouter model registry so context windows and pricing are available
         appScope.launch {

@@ -553,6 +553,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 ledger = app.agentLedger(sid),
                 toolPrefetch = app.jevToolPrefetch,
                 routedApp = { turnRoute?.app },
+                reflex = app.reflexForTurn,
+                reflexInstant = { app.securePrefs.reflexInstantEnabled.value },
             )
 
             // Initialize background memory extractor for this run (opt-in)

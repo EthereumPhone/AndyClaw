@@ -159,6 +159,15 @@ class AgentLoop(
      * plan names one that is not installed. Background runs are routed by nobody and get none.
      */
     private val routedApp: () -> String? = { null },
+    /**
+     * The on-device reflex models (`llm/reflex/`), for the user's own turns: M1 loads the tools a
+     * request needs before the model is asked, and an on-device path that either runs a simple
+     * command itself ([reflexInstant]) or, in shadow mode, is compared with what the agent did.
+     * Null everywhere but the in-app chat and the launcher.
+     */
+    private val reflex: org.ethereumphone.andyclaw.llm.reflex.ReflexRuntime? = null,
+    /** Whether a resolved on-device call may run instead of the agent. Read once per turn. */
+    private val reflexInstant: () -> Boolean = { false },
 ) {
     /**
      * Model calls made by this run, sub-agents included.
@@ -452,6 +461,8 @@ class AgentLoop(
         private const val AUTOPILOT_TOOL_NAME = "agent_display_autopilot"
         private const val UI_TREE_MIN_CHARS = 400
         private const val UI_TREE_ELIDED = " [older screen elided; the newest UI state is further down]"
+        /** M1's tools loaded ahead of search: its recall@5 is ~0.9 on AndyBench's held-out prompts. */
+        private const val REFLEX_PRELOAD_TOOLS = 5
     }
 
     interface Callbacks {
@@ -525,6 +536,18 @@ class AgentLoop(
             }
         }
 
+        // The reflex models read the request before anything else is assembled: an on-device
+        // command ends the turn here, without a model call.
+        reflexNote = "-"
+        val reflexTurn = startReflexTurn(userMessage, conversationHistory)
+        var reflexInjected: List<Message>? = null
+        reflexTurn?.instant?.takeIf { !runToken.stopRequested }?.let { instant ->
+            when (val outcome = runReflexInstant(instant, callbacks)) {
+                null -> { reflexTurn.finish(completed = false); return }
+                else -> reflexInjected = outcome
+            }
+        }
+
         // Route to minimal skill set based on user message + conversation context.
         // Two paths: ToolSearchService (new) or SmartRouter (legacy).
         val routerBudget: RoutingBudget?
@@ -572,6 +595,15 @@ class AgentLoop(
         if (useToolSearch) {
             toolSearchService!!.warmUp()
             toolSearchService.prefetch(userMessage)
+            // M1's routing, from the same words: recall@5 0.9 against BM25's 0.6 on AndyBench's
+            // held-out prompts. Loading a tool grants nothing; every call still meets the gates.
+            // Plus the tool the on-device path already ran: its call is in the history.
+            (reflexTurn?.tools?.take(REFLEX_PRELOAD_TOOLS).orEmpty() +
+                listOfNotNull(reflexTurn?.instant?.call?.tool?.takeIf { reflexInjected != null }))
+                .takeIf { it.isNotEmpty() }?.let {
+                    toolSearchService.addDiscoveredTools(it.toSet())
+                    Log.i(TAG, "reflex preload -> ${it.joinToString()}")
+                }
         }
 
         // Jev's pre-execution pick runs while memory and the system prompt are assembled, so a
@@ -693,7 +725,7 @@ class AgentLoop(
         }
         var toolsJson = if (client.maxToolCount > 0 && allToolsJson.size > client.maxToolCount) {
             Log.d(TAG, "Trimming tools from ${allToolsJson.size} to ${client.maxToolCount} for constrained provider")
-            allToolsJson.take(client.maxToolCount)
+            reflexFirst(allToolsJson, reflexTurn).take(client.maxToolCount)
         } else {
             allToolsJson.toList()
         }
@@ -739,6 +771,15 @@ class AgentLoop(
             // Inside the try: a cancel during Jev's wait or the pre-executed tool still ends the
             // run — its TURN row, the lease and the cleanup — instead of escaping past them.
             preExecute(prePick, toolsJson, messages, callbacks, effectiveModelId)
+            // An on-device read (or a refused on-device action): its call and result, for the
+            // model to answer from.
+            // Only if the model is offered that tool: a history naming a tool the request does not
+            // define is refused by some providers. Otherwise the model simply runs it itself.
+            reflexInjected?.takeIf { injected ->
+                val names = toolsJson.mapNotNull { it["name"]?.jsonPrimitive?.contentOrNull }.toSet()
+                injected.flatMap { (it.content as? MessageContent.Blocks)?.blocks.orEmpty() }
+                    .filterIsInstance<ContentBlock.ToolUseBlock>().all { it.name in names }
+            }?.let { messages.addAll(it) }
 
             Log.i(TAG, "=== AgentLoop.run starting === model=$effectiveModelId" +
                 (if (modelIdOverride != null) " [ROUTED from ${model.modelId}]" else "") +
@@ -1019,7 +1060,7 @@ class AgentLoop(
                     allToolsJson.add(buildSpawnSubagentToolJson())
                     allToolsJson.add(buildAskUserToolJson())
                     toolsJson = if (client.maxToolCount > 0 && allToolsJson.size > client.maxToolCount) {
-                        allToolsJson.take(client.maxToolCount)
+                        reflexFirst(allToolsJson, reflexTurn).take(client.maxToolCount)
                     } else {
                         allToolsJson.toList()
                     }
@@ -1259,6 +1300,11 @@ class AgentLoop(
             // covers the runs that finished cleanly is not a record of what the agent did.
             recordTurn(runOutcome, recordedIntent, iterations, totalInputTokens, totalOutputTokens)
 
+            reflexTurn?.let { turn ->
+                agentToolCalls(messages.drop(conversationHistory.size)).forEach { (name, input, ok) -> turn.noteAgentCall(name, input, ok) }
+                turn.finish(completed = runOutcome == LedgerOutcome.OK && !cancelled && !runToken.stopRequested)
+            }
+
             try {
                 skillRegistry.cleanupAll()
             } catch (e: Exception) {
@@ -1437,6 +1483,145 @@ class AgentLoop(
      * a confidential one — Tinfoil's enclave is the point of choosing it, and Jev is reached
      * through OpenRouter.
      */
+    // ── The reflex models ─────────────────────────────────────────
+
+    /** What the reflex models did this turn, for `AgentRunMetrics`. */
+    @Volatile
+    private var reflexNote: String = "-"
+
+    /** M1 on the user's own words (~15 ms, off the caller's thread); null if it has nothing to add. */
+    private suspend fun startReflexTurn(userMessage: String, history: List<Message>): ReflexTurn? {
+        val runtime = reflex ?: return null
+        if (provenance != Provenance.USER) return null
+        val job = currentCoroutineContext()[Job]
+        return try {
+            withContext(Dispatchers.IO) {
+                ReflexTurn.start(
+                    runtime = runtime,
+                    text = userMessage,
+                    previousReply = history.lastOrNull { it.role == "assistant" }?.let(::extractText),
+                    enabledTools = reflexToolNames(),
+                    localModel = client is LocalLlmClient,
+                    instantOn = reflexInstant(),
+                    // A STOP while M2 loads ends the wait for the model lock.
+                    stillWanted = { job?.isActive != false && !runToken.stopRequested },
+                )
+            }
+        } catch (e: Exception) {
+            org.ethereumphone.andyclaw.ExecutionEngine.rethrowIfCancelled(e)
+            Log.w(TAG, "reflex skipped: ${e.message}")
+            null
+        }
+    }
+
+    /**
+     * The tools this turn may call, by the names the reflex labels use. A tool another skill's
+     * name forced into a namespace is left out: the label's name would reach the wrong skill.
+     */
+    private fun reflexToolNames(): Set<String> = skillRegistry.getEnabled(enabledSkillIds).flatMap { skill ->
+        val tools = skill.baseManifest.tools +
+            (if (tier == Tier.PRIVILEGED) skill.privilegedManifest?.tools.orEmpty() else emptyList())
+        tools.map { it.name }.filter { skillRegistry.getEffectiveName(skill.id, it) == it }
+    }.toSet()
+
+    /**
+     * Runs the on-device call through the ordinary engine — provenance gate, approvals, ledger —
+     * as if the model had made it. Null: it ran and the turn is over, answered from a template
+     * with no model call. Otherwise the messages to put before the model's first call: the call
+     * and its result, for a read the model should phrase or an action that was refused or failed.
+     */
+    private suspend fun runReflexInstant(
+        instant: org.ethereumphone.andyclaw.llm.reflex.ReflexRouter.Decision.Instant,
+        callbacks: Callbacks,
+    ): List<Message>? {
+        val modelId = customModelIdOverride ?: model.modelId
+        var endedHere = false
+        var outcome = LedgerOutcome.OK
+        try {
+            val call = ContentBlock.ToolUseBlock(
+                id = "toolu_reflex_" + java.util.UUID.randomUUID().toString().replace("-", ""),
+                name = instant.call.tool,
+                input = instant.call.input,
+            )
+            val engine = ExecutionEngineFactory.create(
+                skillRegistry = skillRegistry,
+                tier = tier,
+                enabledSkillIds = enabledSkillIds,
+                safetyLayer = safetyLayer,
+                agentCallbacks = callbacks,
+                budgetConfig = budgetConfig,
+                provenance = provenance,
+                triggerConversationId = triggerConversationId,
+                enforceProvenance = enforceProvenance,
+                ledger = ledger,
+                intent = recordedIntent,
+                runContext = autopilotRunContext(modelId, callbacks),
+            )
+            val batch = engine.executeBatch(ExecutionEngineFactory.toToolCalls(listOf(call)))
+            noteBatch(batch.metrics)
+            val results = ExecutionEngineFactory.toContentBlocks(batch.results)
+            val result = results.firstOrNull() as? ContentBlock.ToolResult
+            val reply = if (result != null && !result.isError &&
+                instant.label !in org.ethereumphone.andyclaw.llm.reflex.ReflexReplies.READS
+            ) {
+                org.ethereumphone.andyclaw.llm.reflex.ReflexReplies.confirm(instant.label, instant.call, { reflex?.appLabel(it) })
+            } else null
+            reflexNote = instant.label + when {
+                reply != null -> ":done"
+                result == null || result.isError -> ":failed"
+                else -> ":read"
+            }
+            Log.i(TAG, "reflex instant ${instant.call.tool} -> $reflexNote (m1 ${instant.m1Ms} ms, m2 ${instant.m2Ms} ms)")
+            if (reply == null) {
+                return if (results.isEmpty()) emptyList()
+                else listOf(Message.assistant(listOf(call)), Message("user", MessageContent.Blocks(results)))
+            }
+            endedHere = true
+            modelIdsUsed.add(org.ethereumphone.andyclaw.llm.reflex.ReflexRuntime.MODEL_ID)
+            callbacks.onToken(reply)
+            logRunSummary(0, 0, 0, 0, 0, 0, 0, 0, budgetConfig)
+            callbacks.onComplete(reply, null)
+            return null
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            endedHere = true
+            outcome = LedgerOutcome.BLOCKED
+            throw e
+        } catch (e: Exception) {
+            // The agent takes the request as if nothing had been tried.
+            Log.w(TAG, "reflex instant failed, handing over: ${e.message}")
+            reflexNote = instant.label + ":error"
+            return emptyList()
+        } finally {
+            if (endedHere) {
+                // What the main loop's `finally` does for a turn that ends there.
+                withContext(kotlinx.coroutines.NonCancellable) {
+                    withContext(Dispatchers.IO) {
+                        skillRegistry.onRunFinished(runToken.id, if (outcome == LedgerOutcome.OK) RunEnd.OK else RunEnd.STOPPED)
+                        org.ethereumphone.andyclaw.skills.builtin.AgentDisplayLease.release(runToken.id)
+                    }
+                }
+                recordTurn(outcome, recordedIntent, 0, 0, 0)
+                runCatching { skillRegistry.cleanupAll() }
+            }
+        }
+    }
+
+    /** [tools] with M1's choices first, for a model that only sees the first few. */
+    private fun reflexFirst(tools: List<JsonObject>, turn: ReflexTurn?): List<JsonObject> {
+        val rank = turn?.tools?.withIndex()?.associate { (i, name) -> name to i } ?: return tools
+        if (rank.isEmpty()) return tools
+        return tools.sortedBy { rank[skillRegistry.resolveOriginalToolName(it["name"]?.jsonPrimitive?.contentOrNull ?: "")] ?: Int.MAX_VALUE }
+    }
+
+    /** The calls this turn's model made and whether each succeeded; the reflex path's own excluded. */
+    private fun agentToolCalls(turnMessages: List<Message>): List<Triple<String, JsonObject?, Boolean>> {
+        val blocks = turnMessages.flatMap { (it.content as? MessageContent.Blocks)?.blocks.orEmpty() }
+        val results = blocks.filterIsInstance<ContentBlock.ToolResult>().associateBy { it.toolUseId }
+        return blocks.filterIsInstance<ContentBlock.ToolUseBlock>()
+            .filter { !it.id.startsWith("toolu_reflex_") }
+            .map { use -> Triple(skillRegistry.resolveOriginalToolName(use.name), use.input, results[use.id]?.isError == false) }
+    }
+
     private suspend fun startPrePick(
         userMessage: String,
         useToolSearch: Boolean,
@@ -1896,7 +2081,7 @@ class AgentLoop(
             METRICS_TAG,
             "durationMs=${System.currentTimeMillis() - runStartedMs} " +
                 "modelCalls=${modelCalls.get()} iterations=$iterations " +
-                "preExecuted=${preExecutedTool ?: "-"} " +
+                "preExecuted=${preExecutedTool ?: "-"} reflex=$reflexNote " +
                 FlowMetrics.snapshot() + " " + AutopilotMetrics.snapshotAndReset(),
         )
         if (cacheRead > 0 || cacheWrite > 0) {

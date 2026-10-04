@@ -371,6 +371,17 @@ class LauncherBindingService : Service() {
                     put("jevPrefetchEnabled", prefs.jevPrefetchEnabled.value)
                     put("autopilotNoConfirm", prefs.autopilotNoConfirm.value)
                 }
+                // The on-device reflex models: routing and shadow mode, and running simple
+                // commands on the phone. Only where the models can run (not an x86 host).
+                app.reflexRuntime?.let { reflex ->
+                    put("reflexEnabled", prefs.reflexEnabled.value)
+                    put("reflexInstant", prefs.reflexInstantEnabled.value)
+                    // absent | downloading | ready | failed: the model that fills in times, levels
+                    // and app names. Fetched on Wi-Fi by itself; "reflexActorDownload" asks now.
+                    put("reflexActorState", reflex.actorState.value.name.lowercase())
+                    put("reflexActorProgress", reflex.actorProgress.value.toDouble())
+                    runCatching { reflex.shadowSummary() }.getOrNull()?.let { put("reflexSummary", it) }
+                }
                 put("ambientIngest", prefs.ambientIngestEnabled.value)
                 // ok | no_account | auth_expired | offline | off, and when it last worked, so
                 // the launcher can say "Google disconnected — reconnect" instead of showing nothing.
@@ -498,6 +509,12 @@ class LauncherBindingService : Service() {
                     "autopilotEnabled" -> prefs.setAutopilotEnabled(value.toBooleanStrict())
                     "jevPrefetchEnabled" -> prefs.setJevPrefetchEnabled(value.toBooleanStrict())
                     "autopilotNoConfirm" -> prefs.setAutopilotNoConfirm(value.toBooleanStrict())
+                    "reflexEnabled" -> prefs.setReflexEnabled(value.toBooleanStrict())
+                    "reflexInstant" -> prefs.setReflexInstantEnabled(value.toBooleanStrict())
+                    "reflexActorDownload" -> {
+                        val reflex = app.reflexRuntime ?: return false
+                        reflex.scope.launch { reflex.downloadActor() }
+                    }
                     // Through the app, not the prefs: the receivers have to follow the
                     // switch, or nothing happens until the next boot.
                     "ambientIngest" -> app.setAmbientIngestEnabled(value.toBooleanStrict())
@@ -1820,6 +1837,9 @@ class LauncherBindingService : Service() {
             ledger = app.agentLedger(sessionId),
             toolPrefetch = app.jevToolPrefetch,
             routedApp = { turnRoute?.app },
+            reflex = app.reflexForTurn,
+            // Never from the lock screen: every action there waits for approval anyway.
+            reflexInstant = { !fromLockscreen && app.securePrefs.reflexInstantEnabled.value },
         )
 
         // The conversation so far: in memory, or rebuilt from what was stored (after a restart).

@@ -29,6 +29,20 @@ class LlamaCpp {
         /** Process-wide, like the native state it guards. */
         private val nativeLock = ReentrantLock()
         private val cancelLock = Any()
+
+        /**
+         * Guards Llamatik's embedding slot, which is separate from the generation model and is
+         * used by the reflex encoder ([org.ethereumphone.andyclaw.llm.reflex.ReflexModel]).
+         * Not [nativeLock]: a fallback generation holds that for minutes, and an embedding must
+         * answer in milliseconds. `LlamaBridge.shutdown()` frees both slots, so it takes this
+         * lock too, and bumps [shutdowns] so the embedder knows its model is gone.
+         */
+        val embedLock = Any()
+
+        /** How many times `LlamaBridge.shutdown()` has run. Guarded by [embedLock]. */
+        @Volatile
+        var shutdowns: Int = 0
+            private set
     }
 
     @Volatile
@@ -93,9 +107,37 @@ class LlamaCpp {
         unloadIfPending()
     }
 
+    /**
+     * Unloads the model if it is still [path] and nothing is generating. For a caller that loaded
+     * its own model and is done with it; never frees a model someone else has loaded since.
+     */
+    fun unloadIfLoaded(path: String) {
+        if (!nativeLock.tryLock()) return
+        try {
+            if (loadedModelPath == path) unloadPending = true
+        } finally {
+            nativeLock.unlock()
+        }
+        unloadIfPending()
+    }
+
+    /**
+     * The whole completion as one string. Collected from [LlamaBridge.generateStream]: the
+     * bundled Llamatik's blocking `LlamaBridge.generate` aborts the process in
+     * `llama_sampler_sample` on its first token, for every model and parameter set tried on the
+     * dGEN1, while the streaming decode of the same prompt works.
+     */
     fun generate(prompt: String): String = withNativeLock {
         check(isModelLoaded) { "Model not loaded" }
-        LlamaBridge.generate(prompt)
+        val out = StringBuilder()
+        var error: String? = null
+        LlamaBridge.generateStream(prompt, object : GenStream {
+            override fun onDelta(text: String) { out.append(text) }
+            override fun onComplete() {}
+            override fun onError(message: String) { error = message }
+        })
+        error?.let { throw IllegalStateException("Local inference error: $it") }
+        out.toString()
     }
 
     /**
@@ -168,7 +210,10 @@ class LlamaCpp {
             if (!unloadPending) return
             unloadPending = false
             if (!isModelLoaded) return
-            LlamaBridge.shutdown()
+            synchronized(embedLock) {
+                LlamaBridge.shutdown()
+                shutdowns++
+            }
             isModelLoaded   = false
             loadedModelPath = null
             loadedConfig    = null

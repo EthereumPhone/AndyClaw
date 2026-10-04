@@ -18,6 +18,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.size
@@ -2005,6 +2006,7 @@ fun SettingsScreen(
                 }
 
                 AutopilotSettingsRows(primaryColor, contentTitleStyle, contentBodyStyle, rowControlSpacing)
+                ReflexSettingsRows(primaryColor, contentTitleStyle, contentBodyStyle, rowControlSpacing)
 
                 Spacer(Modifier.height(8.dp))
 
@@ -3110,6 +3112,130 @@ private fun AutopilotSettingsRows(
                 onCheckedChange = { autopilotPrefs.setJevPrefetchEnabled(it) },
                 activeColor = primaryColor,
             )
+        }
+    }
+}
+
+/**
+ * The on-device reflex models: the switch for them (routing + shadow mode), the switch for
+ * running simple commands on the phone, what shadow mode has seen, and the action model's download.
+ */
+@Composable
+private fun ReflexSettingsRows(
+    primaryColor: androidx.compose.ui.graphics.Color,
+    contentTitleStyle: androidx.compose.ui.text.TextStyle,
+    contentBodyStyle: androidx.compose.ui.text.TextStyle,
+    rowControlSpacing: androidx.compose.ui.unit.Dp,
+) {
+    val app = androidx.compose.ui.platform.LocalContext.current.applicationContext as org.ethereumphone.andyclaw.NodeApp
+    val runtime = app.reflexRuntime ?: return
+    val prefs = app.securePrefs
+    val reflexOn by prefs.reflexEnabled.collectAsState()
+    val instantOn by prefs.reflexInstantEnabled.collectAsState()
+    val actorState by runtime.actorState.collectAsState()
+    val actorProgress by runtime.actorProgress.collectAsState()
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
+    var stats by remember { mutableStateOf<org.ethereumphone.andyclaw.llm.reflex.ReflexShadow.Stats?>(null) }
+    LaunchedEffect(Unit) {
+        stats = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { runtime.shadow.stats() }
+    }
+
+    @Composable
+    fun SwitchRow(title: String, body: String, checked: Boolean, enabled: Boolean = true, onChange: (Boolean) -> Unit) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(text = title, style = contentTitleStyle, color = primaryColor)
+                Text(text = body, style = contentBodyStyle, color = dgenWhite)
+            }
+            Spacer(Modifier.width(rowControlSpacing))
+            DgenSquareSwitch(
+                checked = checked,
+                onCheckedChange = { if (enabled) onChange(it) },
+                activeColor = primaryColor,
+            )
+        }
+    }
+
+    Column {
+        SwitchRow(
+            title = "ON-DEVICE REFLEXES",
+            body = "A small model on the phone reads each request you type or say and loads the " +
+                "tools it needs before the AI is asked. It also notes what it would have done " +
+                "itself, next to what the AI did. Nothing leaves the phone.",
+            checked = reflexOn,
+            onChange = { prefs.setReflexEnabled(it) },
+        )
+        SwitchRow(
+            title = "INSTANT ACTIONS (EXPERIMENTAL)",
+            body = "Simple commands — Wi-Fi, Bluetooth, Do Not Disturb, dark mode, volume, alarms, " +
+                "reminders, opening an app — run on the phone in under a second, without asking the " +
+                "AI. Anything it is unsure of still goes to the AI.",
+            checked = instantOn && reflexOn,
+            enabled = reflexOn,
+            onChange = { prefs.setReflexInstantEnabled(it) },
+        )
+        stats?.let { s ->
+            val agree = if (s.fired > 0) " (${s.agreed * 100 / s.fired} % agreed)" else ""
+            Text(
+                text = "Seen so far: ${s.fired} it would have handled$agree, ${s.missed} it left to the AI " +
+                    "that it could have done, ${s.correctAbstain} rightly left to the AI.",
+                style = contentBodyStyle,
+                color = dgenWhite,
+                modifier = Modifier.padding(vertical = 8.dp),
+            )
+            s.recent.take(5).forEach { e ->
+                Text(
+                    text = "${e.verdict.lowercase()}: \"${e.text}\" — on-device ${e.reflex}; AI ${e.agent}",
+                    style = contentBodyStyle,
+                    color = dgenWhite.copy(alpha = 0.7f),
+                    modifier = Modifier.padding(vertical = 2.dp),
+                )
+            }
+            if (s.fired + s.missed + s.correctAbstain > 0) {
+                TextButton(onClick = {
+                    scope.launch(kotlinx.coroutines.Dispatchers.IO) {
+                        runtime.shadow.clear()
+                        stats = runtime.shadow.stats()
+                    }
+                }) { Text("CLEAR", color = primaryColor) }
+            }
+        }
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(text = "ACTION MODEL", style = contentTitleStyle, color = primaryColor)
+                Text(
+                    text = when (actorState) {
+                        org.ethereumphone.andyclaw.llm.reflex.ReflexRuntime.ActorState.READY ->
+                            "Downloaded. Fills in times, levels and app names for alarms, reminders, volume and apps."
+                        org.ethereumphone.andyclaw.llm.reflex.ReflexRuntime.ActorState.DOWNLOADING ->
+                            "Downloading… ${(actorProgress * 100).toInt()} %"
+                        org.ethereumphone.andyclaw.llm.reflex.ReflexRuntime.ActorState.FAILED ->
+                            "The download failed. Without it, alarms, reminders, volume and apps go to the AI."
+                        org.ethereumphone.andyclaw.llm.reflex.ReflexRuntime.ActorState.ABSENT ->
+                            "292 MB. Needed for alarms, reminders, volume and apps; switches and status work without it."
+                    },
+                    style = contentBodyStyle,
+                    color = dgenWhite,
+                )
+            }
+            if (actorState == org.ethereumphone.andyclaw.llm.reflex.ReflexRuntime.ActorState.ABSENT ||
+                actorState == org.ethereumphone.andyclaw.llm.reflex.ReflexRuntime.ActorState.FAILED
+            ) {
+                Spacer(Modifier.width(rowControlSpacing))
+                TextButton(onClick = { scope.launch { runtime.downloadActor() } }) {
+                    Text("DOWNLOAD", color = primaryColor)
+                }
+            }
         }
     }
 }

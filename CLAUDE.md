@@ -518,3 +518,35 @@ run skip with `HeartbeatSkipReason.RECENT_EVENT_TRIGGER`.
 - `AmbientTriggerPolicy` decides how often a signal becomes a round trip, and the cooldown
   counts *any* ingest — an unlock two seconds after a mail notification has nothing to fetch.
   It looks only at which app posted a notification, never at its text.
+
+## 10. The reflex models — `llm/reflex/`, `agent/ReflexTurn.kt`
+
+Two tiny models trained in `~/dgen1-llm/` (its `docs/` explain them; `release/` holds the files).
+**M1** (`reflex-encoder-v1-q8_0.gguf` + heads, APK assets, 37 MB) reads every `USER` turn in ~15 ms:
+its top tools are loaded for the agent ahead of search (`addDiscoveredTools`) and sorted first for a
+local model. **M2** (Gemma 270M, 292 MB, sha256-pinned, at `ReflexRuntime.ACTOR_URL` in
+`gs://dgen-updates/models/reflex/`) fills arguments for alarms, reminders, volume, apps and LEDs.
+Users drive AndyClaw from the launcher and never see its own settings, so M2 downloads by itself
+(`maybeFetchActor`: unmetered + validated network, no Battery Saver, ≥ 1.3 GB free, 6 h after a
+failure), and the launcher's settings show `reflexEnabled`, `reflexInstant`, `reflexActorState`,
+`reflexActorProgress`, `reflexSummary` and write `reflexActorDownload`.
+
+- **Shadow mode is the default.** `agent.reflex` (on) runs M1 and records, per label, whether the
+  on-device call would have matched what the agent ran (`ReflexShadow`, `filesDir/reflex_shadow.json`,
+  on the device only, shown in Settings). `agent.reflex.instant` (off) runs the call instead of the
+  model, through the ordinary engine (provenance gate, approvals, ledger), and ends the turn with a
+  template reply (`ReflexReplies`) — or, for a read, hands the result to the model.
+- **Abstain by default**: a gate (confidence ≥ τ and the tool head agreeing), `ReflexSpec.validate`
+  on M2's JSON, a resolver that refuses what it cannot compute, a tool the turn has not enabled, a
+  message over 200 chars, one that refers back ("turn it off", "yes", "instead") or answers a
+  question the last reply asked (`ReflexTurn.isSelfContained`) — all go to the agent. The launcher
+  keeps one conversation for days, so this is decided by the words, never by the conversation's age.
+  Lock-screen prompts never run instantly: every action there waits for approval.
+- `ReflexSpec`/`ReflexResolver` mirror `~/dgen1-llm/gen/spec.py`/`resolve.py`. Change one, change both,
+  and retrain if a label or schema changes. `ReflexSpecTest` pins the shipped labels to the spec.
+- **Llamatik traps** (all handled; don't undo them): `LlamaBridge.generate()` aborts the process, so
+  `LlamaCpp.generate` collects `generateStream`; greedy is `topK = 1`, never `temperature = 0`;
+  `shutdown()` frees the embedding slot too, so it runs under `LlamaCpp.embedLock` and bumps
+  `shutdowns`, which M1 watches; M2 loaded costs ~1 GB RSS, so it unloads after 60 s idle.
+- The integration cannot be sideloaded onto a dGEN1 (release platform key). It is verified on the
+  phone by `~/dgen1-llm/android-harness/`, which runs this package's sources with the same aar.

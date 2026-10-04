@@ -421,6 +421,21 @@ class SecurePrefs(context: Context) : KeyValueStore {
   private val _jevPrefetchEnabled = MutableStateFlow(prefs.getBoolean("agent.jevPrefetch", true))
   val jevPrefetchEnabled: StateFlow<Boolean> = _jevPrefetchEnabled
 
+  /**
+   * The on-device reflex models (`llm/reflex/`): M1 reads each request the user types or says and
+   * loads the tools it needs before the model is asked, and in shadow mode notes what the
+   * on-device path would have done next to what the agent did. Nothing leaves the phone.
+   */
+  private val _reflexEnabled = MutableStateFlow(prefs.getBoolean("agent.reflex", true))
+  val reflexEnabled: StateFlow<Boolean> = _reflexEnabled
+
+  /**
+   * Simple commands ("wifi off", "alarm at 7") run on the device without a model call. Off
+   * until shadow mode has shown the on-device path agrees with the agent.
+   */
+  private val _reflexInstantEnabled = MutableStateFlow(prefs.getBoolean("agent.reflex.instant", false))
+  val reflexInstantEnabled: StateFlow<Boolean> = _reflexInstantEnabled
+
   /** Irreversible compiled flows run without an approval card (the user's own requests only). */
   private val _autopilotNoConfirm = MutableStateFlow(prefs.getBoolean("agent.autopilot.noConfirm", true))
   val autopilotNoConfirm: StateFlow<Boolean> = _autopilotNoConfirm
@@ -1110,6 +1125,16 @@ class SecurePrefs(context: Context) : KeyValueStore {
     _autopilotNoConfirm.value = enabled
   }
 
+  fun setReflexEnabled(enabled: Boolean) {
+    prefs.edit { putBoolean("agent.reflex", enabled) }
+    _reflexEnabled.value = enabled
+  }
+
+  fun setReflexInstantEnabled(enabled: Boolean) {
+    prefs.edit { putBoolean("agent.reflex.instant", enabled) }
+    _reflexInstantEnabled.value = enabled
+  }
+
   fun setJevPrefetchEnabled(enabled: Boolean) {
     prefs.edit { putBoolean("agent.jevPrefetch", enabled) }
     _jevPrefetchEnabled.value = enabled
@@ -1481,6 +1506,8 @@ class SecurePrefs(context: Context) : KeyValueStore {
     _toolSearchEnabled.value = prefs.getBoolean("routing.toolSearchEnabled", true)
     _autopilotEnabled.value = prefs.getBoolean("agent.autopilot.enabled", true)
     _jevPrefetchEnabled.value = prefs.getBoolean("agent.jevPrefetch", true)
+    _reflexEnabled.value = prefs.getBoolean("agent.reflex", true)
+    _reflexInstantEnabled.value = prefs.getBoolean("agent.reflex.instant", false)
     _autopilotNoConfirm.value = prefs.getBoolean("agent.autopilot.noConfirm", true)
     _selectedRoutingPresetId.value = prefs.getString("routing.presetId", "stock_minimal") ?: "stock_minimal"
     _routingPresets.value = loadRoutingPresets()
