@@ -1537,6 +1537,7 @@ class AgentLoop(
         val modelId = customModelIdOverride ?: model.modelId
         var endedHere = false
         var outcome = LedgerOutcome.OK
+        val t0 = System.nanoTime()
         try {
             val call = ContentBlock.ToolUseBlock(
                 id = "toolu_reflex_" + java.util.UUID.randomUUID().toString().replace("-", ""),
@@ -1572,6 +1573,15 @@ class AgentLoop(
                 else -> ":read"
             }
             Log.i(TAG, "reflex instant ${instant.call.tool} -> $reflexNote (m1 ${instant.m1Ms} ms, m2 ${instant.m2Ms} ms)")
+            noteReflexHandled(
+                instant,
+                when {
+                    reply != null -> org.ethereumphone.andyclaw.llm.reflex.ReflexActivity.DONE
+                    result == null || result.isError -> org.ethereumphone.andyclaw.llm.reflex.ReflexActivity.FAILED
+                    else -> org.ethereumphone.andyclaw.llm.reflex.ReflexActivity.READ
+                },
+                t0,
+            )
             if (reply == null) {
                 return if (results.isEmpty()) emptyList()
                 else listOf(Message.assistant(listOf(call)), Message("user", MessageContent.Blocks(results)))
@@ -1590,6 +1600,7 @@ class AgentLoop(
             // The agent takes the request as if nothing had been tried.
             Log.w(TAG, "reflex instant failed, handing over: ${e.message}")
             reflexNote = instant.label + ":error"
+            noteReflexHandled(instant, org.ethereumphone.andyclaw.llm.reflex.ReflexActivity.FAILED, t0)
             return emptyList()
         } finally {
             if (endedHere) {
@@ -1604,6 +1615,17 @@ class AgentLoop(
                 runCatching { skillRegistry.cleanupAll() }
             }
         }
+    }
+
+    /** For Settings' "Last used": what ran on the phone, how it ended, and how long it took in all. */
+    private fun noteReflexHandled(
+        instant: org.ethereumphone.andyclaw.llm.reflex.ReflexRouter.Decision.Instant,
+        outcome: String,
+        startNs: Long,
+    ) {
+        val ms = instant.m1Ms + instant.m2Ms + (System.nanoTime() - startNs) / 1_000_000
+        runCatching { reflex?.activity?.noteHandled(instant.label, outcome, ms) }
+            .onFailure { Log.w(TAG, "reflex activity not recorded: ${it.message}") }
     }
 
     /** [tools] with M1's choices first, for a model that only sees the first few. */

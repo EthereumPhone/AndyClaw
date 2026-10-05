@@ -525,13 +525,23 @@ Two tiny models trained in `~/dgen1-llm/` (its `docs/` explain them; `release/` 
 **M1** (`reflex-encoder-v1-q8_0.gguf` + heads, APK assets, 37 MB) reads every `USER` turn in ~15 ms:
 its top tools are loaded for the agent ahead of search (`addDiscoveredTools`) and sorted first for a
 local model. **M2** (Gemma 270M, 292 MB, sha256-pinned) fills arguments for alarms, reminders,
-volume, apps and LEDs. It is fetched from `ReflexRuntime.ACTOR_URLS`: Cloudflare R2 at
+volume, apps and LEDs. Its mirrors are `ReflexRuntime.ACTOR_URLS`: Cloudflare R2 at
 `updates.freedomfactory.io/models/reflex/` first (no egress charge), `gs://dgen-updates/models/reflex/`
-only when that fails — upload a new model version to both.
-Users drive AndyClaw from the launcher and never see its own settings, so M2 downloads by itself
-(`maybeFetchActor`: unmetered + validated network, no Battery Saver, ≥ 1.3 GB free, 6 h after a
-failure), and the launcher's settings show `reflexEnabled`, `reflexInstant`, `reflexActorState`,
-`reflexActorProgress`, `reflexSummary` and write `reflexActorDownload`.
+only when that fails — upload a new model version to both, and bump `ACTOR`/`ACTOR_VERSION`/`PINNED`.
+
+**M2 never downloads by itself.** The user gets it, as with the Transaction Guardian, from the OS
+Settings › Your dGEN1 › AndyClaw (MtkSettings `display/andyclaw/`, sharing `display/models/` with
+the guardian): Settings fetches it with DownloadManager, writes it into `ReflexProvider`'s staging
+fd, and `install` keeps it only if its sha256 is `PINNED`'s. `ReflexProvider`
+(`content://org.ethereumphone.andyclaw.reflex`, signature permission `…permission.REFLEX_MODEL`)
+speaks the guardian's contract (`status` / `install` / `delete` / `/staging` / `/state`) plus `set`
+for the two switches, and its `status` carries what the page shows: on/acting, M1's state, and
+`ReflexActivity` (`filesDir/reflex_activity.json`: requests read, commands run on the phone, the
+last 20 with label, outcome, time and duration — never the user's words). Off ethOS there is no
+such page, so AndyClaw's own settings keep a DOWNLOAD button (`startActorDownload`); on ethOS they
+link to the Settings page (`ReflexProvider.SETTINGS_ACTION`). The launcher's settings show
+`reflexEnabled`, `reflexInstant`, `reflexActorState`, `reflexRead`, `reflexHandled`,
+`reflexLastTitle`/`AtMs`/`Ms` and link to the same page.
 
 - **Shadow mode is the default.** `agent.reflex` (on) runs M1 and records, per label, whether the
   on-device call would have matched what the agent ran (`ReflexShadow`, `filesDir/reflex_shadow.json`,

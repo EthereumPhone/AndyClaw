@@ -1028,7 +1028,12 @@ class NodeApp : Application() {
      */
     val reflexRuntime: org.ethereumphone.andyclaw.llm.reflex.ReflexRuntime? by lazy {
         if (android.os.Build.SUPPORTED_ABIS.firstOrNull()?.startsWith("x86") == true) null
-        else org.ethereumphone.andyclaw.llm.reflex.ReflexRuntime(this, llamaCpp)
+        else org.ethereumphone.andyclaw.llm.reflex.ReflexRuntime(this, llamaCpp).also { runtime ->
+            // Settings' AndyClaw page watches this to show "Last used" as it happens.
+            runtime.activity.onChange = {
+                runCatching { contentResolver.notifyChange(org.ethereumphone.andyclaw.services.ReflexProvider.STATE_URI, null) }
+            }
+        }
     }
 
     /** [reflexRuntime] for a turn, when the user has not switched the reflexes off. */
@@ -1309,8 +1314,8 @@ class NodeApp : Application() {
 
         // Copy and load the reflex encoder (37 MB, ~0.3 s) now, so the first turn has it. A turn
         // never waits for this: until it is done, turns run as if the reflexes were off. M2 is
-        // fetched on Wi-Fi; launcher users never see AndyClaw's own settings to ask for it.
-        reflexForTurn?.let { it.routerIfReady(); it.maybeFetchActor() }
+        // the user's to download, from Settings › Your dGEN1 › AndyClaw (ReflexProvider).
+        reflexForTurn?.routerIfReady()
 
         // Refresh OpenRouter model registry so context windows and pricing are available
         appScope.launch {

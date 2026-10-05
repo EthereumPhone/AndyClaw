@@ -3118,7 +3118,8 @@ private fun AutopilotSettingsRows(
 
 /**
  * The on-device reflex models: the switch for them (routing + shadow mode), the switch for
- * running simple commands on the phone, what shadow mode has seen, and the action model's download.
+ * running simple commands on the phone, what shadow mode has seen, and the action model. On ethOS
+ * the action model is downloaded in Settings › Your dGEN1 › AndyClaw; elsewhere, here.
  */
 @Composable
 private fun ReflexSettingsRows(
@@ -3135,6 +3136,21 @@ private fun ReflexSettingsRows(
     val actorState by runtime.actorState.collectAsState()
     val actorProgress by runtime.actorProgress.collectAsState()
     val scope = androidx.compose.runtime.rememberCoroutineScope()
+    val context = androidx.compose.ui.platform.LocalContext.current
+    // On ethOS the OS Settings page downloads the action model and says when Reflex was used.
+    val osSettings = org.ethereumphone.andyclaw.skills.tier.OsCapabilities.isPrivilegedOs
+    var lastUsed by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(actorState) {
+        lastUsed = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            runCatching { runtime.activity.stats() }.getOrNull()?.let { a ->
+                a.lastHandled?.let { e ->
+                    "Last done on the phone: ${org.ethereumphone.andyclaw.llm.reflex.ReflexActivity.describe(e.label)}, " +
+                        android.text.format.DateUtils.getRelativeTimeSpanString(e.atMs) + ". " +
+                        "${a.handled} so far."
+                }
+            }
+        }
+    }
     var stats by remember { mutableStateOf<org.ethereumphone.andyclaw.llm.reflex.ReflexShadow.Stats?>(null) }
     LaunchedEffect(Unit) {
         stats = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { runtime.shadow.stats() }
@@ -3219,16 +3235,33 @@ private fun ReflexSettingsRows(
                             "Downloaded. Fills in times, levels and app names for alarms, reminders, volume and apps."
                         org.ethereumphone.andyclaw.llm.reflex.ReflexRuntime.ActorState.DOWNLOADING ->
                             "Downloading… ${(actorProgress * 100).toInt()} %"
+                        org.ethereumphone.andyclaw.llm.reflex.ReflexRuntime.ActorState.INSTALLING ->
+                            "Installing…"
                         org.ethereumphone.andyclaw.llm.reflex.ReflexRuntime.ActorState.FAILED ->
                             "The download failed. Without it, alarms, reminders, volume and apps go to the AI."
                         org.ethereumphone.andyclaw.llm.reflex.ReflexRuntime.ActorState.ABSENT ->
-                            "292 MB. Needed for alarms, reminders, volume and apps; switches and status work without it."
+                            if (osSettings) "Not downloaded. Get it in Settings › Your dGEN1 › AndyClaw (292 MB); " +
+                                "until then alarms, reminders, volume and apps go to the AI."
+                            else "292 MB. Needed for alarms, reminders, volume and apps; switches and status work without it."
                     },
                     style = contentBodyStyle,
                     color = dgenWhite,
                 )
+                lastUsed?.let { Text(text = it, style = contentBodyStyle, color = dgenWhite.copy(alpha = 0.7f)) }
             }
-            if (actorState == org.ethereumphone.andyclaw.llm.reflex.ReflexRuntime.ActorState.ABSENT ||
+            if (osSettings) {
+                Spacer(Modifier.width(rowControlSpacing))
+                TextButton(onClick = {
+                    runCatching {
+                        context.startActivity(
+                            android.content.Intent(org.ethereumphone.andyclaw.services.ReflexProvider.SETTINGS_ACTION)
+                                .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK),
+                        )
+                    }.onFailure { android.util.Log.w("ReflexSettings", "no Settings page: ${it.javaClass.simpleName}") }
+                }) {
+                    Text("SETTINGS", color = primaryColor)
+                }
+            } else if (actorState == org.ethereumphone.andyclaw.llm.reflex.ReflexRuntime.ActorState.ABSENT ||
                 actorState == org.ethereumphone.andyclaw.llm.reflex.ReflexRuntime.ActorState.FAILED
             ) {
                 Spacer(Modifier.width(rowControlSpacing))

@@ -2,6 +2,13 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
+    <!-- Settings › Your dGEN1 › AndyClaw: Reflex's model download and switches (ReflexProvider).
+         Signature: only the platform-signed Settings can hand AndyClaw a model file. -->
+    <permission
+        android:name="org.ethereumphone.andyclaw.permission.REFLEX_MODEL"
+        android:label="Install and control AndyClaw's on-device Reflex model"
+        android:protectionLevel="signature" />
+
     <uses-permission android:name="android.permission.VIBRATE" />
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.READ_CONTACTS" />
@@ -140,6 +147,14 @@
             android:name=".services.LauncherBindingService"
             android:enabled="true"
             android:exported="true" />
+
+        <!-- Reflex's action model for Settings: status, staging fd, install, delete, switches. -->
+        <provider
+            android:name=".services.ReflexProvider"
+            android:authorities="org.ethereumphone.andyclaw.reflex"
+            android:exported="true"
+            android:grantUriPermissions="false"
+            android:permission="org.ethereumphone.andyclaw.permission.REFLEX_MODEL" />
 
         <!-- Exposes heartbeat settings (interval) to the OS heartbeat service. -->
         <provider

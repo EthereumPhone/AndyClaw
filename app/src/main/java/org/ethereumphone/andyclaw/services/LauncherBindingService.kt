@@ -376,10 +376,20 @@ class LauncherBindingService : Service() {
                 app.reflexRuntime?.let { reflex ->
                     put("reflexEnabled", prefs.reflexEnabled.value)
                     put("reflexInstant", prefs.reflexInstantEnabled.value)
-                    // absent | downloading | ready | failed: the model that fills in times, levels
-                    // and app names. Fetched on Wi-Fi by itself; "reflexActorDownload" asks now.
+                    // absent | installing | ready (| downloading | failed, AndyClaw's own download
+                    // off ethOS): the model that fills in times, levels and app names. The user
+                    // downloads it in Settings › Your dGEN1 › AndyClaw (ReflexProvider).
                     put("reflexActorState", reflex.actorState.value.name.lowercase())
-                    put("reflexActorProgress", reflex.actorProgress.value.toDouble())
+                    // What it has done, so the launcher can say whether and when it is used.
+                    runCatching { reflex.activity.stats() }.getOrNull()?.let { a ->
+                        put("reflexRead", a.read)
+                        put("reflexHandled", a.handled)
+                        a.lastHandled?.let { e ->
+                            put("reflexLastTitle", org.ethereumphone.andyclaw.llm.reflex.ReflexActivity.describe(e.label))
+                            put("reflexLastAtMs", e.atMs)
+                            put("reflexLastMs", e.ms)
+                        }
+                    }
                     runCatching { reflex.shadowSummary() }.getOrNull()?.let { put("reflexSummary", it) }
                 }
                 put("ambientIngest", prefs.ambientIngestEnabled.value)
@@ -511,11 +521,6 @@ class LauncherBindingService : Service() {
                     "autopilotNoConfirm" -> prefs.setAutopilotNoConfirm(value.toBooleanStrict())
                     "reflexEnabled" -> prefs.setReflexEnabled(value.toBooleanStrict())
                     "reflexInstant" -> prefs.setReflexInstantEnabled(value.toBooleanStrict())
-                    "reflexActorDownload" -> {
-                        // Claimed before this returns: the launcher reloads at once and must
-                        // already see "downloading".
-                        (app.reflexRuntime ?: return false).startActorDownload()
-                    }
                     // Through the app, not the prefs: the receivers have to follow the
                     // switch, or nothing happens until the next boot.
                     "ambientIngest" -> app.setAmbientIngestEnabled(value.toBooleanStrict())

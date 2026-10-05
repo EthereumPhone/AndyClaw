@@ -98,11 +98,13 @@ class ReflexTurn private constructor(
             val message = text.trim()
             if (message.isEmpty() || message.length > MAX_CHARS) return null
             val router = runtime.routerIfReady() ?: return null
-            runtime.maybeFetchActor()
             val now = ZonedDateTime.now()
             val labelEnabled = { label: String -> ReflexSpec.toolFor(label) in enabledTools }
             // M1 only: the routing hint, the gate, and the M1-only actions resolved.
-            val quick = router.decide(message, now, labelEnabled, useActor = false) ?: return null
+            val quick = router.decide(message, now, labelEnabled, useActor = false)
+            // Counted for Settings ("read 148 requests"), labels and times only.
+            runCatching { runtime.activity.noteRead() }
+            if (quick == null) return null
             if (!isSelfContained(message, previousReply)) {
                 return ReflexTurn(runtime, message, quick.tools, null, null)
             }

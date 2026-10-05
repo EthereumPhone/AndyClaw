@@ -29,8 +29,11 @@ import java.util.concurrent.TimeUnit
  * - M1 (encoder, heads, labels) ships as APK assets and is copied once to
  *   `filesDir/models/reflex/` — llama.cpp needs a real path — and checked against [PINNED].
  *   A subdirectory, so `GgufRegistry`'s BYO-model list (top level of `models/`) never shows it.
- * - M2 (292 MB) is downloaded on demand ([downloadActor]) and pinned the same way. Without it
- *   the M1-only actions still work and intents go to the agent.
+ * - M2 (292 MB) is not in the APK. On ethOS the user downloads it from Settings › Your dGEN1 ›
+ *   AndyClaw: Settings fetches it and hands it over through [ReflexProvider]'s staging file, and
+ *   [installStaged] checks it against [PINNED]. Elsewhere AndyClaw's own settings fetch it
+ *   ([startActorDownload]). Nothing downloads it by itself. Without it the M1-only actions still
+ *   work and intents go to the agent.
  *
  * Every name carries the model version: an update never loads a mixed set.
  */
@@ -54,13 +57,17 @@ class ReflexRuntime(
 
     val shadow: ReflexShadow by lazy { ReflexShadow(File(context.filesDir, "reflex_shadow.json")) }
 
+    /** What Reflex has done on this phone and when, for the settings that show it. */
+    val activity: ReflexActivity by lazy { ReflexActivity(File(context.filesDir, "reflex_activity.json")) }
+
     private val _actorState = MutableStateFlow(if (actorFile().isFile) ActorState.READY else ActorState.ABSENT)
-    /** Whether M2 is on the phone, for the settings row. */
+    /** Whether M2 is on the phone, for the settings rows and [ReflexProvider]. */
     val actorState: StateFlow<ActorState> = _actorState.asStateFlow()
     private val _actorProgress = MutableStateFlow(0f)
     val actorProgress: StateFlow<Float> = _actorProgress.asStateFlow()
 
-    enum class ActorState { ABSENT, DOWNLOADING, READY, FAILED }
+    /** DOWNLOADING and FAILED are AndyClaw's own download; INSTALLING is a hand-over from Settings. */
+    enum class ActorState { ABSENT, DOWNLOADING, INSTALLING, READY, FAILED }
 
     /**
      * The router, or null when M1 cannot run (no files, a bad hash, a failed load). Blocking: the
@@ -81,6 +88,13 @@ class ReflexRuntime(
 
     private val building = java.util.concurrent.atomic.AtomicBoolean(false)
 
+    /** M1 for Settings: `ready`, `loading` (not built yet, or building), or `failed`. */
+    fun m1State(): String = when {
+        router != null -> "ready"
+        failed -> "failed"
+        else -> "loading"
+    }
+
     /**
      * The router if it is built; otherwise starts building it in the background and returns null.
      * A turn never waits for the first extraction and load.
@@ -99,33 +113,11 @@ class ReflexRuntime(
         pm.getApplicationLabel(pm.getApplicationInfo(pkg, 0)).toString()
     }.getOrNull()
 
-    @Volatile
-    private var lastFetchFailureMs = 0L
-
     /**
-     * Starts M2's download when nobody would mind: the phone is on an unmetered network, not in
-     * Battery Saver, with room to spare, and the last attempt did not fail in the past
-     * [FETCH_RETRY_MS]. Home-screen users never open AndyClaw's settings, so this is how M2
-     * arrives. Cheap to call on every turn.
-     */
-    fun maybeFetchActor() {
-        if (_actorState.value == ActorState.READY || _actorState.value == ActorState.DOWNLOADING) return
-        if (System.currentTimeMillis() - lastFetchFailureMs < FETCH_RETRY_MS) return
-        val cm = context.getSystemService(android.net.ConnectivityManager::class.java) ?: return
-        val caps = cm.getNetworkCapabilities(cm.activeNetwork) ?: return
-        if (!caps.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_NOT_METERED) ||
-            !caps.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_VALIDATED)
-        ) return
-        if (context.getSystemService(android.os.PowerManager::class.java)?.isPowerSaveMode == true) return
-        if (context.filesDir.usableSpace < ACTOR_BYTES + MIN_FREE_BYTES) return
-        startActorDownload()
-    }
-
-    /**
-     * Claims the download and starts it; false if M2 is already here or already downloading.
-     * The claim is made before this returns, so a settings read right after (the launcher's
-     * DOWNLOAD NOW reloads at once) already says "downloading", and a second tap or the automatic
-     * fetch cannot start another download into the same temp file.
+     * AndyClaw's own download, for a phone without ethOS Settings (whose page is the way on a
+     * dGEN1). Claims the download and starts it; false if M2 is already here, or a download or an
+     * install is already running. The claim is made before this returns, so a second tap cannot
+     * start another download into the same temp file.
      */
     fun startActorDownload(): Boolean {
         if (actorFile().isFile) {
@@ -134,7 +126,7 @@ class ReflexRuntime(
         }
         while (true) {
             val current = _actorState.value
-            if (current == ActorState.DOWNLOADING || current == ActorState.READY) return false
+            if (current == ActorState.DOWNLOADING || current == ActorState.INSTALLING || current == ActorState.READY) return false
             if (_actorState.compareAndSet(current, ActorState.DOWNLOADING)) break
         }
         _actorProgress.value = 0f
@@ -210,10 +202,106 @@ class ReflexRuntime(
             } else {
                 tmp.delete()
                 _actorState.value = ActorState.FAILED
-                lastFetchFailureMs = System.currentTimeMillis()
             }
         }
         done
+    }
+
+    // ── The hand-over from Settings (ReflexProvider) ─────────────────────────
+
+    private val installLock = Any()
+
+    val isInstalling: Boolean get() = _actorState.value == ActorState.INSTALLING
+
+    /** Where Settings writes the downloaded M2 before [installStaged]. */
+    fun stagingFile() = File(dir, "$ACTOR.staging")
+
+    /** A fresh, empty staging file, or null while an install or AndyClaw's own download runs. */
+    fun freshStaging(): File? {
+        val state = _actorState.value
+        if (state == ActorState.INSTALLING || state == ActorState.DOWNLOADING) return null
+        dir.mkdirs()
+        return stagingFile().also { it.delete(); it.createNewFile() }
+    }
+
+    /**
+     * Installs the file Settings staged: its sha256 must be [PINNED]'s, or it is deleted and
+     * nothing changes. Null on success, else an error code from the provider contract
+     * (`no_staging`, `bad_hash`, `busy`, `io`). The staging file is always gone afterwards.
+     */
+    fun installStaged(): String? = synchronized(installLock) {
+        while (true) {
+            val current = _actorState.value
+            if (current == ActorState.INSTALLING || current == ActorState.DOWNLOADING) return "busy"
+            if (_actorState.compareAndSet(current, ActorState.INSTALLING)) break
+        }
+        val staged = stagingFile()
+        var error: String? = null
+        try {
+            if (!staged.isFile || staged.length() == 0L) {
+                error = "no_staging"
+            } else {
+                val sha = staged.inputStream().use { input -> sha256(input) }
+                if (sha != PINNED.getValue(ACTOR)) {
+                    error = "bad_hash"
+                } else if (!staged.renameTo(actorFile())) {
+                    error = "io"
+                } else {
+                    // The loaded model, if any, is the file just replaced: let it be rebuilt.
+                    actor = null
+                    olderActors().forEach { it.delete() }
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "actor install failed: ${e.javaClass.simpleName}")
+            error = "io"
+        } finally {
+            staged.delete()
+            _actorState.value = if (actorFile().isFile) ActorState.READY else ActorState.ABSENT
+        }
+        Log.i(TAG, "actor install: ${error ?: "ok"}")
+        error
+    }
+
+    /**
+     * Removes M2 (Settings' "Remove download"). A turn already generating keeps its mapped copy
+     * until it ends; the next one finds no model and leaves intents to the agent.
+     */
+    fun deleteActor(): Boolean = synchronized(installLock) {
+        if (_actorState.value == ActorState.DOWNLOADING || _actorState.value == ActorState.INSTALLING) return false
+        actor = null
+        llamaCpp.unloadIfLoaded(actorFile().absolutePath)
+        val ok = (!actorFile().exists() || actorFile().delete()) && olderActors().all { it.delete() }
+        stagingFile().delete()
+        _actorState.value = if (actorFile().isFile) ActorState.READY else ActorState.ABSENT
+        ok
+    }
+
+    /** The version of M2 on the phone: [ACTOR_VERSION], an older one's, or 0. */
+    fun installedActorVersion(): Int {
+        if (actorFile().isFile) return ACTOR_VERSION
+        return olderActors().mapNotNull { ACTOR_FILE.matchEntire(it.name)?.groupValues?.get(1)?.toIntOrNull() }.maxOrNull() ?: 0
+    }
+
+    /** Bytes M2 takes on the phone (0 if absent). */
+    fun actorBytesOnDisk(): Long = actorFile().takeIf { it.isFile }?.length() ?: olderActors().sumOf { it.length() }
+
+    /** Usable space where M2 goes. */
+    fun freeBytes(): Long = dir.also { it.mkdirs() }.usableSpace
+
+    /** M2 files of another version, left from before an update. */
+    private fun olderActors(): List<File> =
+        dir.listFiles { f -> f.name != ACTOR && ACTOR_FILE.matches(f.name) }?.toList().orEmpty()
+
+    private fun sha256(input: InputStream): String {
+        val md = MessageDigest.getInstance("SHA-256")
+        val buf = ByteArray(1 shl 16)
+        while (true) {
+            val n = input.read(buf)
+            if (n < 0) break
+            md.update(buf, 0, n)
+        }
+        return md.digest().joinToString("") { "%02x".format(it) }
     }
 
     /** Copies asset [name] to [dir] once, verified; later starts reuse the verified copy. */
@@ -301,10 +389,10 @@ class ReflexRuntime(
         const val HEADS = "reflex-heads-v1.bin"
         const val LABELS = "reflex-labels-v1.json"
         const val ACTOR = "reflex-actor-v1-q8_0.gguf"
-        private const val ACTOR_BYTES = 291_545_376L
-
-        private const val FETCH_RETRY_MS = 6 * 3_600_000L
-        private const val MIN_FREE_BYTES = 1_000_000_000L
+        /** The version [ACTOR] carries; Settings shows it and compares it with what is installed. */
+        const val ACTOR_VERSION = 1
+        const val ACTOR_BYTES = 291_545_376L
+        private val ACTOR_FILE = Regex("reflex-actor-v(\\d+)-q8_0\\.gguf")
 
         /**
          * Labels that may run on the device once instant actions are switched on. Not the ones
